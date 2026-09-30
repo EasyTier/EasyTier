@@ -154,10 +154,10 @@ impl NativeDhcpIpv4Host {
         self.ensure_open()?;
 
         let Some(ip) = next else {
-            self.global_ctx.set_ipv4(None);
+            self.global_ctx.set_applied_ipv4(None);
             return Ok(None);
         };
-        self.global_ctx.set_ipv4(Some(ip));
+        self.global_ctx.set_applied_ipv4(Some(ip));
         Ok(Some(ip))
     }
 }
@@ -176,7 +176,7 @@ impl DhcpIpv4Host for NativeDhcpIpv4Host {
         let permit = self.operation.clone().lock_owned().await;
         let outcome = match self.apply(next).await {
             Ok(actual) => DhcpIpv4ApplyOutcome::applied(actual),
-            Err(error) => DhcpIpv4ApplyOutcome::failed(self.global_ctx.get_ipv4(), error),
+            Err(error) => DhcpIpv4ApplyOutcome::failed(self.global_ctx.applied_ipv4(), error),
         };
         outcome.with_permit(DhcpIpv4ApplyPermit::new(permit))
     }

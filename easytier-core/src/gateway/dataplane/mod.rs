@@ -31,7 +31,7 @@ use tokio::{
 };
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     foundation::task::reap_joinset_background,
     gateway::{
         proxy::{
@@ -183,7 +183,7 @@ where
     operation: Mutex<()>,
     pub(super) runtime_started: AtomicBool,
     runtime_guard: DataPlaneIoGuard,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     pub(super) peer_manager: Weak<PeerManagerCore>,
     pub(super) transport_proxy: Option<Weak<WrappedTransportProxyModule>>,
     pub(super) host: Arc<H>,
@@ -336,7 +336,7 @@ where
     H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
     pub(crate) fn new(
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         peer_manager: Arc<PeerManagerCore>,
         transport_proxy: Option<&Arc<WrappedTransportProxyModule>>,
         host: Arc<H>,
@@ -366,23 +366,12 @@ where
         })
     }
 
-    fn runtime_ipv4(runtime_config: &CoreRuntimeConfigStore) -> Option<cidr::Ipv4Inet> {
-        let prefix = runtime_config
-            .snapshot()
-            .peer
-            .runtime
-            .core
-            .routes
-            .ipv4
-            .clone()?;
-        let IpAddr::V4(address) = prefix.address else {
-            return None;
-        };
-        cidr::Ipv4Inet::new(address, prefix.prefix_len).ok()
+    fn effective_ipv4(&self) -> Option<cidr::Ipv4Inet> {
+        self.peer_manager.upgrade().and_then(|pm| pm.my_ipv4())
     }
 
     pub(crate) fn is_local_virtual_ip(&self, ip: IpAddr) -> bool {
-        Self::runtime_ipv4(&self.runtime_config)
+        self.effective_ipv4()
             .is_some_and(|inet| IpAddr::V4(inet.address()) == ip)
     }
 
@@ -434,7 +423,7 @@ where
                     continue;
                 }
 
-                let cur_ipv4 = Self::runtime_ipv4(&runtime_config);
+                let cur_ipv4 = peer_manager.upgrade().and_then(|pm| pm.my_ipv4());
                 if prev_ipv4 != cur_ipv4 {
                     let old_ipv4 = prev_ipv4;
                     prev_ipv4 = cur_ipv4;
@@ -573,7 +562,7 @@ where
             ));
         };
         self.runtime_guard.ensure_open()?;
-        let local_virtual_ip = Self::runtime_ipv4(&self.runtime_config).map(|inet| inet.address());
+        let local_virtual_ip = self.effective_ipv4().map(|inet| inet.address());
         let local_virtual_destination = local_virtual_ip == Some(dst_ip);
         let local_endpoint = local_virtual_destination
             && self.entries.contains_key(&FlowKey {

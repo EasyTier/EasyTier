@@ -121,7 +121,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::config::toml::{ConfigLoader as _, TomlConfig};
+    use crate::config::{InstanceConfig, InstanceConfigRaw};
+
     #[derive(Debug)]
     struct TestInstance {
         id: Uuid,
@@ -149,19 +150,22 @@ mod tests {
 
         fn create(
             &self,
-            config: TomlConfig,
+            config: InstanceConfig,
             name: Self::CreateContext,
         ) -> Result<Arc<Self::Instance>, Self::Error> {
             Ok(Arc::new(TestInstance {
-                id: config.get_id(),
+                id: config.parsed().instance_id,
                 name,
             }))
         }
     }
 
     fn add(manager: &InstanceManager<TestFactory>, id: Uuid, name: &str) {
-        let config = TomlConfig::default();
-        config.set_id(id);
+        let raw = InstanceConfigRaw {
+            instance_id: Some(id),
+            ..Default::default()
+        };
+        let config = InstanceConfig::try_from(raw).unwrap();
         manager.create(config, name.to_owned()).unwrap();
     }
 

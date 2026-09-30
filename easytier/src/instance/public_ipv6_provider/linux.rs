@@ -715,12 +715,8 @@ mod tests {
     };
 
     use super::PublicIpv6ProviderConfig;
-    use crate::common::{
-        config::{ConfigLoader, TomlConfigLoader},
-        error::Error,
-        global_ctx::GlobalCtx,
-    };
-    use crate::instance::config::test_core_instance_config;
+    use crate::common::{error::Error, global_ctx::GlobalCtx};
+    use crate::instance::config::test_instance_config;
 
     fn run_ip(args: &[&str]) {
         let output = Command::new("ip")
@@ -911,21 +907,20 @@ mod tests {
     }
 
     fn test_global_ctx() -> Arc<GlobalCtx> {
-        Arc::new(GlobalCtx::new(TomlConfigLoader::default()))
+        crate::common::global_ctx::tests::get_mock_global_ctx()
     }
 
     #[tokio::test]
     async fn test_runtime_public_ipv6_provider_config_reads_provider_fields() {
-        let global_ctx = test_global_ctx();
+        let mut raw = easytier_core::config::InstanceConfigRaw::default();
         let prefix = "2001:db8::/48".parse().unwrap();
-        global_ctx.config.set_ipv6_public_addr_provider(true);
-        global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
+        raw.ipv6_public_addr_provider = Some(true);
+        raw.ipv6_public_addr_prefix = Some(prefix);
+        let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
         assert_eq!(
-            test_core_instance_config(&global_ctx)
-                .connectivity
-                .runtime
-                .public_ipv6_provider,
+            PublicIpv6ProviderConfig::from(&test_instance_config(&global_ctx)),
             PublicIpv6ProviderConfig {
                 provider_enabled: true,
                 configured_prefix: Some(prefix),
@@ -1330,7 +1325,13 @@ mod tests {
         let prefix = "2001:db8:fade::/64".parse().unwrap();
         let wan_addr = "2001:db8:fade::1";
         let leased_addr = "2001:db8:fade::123".parse::<std::net::Ipv6Addr>().unwrap();
-        let global_ctx = test_global_ctx();
+        let raw = easytier_core::config::InstanceConfigRaw {
+            ipv6_public_addr_provider: Some(true),
+            ipv6_public_addr_prefix: Some(prefix),
+            ..Default::default()
+        };
+        let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
         run_ip(&[
             "-6",
@@ -1350,20 +1351,11 @@ mod tests {
             &tun_if,
         ]);
 
-        global_ctx.config.set_ipv6_public_addr_provider(true);
-        global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
         global_ctx.set_tun_device_ready(tun_if);
 
         let platform = super::RuntimePublicIpv6ProviderPlatform::new(&global_ctx);
-        let runtime_config = easytier_core::config::runtime::CoreRuntimeConfigStore::new(
-            easytier_core::config::runtime::CoreRuntimeConfig {
-                public_ipv6_provider: test_core_instance_config(&global_ctx)
-                    .connectivity
-                    .runtime
-                    .public_ipv6_provider,
-                ..Default::default()
-            },
-            Arc::new(easytier_core::config::peers::PeerRuntimeSnapshot::default()),
+        let runtime_config = easytier_core::config::runtime::InstanceConfigStore::new(
+            test_instance_config(&global_ctx),
         );
         let runtime = easytier_core::peers::public_ipv6::CorePublicIpv6Runtime::new(
             runtime_config.clone(),

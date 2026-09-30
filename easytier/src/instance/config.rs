@@ -60,6 +60,7 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
         tcp_hole_punching_enabled: cfg!(feature = "tcp-hole-punch"),
         ignore_unsupported_config: false,
         connectivity: CoreConnectivityMode::Full,
+        direct_testing: false,
         easytier_version: EASYTIER_VERSION.to_owned(),
         endpoint_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
     }
@@ -93,42 +94,26 @@ pub(crate) fn runtime_peer_credential_storage(
         None
     }
     #[cfg(feature = "management")]
-    runtime_credential_storage(global_ctx.config.get_credential_file())
+    runtime_credential_storage(
+        global_ctx
+            .runtime_config_store()
+            .snapshot()
+            .credential_file
+            .clone(),
+    )
 }
 
 #[cfg(test)]
-pub(crate) fn test_core_instance_config(
+pub(crate) fn test_instance_config(
     global_ctx: &ArcGlobalCtx,
-) -> easytier_core::instance::CoreInstanceConfig {
-    use easytier_core::config::toml::{ConfigLoader as _, TomlConfig};
-
-    let config = TomlConfig::new_from_str(&global_ctx.config.dump())
-        .expect("test configuration should round-trip through TOML");
-    config.set_ipv4(global_ctx.get_ipv4());
-    config.set_ipv6(global_ctx.get_ipv6());
-    config.set_flags(global_ctx.get_flags());
-    let mut host = runtime_core_host_config();
-    let hostname = global_ctx.get_hostname();
-    host.hostname_fallback = (!hostname.is_empty()).then_some(hostname);
-    easytier_core::instance::CoreInstanceConfig::from_toml_with_host(&config, &host)
-        .expect("test configuration should normalize")
-}
-
-#[cfg(test)]
-pub(crate) fn test_runtime_instance_config(
-    global_ctx: &ArcGlobalCtx,
-) -> easytier_core::config::runtime::CoreInstanceRuntimeConfig {
-    let config = test_core_instance_config(global_ctx);
-    easytier_core::config::runtime::CoreInstanceRuntimeConfig {
-        services: config.connectivity.runtime,
-        peer: Arc::new(config.peer.snapshot),
-    }
+) -> easytier_core::config::InstanceConfig {
+    (*global_ctx.runtime_config_store().snapshot()).clone()
 }
 
 #[cfg(test)]
 mod tests {
     use easytier_core::{
-        config::toml::TomlConfig,
+        config::parse_instance_config,
         events::{CoreEvent, CoreEventSink},
     };
 
@@ -157,41 +142,28 @@ mod tests {
     #[test]
     fn clearing_configured_hostname_does_not_reuse_the_old_value() {
         let host = runtime_core_host_config();
-        let initial = TomlConfig::new_from_str("hostname = \"configured-host\"").unwrap();
-        let cleared = TomlConfig::new_from_str("hostname = \"\"").unwrap();
+        let initial = parse_instance_config("test", "hostname = \"configured-host\"").unwrap();
+        let cleared = parse_instance_config("test", "hostname = \"\"").unwrap();
 
-        let initial =
-            easytier_core::instance::CoreInstanceConfig::from_toml_with_host(&initial, &host)
-                .unwrap();
-        let cleared =
-            easytier_core::instance::CoreInstanceConfig::from_toml_with_host(&cleared, &host)
-                .unwrap();
+        let initial = easytier_core::instance::prepare_instance_config(initial, &host).unwrap();
+        let cleared = easytier_core::instance::prepare_instance_config(cleared, &host).unwrap();
 
+        assert_eq!(initial.parsed().hostname.as_str(), "configured-host");
+        assert_ne!(cleared.parsed().hostname.as_str(), "configured-host");
         assert_eq!(
-            initial.peer.snapshot.runtime.core.node.hostname.as_deref(),
-            Some("configured-host")
-        );
-        assert_ne!(
-            cleared.peer.snapshot.runtime.core.node.hostname.as_deref(),
-            Some("configured-host")
-        );
-        assert_eq!(
-            cleared.peer.snapshot.runtime.core.node.hostname.as_deref(),
-            host.hostname_fallback.as_deref()
+            cleared.parsed().hostname.as_str(),
+            host.hostname_fallback.as_deref().unwrap_or("")
         );
     }
 
     #[test]
     fn test_config_uses_current_global_context_hostname_as_fallback() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx.set_hostname("test-hostname".to_owned());
+        let config = parse_instance_config("test", "hostname = 'test-hostname'\n").unwrap();
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
-        let config = test_core_instance_config(&global_ctx);
+        let config = test_instance_config(&global_ctx);
 
-        assert_eq!(
-            config.peer.snapshot.runtime.core.node.hostname.as_deref(),
-            Some("test-hostname")
-        );
+        assert_eq!(config.parsed().hostname.as_str(), "test-hostname");
     }
 
     #[tokio::test]

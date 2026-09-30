@@ -1,11 +1,7 @@
 //! Compile-time capability selection for portable Instance validation.
-//!
-//! Cargo features are localized here so configuration validation remains one
-//! unconditional path in `CoreInstance`.
 
-use crate::config::{peers::PeerRuntimeSnapshot, runtime::CoreRuntimeConfig};
-
-use super::CoreInstanceConfig;
+use super::CoreInstanceHostConfig;
+use crate::config::InstanceConfigParsed;
 
 const DHCP_IPV4_AVAILABLE: bool = cfg!(feature = "dhcp-ipv4");
 const SMOLTCP_GATEWAY_AVAILABLE: bool = cfg!(feature = "proxy-smoltcp-stack");
@@ -22,58 +18,48 @@ fn require(available: bool, requested: bool, capability: &str) -> anyhow::Result
     Ok(())
 }
 
-fn validate_snapshot(
-    runtime: &CoreRuntimeConfig,
-    peer: &PeerRuntimeSnapshot,
+pub(crate) fn validate(
+    config: &InstanceConfigParsed,
+    host: &CoreInstanceHostConfig,
 ) -> anyhow::Result<()> {
-    let core = &peer.runtime.core;
-    require(DHCP_IPV4_AVAILABLE, runtime.dhcp_ipv4, "DHCP IPv4")?;
+    require(DHCP_IPV4_AVAILABLE, config.dhcp, "DHCP IPv4")?;
     require(
         SMOLTCP_GATEWAY_AVAILABLE,
-        runtime.gateway.socks5_bind.is_some() || !runtime.gateway.port_forwards.is_empty(),
+        config.socks5_proxy.is_some() || !config.port_forward.is_empty(),
         "the smoltcp gateway",
     )?;
     require(
         PROXY_CIDR_MONITOR_AVAILABLE,
-        runtime
-            .manual_routes
+        config
+            .routes
             .as_ref()
             .is_some_and(|routes| !routes.is_empty()),
         "the proxy CIDR monitor",
     )?;
     require(
         WRAPPED_TRANSPORT_AVAILABLE,
-        !core.routes.proxy_networks.is_empty(),
+        !config.proxy_network.is_empty(),
         "proxy routing services",
     )?;
+    let has_proxy_networks = !config.proxy_network.is_empty();
+    let should_start_packet_proxy =
+        (has_proxy_networks || config.flags.enable_exit_node || host.force_exit_node)
+            && (!config.flags.proxy_forward_by_system || config.flags.no_tun);
     require(
         PACKET_PROXY_AVAILABLE,
-        runtime
-            .proxy
-            .should_start(!core.routes.proxy_networks.is_empty()),
+        should_start_packet_proxy,
         "packet proxy services",
     )?;
     require(
         PUBLIC_IPV6_AVAILABLE,
-        runtime.public_ipv6_auto
-            || runtime.public_ipv6_provider.provider_enabled
-            || runtime.public_ipv6_provider.configured_prefix.is_some(),
+        config.ipv6_public_addr_auto
+            || config.ipv6_public_addr_provider
+            || config.ipv6_public_addr_prefix.is_some(),
         "public IPv6 services",
     )?;
-    Ok(())
-}
-
-pub(super) fn validate(config: &CoreInstanceConfig) -> anyhow::Result<()> {
-    validate_snapshot(&config.connectivity.runtime, &config.peer.snapshot)?;
     require(
         VPN_PORTAL_AVAILABLE,
-        config.vpn_portal.is_some(),
+        config.vpn_portal_config.is_some(),
         "the VPN portal",
     )
-}
-
-pub(super) fn validate_runtime(
-    config: &crate::config::runtime::CoreInstanceRuntimeConfig,
-) -> anyhow::Result<()> {
-    validate_snapshot(&config.services, &config.peer)
 }

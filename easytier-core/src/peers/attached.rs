@@ -15,17 +15,14 @@ use tokio::{runtime::Handle, sync::Mutex, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use optionize::Optionizable;
+
 use crate::{
-    config::{
-        IpPrefix, PeerId,
-        peers::PeerRuntimeSnapshot,
-        runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
-    },
+    config::{InstanceConfig, PeerId, peers::HostRoutingPolicy, runtime::InstanceConfigStore},
     host::packet::{HostPacket, HostPacketReceiver, host_packet_channel},
     packet::ZCPacket,
     peers::{
-        conn::peer_conn::PeerConnId,
-        peer_manager::{PeerManagerCore, PortablePeerManagerConfig, RouteAlgoType},
+        conn::peer_conn::PeerConnId, peer_manager::PeerManagerCore,
         public_ipv6::CorePublicIpv6Runtime,
     },
     tunnel::ring::create_ring_tunnel_pair,
@@ -66,23 +63,22 @@ struct AttachedCredentialRegistration {
 impl AttachedCredentialRegistration {
     fn register(
         network_peer_manager: Arc<PeerManagerCore>,
-        network_runtime_config: CoreRuntimeConfigStore,
+        network_runtime_config: InstanceConfigStore,
         public_key: [u8; 32],
         configured_groups: Vec<String>,
     ) -> anyhow::Result<Self> {
         let mut peer_changes = network_runtime_config.subscribe_peer_runtime_changes();
-        let groups = effective_credential_groups(
-            network_runtime_config.snapshot().as_ref(),
-            &configured_groups,
-        );
+        let groups =
+            effective_credential_groups(&network_runtime_config.snapshot(), &configured_groups);
         let credential_id =
             network_peer_manager.register_ephemeral_credential(public_key, groups)?;
         let task_peer_manager = network_peer_manager.clone();
+        let task_runtime_config = network_runtime_config.clone();
         let policy_task = tokio::spawn(async move {
             while peer_changes.changed().await.is_ok() {
                 let _ = peer_changes.borrow_and_update();
                 let groups = effective_credential_groups(
-                    network_runtime_config.snapshot().as_ref(),
+                    &task_runtime_config.snapshot(),
                     &configured_groups,
                 );
                 if task_peer_manager
@@ -135,27 +131,21 @@ struct AttachedCleanupResources {
 }
 
 fn effective_credential_groups(
-    network: &CoreInstanceRuntimeConfig,
+    network: &InstanceConfig,
     configured_groups: &[String],
 ) -> Vec<String> {
-    network
-        .peer
-        .acl_group_declarations
+    let declares = network
+        .acl
+        .as_ref()
+        .and_then(|a| a.acl_v1.as_ref())
+        .and_then(|v1| v1.group.as_ref())
+        .map(|g| g.declares.as_slice())
+        .unwrap_or_default();
+    declares
         .iter()
         .filter(|declaration| configured_groups.contains(&declaration.group_name))
         .map(|declaration| declaration.group_name.clone())
         .collect()
-}
-
-fn build_attached_services(
-    network: &CoreRuntimeConfig,
-    credential_peer: bool,
-) -> CoreRuntimeConfig {
-    let mut services = network.clone();
-    if credential_peer {
-        services.acl = services.acl.for_credential_peer();
-    }
-    services
 }
 
 /// One complete EasyTier peer connected to another manager in process.
@@ -178,12 +168,12 @@ impl AttachedPeerRuntime {
     /// Constructs, starts, and transactionally connects one peer manager.
     pub async fn connect(
         network_peer_manager: Arc<PeerManagerCore>,
-        network_runtime_config: CoreRuntimeConfigStore,
+        network_runtime_config: InstanceConfigStore,
         config: AttachedPeerConfig,
     ) -> anyhow::Result<Arc<Self>> {
         let runtime_handle = Handle::current();
         let network = network_runtime_config.snapshot();
-        let (peer_snapshot, credential_public_key) = build_peer_snapshot(&network, &config)?;
+        let (attached_config, credential_public_key) = build_peer_snapshot(&network, &config)?;
         let credential_registration = match credential_public_key {
             Some(public_key) => Some(AttachedCredentialRegistration::register(
                 network_peer_manager.clone(),
@@ -193,20 +183,11 @@ impl AttachedPeerRuntime {
             )?),
             None => None,
         };
-        let services = build_attached_services(&network.services, credential_public_key.is_some());
-        let runtime_config = CoreRuntimeConfigStore::new(services, Arc::new(peer_snapshot.clone()));
+        let runtime_config = InstanceConfigStore::new(attached_config);
         let (packet_sender, packet_receiver) = host_packet_channel();
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
-        let flags = peer_snapshot.flags.clone();
         let peer_manager = Arc::new(PeerManagerCore::new(
-            PortablePeerManagerConfig {
-                snapshot: peer_snapshot,
-                route_algo: RouteAlgoType::Ospf,
-                exit_nodes: Vec::new(),
-                foreign_context_default_flags: flags,
-            },
-            Vec::new(),
             runtime_config,
             Arc::new(()),
             packet_sender,
@@ -214,6 +195,7 @@ impl AttachedPeerRuntime {
             Arc::new(()),
             None,
             Arc::new(()),
+            HostRoutingPolicy::default(),
         )?);
         if let Err(error) = peer_manager
             .follow_network_policy(network_runtime_config, config.groups)
@@ -382,12 +364,10 @@ fn ipv4_destination(payload: &[u8]) -> anyhow::Result<Ipv4Addr> {
 }
 
 fn build_peer_snapshot(
-    network: &CoreInstanceRuntimeConfig,
+    network: &InstanceConfig,
     config: &AttachedPeerConfig,
-) -> anyhow::Result<(PeerRuntimeSnapshot, Option<[u8; 32]>)> {
+) -> anyhow::Result<(InstanceConfig, Option<[u8; 32]>)> {
     network
-        .peer
-        .runtime
         .network_identity
         .network_secret
         .as_deref()
@@ -399,50 +379,43 @@ fn build_peer_snapshot(
         anyhow::bail!("unusable attached-peer IPv4 address: {}", config.virtual_ip);
     }
 
-    let mut snapshot = network.peer.as_ref().clone();
-    snapshot.runtime.core.node.peer_id = None;
-    snapshot.runtime.core.node.instance_id = None;
-    snapshot.runtime.core.node.hostname = Some(config.name.clone());
-    snapshot.runtime.core.routes.ipv4 = Some(IpPrefix {
-        address: IpAddr::V4(address),
-        prefix_len: config.virtual_ip.network_length(),
-    });
-    snapshot.runtime.core.routes.ipv6 = None;
-    snapshot.runtime.core.routes.advertised_routes.clear();
-    snapshot.runtime.core.routes.proxy_networks.clear();
-    snapshot.runtime.core.routes.foreign_networks.clear();
-    snapshot.runtime.core.peer_policy.p2p_enabled = false;
-    snapshot.runtime.core.peer_policy.relay_peer_rpc = false;
-    snapshot.runtime.core.peer_policy.relay_data = false;
-    snapshot.runtime.stun_info = Default::default();
-    let supports_conn_list_sync = snapshot.runtime.feature_flags.support_conn_list_sync;
-    snapshot.runtime.feature_flags = Default::default();
-    snapshot.runtime.feature_flags.support_conn_list_sync = supports_conn_list_sync;
-    snapshot.runtime.feature_flags.disable_p2p = true;
-    snapshot.runtime.feature_flags.need_p2p = false;
-    snapshot.runtime.feature_flags.avoid_relay_data = true;
-    snapshot.flags.disable_p2p = true;
-    snapshot.flags.need_p2p = false;
-    snapshot.flags.relay_all_peer_rpc = false;
-    snapshot.flags.disable_relay_data = true;
-    snapshot.flags.p2p_only = false;
-    snapshot.pinned_peers.clear();
-    snapshot.avoid_relay_data_preference = true;
-    snapshot.peer_group_memberships.clear();
+    let mut parsed = network.parsed().clone();
+    parsed.instance_id = uuid::Uuid::new_v4();
+    parsed.hostname = config.name.clone();
+    parsed.ipv4 = Some(config.virtual_ip);
+    parsed.dhcp = false;
+    parsed.ipv6 = None;
+    parsed.routes = None;
+    parsed.proxy_network.clear();
+    parsed.listeners = None;
+    parsed.mapped_listeners.clear();
+    parsed.peer.clear();
+    parsed.exit_nodes.clear();
+    parsed.vpn_portal_config = None;
+    parsed.socks5_proxy = None;
+    parsed.port_forward.clear();
+    parsed.stun_servers = None;
+    parsed.tcp_stun_servers = None;
+    parsed.stun_servers_v6 = None;
+    parsed.credential_file = None;
+    parsed.managed_credentials.clear();
+    parsed.source = None;
 
-    let credential_public_key = if snapshot
-        .runtime
+    parsed.flags.disable_p2p = true;
+    parsed.flags.relay_all_peer_rpc = false;
+    parsed.flags.disable_relay_data = true;
+
+    let credential_public_key = if parsed
         .secure_mode
         .as_ref()
         .is_some_and(|secure| secure.enabled)
     {
         let private = StaticSecret::from(config.identity_private_key);
         let public = PublicKey::from(&private);
-        snapshot.runtime.network_identity.network_secret = None;
-        snapshot.runtime.network_identity.network_secret_digest = None;
-        snapshot.hmac_secret_digest = false;
-        snapshot.acl_group_declarations.clear();
-        snapshot.runtime.secure_mode = Some(crate::proto::common::SecureModeConfig {
+        parsed.network_identity.network_secret = None;
+        parsed.network_identity.network_secret_digest = None;
+        parsed.acl = crate::config::peers::strip_group_material_from_acl(parsed.acl.as_ref());
+        parsed.secure_mode = Some(crate::proto::common::SecureModeConfig {
             enabled: true,
             local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
             local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
@@ -451,7 +424,10 @@ fn build_peer_snapshot(
     } else {
         None
     };
-    Ok((snapshot, credential_public_key))
+
+    let raw = parsed.clone().downgrade();
+    let attached_config = InstanceConfig::new(parsed, raw, ());
+    Ok((attached_config, credential_public_key))
 }
 
 async fn cleanup(
@@ -515,14 +491,10 @@ mod tests {
     use super::*;
     use crate::{
         config::{
-            CoreConfig, NetworkIdentity, NodeConfig,
-            peers::{HostRoutingPolicy, PeerGroupIdentity, PeerRuntimeConfig},
-            runtime::CoreRuntimeConfig,
+            InstanceConfig, InstanceConfigParsed, peers::HostRoutingPolicy,
+            runtime::InstanceConfigStore,
         },
-        proto::{
-            acl::{Acl, AclV1, GroupInfo},
-            common::{PeerFeatureFlag, StunInfo},
-        },
+        proto::acl::{Acl, AclV1, GroupInfo},
     };
 
     fn attached_ipv4(address: Ipv4Addr) -> cidr::Ipv4Inet {
@@ -531,14 +503,14 @@ mod tests {
 
     fn peer_manager_with_acl(
         tcp_whitelist: Vec<String>,
-    ) -> (Arc<PeerManagerCore>, CoreRuntimeConfigStore) {
+    ) -> (Arc<PeerManagerCore>, InstanceConfigStore) {
         peer_manager_with_acl_and_secure(tcp_whitelist, false)
     }
 
     fn peer_manager_with_acl_and_secure(
         tcp_whitelist: Vec<String>,
         secure_mode_enabled: bool,
-    ) -> (Arc<PeerManagerCore>, CoreRuntimeConfigStore) {
+    ) -> (Arc<PeerManagerCore>, InstanceConfigStore) {
         let secure_mode = secure_mode_enabled.then(|| {
             let private = StaticSecret::from([99u8; 32]);
             let public = PublicKey::from(&private);
@@ -548,62 +520,38 @@ mod tests {
                 local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
             }
         });
-        let runtime = PeerRuntimeConfig {
-            core: CoreConfig {
-                node: NodeConfig {
-                    network_name: "attached-test".to_owned(),
-                    ..Default::default()
-                },
-                routes: crate::config::RouteConfig {
-                    ipv4: Some(IpPrefix {
-                        address: IpAddr::V4(Ipv4Addr::new(10, 82, 0, 1)),
-                        prefix_len: 24,
-                    }),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            network_identity: NetworkIdentity::new(
+        let parsed = InstanceConfigParsed {
+            instance_id: uuid::Uuid::new_v4(),
+            hostname: "attached-test".to_owned(),
+            ipv4: Some(cidr::Ipv4Inet::new(Ipv4Addr::new(10, 82, 0, 1), 24).unwrap()),
+            network_identity: crate::config::toml::NetworkIdentity::new(
                 "attached-test".to_owned(),
                 "shared-secret".to_owned(),
             ),
-            stun_info: StunInfo::default(),
-            feature_flags: PeerFeatureFlag::default(),
             secure_mode,
-            host_routing: HostRoutingPolicy::default(),
-        };
-        let mut portable = PortablePeerManagerConfig::new(runtime);
-        portable.snapshot.acl_group_declarations = vec![PeerGroupIdentity {
-            group_name: "ops".to_owned(),
-            group_secret: "ops-secret".to_owned(),
-        }];
-        let services = CoreRuntimeConfig {
-            acl: crate::config::peers::AclRuleConfig {
-                acl: Some(Acl {
-                    acl_v1: Some(AclV1 {
-                        chains: Vec::new(),
-                        group: Some(GroupInfo {
-                            declares: vec![crate::proto::acl::GroupIdentity {
-                                group_name: "ops".to_owned(),
-                                group_secret: "ops-secret".to_owned(),
-                            }],
-                            members: Vec::new(),
-                        }),
+            acl: Some(Acl {
+                acl_v1: Some(AclV1 {
+                    chains: Vec::new(),
+                    group: Some(GroupInfo {
+                        declares: vec![crate::proto::acl::GroupIdentity {
+                            group_name: "ops".to_owned(),
+                            group_secret: "ops-secret".to_owned(),
+                        }],
+                        members: Vec::new(),
                     }),
                 }),
-                tcp_whitelist,
-                ..Default::default()
-            },
+            }),
+            tcp_whitelist,
             ..Default::default()
         };
-        let store = CoreRuntimeConfigStore::new(services, Arc::new(portable.snapshot.clone()));
+        let raw = parsed.clone().downgrade();
+        let config = InstanceConfig::new(parsed, raw, ());
+        let store = InstanceConfigStore::new(config);
         let (packet_sender, _packet_receiver) = host_packet_channel();
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(store.clone(), Arc::new(()), Arc::new(()));
         let peer_manager = Arc::new(
             PeerManagerCore::new(
-                portable,
-                Vec::new(),
                 store.clone(),
                 Arc::new(()),
                 packet_sender,
@@ -611,13 +559,14 @@ mod tests {
                 Arc::new(()),
                 None,
                 Arc::new(()),
+                HostRoutingPolicy::default(),
             )
             .unwrap(),
         );
         (peer_manager, store)
     }
 
-    fn peer_manager() -> (Arc<PeerManagerCore>, CoreRuntimeConfigStore) {
+    fn peer_manager() -> (Arc<PeerManagerCore>, InstanceConfigStore) {
         peer_manager_with_acl(Vec::new())
     }
 
@@ -706,15 +655,33 @@ mod tests {
         .await
         .unwrap();
         wait_for_acl_groups(&network_peer_manager, attached.peer_id(), &["ops"]).await;
-        store.update_peer_with(|peer| {
-            peer.acl_group_declarations.push(PeerGroupIdentity {
+        let mut next = (*store.snapshot()).clone();
+        if let Some(group) = next
+            .parsed_mut()
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl_v1| acl_v1.group.as_mut())
+        {
+            group.declares.push(crate::proto::acl::GroupIdentity {
                 group_name: "audit".to_owned(),
                 group_secret: "audit-secret".to_owned(),
             });
-        });
+        }
+        store.replace(next);
         wait_for_acl_groups(&network_peer_manager, attached.peer_id(), &["audit", "ops"]).await;
 
-        store.update_peer_with(|peer| peer.acl_group_declarations.clear());
+        let mut next = (*store.snapshot()).clone();
+        if let Some(group) = next
+            .parsed_mut()
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl_v1| acl_v1.group.as_mut())
+        {
+            group.declares.clear();
+        }
+        store.replace(next);
 
         wait_for_acl_groups(&network_peer_manager, attached.peer_id(), &[]).await;
         attached.close().await;
@@ -769,11 +736,11 @@ mod tests {
     async fn invalid_acl_update_does_not_publish_manager_config() {
         let (peer_manager, store) = peer_manager();
         let before = store.snapshot();
-        let mut invalid = before.as_ref().clone();
-        invalid.services.acl.tcp_whitelist = vec!["not-a-port".to_owned()];
+        let mut invalid = (*before).clone();
+        invalid.parsed_mut().tcp_whitelist = vec!["not-a-port".to_owned()];
 
         assert!(peer_manager.update_runtime_config(invalid).await.is_err());
-        assert_eq!(store.snapshot().services.acl, before.services.acl);
+        assert_eq!(store.snapshot().tcp_whitelist, before.tcp_whitelist);
         assert!(
             peer_manager
                 .acl_filter()
@@ -823,22 +790,16 @@ mod tests {
 
         let (snapshot, credential_public_key) =
             build_peer_snapshot(network.as_ref(), &config).unwrap();
-        let services = build_attached_services(&network.services, credential_public_key.is_some());
 
         assert!(credential_public_key.is_some());
-        assert!(snapshot.runtime.network_identity.network_secret.is_none());
+        assert!(snapshot.network_identity.network_secret.is_none());
+        assert!(snapshot.network_identity.network_secret_digest.is_none());
+        let (declarations, memberships) =
+            crate::peers::context::peer_acl_groups(snapshot.acl.as_ref());
+        assert!(memberships.is_empty());
+        assert!(declarations.is_empty());
         assert!(
             snapshot
-                .runtime
-                .network_identity
-                .network_secret_digest
-                .is_none()
-        );
-        assert!(snapshot.peer_group_memberships.is_empty());
-        assert!(snapshot.acl_group_declarations.is_empty());
-        assert!(
-            services
-                .acl
                 .acl
                 .as_ref()
                 .unwrap()
@@ -850,8 +811,6 @@ mod tests {
         );
         assert!(
             network
-                .services
-                .acl
                 .acl
                 .as_ref()
                 .unwrap()
@@ -866,8 +825,10 @@ mod tests {
     #[tokio::test]
     async fn attached_peer_uses_its_own_cidr_when_host_uses_dhcp() {
         let (_network_peer_manager, store) = peer_manager_with_acl_and_secure(Vec::new(), true);
-        store.update_peer_with(|peer| peer.runtime.core.routes.ipv4 = None);
-        store.update_services(|services| services.dhcp_ipv4 = true);
+        let mut next = (*store.snapshot()).clone();
+        next.parsed_mut().ipv4 = None;
+        next.parsed_mut().dhcp = true;
+        store.replace(next);
         let network = store.snapshot();
         let config = AttachedPeerConfig {
             name: "wireguard-client".to_owned(),
@@ -878,13 +839,7 @@ mod tests {
 
         let (snapshot, _) = build_peer_snapshot(network.as_ref(), &config).unwrap();
 
-        assert_eq!(
-            snapshot.runtime.core.routes.ipv4,
-            Some(IpPrefix {
-                address: IpAddr::V4(Ipv4Addr::new(10, 90, 0, 2)),
-                prefix_len: 16,
-            })
-        );
+        assert_eq!(snapshot.ipv4, Some("10.90.0.2/16".parse().unwrap()));
     }
 
     #[tokio::test]
@@ -946,7 +901,7 @@ mod tests {
         .await
         .expect("network peer manager did not subscribe to config updates");
         let peer_subscribers = store.peer_change_subscriber_count();
-        let service_subscribers = store.service_change_subscriber_count();
+        let config_subscribers = store.change_subscriber_count();
 
         let first = AttachedPeerRuntime::connect(
             network_peer_manager.clone(),
@@ -979,10 +934,7 @@ mod tests {
             &second.peer_manager.acl_filter()
         ));
         assert_eq!(store.peer_change_subscriber_count(), peer_subscribers + 2);
-        assert_eq!(
-            store.service_change_subscriber_count(),
-            service_subscribers + 2
-        );
+        assert_eq!(store.change_subscriber_count(), config_subscribers + 2);
         wait_for_route(
             &network_peer_manager,
             first.peer_id(),
@@ -999,11 +951,21 @@ mod tests {
         .await;
         wait_for_acl_groups(&network_peer_manager, first.peer_id(), &["ops"]).await;
 
-        store.update_peer_with(|peer| peer.acl_group_declarations.clear());
+        let mut next = (*store.snapshot()).clone();
+        if let Some(group) = next
+            .parsed_mut()
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl_v1| acl_v1.group.as_mut())
+        {
+            group.declares.clear();
+        }
+        store.replace(next);
         wait_for_acl_groups(&network_peer_manager, first.peer_id(), &[]).await;
 
-        let mut updated = store.snapshot().as_ref().clone();
-        updated.services.acl.tcp_whitelist.push("22".to_owned());
+        let mut updated = (*store.snapshot()).clone();
+        updated.parsed_mut().tcp_whitelist.push("22".to_owned());
         store.replace(updated);
         wait_for_acl_rules(&first).await;
         wait_for_acl_rules(&second).await;
@@ -1011,10 +973,7 @@ mod tests {
         let first_peer_id = first.peer_id();
         first.close().await;
         assert_eq!(store.peer_change_subscriber_count(), peer_subscribers + 1);
-        assert_eq!(
-            store.service_change_subscriber_count(),
-            service_subscribers + 1
-        );
+        assert_eq!(store.change_subscriber_count(), config_subscribers + 1);
         wait_for_route(
             &network_peer_manager,
             first_peer_id,
@@ -1024,7 +983,7 @@ mod tests {
         .await;
         second.close().await;
         assert_eq!(store.peer_change_subscriber_count(), peer_subscribers);
-        assert_eq!(store.service_change_subscriber_count(), service_subscribers);
+        assert_eq!(store.change_subscriber_count(), config_subscribers);
         network_peer_manager.clear_resources().await;
     }
 
@@ -1032,7 +991,17 @@ mod tests {
     async fn attached_peer_reconnects_after_acl_group_removal() {
         let (network_peer_manager, store) = peer_manager();
         network_peer_manager.run().await.unwrap();
-        store.update_peer_with(|peer| peer.acl_group_declarations.clear());
+        let mut next = (*store.snapshot()).clone();
+        if let Some(group) = next
+            .parsed_mut()
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl_v1| acl_v1.group.as_mut())
+        {
+            group.declares.clear();
+        }
+        store.replace(next);
 
         let attached = AttachedPeerRuntime::connect(
             network_peer_manager.clone(),
@@ -1256,5 +1225,31 @@ mod tests {
         pause.resume.notify_one();
         pause.finished.notified().await;
         network_peer_manager.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn attached_peer_overrides_dhcp_to_false_even_if_parent_enabled() {
+        let parent_parsed = InstanceConfigParsed {
+            dhcp: true,
+            network_identity: crate::peers::context::NetworkIdentity {
+                network_name: "test-net".to_owned(),
+                network_secret: Some("secret".to_owned()),
+                network_secret_digest: None,
+            },
+            ..Default::default()
+        };
+        let raw = parent_parsed.clone().downgrade();
+        let parent_config = InstanceConfig::new(parent_parsed, raw, ());
+
+        let client = AttachedPeerConfig {
+            name: "client-1".to_owned(),
+            virtual_ip: "10.144.144.10/24".parse().unwrap(),
+            groups: vec![],
+            identity_private_key: [1u8; 32],
+        };
+
+        let (snapshot, _) = build_peer_snapshot(&parent_config, &client).unwrap();
+        assert!(!snapshot.dhcp);
+        assert_eq!(snapshot.ipv4, Some("10.144.144.10/24".parse().unwrap()));
     }
 }

@@ -530,3 +530,8 @@ acl:
     name: 名称
     type: 类型
   match: 匹配
+
+disable_relay_data: 不转发数据
+disable_relay_data_help: 不转发其他节点的数据包，本节点不承载自身以外的流量。
+prefer_peer_relay: 优先凭证节点转发
+prefer_peer_relay_help: 优先通过已经转发到目标节点的凭证节点转发，而不是为同一目标再通告一条直连路径。

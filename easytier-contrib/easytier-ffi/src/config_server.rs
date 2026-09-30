@@ -9,10 +9,7 @@ use std::{
 };
 
 use easytier::{
-    common::{
-        MachineIdOptions,
-        config::{ConfigLoader as _, TomlConfigLoader},
-    },
+    common::{MachineIdOptions, config::InstanceConfig},
     web_client::{WebClient, WebClientHooks, parse_config_server_endpoint, run_web_client},
 };
 use uuid::Uuid;
@@ -169,7 +166,7 @@ impl ManagedConfigServerClientHooks {
         let network_name = ffi_context()
             .manager
             .config(instance_id)
-            .map(|config| config.get_network_identity().network_name)
+            .map(|config| config.parsed().network_identity.network_name.clone())
             .unwrap_or_default();
         let event_json = serde_json::json!({
             "event": event,
@@ -213,15 +210,15 @@ impl WebClientHooks for ManagedConfigServerClientHooks {
         true
     }
 
-    async fn pre_run_network_instance(&self, cfg: &TomlConfigLoader) -> Result<(), String> {
+    async fn pre_run_network_instance(&self, cfg: &InstanceConfig) -> Result<(), String> {
         if self.stopping.load(Ordering::Acquire) {
             return Err("config server client is stopping".to_string());
         }
 
-        let inst_name = cfg.get_inst_name();
-        let inst_id = cfg.get_id();
+        let inst_name = &cfg.parsed().instance_name;
+        let inst_id = cfg.parsed().instance_id;
 
-        self.validate_instance_name(&inst_name, inst_id)
+        self.validate_instance_name(inst_name, inst_id)
     }
 
     async fn post_run_network_instance(&self, id: &Uuid) -> Result<(), String> {

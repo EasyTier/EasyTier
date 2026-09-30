@@ -23,7 +23,7 @@ use tokio_util::{
 };
 
 use crate::{
-    config::{gateway::PortForwardConfig, runtime::CoreRuntimeConfigStore},
+    config::{gateway::PortForwardConfig, runtime::InstanceConfigStore},
     events::{CoreEvent, CoreEventSink},
     foundation::task::reap_joinset_background,
     gateway::dataplane::{
@@ -100,7 +100,7 @@ where
 {
     operation: Mutex<()>,
     started: AtomicBool,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     data_plane: Arc<DataPlaneRuntime<H>>,
     host: Arc<H>,
     socket_context: SocketContext,
@@ -119,7 +119,7 @@ where
     H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
     pub(crate) fn new(
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         data_plane: Arc<DataPlaneRuntime<H>>,
         host: Arc<H>,
         socket_context: SocketContext,
@@ -153,13 +153,7 @@ where
             "port-forward adapter",
         ));
         self.start_udp_reaper();
-        let cfgs = self
-            .runtime_config
-            .snapshot()
-            .services
-            .gateway
-            .port_forwards
-            .clone();
+        let cfgs = self.runtime_config.snapshot().port_forward.clone();
         if let Err(error) = self.apply_port_forwards(&cfgs).await {
             self.stop_inner().await;
             return Err(error);

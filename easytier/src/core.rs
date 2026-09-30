@@ -2,26 +2,30 @@ use crate::{
     ShellType,
     common::{
         config::{
-            ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
-            FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
-            TomlConfigLoader, VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_config,
-            load_config_from_file, load_toml_config_from_path, parse_mapped_listener_urls,
+            ConfigFileControl, ConsoleLoggerConfig, FileLoggerConfig, InstanceConfig,
+            InstanceConfigRaw, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
+            VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_raw,
+            load_config_from_file, load_toml_config_from_path, parse_instance_config,
+            parse_mapped_listener_urls, serialize_raw_to_toml_redacted,
         },
         constants::EASYTIER_VERSION,
         log,
     },
     instance::factory::native_cli_instance_manager,
-    proto::common::{CompressionAlgoPb, SecureModeConfig},
+    proto::common::{CompressionAlgoPb, Flags, FlagsPatch, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
     web_client,
 };
 use anyhow::Context;
 use cidr::IpCidr;
-use clap::{CommandFactory, Parser};
-use easytier_core::config::normalize_secure_mode_config;
+use clap::{Arg, ArgMatches, CommandFactory, FromArgMatches, Parser};
+use easytier_core::config::EncryptionAlgorithm;
 use guarden::defer;
+use prost_types::field_descriptor_proto::Type;
 use rust_i18n::t;
+use serde_json::{Value, json};
+use std::str::{FromStr, ParseBoolError};
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
@@ -34,6 +38,7 @@ use tokio::io::AsyncReadExt;
 use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
+use serde::Serialize;
 
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
@@ -141,6 +146,10 @@ struct Cli {
 
 #[derive(Parser, Debug, Default, PartialEq, Eq)]
 struct NetworkOptions {
+    /// Filled in from the flag arguments the schema implies.
+    #[arg(skip)]
+    flags: FlagsPatch,
+
     #[arg(
         long,
         env = "ET_NETWORK_NAME",
@@ -306,79 +315,6 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_DEFAULT_PROTOCOL",
-        help = t!("core_clap.default_protocol").to_string()
-    )]
-    default_protocol: Option<String>,
-
-    #[arg(
-        short = 'u',
-        long,
-        env = "ET_DISABLE_ENCRYPTION",
-        help = t!("core_clap.disable_encryption").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_encryption: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_ENCRYPTION_ALGORITHM",
-        help = t!("core_clap.encryption_algorithm").to_string(),
-        value_parser = crate::common::config::parse_encryption_algorithm,
-    )]
-    encryption_algorithm: Option<EncryptionAlgorithm>,
-
-    #[arg(
-        long,
-        env = "ET_MULTI_THREAD",
-        help = t!("core_clap.multi_thread").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    multi_thread: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_MULTI_THREAD_COUNT",
-        help = t!("core_clap.multi_thread_count").to_string(),
-    )]
-    multi_thread_count: Option<u32>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_IPV6",
-        help = t!("core_clap.disable_ipv6").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_ipv6: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DEV_NAME",
-        help = t!("core_clap.dev_name").to_string()
-    )]
-    dev_name: Option<String>,
-
-    #[arg(
-        long,
-        env = "ET_MTU",
-        help = t!("core_clap.mtu").to_string()
-    )]
-    mtu: Option<u16>,
-
-    #[arg(
-        long,
-        env = "ET_LATENCY_FIRST",
-        help = t!("core_clap.latency_first").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    latency_first: Option<bool>,
-
-    #[arg(
-        long,
         env = "ET_EXIT_NODES",
         value_delimiter = ',',
         help = t!("core_clap.exit_nodes").to_string(),
@@ -388,150 +324,12 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_ENABLE_EXIT_NODE",
-        help = t!("core_clap.enable_exit_node").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    enable_exit_node: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_PROXY_FORWARD_BY_SYSTEM",
-        help = t!("core_clap.proxy_forward_by_system").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    proxy_forward_by_system: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_NO_TUN",
-        help = t!("core_clap.no_tun").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    no_tun: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_USE_SMOLTCP",
-        help = t!("core_clap.use_smoltcp").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    use_smoltcp: Option<bool>,
-
-    #[arg(
-        long,
         env = "ET_MANUAL_ROUTES",
         value_delimiter = ',',
         help = t!("core_clap.manual_routes").to_string(),
         num_args = 0..
     )]
     manual_routes: Option<Vec<String>>,
-
-    // if not in relay_network_whitelist:
-    // for foreign virtual network, will refuse the incoming connection
-    // for local virtual network, will refuse to relay tun packets
-    #[arg(
-        long,
-        env = "ET_RELAY_NETWORK_WHITELIST",
-        value_delimiter = ',',
-        help = t!("core_clap.relay_network_whitelist").to_string(),
-        num_args = 0..
-    )]
-    relay_network_whitelist: Option<Vec<String>>,
-
-    #[arg(
-        long,
-        env = "ET_P2P_ONLY",
-        help = t!("core_clap.p2p_only").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    p2p_only: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_LAZY_P2P",
-        help = t!("core_clap.lazy_p2p").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    lazy_p2p: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_P2P",
-        help = t!("core_clap.disable_p2p").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_p2p: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_UDP_HOLE_PUNCHING",
-        help = t!("core_clap.disable_udp_hole_punching").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_udp_hole_punching: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_TCP_HOLE_PUNCHING",
-        help = t!("core_clap.disable_tcp_hole_punching").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_tcp_hole_punching: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_SYM_HOLE_PUNCHING",
-        help = t!("core_clap.disable_sym_hole_punching").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_sym_hole_punching: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_UPNP",
-        help = t!("core_clap.disable_upnp").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_upnp: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_ENABLE_UDP_BROADCAST_RELAY",
-        help = t!("core_clap.enable_udp_broadcast_relay").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    enable_udp_broadcast_relay: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_RELAY_ALL_PEER_RPC",
-        help = t!("core_clap.relay_all_peer_rpc").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    relay_all_peer_rpc: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_NEED_P2P",
-        help = t!("core_clap.need_p2p").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    need_p2p: Option<bool>,
 
     #[cfg(feature = "socks5")]
     #[arg(
@@ -543,107 +341,12 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_COMPRESSION",
-        help = t!("core_clap.compression").to_string(),
-    )]
-    compression: Option<String>,
-
-    #[arg(
-        long,
-        env = "ET_BIND_DEVICE",
-        help = t!("core_clap.bind_device").to_string()
-    )]
-    bind_device: Option<bool>,
-
-    // SO_MARK (fwmark) is a Linux-family kernel feature. Gate the flag out
-    // entirely on other targets so users on Windows/macOS/BSD don't see a
-    // `--socket-mark` they can't act on.
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    #[arg(
-        long,
-        env = "ET_SOCKET_MARK",
-        help = t!("core_clap.socket_mark").to_string()
-    )]
-    socket_mark: Option<u32>,
-
-    #[arg(
-        long,
-        env = "ET_ENABLE_KCP_PROXY",
-        help = t!("core_clap.enable_kcp_proxy").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    enable_kcp_proxy: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_KCP_INPUT",
-        help = t!("core_clap.disable_kcp_input").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_kcp_input: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_ENABLE_QUIC_PROXY",
-        help = t!("core_clap.enable_quic_proxy").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    enable_quic_proxy: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_QUIC_INPUT",
-        help = t!("core_clap.disable_quic_input").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_quic_input: Option<bool>,
-
-    #[arg(
-        long,
         env = "ET_PORT_FORWARD",
         value_delimiter = ',',
         help = t!("core_clap.port_forward").to_string(),
         num_args = 1..
     )]
     port_forward: Vec<url::Url>,
-
-    #[arg(
-        long,
-        env = "ET_ACCEPT_DNS",
-        help = t!("core_clap.accept_dns").to_string(),
-    )]
-    accept_dns: Option<bool>,
-
-    #[arg(
-        long = "tld-dns-zone",
-        env = "ET_TLD_DNS_ZONE",
-        help = t!("core_clap.tld_dns_zone").to_string())]
-    tld_dns_zone: Option<String>,
-
-    #[arg(
-        long,
-        env = "ET_PRIVATE_MODE",
-        help = t!("core_clap.private_mode").to_string(),
-    )]
-    private_mode: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_FOREIGN_RELAY_BPS_LIMIT",
-        help = t!("core_clap.foreign_relay_bps_limit").to_string(),
-    )]
-    foreign_relay_bps_limit: Option<u64>,
-
-    #[arg(
-        long,
-        env = "ET_INSTANCE_RECV_BPS_LIMIT",
-        help = t!("core_clap.instance_recv_bps_limit").to_string(),
-    )]
-    instance_recv_bps_limit: Option<u64>,
 
     #[arg(
         long,
@@ -660,42 +363,6 @@ struct NetworkOptions {
         num_args = 0..
     )]
     udp_whitelist: Vec<String>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_RELAY_KCP",
-        help = t!("core_clap.disable_relay_kcp").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_relay_kcp: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_DISABLE_RELAY_QUIC",
-        help = t!("core_clap.disable_relay_quic").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    disable_relay_quic: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_ENABLE_RELAY_FOREIGN_NETWORK_KCP",
-        help = t!("core_clap.enable_relay_foreign_network_kcp").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    enable_relay_foreign_network_kcp: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_ENABLE_RELAY_FOREIGN_NETWORK_QUIC",
-        help = t!("core_clap.enable_relay_foreign_network_quic").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    enable_relay_foreign_network_quic: Option<bool>,
 
     #[arg(
         long,
@@ -965,7 +632,7 @@ impl NetworkOptions {
 
     fn can_merge(
         &self,
-        cfg: &TomlConfigLoader,
+        config: &InstanceConfig,
         source: ConfigFileSource,
         explicit_config_file_count: usize,
         config_dir_file_count: usize,
@@ -985,19 +652,15 @@ impl NetworkOptions {
             return false;
         };
 
-        if source == ConfigFileSource::ConfigDir {
-            return cfg.get_network_identity().network_name == *network_name;
-        }
-
-        cfg.get_network_identity().network_name == *network_name
+        config.parsed().network_identity.network_name == *network_name
     }
 
-    fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
+    fn merge_into(&self, raw: &mut InstanceConfigRaw) -> anyhow::Result<()> {
         if self.hostname.is_some() {
-            cfg.set_hostname(self.hostname.clone());
+            raw.hostname = self.hostname.clone();
         }
 
-        let old_ns = cfg.get_network_identity();
+        let old_ns = raw.network_identity.clone().unwrap_or_default();
         let network_name = self
             .network_name
             .clone()
@@ -1005,48 +668,50 @@ impl NetworkOptions {
 
         if self.credential.is_some() {
             // Credential mode: no network_secret, authenticate via credential keypair
-            cfg.set_network_identity(NetworkIdentity::new_credential(network_name));
+            raw.set_network_identity(NetworkIdentity::new_credential(network_name));
         } else if let Some(network_secret) = &self.network_secret {
-            cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret.clone()));
+            raw.set_network_identity(NetworkIdentity::new(network_name, network_secret.clone()));
         } else if let Some(network_secret) = old_ns.network_secret {
-            cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret));
+            raw.set_network_identity(NetworkIdentity::new(network_name, network_secret));
         } else {
-            cfg.set_network_identity(NetworkIdentity::new_credential(network_name));
+            raw.set_network_identity(NetworkIdentity::new_credential(network_name));
         }
 
         if let Some(dhcp) = self.dhcp {
-            cfg.set_dhcp(dhcp);
+            raw.dhcp = Some(dhcp);
         }
 
         if let Some(ipv4) = &self.ipv4 {
-            cfg.set_ipv4(Some(ipv4.parse().with_context(|| {
-                format!("failed to parse ipv4 address: {}", ipv4)
-            })?))
+            raw.ipv4 = Some(
+                ipv4.parse()
+                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))?,
+            );
         }
 
         if let Some(ipv6) = &self.ipv6 {
-            cfg.set_ipv6(Some(ipv6.parse().with_context(|| {
-                format!("failed to parse ipv6 address: {}", ipv6)
-            })?))
+            raw.ipv6 = Some(
+                ipv6.parse()
+                    .with_context(|| format!("failed to parse ipv6 address: {}", ipv6))?,
+            );
         }
 
         if let Some(enabled) = self.ipv6_public_addr_provider {
-            cfg.set_ipv6_public_addr_provider(enabled);
+            raw.ipv6_public_addr_provider = Some(enabled);
         }
 
         if let Some(enabled) = self.ipv6_public_addr_auto {
-            cfg.set_ipv6_public_addr_auto(enabled);
+            raw.ipv6_public_addr_auto = Some(enabled);
         }
 
         if let Some(prefix) = &self.ipv6_public_addr_prefix {
-            cfg.set_ipv6_public_addr_prefix(Some(prefix.parse().with_context(|| {
+            raw.ipv6_public_addr_prefix = Some(prefix.parse().with_context(|| {
                 format!("failed to parse ipv6 public address prefix: {}", prefix)
-            })?));
+            })?);
         }
 
         if !self.peers.is_empty() {
-            let mut peers = cfg.get_peers();
-            peers.reserve(peers.len() + self.peers.len());
+            let peers = raw.peer.get_or_insert_with(Vec::new);
+            peers.reserve(self.peers.len());
             for p in &self.peers {
                 peers.push(PeerConfig {
                     uri: p
@@ -1055,47 +720,43 @@ impl NetworkOptions {
                     peer_public_key: None,
                 });
             }
-            cfg.set_peers(peers);
         }
 
         if self.no_listener || !self.listeners.is_empty() {
-            cfg.set_listeners(
-                Cli::parse_listeners(self.no_listener, self.listeners.clone())
-                    .with_context(|| format!("failed to parse listeners: {:?}", self.listeners))?
-                    .into_iter()
-                    .map(|s| s.parse().unwrap())
-                    .collect(),
-            );
-        } else if cfg.get_listeners().is_none() {
-            cfg.set_listeners(
-                Cli::parse_listeners(false, vec!["11010".to_string()])?
-                    .into_iter()
-                    .map(|s| s.parse().unwrap())
-                    .collect(),
-            );
+            let parsed_listeners = Cli::parse_listeners(self.no_listener, self.listeners.clone())
+                .with_context(|| format!("failed to parse listeners: {:?}", self.listeners))?
+                .into_iter()
+                .map(|s| s.parse().unwrap())
+                .collect();
+            raw.listeners = Some(parsed_listeners);
+        } else if raw.listeners.is_none() {
+            let default_listeners = Cli::parse_listeners(false, vec!["11010".to_string()])?
+                .into_iter()
+                .map(|s| s.parse().unwrap())
+                .collect();
+            raw.listeners = Some(default_listeners);
         }
 
         if !self.mapped_listeners.is_empty() {
-            cfg.set_mapped_listeners(Some(parse_mapped_listener_urls(&self.mapped_listeners)?));
+            raw.mapped_listeners = Some(parse_mapped_listener_urls(&self.mapped_listeners)?);
         }
 
         for n in self.proxy_networks.iter() {
-            add_proxy_network_to_config(n, cfg)?;
+            add_proxy_network_to_raw(n, raw)?;
         }
 
         if let Some(external_nodes) = self.external_node.as_ref() {
-            let mut old_peers = cfg.get_peers();
-            old_peers.push(PeerConfig {
+            let peers = raw.peer.get_or_insert_with(Vec::new);
+            peers.push(PeerConfig {
                 uri: external_nodes.parse().with_context(|| {
                     format!("failed to parse external node uri: {}", external_nodes)
                 })?,
                 peer_public_key: None,
             });
-            cfg.set_peers(old_peers);
         }
 
         if let Some(inst_name) = &self.instance_name {
-            cfg.set_inst_name(inst_name.clone());
+            raw.instance_name = Some(inst_name.clone());
         }
 
         let has_vpn_portal_overrides = self.vpn_portal.is_some()
@@ -1109,11 +770,10 @@ impl NetworkOptions {
                 );
             }
 
-            let existing = cfg.get_vpn_portal_config();
+            let existing = raw.vpn_portal_config.as_ref();
             let wireguard_listen = match self.vpn_portal.as_deref() {
                 Some(value) => Self::parse_vpn_portal_listener(value)?,
                 None => existing
-                    .as_ref()
                     .map(|portal| portal.wireguard_listen)
                     .ok_or_else(|| {
                         anyhow::anyhow!("--vpn-portal is required when no vpn_portal_config exists")
@@ -1122,14 +782,14 @@ impl NetworkOptions {
             let wireguard_private_key = self
                 .vpn_portal_private_key
                 .clone()
-                .or_else(|| existing.as_ref()?.wireguard_private_key.clone());
+                .or_else(|| existing.and_then(|portal| portal.wireguard_private_key.clone()));
             let clients = if self.vpn_portal_clients.is_empty() {
-                existing.map_or_else(Vec::new, |portal| portal.clients)
+                existing.map_or_else(Vec::new, |portal| portal.clients.clone())
             } else {
                 self.parse_vpn_portal_clients()?
             };
 
-            cfg.set_vpn_portal_config(VpnPortalConfig {
+            raw.vpn_portal_config = Some(VpnPortalConfig {
                 wireguard_listen,
                 wireguard_private_key,
                 clients,
@@ -1144,16 +804,16 @@ impl NetworkOptions {
                         .with_context(|| format!("failed to parse route: {}", r))?,
                 );
             }
-            cfg.set_routes(Some(routes));
+            raw.routes = Some(routes);
         }
 
         #[cfg(feature = "socks5")]
         if let Some(socks5_proxy) = self.socks5 {
-            cfg.set_socks5_portal(Some(
+            raw.socks5_proxy = Some(
                 format!("socks5://0.0.0.0:{}", socks5_proxy)
                     .parse()
                     .unwrap(),
-            ));
+            );
         }
 
         for port_forward in self.port_forward.iter() {
@@ -1184,13 +844,12 @@ impl NetworkOptions {
                 proto: port_forward.scheme().to_string(),
             };
 
-            let mut old = cfg.get_port_forwards();
+            let old = raw.port_forward.get_or_insert_with(Vec::new);
             old.push(port_forward_item);
-            cfg.set_port_forwards(old);
         }
 
         if let Some(ref credential_file) = self.credential_file {
-            cfg.set_credential_file(Some(credential_file.clone()));
+            raw.credential_file = Some(credential_file.clone());
         }
 
         if let Some(ref credential_secret) = self.credential {
@@ -1200,7 +859,7 @@ impl NetworkOptions {
                 local_private_key: Some(credential_secret.clone()),
                 local_public_key: None,
             };
-            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
+            raw.secure_mode = Some(c);
         } else if let Some(secure_mode) = self.secure_mode
             && secure_mode
         {
@@ -1212,147 +871,59 @@ impl NetworkOptions {
                 if cli_private_key.is_some() || cli_public_key.is_some() {
                     (cli_private_key, cli_public_key)
                 } else {
-                    cfg.get_secure_mode()
-                        .map_or((None, None), |c| (c.local_private_key, c.local_public_key))
+                    raw.secure_mode.as_ref().map_or((None, None), |c| {
+                        (c.local_private_key.clone(), c.local_public_key.clone())
+                    })
                 };
             let c = SecureModeConfig {
                 enabled: secure_mode,
                 local_private_key,
                 local_public_key,
             };
-            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
+            raw.secure_mode = Some(c);
         }
 
-        let mut f = cfg.get_flags();
-        if let Some(default_protocol) = &self.default_protocol {
-            f.default_protocol = default_protocol.clone()
-        };
-        if let Some(v) = self.disable_encryption {
-            f.enable_encryption = !v;
-        }
-        if let Some(algorithm) = &self.encryption_algorithm {
-            f.encryption_algorithm = algorithm.to_string();
-        }
-        if let Some(v) = self.disable_ipv6 {
-            f.enable_ipv6 = !v;
-        }
-        f.latency_first = self.latency_first.unwrap_or(f.latency_first);
-        if let Some(dev_name) = &self.dev_name {
-            f.dev_name = dev_name.clone()
-        }
-        if let Some(mtu) = self.mtu {
-            f.mtu = mtu as u32;
-        }
-        f.enable_exit_node = self.enable_exit_node.unwrap_or(f.enable_exit_node);
-        f.proxy_forward_by_system = self
-            .proxy_forward_by_system
-            .unwrap_or(f.proxy_forward_by_system);
-        f.no_tun = self.no_tun.unwrap_or(f.no_tun) || cfg!(not(feature = "tun"));
-        f.use_smoltcp = self.use_smoltcp.unwrap_or(f.use_smoltcp);
-        if let Some(wl) = self.relay_network_whitelist.as_ref() {
-            f.relay_network_whitelist = wl.join(" ");
-        }
-        f.disable_p2p = self.disable_p2p.unwrap_or(f.disable_p2p);
-        f.p2p_only = self.p2p_only.unwrap_or(f.p2p_only);
-        f.lazy_p2p = self.lazy_p2p.unwrap_or(f.lazy_p2p);
-        f.disable_tcp_hole_punching = self
-            .disable_tcp_hole_punching
-            .unwrap_or(f.disable_tcp_hole_punching);
-        f.disable_udp_hole_punching = self
-            .disable_udp_hole_punching
-            .unwrap_or(f.disable_udp_hole_punching);
-        f.relay_all_peer_rpc = self.relay_all_peer_rpc.unwrap_or(f.relay_all_peer_rpc);
-        f.need_p2p = self.need_p2p.unwrap_or(f.need_p2p);
-        f.multi_thread = self.multi_thread.unwrap_or(f.multi_thread);
-        if let Some(compression) = &self.compression {
-            f.data_compress_algo = match compression.as_str() {
-                "none" => CompressionAlgoPb::None,
-                "zstd" => CompressionAlgoPb::Zstd,
-                _ => panic!(
-                    "unknown compression algorithm: {}, supported: none, zstd",
-                    compression
-                ),
-            }
-            .into();
-        }
-        f.bind_device = self.bind_device.unwrap_or(f.bind_device);
-        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        {
-            f.socket_mark = self.socket_mark.or(f.socket_mark);
-        }
-        f.enable_kcp_proxy = self.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
-        f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
-        f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
-        f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
-        f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
-        f.private_mode = self.private_mode.unwrap_or(f.private_mode);
-        f.foreign_relay_bps_limit = self
-            .foreign_relay_bps_limit
-            .unwrap_or(f.foreign_relay_bps_limit);
-        f.instance_recv_bps_limit = self
-            .instance_recv_bps_limit
-            .unwrap_or(f.instance_recv_bps_limit);
-        f.multi_thread_count = self.multi_thread_count.unwrap_or(f.multi_thread_count);
-        f.disable_relay_kcp = self.disable_relay_kcp.unwrap_or(f.disable_relay_kcp);
-        f.disable_relay_quic = self.disable_relay_quic.unwrap_or(f.disable_relay_quic);
-        f.enable_relay_foreign_network_kcp = self
-            .enable_relay_foreign_network_kcp
-            .unwrap_or(f.enable_relay_foreign_network_kcp);
-        f.enable_relay_foreign_network_quic = self
-            .enable_relay_foreign_network_quic
-            .unwrap_or(f.enable_relay_foreign_network_quic);
-        f.disable_sym_hole_punching = self
-            .disable_sym_hole_punching
-            .unwrap_or(f.disable_sym_hole_punching);
-        f.disable_upnp = self.disable_upnp.unwrap_or(f.disable_upnp);
-        f.enable_udp_broadcast_relay = self
-            .enable_udp_broadcast_relay
-            .unwrap_or(f.enable_udp_broadcast_relay);
-        // Configure tld_dns_zone: use provided value if set
-        if let Some(tld_dns_zone) = &self.tld_dns_zone {
-            f.tld_dns_zone = tld_dns_zone.clone();
-        }
-        cfg.set_flags(f);
+        raw.patch_flags(self.flags.clone());
+        #[cfg(not(feature = "tun"))]
+        raw.patch_flags(FlagsPatch {
+            no_tun: Some(true),
+            ..Default::default()
+        });
 
         if !self.exit_nodes.is_empty() {
-            cfg.set_exit_nodes(self.exit_nodes.clone());
+            raw.exit_nodes = Some(self.exit_nodes.clone());
         }
 
-        let mut old_tcp_whitelist = cfg.get_tcp_whitelist();
+        let old_tcp_whitelist = raw.tcp_whitelist.get_or_insert_with(Vec::new);
         old_tcp_whitelist.extend(self.tcp_whitelist.clone());
-        cfg.set_tcp_whitelist(old_tcp_whitelist);
 
-        let mut old_udp_whitelist = cfg.get_udp_whitelist();
+        let old_udp_whitelist = raw.udp_whitelist.get_or_insert_with(Vec::new);
         old_udp_whitelist.extend(self.udp_whitelist.clone());
-        cfg.set_udp_whitelist(old_udp_whitelist);
 
         if let Some(stun_servers) = &self.stun_servers {
             if stun_servers.is_empty() {
-                cfg.set_stun_servers(Some(Vec::new()));
+                raw.stun_servers = Some(Vec::new());
             } else {
-                let mut old_stun_servers = cfg.get_stun_servers().unwrap_or_default();
+                let old_stun_servers = raw.stun_servers.get_or_insert_with(Vec::new);
                 old_stun_servers.extend(stun_servers.iter().cloned());
-                cfg.set_stun_servers(Some(old_stun_servers));
             }
         }
 
         if let Some(stun_servers_v6) = &self.stun_servers_v6 {
             if stun_servers_v6.is_empty() {
-                cfg.set_stun_servers_v6(Some(Vec::new()));
+                raw.stun_servers_v6 = Some(Vec::new());
             } else {
-                let mut old_stun_servers_v6 = cfg.get_stun_servers_v6().unwrap_or_default();
+                let old_stun_servers_v6 = raw.stun_servers_v6.get_or_insert_with(Vec::new);
                 old_stun_servers_v6.extend(stun_servers_v6.iter().cloned());
-                cfg.set_stun_servers_v6(Some(old_stun_servers_v6));
             }
         }
 
         if let Some(tcp_stun_servers) = &self.tcp_stun_servers {
             if tcp_stun_servers.is_empty() {
-                cfg.set_tcp_stun_servers(Some(Vec::new()));
+                raw.tcp_stun_servers = Some(Vec::new());
             } else {
-                let mut old_tcp_stun_servers = cfg.get_tcp_stun_servers().unwrap_or_default();
+                let old_tcp_stun_servers = raw.tcp_stun_servers.get_or_insert_with(Vec::new);
                 old_tcp_stun_servers.extend(tcp_stun_servers.iter().cloned());
-                cfg.set_tcp_stun_servers(Some(old_tcp_stun_servers));
             }
         }
         Ok(())
@@ -1457,8 +1028,96 @@ fn win_service_event_loop(
     });
 }
 
+fn flags_from(matches: &ArgMatches) -> Result<FlagsPatch, clap::Error> {
+    let given = Flags::flags()
+        .iter()
+        .filter_map(|field| {
+            let name = field.name();
+            let value = if let Ok(Some(values)) = matches.try_get_many::<String>(name) {
+                json!(values.map(|s| s.as_str()).collect::<Vec<_>>().join(" "))
+            } else if let Ok(Some(value)) = matches.try_get_one::<Value>(name) {
+                value.clone()
+            } else {
+                return None;
+            };
+            Some((name.to_owned(), value))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::from_value(Value::Object(given)).map_err(|error| {
+        clap::Error::raw(
+            clap::error::ErrorKind::ValueValidation,
+            format!("{error:#}"),
+        )
+    })
+}
+
+fn cli_command() -> clap::Command {
+    fn arg(flag: &str, spelling: &str) -> Arg {
+        let name = spelling.to_uppercase();
+        Arg::new(flag.to_owned())
+            .long(spelling.replace('_', "-"))
+            .env(format!("ET_{name}"))
+            .value_name(name)
+            .help(t!(format!("core_clap.{spelling}")).to_string())
+    }
+
+    fn parsed<T: FromStr + Serialize>(value: &str) -> Result<Value, T::Err> {
+        value.parse::<T>().map(|value| json!(value))
+    }
+
+    fn negated(value: &str) -> Result<Value, ParseBoolError> {
+        value.parse::<bool>().map(|value| json!(!value))
+    }
+
+    Cli::command().args(Flags::flags().iter().map(|field| {
+        let name = field.name();
+        match name {
+            // The two the command line states in the negative, which can be given
+            // bare like any other boolean flag.
+            "enable_encryption" => arg(name, "disable_encryption")
+                .short('u')
+                .num_args(0..=1)
+                .default_missing_value("true")
+                .value_parser(negated),
+            "enable_ipv6" => arg(name, "disable_ipv6")
+                .num_args(0..=1)
+                .default_missing_value("true")
+                .value_parser(negated),
+            // The command line names the algorithm instead of spelling the field.
+            // The values are the schema's own, which the patch reads.
+            "data_compress_algo" => {
+                arg(name, "compression").value_parser(parsed::<CompressionAlgoPb>)
+            }
+            "encryption_algorithm" => arg(name, name).value_parser(parsed::<EncryptionAlgorithm>),
+            "mtu" => arg(name, name).value_parser(parsed::<u16>),
+            "relay_network_whitelist" => arg(name, name)
+                .value_delimiter(',')
+                .num_args(0..)
+                .action(clap::ArgAction::Append),
+            _ => {
+                let arg = arg(name, name);
+                match field.r#type() {
+                    // A boolean flag can be given bare, and bare means enabled.
+                    Type::Bool => arg
+                        .num_args(0..=1)
+                        .default_missing_value("true")
+                        .value_parser(parsed::<bool>),
+                    Type::Uint32 => arg.value_parser(parsed::<u32>),
+                    Type::Uint64 => arg.value_parser(parsed::<u64>),
+                    // An enum flag takes the name the schema spells, and the patch's
+                    // own serde rejects anything the enum does not declare.
+                    Type::String | Type::Enum => arg.value_parser(parsed::<String>),
+                    other => panic!("{name}: no command line for {other:?}"),
+                }
+            }
+        }
+    }))
+}
+
 fn parse_cli() -> Cli {
-    let mut cli = Cli::parse();
+    let matches = cli_command().get_matches();
+    let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    cli.network_options.flags = flags_from(&matches).unwrap_or_else(|error| error.exit());
     // for --stun-servers="", we want vec![], but clap will give vec![""], hack for that
     if let Some(stun_servers) = &mut cli.network_options.stun_servers {
         stun_servers.retain(|s| !s.trim().is_empty());
@@ -1600,26 +1259,30 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         }
     };
     for (config_file, source) in config_files {
-        let (cfg, mut control) = load_config_from_file(
+        let (config, mut control) = load_config_from_file(
             &config_file,
             cli.config_dir.as_ref(),
             cli.disable_env_parsing,
         )
         .await?;
 
-        if cli.network_options.can_merge(
-            &cfg,
+        let config = if cli.network_options.can_merge(
+            &config,
             source,
             explicit_config_file_count,
             config_dir_file_count,
         ) {
+            let mut raw = config.into_raw();
             cli.network_options
-                .merge_into(&cfg)
+                .merge_into(&mut raw)
                 .with_context(|| format!("failed to merge config from cli: {:?}", config_file))?;
             crate_cli_network = false;
             control.set_read_only(true);
             control.set_no_delete(true);
-        }
+            InstanceConfig::try_from(raw)?
+        } else {
+            config
+        };
 
         log::info!(
             "\
@@ -1630,16 +1293,17 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             ",
             config_file,
             control.permission,
-            cfg.dump_redacted()
+            serialize_raw_to_toml_redacted(config.raw()).unwrap_or_default()
         );
-        manager.run_network_instance(cfg, control)?;
+        manager.run_network_instance(config, control)?;
     }
 
     if crate_cli_network {
-        let cfg = TomlConfigLoader::default();
+        let mut raw = InstanceConfigRaw::default();
         cli.network_options
-            .merge_into(&cfg)
+            .merge_into(&mut raw)
             .with_context(|| "failed to create config from cli".to_string())?;
+        let config = InstanceConfig::try_from(raw)?;
         log::info!(
             "\
             Starting easytier from cli with config:\n\
@@ -1647,9 +1311,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             {}\n\
             -----------------------------------\n\
             ",
-            cfg.dump_redacted()
+            serialize_raw_to_toml_redacted(config.raw()).unwrap_or_default()
         );
-        manager.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
+        manager.run_network_instance(config, ConfigFileControl::STATIC_CONFIG)?;
     }
 
     #[cfg(unix)]
@@ -1763,7 +1427,7 @@ pub async fn main() -> ExitCode {
     let cli = parse_cli();
 
     if let Some(shell) = cli.gen_autocomplete {
-        let mut cmd = Cli::command();
+        let mut cmd = cli_command();
         if let Some(shell) = shell.to_shell() {
             crate::print_completions(shell, &mut cmd, "easytier-core");
         } else {
@@ -1810,7 +1474,7 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
                 .read_to_string(&mut stdin)
                 .await
                 .context("failed to read config from stdin")?;
-            TomlConfigLoader::new_from_str_with_source("stdin", stdin.as_str())?;
+            parse_instance_config("stdin", stdin.as_str())?;
         } else {
             load_toml_config_from_path(config_file)?;
         };
@@ -1822,6 +1486,28 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::config::serialize_raw_to_toml;
+    use crate::proto::common::CompressionAlgoPb;
+
+    #[test]
+    fn review_default_network_name_matches_config_dir() {
+        let config = parse_instance_config("review", "hostname = 'file-node'\n").unwrap();
+        assert_eq!(config.parsed().network_identity.network_name, "default");
+        let options = NetworkOptions {
+            network_name: Some("default".to_owned()),
+            hostname: Some("override-node".to_owned()),
+            ..Default::default()
+        };
+        assert!(
+            options.can_merge(&config, ConfigFileSource::ConfigDir, 0, 1),
+            "a config with the effective default network must match --network-name default"
+        );
+    }
+
+    /// Parses the flags the way the binary does.
+    fn parse_flags(argv: &[&str]) -> Result<FlagsPatch, clap::Error> {
+        flags_from(&cli_command().try_get_matches_from(argv)?)
+    }
 
     #[test]
     fn test_parse_listeners() {
@@ -1908,7 +1594,8 @@ mod tests {
 
     #[test]
     fn test_network_options_merge_preserves_credential_identity() {
-        let cfg = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 [network_identity]
 network_name = "credential-network"
@@ -1919,45 +1606,241 @@ enabled = true
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.get_network_identity().network_secret, None);
+        assert_eq!(config.parsed().network_identity.network_secret, None);
 
+        let mut raw = config.into_raw();
         NetworkOptions {
             hostname: Some("override-host".to_string()),
             ..Default::default()
         }
-        .merge_into(&cfg)
+        .merge_into(&mut raw)
         .unwrap();
 
-        let identity = cfg.get_network_identity();
+        let updated = InstanceConfig::try_from(raw).unwrap();
+        let identity = &updated.parsed().network_identity;
         assert_eq!(identity.network_name, "credential-network");
         assert_eq!(identity.network_secret, None);
         assert_eq!(identity.network_secret_digest, None);
-        assert_eq!(cfg.get_hostname(), "override-host");
+        assert_eq!(updated.parsed().hostname, "override-host");
+    }
+
+    #[test]
+    fn test_cli_flags_from_schema_preserves_presence() {
+        assert_eq!(parse_flags(&["easytier"]).unwrap(), FlagsPatch::default());
+        let patch = parse_flags(&[
+            "easytier",
+            "--disable-encryption",
+            "false",
+            "--latency-first",
+            "false",
+            "--mtu",
+            "0",
+            "--compression",
+            "Zstd",
+            "--socket-mark",
+            "42",
+            "--disable-relay-data",
+        ])
+        .unwrap();
+        assert_eq!(patch.enable_encryption, Some(true));
+        assert_eq!(patch.latency_first, Some(false));
+        assert_eq!(patch.mtu, Some(0));
+        assert_eq!(
+            patch.data_compress_algo,
+            Some(CompressionAlgoPb::Zstd as i32)
+        );
+        assert_eq!(patch.socket_mark, Some(42));
+        assert_eq!(patch.disable_relay_data, Some(true));
+        assert_eq!(patch.enable_ipv6, None);
+
+        // A negated flag can be given bare, and bare means the value it states.
+        let patch = parse_flags(&["easytier", "--disable-ipv6"]).unwrap();
+        assert_eq!(patch.enable_ipv6, Some(false));
+
+        // Compression tests: case-insensitive, accepts None/none/zstd/Zstd/ZSTD, rejects invalid
+        let patch = parse_flags(&["easytier", "--compression", "none"]).unwrap();
+        assert_eq!(
+            patch.data_compress_algo,
+            Some(CompressionAlgoPb::None as i32)
+        );
+        let patch = parse_flags(&["easytier", "--compression", "zstd"]).unwrap();
+        assert_eq!(
+            patch.data_compress_algo,
+            Some(CompressionAlgoPb::Zstd as i32)
+        );
+        let patch = parse_flags(&["easytier", "--compression", "ZSTD"]).unwrap();
+        assert_eq!(
+            patch.data_compress_algo,
+            Some(CompressionAlgoPb::Zstd as i32)
+        );
+        assert!(parse_flags(&["easytier", "--compression", "invalid"]).is_err());
+        assert!(parse_flags(&["easytier", "--compression", "lz4"]).is_err());
+
+        // Encryption algorithm tests: case-insensitive, aliases, rejects invalid
+        let patch = parse_flags(&["easytier", "--encryption-algorithm", "aes-gcm"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("aes-gcm".to_string()));
+        let patch = parse_flags(&["easytier", "--encryption-algorithm", "AES-GCM"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("aes-gcm".to_string()));
+        let patch =
+            parse_flags(&["easytier", "--encryption-algorithm", "openssl-aes-gcm"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("aes-gcm".to_string()));
+        let patch =
+            parse_flags(&["easytier", "--encryption-algorithm", "chacha20-poly1305"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("chacha20".to_string()));
+        let patch = parse_flags(&["easytier", "--encryption-algorithm", "xor"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("xor".to_string()));
+        assert!(parse_flags(&["easytier", "--encryption-algorithm", "rot13"]).is_err());
+        assert!(parse_flags(&["easytier", "--encryption-algorithm", "des"]).is_err());
+
+        // Deprecated flag is not accepted.
+        assert!(parse_flags(&["easytier", "--quic-listen-port", "1234"]).is_err());
+
+        // MTU tests: u16 range validation
+        let patch = parse_flags(&["easytier", "--mtu", "1400"]).unwrap();
+        assert_eq!(patch.mtu, Some(1400));
+        let patch = parse_flags(&["easytier", "--mtu", "65535"]).unwrap();
+        assert_eq!(patch.mtu, Some(65535));
+        assert!(parse_flags(&["easytier", "--mtu", "65536"]).is_err());
+        assert!(parse_flags(&["easytier", "--mtu", "70000"]).is_err());
+
+        // Relay network whitelist tests: comma, multiple values, bare clearing
+        let patch = parse_flags(&["easytier", "--relay-network-whitelist", "net1,net2"]).unwrap();
+        assert_eq!(patch.relay_network_whitelist, Some("net1 net2".to_string()));
+        let patch =
+            parse_flags(&["easytier", "--relay-network-whitelist", "net1", "net2"]).unwrap();
+        assert_eq!(patch.relay_network_whitelist, Some("net1 net2".to_string()));
+        let patch = parse_flags(&[
+            "easytier",
+            "--relay-network-whitelist",
+            "net1",
+            "--relay-network-whitelist",
+            "net2",
+        ])
+        .unwrap();
+        assert_eq!(patch.relay_network_whitelist, Some("net1 net2".to_string()));
+        let patch = parse_flags(&["easytier", "--relay-network-whitelist"]).unwrap();
+        assert_eq!(patch.relay_network_whitelist, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_network_options_patch_preserves_omitted_flags_and_applies_zero_values() {
+        let instance_config = parse_instance_config(
+            "test",
+            r#"[flags]
+default_protocol = "udp"
+latency_first = true
+mtu = 1400
+socket_mark = 42
+"#,
+        )
+        .unwrap();
+        let mut raw = instance_config.raw().clone();
+
+        NetworkOptions::default().merge_into(&mut raw).unwrap();
+        let updated = InstanceConfig::try_from(raw.clone()).unwrap();
+        assert_eq!(updated.parsed().flags.socket_mark, Some(42));
+        assert_eq!(raw.flags.enable_encryption, None);
+        assert_eq!(raw.flags.multi_thread, None);
+
+        NetworkOptions {
+            flags: FlagsPatch {
+                latency_first: Some(false),
+                mtu: Some(0),
+                relay_network_whitelist: Some(String::new()),
+                enable_encryption: Some(false),
+                data_compress_algo: Some(CompressionAlgoPb::Zstd.into()),
+                #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+                socket_mark: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .merge_into(&mut raw)
+        .unwrap();
+
+        let updated = InstanceConfig::try_from(raw).unwrap();
+        let flags = &updated.parsed().flags;
+        assert_eq!(flags.default_protocol, "udp");
+        assert!(!flags.latency_first);
+        assert_eq!(flags.mtu, 0);
+        assert_eq!(flags.relay_network_whitelist, "");
+        assert!(!flags.enable_encryption);
+        assert_eq!(flags.data_compress_algo, CompressionAlgoPb::Zstd as i32);
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        assert_eq!(flags.socket_mark, Some(0));
+        #[cfg(not(feature = "tun"))]
+        assert!(flags.no_tun);
+    }
+
+    #[test]
+    fn network_options_preserve_default_network_identity_in_secure_mode() {
+        for input in [
+            "",
+            "[secure_mode]\nenabled = true",
+            "[network_identity]\nnetwork_name = 'default'\n[secure_mode]\nenabled = true",
+        ] {
+            let instance_config = parse_instance_config("test", input).unwrap();
+            let mut raw = instance_config.raw().clone();
+            let secret = raw
+                .network_identity
+                .as_ref()
+                .and_then(|n| n.network_secret.clone());
+            NetworkOptions {
+                hostname: Some("updated-hostname".to_owned()),
+                secure_mode: Some(true),
+                ..Default::default()
+            }
+            .merge_into(&mut raw)
+            .unwrap();
+
+            assert_eq!(raw.hostname.as_deref(), Some("updated-hostname"));
+            assert_eq!(
+                raw.network_identity
+                    .as_ref()
+                    .and_then(|n| n.network_secret.clone()),
+                secret
+            );
+            let toml_str = serialize_raw_to_toml(&raw).unwrap();
+            let restored = parse_instance_config("restored", &toml_str).unwrap();
+            assert_eq!(
+                restored
+                    .raw()
+                    .network_identity
+                    .as_ref()
+                    .and_then(|n| n.network_secret.clone()),
+                secret
+            );
+        }
     }
 
     #[test]
     fn secure_mode_cli_flag_preserves_config_file_keypair() {
         use base64::{Engine as _, prelude::BASE64_STANDARD};
         let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
-        let cfg = TomlConfigLoader::new_from_str(&format!(
-            r#"
+        let instance_config = parse_instance_config(
+            "test",
+            &format!(
+                r#"
 [secure_mode]
 enabled = true
 local_private_key = "{}"
 "#,
-            BASE64_STANDARD.encode(private.as_bytes())
-        ))
+                BASE64_STANDARD.encode(private.as_bytes())
+            ),
+        )
         .unwrap();
-        let file_keypair = cfg.get_secure_mode().unwrap();
+        let mut raw = instance_config.raw().clone();
+        let file_keypair = raw.secure_mode.as_ref().unwrap().clone();
 
         NetworkOptions {
             secure_mode: Some(true),
             ..Default::default()
         }
-        .merge_into(&cfg)
+        .merge_into(&mut raw)
         .unwrap();
 
-        let merged = cfg.get_secure_mode().unwrap();
+        let updated = InstanceConfig::try_from(raw).unwrap();
+        let merged = updated.parsed().secure_mode.as_ref().unwrap();
         assert!(merged.enabled);
         assert_eq!(merged.local_private_key, file_keypair.local_private_key);
         assert_eq!(merged.local_public_key, file_keypair.local_public_key);
@@ -1967,13 +1850,15 @@ local_private_key = "{}"
     #[test]
     fn secure_mode_cli_key_replaces_config_file_keypair() {
         use base64::{Engine as _, prelude::BASE64_STANDARD};
-        let cfg = TomlConfigLoader::new_from_str(
+        let instance_config = parse_instance_config(
+            "test",
             r#"
 [secure_mode]
 enabled = true
 "#,
         )
         .unwrap();
+        let mut raw = instance_config.raw().clone();
         let cli_private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
 
         NetworkOptions {
@@ -1981,10 +1866,11 @@ enabled = true
             local_private_key: Some(BASE64_STANDARD.encode(cli_private.as_bytes())),
             ..Default::default()
         }
-        .merge_into(&cfg)
+        .merge_into(&mut raw)
         .unwrap();
 
-        let merged = cfg.get_secure_mode().unwrap();
+        let updated = InstanceConfig::try_from(raw).unwrap();
+        let merged = updated.parsed().secure_mode.as_ref().unwrap();
         assert_eq!(
             merged.private_key().unwrap().as_bytes(),
             cli_private.as_bytes()
@@ -1997,7 +1883,8 @@ enabled = true
 
     #[test]
     fn empty_stun_server_options_clear_existing_config() {
-        let cfg = TomlConfigLoader::new_from_str(
+        let instance_config = parse_instance_config(
+            "test",
             r#"
 stun_servers = ["udp.example.com:3478"]
 stun_servers_v6 = ["v6.example.com:3478"]
@@ -2005,6 +1892,7 @@ tcp_stun_servers = ["tcp.example.com:3478"]
 "#,
         )
         .unwrap();
+        let mut raw = instance_config.raw().clone();
 
         NetworkOptions {
             stun_servers: Some(Vec::new()),
@@ -2012,17 +1900,18 @@ tcp_stun_servers = ["tcp.example.com:3478"]
             tcp_stun_servers: Some(Vec::new()),
             ..Default::default()
         }
-        .merge_into(&cfg)
+        .merge_into(&mut raw)
         .unwrap();
 
-        assert_eq!(cfg.get_stun_servers(), Some(Vec::new()));
-        assert_eq!(cfg.get_stun_servers_v6(), Some(Vec::new()));
-        assert_eq!(cfg.get_tcp_stun_servers(), Some(Vec::new()));
+        assert_eq!(raw.stun_servers, Some(Vec::new()));
+        assert_eq!(raw.stun_servers_v6, Some(Vec::new()));
+        assert_eq!(raw.tcp_stun_servers, Some(Vec::new()));
     }
 
     #[test]
     fn vpn_portal_cli_uses_named_clients_and_preserves_unset_fields() {
-        let cfg = TomlConfigLoader::new_from_str(
+        let instance_config = parse_instance_config(
+            "test",
             r#"
 [vpn_portal_config]
 wireguard_listen = "127.0.0.1:51820"
@@ -2034,14 +1923,16 @@ virtual_ip = "10.144.144.9/24"
 "#,
         )
         .unwrap();
+        let mut raw = instance_config.raw().clone();
 
         NetworkOptions {
             vpn_portal: Some("wg://0.0.0.0:51821".to_owned()),
             ..Default::default()
         }
-        .merge_into(&cfg)
+        .merge_into(&mut raw)
         .unwrap();
-        let preserved = cfg.get_vpn_portal_config().unwrap();
+        let updated = InstanceConfig::try_from(raw.clone()).unwrap();
+        let preserved = updated.parsed().vpn_portal_config.as_ref().unwrap();
         assert_eq!(preserved.wireguard_listen, "0.0.0.0:51821".parse().unwrap());
         assert_eq!(
             preserved.wireguard_private_key.as_deref(),
@@ -2058,10 +1949,11 @@ virtual_ip = "10.144.144.9/24"
             vpn_portal_client_groups: vec!["alice=staff".to_owned(), "alice=dev".to_owned()],
             ..Default::default()
         }
-        .merge_into(&cfg)
+        .merge_into(&mut raw)
         .unwrap();
 
-        let replaced = cfg.get_vpn_portal_config().unwrap();
+        let updated = InstanceConfig::try_from(raw).unwrap();
+        let replaced = updated.parsed().vpn_portal_config.as_ref().unwrap();
         assert_eq!(replaced.wireguard_listen, "0.0.0.0:51821".parse().unwrap());
         assert_eq!(
             replaced.wireguard_private_key.as_deref(),
@@ -2089,13 +1981,13 @@ virtual_ip = "10.144.144.9/24"
             .to_string();
         assert!(error.contains("legacy VPN portal CIDR"), "{error}");
 
-        let cfg = TomlConfigLoader::default();
+        let mut raw = InstanceConfigRaw::default();
         let missing_clients = NetworkOptions {
             vpn_portal: Some("wg://0.0.0.0:51820".to_owned()),
             vpn_portal_client_groups: vec!["alice=staff".to_owned()],
             ..Default::default()
         }
-        .merge_into(&cfg)
+        .merge_into(&mut raw)
         .unwrap_err()
         .to_string();
         assert!(
@@ -2103,13 +1995,14 @@ virtual_ip = "10.144.144.9/24"
             "{missing_clients}"
         );
 
+        let mut raw = InstanceConfigRaw::default();
         let unknown_client = NetworkOptions {
             vpn_portal: Some("wg://0.0.0.0:51820".to_owned()),
             vpn_portal_clients: vec!["alice=10.144.144.10/24".to_owned()],
             vpn_portal_client_groups: vec!["bob=staff".to_owned()],
             ..Default::default()
         }
-        .merge_into(&TomlConfigLoader::default())
+        .merge_into(&mut raw)
         .unwrap_err()
         .to_string();
         assert!(

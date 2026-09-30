@@ -6,10 +6,11 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
     gateway::proxy::{
+        ProxyHostPolicy,
         cidr_table::ProxyCidrTable,
         service::CoreProxyRuntime,
         tcp_proxy_engine::{TcpNatEntrySnapshot, TcpProxyMode, TcpProxyNicContext},
@@ -141,11 +142,12 @@ where
         host: Arc<H>,
         protected_tcp_ports: Arc<ProtectedTcpPortRegistry>,
         running_listeners: Arc<RunningListenerRegistry>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
         engine: &Arc<dyn WrappedTransportEngine>,
         transport: WrappedTransportKind,
+        host_policy: ProxyHostPolicy,
     ) -> Arc<Self> {
         let protocol_label = match transport {
             WrappedTransportKind::Kcp => "KCP",
@@ -158,6 +160,7 @@ where
             running_listeners,
             runtime_config,
             protocol_label,
+            host_policy,
         );
         let connector = Arc::new(WrappedTransportSourceConnector {
             peer_manager: peer_manager.clone(),
@@ -473,7 +476,7 @@ impl WrappedTransportPacketPlane {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new<H>(
         peer_manager: Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         kcp: &Option<Arc<dyn WrappedTransportEngine>>,
         quic: &Option<Arc<dyn WrappedTransportEngine>>,
         host: Arc<H>,
@@ -481,6 +484,7 @@ impl WrappedTransportPacketPlane {
         running_listeners: Arc<RunningListenerRegistry>,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
+        host_policy: ProxyHostPolicy,
     ) -> Self
     where
         H: DirectConnectorHost + TcpHolePunchHost,
@@ -496,6 +500,7 @@ impl WrappedTransportPacketPlane {
                 socket_context.clone(),
                 engine,
                 WrappedTransportKind::Kcp,
+                host_policy,
             ) as Arc<dyn WrappedTransportSourceLifecycle>
         });
         let quic_source = quic.as_ref().map(|engine| {
@@ -509,6 +514,7 @@ impl WrappedTransportPacketPlane {
                 socket_context.clone(),
                 engine,
                 WrappedTransportKind::Quic,
+                host_policy,
             ) as Arc<dyn WrappedTransportSourceLifecycle>
         });
         let destination = (kcp.is_some() || quic.is_some()).then(|| {
@@ -520,6 +526,7 @@ impl WrappedTransportPacketPlane {
                 runtime_config,
                 cidr_table,
                 socket_context,
+                host_policy,
             ) as Arc<dyn WrappedTransportDestinationLifecycle>
         });
         Self {

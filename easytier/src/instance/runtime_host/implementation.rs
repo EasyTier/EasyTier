@@ -30,15 +30,6 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
     }
 
     #[cfg(feature = "web-client")]
-    fn synchronize_config(
-        &self,
-        patch: &crate::proto::api::config::InstanceConfigPatch,
-        config: &easytier_core::config::runtime::CoreInstanceRuntimeConfig,
-    ) {
-        self.synchronize_global_ctx_config(patch, config);
-    }
-
-    #[cfg(feature = "web-client")]
     fn publish_config_patch(&self, patch: crate::proto::api::config::InstanceConfigPatch) {
         #[cfg(feature = "management")]
         self.event_journal.publish_config_patch(patch);

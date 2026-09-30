@@ -6,7 +6,7 @@ use easytier_proto::{
 };
 
 use crate::{
-    config::{api::network_config_from_toml, toml::ConfigLoader as _},
+    config::{api::network_config_from_raw, serialize_raw_to_toml},
     management::apply_config_patch,
 };
 
@@ -36,13 +36,13 @@ where
         _: BaseController,
         request: GetConfigRequest,
     ) -> rpc_types::error::Result<GetConfigResponse> {
-        let config = self
-            .instance(request.instance.as_ref())?
-            .toml_config()
-            .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
+        let instance = self.instance(request.instance.as_ref())?;
+        let snapshot = instance.config_store().snapshot();
+        let config = network_config_from_raw(snapshot.raw());
+        let toml_config = serialize_raw_to_toml(snapshot.raw()).map_err(|e| anyhow::anyhow!(e))?;
         Ok(GetConfigResponse {
-            config: Some(network_config_from_toml(&config)),
-            toml_config: config.dump(),
+            config: Some(config),
+            toml_config,
         })
     }
 }

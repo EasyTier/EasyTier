@@ -136,6 +136,7 @@ once_cell.workspace = true
 
 # for rpc
 prost.workspace = true
+prost-types.workspace = true
 anyhow.workspace = true
 
 url = { workspace = true, features = ["serde"] }

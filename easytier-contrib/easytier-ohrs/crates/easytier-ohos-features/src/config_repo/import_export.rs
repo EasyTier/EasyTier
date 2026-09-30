@@ -1,16 +1,16 @@
 use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
-use easytier::common::config::NetworkConfigExt;
-use easytier::common::config::{ConfigLoader, TomlConfigLoader};
+use easytier::common::config::{
+    NetworkConfigExt, network_config_from_raw, parse_instance_config, serialize_raw_to_toml,
+};
 use easytier::proto::api::manage::NetworkConfig;
 
 pub(super) fn export_config_toml_from_record(
     record: &StoredConfigRecord,
 ) -> Option<ExportTomlResult> {
     let config = serde_json::from_str::<NetworkConfig>(&record.config_json).ok()?;
-    let toml = config.gen_config().ok()?;
-    Some(ExportTomlResult {
-        toml_text: toml.dump(),
-    })
+    let instance_config = config.gen_config().ok()?;
+    let toml_text = serialize_raw_to_toml(instance_config.raw()).ok()?;
+    Some(ExportTomlResult { toml_text })
 }
 
 pub(super) fn import_toml_to_record(
@@ -18,8 +18,8 @@ pub(super) fn import_toml_to_record(
     display_name: Option<String>,
     save_config_record: impl Fn(String, String, String) -> Option<StoredConfigRecord>,
 ) -> Option<StoredConfigRecord> {
-    let config =
-        NetworkConfig::new_from_config(TomlConfigLoader::new_from_str(&toml_text).ok()?).ok()?;
+    let instance_config = parse_instance_config("import", &toml_text).ok()?;
+    let config = network_config_from_raw(instance_config.raw());
 
     let config_id = config.instance_id.clone()?;
     let name_from_toml = toml_text

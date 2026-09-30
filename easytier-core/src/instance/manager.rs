@@ -14,14 +14,11 @@ use std::{
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use crate::config::toml::TomlConfig;
+use crate::config::InstanceConfig;
 use crate::instance::{CoreInstance, CoreInstanceHost, CoreInstanceState};
 use crate::process_runtime::CoreProcessRuntime;
 #[cfg(feature = "web-client")]
-use crate::{
-    config::toml::{ConfigLoader as _, ConfigSource},
-    management::network_instance_running_info,
-};
+use crate::{config::toml::ConfigSource, management::network_instance_running_info};
 #[cfg(feature = "web-client")]
 use easytier_proto::api::manage::NetworkInstanceRunningInfo;
 
@@ -47,7 +44,7 @@ pub trait InstanceFactory: Send + Sync + 'static {
 
     fn create(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         context: Self::CreateContext,
     ) -> Result<Arc<Self::Instance>, Self::Error>;
 }
@@ -283,7 +280,7 @@ impl<F: InstanceFactory> InstanceManager<F> {
 
     pub fn create(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         context: F::CreateContext,
     ) -> Result<Arc<F::Instance>, InstanceCreateError<F::Error>> {
         let instance = self
@@ -372,7 +369,7 @@ where
 {
     pub fn run_network_instance(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         control: ConfigFileControl,
     ) -> anyhow::Result<Uuid> {
         let runtime = self
@@ -501,15 +498,15 @@ where
     }
 
     #[cfg(feature = "web-client")]
-    pub fn config(&self, instance_id: Uuid) -> Option<TomlConfig> {
+    pub fn config(&self, instance_id: Uuid) -> Option<Arc<InstanceConfig>> {
         self.get(instance_id)
-            .and_then(|instance| instance.toml_config())
+            .map(|instance| instance.config_store().snapshot())
     }
 
     #[cfg(feature = "web-client")]
     pub fn config_source(&self, instance_id: Uuid) -> Option<ConfigSource> {
         self.config(instance_id)
-            .map(|config| config.get_network_config_source())
+            .and_then(|config| config.parsed().source.as_ref().map(|s| s.source))
     }
 
     #[cfg(feature = "web-client")]
@@ -638,6 +635,7 @@ mod tests {
     };
 
     use super::*;
+
     struct TestFactory {
         drops: Arc<AtomicUsize>,
     }
@@ -667,11 +665,11 @@ mod tests {
 
         fn create(
             &self,
-            config: TomlConfig,
+            config: InstanceConfig,
             (): Self::CreateContext,
         ) -> Result<Arc<Self::Instance>, Self::Error> {
             Ok(Arc::new(TestInstance {
-                id: config.get_id(),
+                id: config.parsed().instance_id,
                 drops: self.drops.clone(),
             }))
         }
@@ -690,10 +688,12 @@ mod tests {
         )
     }
 
-    fn config(instance_id: Uuid) -> TomlConfig {
-        let config = TomlConfig::default();
-        config.set_id(instance_id);
-        config
+    fn config(instance_id: Uuid) -> InstanceConfig {
+        let raw = crate::config::InstanceConfigRaw {
+            instance_id: Some(instance_id),
+            ..Default::default()
+        };
+        InstanceConfig::try_from(raw).unwrap()
     }
 
     #[test]

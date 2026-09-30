@@ -21,11 +21,11 @@ use easytier::proto::api::manage::{
 use easytier::proto::rpc_types::controller::BaseController;
 use easytier::web_client::{self, WebClient};
 use easytier::{
-    common::config::{NetworkConfig, NetworkConfigExt},
-    common::{
-        config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
-        log,
+    common::config::{
+        ConfigSource, FileLoggerConfig, LoggingConfig, NetworkConfig, NetworkConfigExt,
+        network_config_from_raw, parse_instance_config, serialize_raw_to_toml,
     },
+    common::log,
     instance::factory::{NativeInstanceManager, native_instance_manager},
     proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
     rpc_service::ApiRpcServer,
@@ -112,15 +112,14 @@ fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), Strin
 
 #[tauri::command]
 fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
-    let toml = cfg.gen_config().map_err(|e| e.to_string())?;
-    Ok(toml.dump())
+    let instance_config = cfg.gen_config().map_err(|e| e.to_string())?;
+    serialize_raw_to_toml(instance_config.raw()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn generate_network_config(toml_config: String) -> Result<NetworkConfig, String> {
-    let config = TomlConfigLoader::new_from_str(&toml_config).map_err(|e| e.to_string())?;
-    let cfg = NetworkConfig::new_from_config(&config).map_err(|e| e.to_string())?;
-    Ok(cfg)
+    let config = parse_instance_config("gui", &toml_config).map_err(|e| e.to_string())?;
+    Ok(network_config_from_raw(config.raw()))
 }
 
 #[tauri::command]
@@ -139,7 +138,7 @@ async fn run_network_instance(
         .await
         .map_err(|e| e.to_string())?;
     client_manager
-        .post_run_network_instance_hook(&app, &toml_config.get_id())
+        .post_run_network_instance_hook(&app, &toml_config.parsed().instance_id)
         .await?;
     Ok(())
 }
@@ -724,14 +723,19 @@ mod manager {
     impl WebClientHooks for GuiHooks {
         async fn pre_run_network_instance(
             &self,
-            cfg: &easytier::common::config::TomlConfigLoader,
+            cfg: &easytier::common::config::InstanceConfig,
         ) -> Result<(), String> {
             let client_manager = get_client_manager!()?;
             client_manager
                 .pre_run_network_instance_hook(
                     &self.app,
                     cfg,
-                    PersistedConfigSource::from_runtime_source(cfg.get_network_config_source()),
+                    PersistedConfigSource::from_runtime_source(
+                        cfg.parsed()
+                            .source
+                            .as_ref()
+                            .map_or(ConfigSource::default(), |s| s.source),
+                    ),
                 )
                 .await
         }
@@ -1053,15 +1057,15 @@ mod manager {
         pub(super) async fn pre_run_network_instance_hook(
             &self,
             app: &AppHandle,
-            cfg: &easytier::common::config::TomlConfigLoader,
+            cfg: &easytier::common::config::InstanceConfig,
             source: PersistedConfigSource,
         ) -> Result<(), String> {
-            let instance_id = cfg.get_id();
+            let instance_id = cfg.parsed().instance_id;
             app.emit("pre_run_network_instance", instance_id.to_string())
                 .map_err(|e| e.to_string())?;
 
             #[cfg(target_os = "android")]
-            if !cfg.get_flags().no_tun {
+            if !cfg.parsed().flags.no_tun {
                 match source {
                     PersistedConfigSource::User | PersistedConfigSource::Legacy => {
                         self.disable_instances_with_tun(app, false)
@@ -1083,12 +1087,7 @@ mod manager {
             }
 
             self.storage
-                .save_config(
-                    app,
-                    instance_id,
-                    NetworkConfig::new_from_config(cfg).map_err(|e| e.to_string())?,
-                    source,
-                )
+                .save_config(app, instance_id, network_config_from_raw(cfg.raw()), source)
                 .map_err(|e| e.to_string())?;
 
             Ok(())

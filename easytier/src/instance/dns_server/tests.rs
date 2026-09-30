@@ -16,10 +16,10 @@ use hickory_proto::udp::UdpClientStream;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx};
+use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx_with_config};
 use crate::instance::{
     composition::{NativeCoreInstance, runtime_core_host_adapters},
-    config::test_core_instance_config,
+    config::test_instance_config,
 };
 
 use crate::instance::dns_server::runner::DnsRunner;
@@ -44,7 +44,7 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
         CoreProcessRuntime::new(),
         Arc::new(HostPacketChannelSink::new(packet_sink)),
     );
-    let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
+    let core_instance = NativeCoreInstance::new(test_instance_config(&ctx), adapters).unwrap();
     core_instance.start().await.unwrap();
     (core_instance, HostPacketReceiver::new(packet_receiver))
 }
@@ -54,18 +54,20 @@ pub async fn prepare_env_with_tld_dns_zone(
     tun_ip: Ipv4Inet,
     tld_dns_zone: Option<&str>,
 ) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
-    let ctx = get_mock_global_ctx();
-    ctx.set_hostname(dns_name.to_owned());
-    ctx.set_ipv4(Some(tun_ip));
+    let mut raw = easytier_core::config::InstanceConfigRaw {
+        hostname: Some(dns_name.to_owned()),
+        ipv4: Some(tun_ip),
+        ..Default::default()
+    };
 
     if tld_dns_zone.is_some() {
-        let mut flags = ctx.config.get_flags();
-        flags.accept_dns = true; // Enable DNS
+        raw.flags.accept_dns = Some(true); // Enable DNS
         if let Some(zone) = tld_dns_zone {
-            flags.tld_dns_zone = zone.to_string();
+            raw.flags.tld_dns_zone = Some(zone.to_string());
         }
-        ctx.set_flags(flags);
     }
+    let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+    let ctx = get_mock_global_ctx_with_config(config);
 
     let (core_instance, host_packet_rx) = build_test_core(ctx.clone()).await;
     let host_packet_rx = Arc::new(tokio::sync::Mutex::new(host_packet_rx));
@@ -217,9 +219,12 @@ async fn test_magic_dns_runner() {
 #[tokio::test]
 async fn test_magic_dns_update_replaces_records_for_same_client() {
     let tun_ip = Ipv4Inet::from_str("100.100.100.0/24").unwrap();
-    let ctx = get_mock_global_ctx();
-    ctx.set_hostname("test1".to_string());
-    ctx.set_ipv4(Some(tun_ip));
+    let config = easytier_core::config::InstanceConfigRaw {
+        hostname: Some("test1".to_string()),
+        ipv4: Some(tun_ip),
+        ..Default::default()
+    };
+    let ctx = get_mock_global_ctx_with_config(config.try_into().unwrap());
 
     let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;
 

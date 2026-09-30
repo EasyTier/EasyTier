@@ -1,8 +1,8 @@
 use async_trait::async_trait;
+use url::Url;
 
 use super::*;
 use crate::{
-    config::toml::ConfigLoader as _,
     listener::transport::TransportListenerConfig,
     socket::{
         SocketContext, SocketListener,
@@ -151,50 +151,22 @@ fn raw_unix_listener_does_not_require_a_server_protocol() {
 }
 
 #[test]
-fn core_instance_config_round_trips_as_normalized_json() {
-    let mut core = crate::config::CoreConfig::default();
-    core.peer_policy.encryption_required = false;
-    core.peer_policy.p2p_enabled = false;
-    let peer = crate::peers::peer_manager::PortablePeerManagerConfig::new(
-        crate::config::peers::PeerRuntimeConfig {
-            core,
-            network_identity: crate::config::NetworkIdentity {
-                network_name: "default".to_owned(),
-                network_secret: Some("test".to_owned()),
-                network_secret_digest: None,
-            },
-            stun_info: crate::proto::common::StunInfo::default(),
-            feature_flags: crate::proto::common::PeerFeatureFlag::default(),
-            secure_mode: None,
-            host_routing: crate::config::peers::HostRoutingPolicy::default(),
-        },
-    );
-    let config = CoreInstanceConfig {
-        instance_name: String::new(),
-        peer,
-        connectivity: CoreConnectivityConfig::default(),
-        vpn_portal: None,
-        managed_credentials: Vec::new(),
+fn instance_config_round_trips_as_normalized_json() {
+    let parsed = crate::config::InstanceConfigParsed {
+        instance_name: "test-instance".to_owned(),
+        hostname: "test-host".to_owned(),
+        dhcp: true,
+        ..Default::default()
     };
+    let config = crate::config::InstanceConfig::from(parsed);
 
-    let mut config = config;
-    config.connectivity.direct.testing = true;
     let encoded = serde_json::to_value(&config).unwrap();
-    assert!(encoded["connectivity"]["direct"].get("testing").is_none());
-    let decoded: CoreInstanceConfig = serde_json::from_value(encoded.clone()).unwrap();
+    let decoded: crate::config::InstanceConfig = serde_json::from_value(encoded.clone()).unwrap();
 
-    assert!(!decoded.connectivity.direct.testing);
-    assert!(decoded.connectivity.startup_plan.gateway);
-    assert_eq!(
-        decoded.connectivity.startup_plan.connectivity,
-        CoreConnectivityMode::Full
-    );
+    assert_eq!(decoded.instance_name, "test-instance");
+    assert_eq!(decoded.hostname, "test-host");
+    assert!(decoded.dhcp);
     assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
-
-    let mut legacy = encoded;
-    legacy.as_object_mut().unwrap().remove("instance_name");
-    let decoded: CoreInstanceConfig = serde_json::from_value(legacy).unwrap();
-    assert_eq!(decoded.instance_name, "default");
 }
 
 #[test]
@@ -205,13 +177,12 @@ fn wasi_create_config_uses_shared_toml() {
             .unwrap();
     create.validate().unwrap();
     let config = create.parse_config().unwrap();
-    let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
 
     assert_eq!(
-        normalized.peer.snapshot.runtime.core.node.instance_id,
-        Some(*config.get_id().as_bytes())
+        config.parsed().instance_id,
+        config.raw().instance_id.unwrap()
     );
-    assert!(normalized.peer.snapshot.flags.disable_p2p);
+    assert!(config.parsed().flags.disable_p2p);
     create.version += 1;
     assert!(create.validate().is_err());
 }
@@ -245,12 +216,9 @@ mod portable_runtime {
     use std::sync::Mutex as StdMutex;
 
     use super::*;
+    use crate::peers::context::PeerContext;
     use crate::{
-        config::peers::{HostRoutingPolicy, PeerRuntimeConfig},
-        config::runtime::CoreInstanceRuntimeConfig,
-        config::{
-            CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig, gateway::PortForwardConfig,
-        },
+        config::{InstanceConfig, InstanceConfigParsed},
         connectivity::manual::{ManualConnectorHost, ManualInterfaceAddrs},
         gateway::proxy::wrapped_transport::{
             WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportEngines,
@@ -258,11 +226,12 @@ mod portable_runtime {
         },
         host::testkit::{TestDns, TestHost, TestTcpSocket},
         listener::transport::AcceptedTransport,
-        peers::peer_manager::PortablePeerManagerConfig,
-        proto::{common::StunInfo, peer_rpc::GetIpListResponse},
+        proto::peer_rpc::GetIpListResponse,
         socket::{SocketContext, udp::PreferredIpv6Source},
     };
 
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    use crate::config::gateway::PortForwardConfig;
     #[cfg(feature = "proxy-packet")]
     use crate::gateway::proxy::wrapped_transport::WrappedTransportKind;
 
@@ -311,42 +280,30 @@ mod portable_runtime {
         }
     }
 
-    fn test_config(network_name: &str) -> CoreInstanceConfig {
-        let mut core = CoreConfig::default();
-        core.node.network_name = network_name.to_owned();
-        core.peer_policy.encryption_required = false;
-        let peer = PortablePeerManagerConfig::new(PeerRuntimeConfig {
-            core,
-            network_identity: NetworkIdentity {
-                network_name: network_name.to_owned(),
-                network_secret: Some(String::new()),
-                network_secret_digest: None,
-            },
-            stun_info: StunInfo::default(),
-            feature_flags: Default::default(),
-            secure_mode: None,
-            host_routing: HostRoutingPolicy::default(),
-        });
-        let connectivity = CoreConnectivityConfig::default();
-        CoreInstanceConfig {
+    fn test_config(network_name: &str) -> InstanceConfig {
+        InstanceConfigParsed {
             instance_name: network_name.to_owned(),
-            peer,
-            connectivity,
-            vpn_portal: None,
-            managed_credentials: Vec::new(),
+            network_identity: crate::config::NetworkIdentity::new(
+                network_name.to_owned(),
+                String::new(),
+            ),
+            ..Default::default()
         }
+        .into()
     }
+
     #[cfg(feature = "vpn-portal")]
-    fn portal_test_config(network_name: &str) -> CoreInstanceConfig {
+    fn portal_test_config(network_name: &str) -> InstanceConfig {
         let mut config = test_config(network_name);
-        config.peer.snapshot.runtime.network_identity.network_secret =
-            Some("portal-network-secret".to_owned());
-        config.peer.snapshot.runtime.core.routes.ipv4 = Some(IpPrefix {
-            address: "10.82.0.1".parse().unwrap(),
-            prefix_len: 24,
-        });
-        config.vpn_portal = Some(crate::gateway::vpn_portal::PortalRuntimeConfig {
-            clients: vec![crate::gateway::vpn_portal::PortalClientConfig {
+        config.parsed_mut().network_identity = crate::config::NetworkIdentity::new(
+            network_name.to_owned(),
+            "portal-network-secret".to_owned(),
+        );
+        config.parsed_mut().ipv4 = Some("10.82.0.1/24".parse().unwrap());
+        config.parsed_mut().vpn_portal_config = Some(crate::config::toml::VpnPortalConfig {
+            wireguard_listen: "0.0.0.0:0".parse().unwrap(),
+            wireguard_private_key: None,
+            clients: vec![crate::config::toml::VpnPortalClientConfig {
                 name: "alice".to_owned(),
                 virtual_ip: "10.82.0.2/24".parse().unwrap(),
                 groups: Vec::new(),
@@ -355,25 +312,15 @@ mod portable_runtime {
         config
     }
 
-    fn runtime_snapshot(config: &CoreInstanceConfig) -> CoreInstanceRuntimeConfig {
-        CoreInstanceRuntimeConfig {
-            services: config.connectivity.runtime.clone(),
-            peer: Arc::new(config.peer.snapshot.clone()),
-        }
+    fn runtime_snapshot(config: &InstanceConfig) -> InstanceConfig {
+        config.clone()
     }
 
-    fn proxy_network(real: &str, mapped: Option<&str>) -> ProxyNetworkConfig {
-        fn prefix(value: &str) -> IpPrefix {
-            let (address, prefix_len) = value.split_once('/').unwrap();
-            IpPrefix {
-                address: address.parse().unwrap(),
-                prefix_len: prefix_len.parse().unwrap(),
-            }
-        }
-
-        ProxyNetworkConfig {
-            real: prefix(real),
-            mapped: mapped.map(prefix),
+    fn proxy_network(real: &str, mapped: Option<&str>) -> crate::config::toml::ProxyNetworkConfig {
+        crate::config::toml::ProxyNetworkConfig {
+            cidr: real.parse().unwrap(),
+            mapped_cidr: mapped.map(|m| m.parse().unwrap()),
+            allow: None,
         }
     }
 
@@ -436,14 +383,14 @@ mod portable_runtime {
     }
 
     fn build_with_engines(
-        config: CoreInstanceConfig,
+        config: InstanceConfig,
         engines: WrappedTransportEngines,
     ) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
         build_with_engines_and_listener(config, engines, None)
     }
 
     fn build_with_engines_and_listener(
-        config: CoreInstanceConfig,
+        config: InstanceConfig,
         engines: WrappedTransportEngines,
         external_listener_factory: Option<
             Arc<dyn ExternalListenerFactory<AcceptedTransport<TestTcpSocket>>>,
@@ -455,7 +402,7 @@ mod portable_runtime {
         CoreInstance::new(config, adapters)
     }
 
-    fn build_instance(config: CoreInstanceConfig) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
+    fn build_instance(config: InstanceConfig) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
         build_with_engines(config, WrappedTransportEngines::default())
     }
 
@@ -463,6 +410,26 @@ mod portable_runtime {
     struct RecordingConfigPatchPersistence {
         writes: std::sync::Mutex<Vec<String>>,
         fail: AtomicBool,
+        fail_after_writes: AtomicUsize,
+    }
+
+    #[cfg(feature = "management")]
+    impl RecordingConfigPatchPersistence {
+        fn new(fail: bool) -> Self {
+            Self {
+                writes: std::sync::Mutex::new(Vec::new()),
+                fail: AtomicBool::new(fail),
+                fail_after_writes: AtomicUsize::new(0),
+            }
+        }
+
+        fn fail_after(limit: usize) -> Self {
+            Self {
+                writes: std::sync::Mutex::new(Vec::new()),
+                fail: AtomicBool::new(false),
+                fail_after_writes: AtomicUsize::new(limit),
+            }
+        }
     }
 
     #[cfg(feature = "management")]
@@ -471,12 +438,18 @@ mod portable_runtime {
         async fn persist(
             &self,
             _instance_id: uuid::Uuid,
-            config: &TomlConfig,
+            config: &crate::config::InstanceConfig,
         ) -> anyhow::Result<()> {
             if self.fail.load(Ordering::Relaxed) {
                 anyhow::bail!("injected config persistence failure");
             }
-            self.writes.lock().unwrap().push(config.dump());
+            let fail_after = self.fail_after_writes.load(Ordering::Relaxed);
+            let mut writes = self.writes.lock().unwrap();
+            if fail_after > 0 && writes.len() >= fail_after {
+                anyhow::bail!("injected config persistence failure after limit");
+            }
+            let dumped = crate::config::serialize_raw_to_toml(config.raw())?;
+            writes.push(dumped);
             Ok(())
         }
     }
@@ -511,20 +484,44 @@ mod portable_runtime {
             anyhow::bail!("injected portal update failure")
         }
     }
+
+    #[cfg(feature = "vpn-portal")]
+    struct SucceedingPortalHost;
+
+    #[cfg(feature = "vpn-portal")]
+    #[async_trait]
+    impl crate::gateway::vpn_portal::PortalHost for SucceedingPortalHost {
+        async fn start_listeners(
+            &self,
+        ) -> anyhow::Result<Vec<crate::gateway::vpn_portal::PortalListener>> {
+            Ok(vec![])
+        }
+
+        fn name(&self) -> String {
+            "succeeding-test-portal".to_owned()
+        }
+
+        fn render_client_config(
+            &self,
+            _plan: &crate::gateway::vpn_portal::PortalClientConfigPlan,
+        ) -> String {
+            String::new()
+        }
+
+        async fn update_clients(
+            &self,
+            _clients: &[crate::gateway::vpn_portal::PortalClientConfig],
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
     #[cfg(feature = "vpn-portal")]
     #[tokio::test]
     async fn runtime_update_rejects_portal_client_address_conflict() {
         let instance = build_instance(portal_test_config("portal-runtime-update")).unwrap();
         let before = instance.runtime_config.snapshot();
-        let mut conflicting = before.as_ref().clone();
-        Arc::make_mut(&mut conflicting.peer)
-            .runtime
-            .core
-            .routes
-            .ipv4 = Some(IpPrefix {
-            address: "10.82.0.2".parse().unwrap(),
-            prefix_len: 24,
-        });
+        let mut conflicting = (*before).clone();
+        conflicting.parsed_mut().ipv4 = Some("10.82.0.2/24".parse().unwrap());
 
         let error = instance
             .update_runtime_config(conflicting)
@@ -535,44 +532,100 @@ mod portable_runtime {
             error.to_string().contains("unusable virtual IP"),
             "unexpected runtime update error: {error:#}"
         );
-        assert_eq!(
-            instance
-                .runtime_config
-                .snapshot()
-                .peer
-                .runtime
-                .core
-                .routes
-                .ipv4,
-            before.peer.runtime.core.routes.ipv4
-        );
+        assert_eq!(instance.runtime_config.snapshot().ipv4, before.ipv4);
         instance.peer_manager.clear_resources().await;
     }
     #[cfg(feature = "vpn-portal")]
     #[tokio::test]
     async fn runtime_update_allows_removing_portal_client_acl_group() {
         let mut config = portal_test_config("portal-acl-group-removal");
-        config.vpn_portal.as_mut().unwrap().clients[0].groups = vec!["ops".to_owned()];
-        config.peer.snapshot.acl_group_declarations =
-            vec![crate::config::peers::PeerGroupIdentity {
-                group_name: "ops".to_owned(),
-                group_secret: "ops-secret".to_owned(),
-            }];
+        config
+            .parsed_mut()
+            .vpn_portal_config
+            .as_mut()
+            .unwrap()
+            .clients[0]
+            .groups = vec!["ops".to_owned()];
+        let mut acl = easytier_proto::acl::Acl::default();
+        acl.acl_v1 = Some(easytier_proto::acl::AclV1 {
+            group: Some(easytier_proto::acl::GroupInfo {
+                declares: vec![easytier_proto::acl::GroupIdentity {
+                    group_name: "ops".to_owned(),
+                    group_secret: "ops-secret".to_owned(),
+                }],
+                members: Vec::new(),
+            }),
+            ..Default::default()
+        });
+        config.parsed_mut().acl = Some(acl);
         let instance = build_instance(config).unwrap();
-        let mut updated = instance.runtime_config.snapshot().as_ref().clone();
-        Arc::make_mut(&mut updated.peer)
-            .acl_group_declarations
-            .clear();
+        let mut updated = (*instance.runtime_config.snapshot()).clone();
+        if let Some(acl) = updated.parsed_mut().acl.as_mut()
+            && let Some(acl_v1) = acl.acl_v1.as_mut()
+            && let Some(group) = acl_v1.group.as_mut()
+        {
+            group.declares.clear();
+        }
 
         instance.update_runtime_config(updated).await.unwrap();
 
+        let (declares, _) =
+            crate::peers::context::peer_acl_groups(instance.runtime_config.snapshot().acl.as_ref());
+        assert!(declares.is_empty());
+        instance.peer_manager.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn update_runtime_config_updates_management_snapshot() {
+        let mut initial_raw = test_config("management-sync-before").into_raw();
+        initial_raw.hostname = Some("management-sync-before".to_owned());
+        let initial = InstanceConfig::try_from(initial_raw).unwrap();
+        let instance = build_instance(initial).unwrap();
+        assert_eq!(
+            instance.config_store().snapshot().parsed().hostname,
+            "management-sync-before"
+        );
+
+        let mut updated_raw = instance.runtime_config.snapshot().raw().clone();
+        updated_raw.hostname = Some("management-sync-after".to_owned());
+        let updated = InstanceConfig::try_from(updated_raw).unwrap();
+        instance.update_runtime_config(updated).await.unwrap();
+
+        assert_eq!(
+            instance.config_store().snapshot().parsed().hostname,
+            "management-sync-after"
+        );
+        instance.peer_manager.clear_resources().await;
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn config_patch_rejects_private_public_ipv6_prefix() {
+        use easytier_proto::api::config::InstanceConfigPatch;
+
+        let initial = test_config("public-ipv6-patch-reject");
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut adapters = adapters(None, Arc::new(packet_sink));
+        adapters.config.public_ipv6_provider_supported = true;
+        let instance = CoreInstance::new(initial, adapters).unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                ipv6_public_addr_provider: Some(true),
+                ipv6_public_addr_prefix: Some("fd00::/64".to_owned()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
         assert!(
-            instance
-                .runtime_config
-                .snapshot()
-                .peer
-                .acl_group_declarations
-                .is_empty()
+            error
+                .to_string()
+                .contains("not a valid global unicast IPv6 prefix")
         );
         instance.peer_manager.clear_resources().await;
     }
@@ -581,51 +634,29 @@ mod portable_runtime {
     #[tokio::test]
     async fn runtime_update_preserves_dhcp_owned_ipv4() {
         let mut initial = test_config("dhcp-runtime-update");
-        initial.connectivity.runtime.dhcp_ipv4 = true;
+        initial.parsed_mut().dhcp = true;
         let instance = build_instance(initial).unwrap();
-        let lease = IpPrefix {
-            address: "10.126.126.7".parse().unwrap(),
-            prefix_len: 24,
-        };
-        instance.runtime_config.update_peer_with(|peer| {
-            peer.runtime.core.routes.ipv4 = Some(lease.clone());
-        });
+        let lease: cidr::Ipv4Inet = "10.126.126.7/24".parse().unwrap();
+        instance.peer_manager.context().set_dhcp_ipv4(Some(lease));
+
+        assert_eq!(instance.peer_manager.context().ipv4(), Some(lease));
 
         let mut replacement = test_config("dhcp-runtime-update");
-        replacement.connectivity.runtime.dhcp_ipv4 = true;
+        replacement.parsed_mut().dhcp = true;
         instance
             .update_runtime_config(runtime_snapshot(&replacement))
             .await
             .unwrap();
 
-        assert_eq!(
-            instance
-                .runtime_config
-                .snapshot()
-                .peer
-                .runtime
-                .core
-                .routes
-                .ipv4,
-            Some(lease)
-        );
+        assert_eq!(instance.peer_manager.context().ipv4(), Some(lease));
+        assert_eq!(instance.runtime_config.snapshot().ipv4, None);
 
         let static_replacement = test_config("dhcp-runtime-update");
         instance
             .update_runtime_config(runtime_snapshot(&static_replacement))
             .await
             .unwrap();
-        assert_eq!(
-            instance
-                .runtime_config
-                .snapshot()
-                .peer
-                .runtime
-                .core
-                .routes
-                .ipv4,
-            None
-        );
+        assert_eq!(instance.peer_manager.context().ipv4(), None);
     }
 
     #[tokio::test]
@@ -643,32 +674,21 @@ mod portable_runtime {
     async fn instance_start_ignores_configured_peer_id() {
         let mut config = test_config("fresh-peer-id");
         let instance_id = uuid::Uuid::from_bytes([7; 16]);
-        config.peer.snapshot.runtime.core.node.instance_id = Some(*instance_id.as_bytes());
-        config.peer.snapshot.runtime.core.node.peer_id = Some(0);
+        config.parsed_mut().instance_id = instance_id;
 
         let instance = build_instance(config).unwrap();
         let generated_peer_id = instance.peer_id();
 
         assert_eq!(instance.instance_id(), instance_id);
         assert_ne!(generated_peer_id, 0);
-        assert_eq!(
-            instance
-                .runtime_config
-                .snapshot()
-                .peer
-                .runtime
-                .core
-                .node
-                .peer_id,
-            Some(generated_peer_id)
-        );
+        assert_eq!(instance.peer_manager.my_peer_id(), generated_peer_id);
     }
 
     #[cfg(all(feature = "proxy-packet", feature = "management"))]
     #[tokio::test]
     async fn process_management_rpc_resolves_and_calls_core_instance_directly() {
         use crate::{
-            config::toml::TomlConfig,
+            config::{InstanceConfig, parse_instance_config},
             instance::manager::{InstanceFactory, InstanceManager},
             management::InstanceManagementRpc,
         };
@@ -692,7 +712,7 @@ mod portable_runtime {
 
             fn create(
                 &self,
-                config: TomlConfig,
+                config: InstanceConfig,
                 (): Self::CreateContext,
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
@@ -700,12 +720,13 @@ mod portable_runtime {
                 adapters.config.force_exit_node = true;
                 adapters.config.public_ipv6_provider_supported = true;
                 adapters.config.easytier_version = "host-version".to_owned();
-                CoreInstance::from_toml(config, adapters)
+                CoreInstance::new(config, adapters)
             }
         }
 
         let manager = Arc::new(InstanceManager::new(ManagementTestFactory, None));
-        let config = TomlConfig::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 instance_name = "managed-by-name"
 hostname = "core-owned-config"
@@ -808,10 +829,9 @@ network_secret = "network-secret"
                 ..Default::default()
             }]
         );
-        let runtime = instance.runtime_config.snapshot();
-        assert!(runtime.services.proxy.enable_exit_node);
-        assert!(runtime.services.public_ipv6_provider.provider_supported);
-        assert_eq!(runtime.peer.easytier_version, "host-version");
+        assert!(instance.host_config.force_exit_node);
+        assert!(instance.host_config.public_ipv6_provider_supported);
+        assert_eq!(instance.host_config.easytier_version, "host-version");
     }
 
     #[cfg(feature = "management")]
@@ -843,7 +863,8 @@ network_secret = "network-secret"
         };
 
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-        let config = TomlConfig::new_from_str(
+        let config = crate::config::parse_instance_config(
+            "test",
             r#"
 [network_identity]
 network_name = "managed-network"
@@ -854,8 +875,7 @@ source = "web"
 "#,
         )
         .unwrap();
-        let instance =
-            CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink))).unwrap();
+        let instance = CoreInstance::new(config, adapters(None, Arc::new(packet_sink))).unwrap();
         instance.start().await.unwrap();
         let peer_id = instance.peer_id();
         let secret = BASE64_STANDARD.encode([7u8; 32]);
@@ -873,10 +893,7 @@ source = "web"
             }),
             ..Default::default()
         };
-        let persistence = RecordingConfigPatchPersistence {
-            writes: std::sync::Mutex::new(Vec::new()),
-            fail: AtomicBool::new(true),
-        };
+        let persistence = RecordingConfigPatchPersistence::new(true);
 
         let error =
             crate::management::apply_config_patch(&instance, patch.clone(), Some(&persistence))
@@ -889,9 +906,10 @@ source = "web"
         );
         assert!(
             instance
-                .toml_config()
-                .unwrap()
-                .get_managed_credentials()
+                .config_store()
+                .snapshot()
+                .parsed()
+                .managed_credentials
                 .is_empty()
         );
         let private_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
@@ -917,9 +935,10 @@ source = "web"
         );
         assert_eq!(
             instance
-                .toml_config()
-                .unwrap()
-                .get_managed_credentials()
+                .config_store()
+                .snapshot()
+                .parsed()
+                .managed_credentials
                 .len(),
             1
         );
@@ -934,7 +953,8 @@ source = "web"
         use easytier_proto::api::config::InstanceConfigPatch;
 
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-        let config = TomlConfig::new_from_str(
+        let config = crate::config::parse_instance_config(
+            "test",
             r#"
 instance_name = "durable-ordinary-patch"
 hostname = "before"
@@ -948,17 +968,13 @@ source = "web"
 "#,
         )
         .unwrap();
-        let instance =
-            CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink))).unwrap();
+        let instance = CoreInstance::new(config, adapters(None, Arc::new(packet_sink))).unwrap();
         instance.start().await.unwrap();
         let patch = InstanceConfigPatch {
             hostname: Some("after".to_owned()),
             ..Default::default()
         };
-        let persistence = RecordingConfigPatchPersistence {
-            writes: std::sync::Mutex::new(Vec::new()),
-            fail: AtomicBool::new(true),
-        };
+        let persistence = RecordingConfigPatchPersistence::new(true);
 
         let error =
             crate::management::apply_config_patch(&instance, patch.clone(), Some(&persistence))
@@ -969,14 +985,20 @@ source = "web"
                 .to_string()
                 .contains("injected config persistence failure")
         );
-        assert_eq!(instance.toml_config().unwrap().get_hostname(), "before");
+        assert_eq!(
+            instance.config_store().snapshot().parsed().hostname,
+            "before"
+        );
 
         persistence.fail.store(false, Ordering::Relaxed);
         crate::management::apply_config_patch(&instance, patch, Some(&persistence))
             .await
             .unwrap();
 
-        assert_eq!(instance.toml_config().unwrap().get_hostname(), "after");
+        assert_eq!(
+            instance.config_store().snapshot().parsed().hostname,
+            "after"
+        );
         {
             let persisted = persistence.writes.lock().unwrap();
             assert_eq!(persisted.len(), 1);
@@ -996,8 +1018,9 @@ source = "web"
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
         let mut host_adapters = adapters(None, Arc::new(packet_sink));
         host_adapters.vpn_portal = Some(Arc::new(RejectingPortalHost));
-        let instance = CoreInstance::from_toml(
-            TomlConfig::new_from_str(
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
                 r#"
 instance_name = "durable-portal-patch"
 ipv4 = "10.82.0.1/24"
@@ -1022,10 +1045,7 @@ source = "web"
         )
         .unwrap();
         instance.set_state(CoreInstanceState::Running);
-        let persistence = RecordingConfigPatchPersistence {
-            writes: std::sync::Mutex::new(Vec::new()),
-            fail: AtomicBool::new(true),
-        };
+        let persistence = RecordingConfigPatchPersistence::new(true);
 
         let error = crate::management::apply_config_patch(
             &instance,
@@ -1060,11 +1080,14 @@ source = "web"
                 .contains("injected config persistence failure")
         );
         let clients = instance
-            .toml_config()
+            .config_store()
+            .snapshot()
+            .parsed()
+            .vpn_portal_config
+            .as_ref()
             .unwrap()
-            .get_vpn_portal_config()
-            .unwrap()
-            .clients;
+            .clients
+            .clone();
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].name, "alice");
         assert!(persistence.writes.lock().unwrap().is_empty());
@@ -1120,6 +1143,95 @@ source = "web"
         instance.peer_manager.clear_resources().await;
     }
 
+    #[cfg(all(feature = "management", feature = "vpn-portal"))]
+    #[tokio::test]
+    async fn portal_client_patch_rollback_persistence_failure_preserves_original_config_in_store() {
+        use easytier_proto::api::{
+            config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+            manage::VpnPortalClientConfig,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.vpn_portal = Some(Arc::new(RejectingPortalHost));
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
+                r#"
+instance_name = "durable-portal-rollback-fail"
+ipv4 = "10.82.0.1/24"
+
+[network_identity]
+network_name = "durable-portal-network"
+network_secret = "network-secret"
+
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51820"
+
+[[vpn_portal_config.clients]]
+name = "alice"
+virtual_ip = "10.82.0.2/24"
+
+[source]
+source = "web"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        // Allow 1 write (the patch candidate with "bob"), then fail the 2nd write (the rollback to "alice")
+        let persistence = RecordingConfigPatchPersistence::fail_after(1);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                vpn_portal_clients: vec![
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Remove as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "alice".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "bob".to_owned(),
+                            virtual_ip: "10.82.0.3/24".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                ],
+                ..Default::default()
+            },
+            Some(&persistence),
+        )
+        .await
+        .unwrap_err();
+
+        // Error reports both host rejection and rollback failure
+        let err_msg = format!("{error:#}");
+        assert!(err_msg.contains("injected portal update failure"));
+        assert!(err_msg.contains("failed to restore durable configuration"));
+
+        // Crucial invariant: Store was NOT updated with rejected "bob", it still has "alice"
+        let snapshot = instance.config_store().snapshot();
+        let clients = snapshot
+            .parsed()
+            .vpn_portal_config
+            .as_ref()
+            .unwrap()
+            .clients
+            .clone();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "alice");
+
+        instance.peer_manager.clear_resources().await;
+    }
+
     #[cfg(all(feature = "management", not(feature = "proxy-smoltcp-stack")))]
     #[tokio::test]
     async fn unavailable_gateway_patch_does_not_commit_shared_toml() {
@@ -1129,8 +1241,9 @@ source = "web"
         };
 
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-        let instance = CoreInstance::from_toml(
-            crate::config::toml::TomlConfig::new_from_str(
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
                 "instance_name = \"rejected-gateway-patch\"",
             )
             .unwrap(),
@@ -1175,20 +1288,13 @@ source = "web"
         );
         assert!(
             instance
-                .toml_config()
-                .unwrap()
-                .get_port_forwards()
-                .is_empty()
-        );
-        assert!(
-            instance
-                .runtime_config
+                .config_store()
                 .snapshot()
-                .services
-                .gateway
-                .port_forwards
+                .parsed()
+                .port_forward
                 .is_empty()
         );
+        assert!(instance.runtime_config.snapshot().port_forward.is_empty());
         instance.stop().await;
     }
     #[cfg(all(feature = "management", feature = "vpn-portal"))]
@@ -1197,8 +1303,9 @@ source = "web"
         use easytier_proto::api::config::InstanceConfigPatch;
 
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-        let instance = CoreInstance::from_toml(
-            crate::config::toml::TomlConfig::new_from_str(
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
                 r#"
 instance_name = "rejected-portal-address-patch"
 ipv4 = "10.82.0.1/24"
@@ -1237,21 +1344,17 @@ virtual_ip = "10.82.0.2/24"
             "unexpected config patch error: {error:#}"
         );
         assert_eq!(
-            instance.toml_config().unwrap().get_ipv4().unwrap(),
+            instance.config_store().snapshot().parsed().ipv4.unwrap(),
             "10.82.0.1/24".parse().unwrap()
         );
         assert_eq!(
             instance
                 .runtime_config
                 .snapshot()
-                .peer
-                .runtime
-                .core
-                .routes
                 .ipv4
                 .as_ref()
                 .unwrap()
-                .address,
+                .address(),
             "10.82.0.1".parse::<IpAddr>().unwrap()
         );
         instance.peer_manager.clear_resources().await;
@@ -1266,7 +1369,8 @@ virtual_ip = "10.82.0.2/24"
         };
 
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-        let toml_config = crate::config::toml::TomlConfig::new_from_str(
+        let instance_config = crate::config::parse_instance_config(
+            "test",
             "instance_name = \"ignored-gateway-patch\"",
         )
         .unwrap();
@@ -1274,7 +1378,7 @@ virtual_ip = "10.82.0.2/24"
         host_adapters.config.ignore_unsupported_config = true;
         host_adapters.config.gateway_enabled = false;
         host_adapters.config.endpoint_protocols = vec!["tcp".to_owned(), "udp".to_owned()];
-        let instance = CoreInstance::from_toml(toml_config, host_adapters).unwrap();
+        let instance = CoreInstance::new(instance_config, host_adapters).unwrap();
         instance.start().await.unwrap();
 
         crate::management::apply_config_patch(
@@ -1309,18 +1413,412 @@ virtual_ip = "10.82.0.2/24"
         .await
         .unwrap();
 
-        assert_eq!(instance.toml_config().unwrap().get_port_forwards().len(), 1);
-        assert!(
+        assert_eq!(
             instance
-                .runtime_config
+                .config_store()
                 .snapshot()
-                .services
-                .gateway
-                .port_forwards
-                .is_empty()
+                .raw()
+                .port_forward
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
         );
+        assert_eq!(
+            crate::config::api_input::network_config_from_raw(
+                instance.config_store().snapshot().raw()
+            )
+            .port_forwards
+            .len(),
+            1
+        );
+        assert!(instance.runtime_config.snapshot().port_forward.is_empty());
         assert!(instance.list_connectors().is_empty());
         instance.stop().await;
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_only_hostname_preserves_unset_raw_fields() {
+        use easytier_proto::api::config::InstanceConfigPatch;
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
+                r#"
+instance_name = "test-raw-intent"
+hostname = "before"
+"#,
+            )
+            .unwrap(),
+            adapters(None, Arc::new(packet_sink)),
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let before_raw = instance.config_store().snapshot().raw().clone();
+        assert_eq!(before_raw.hostname.as_deref(), Some("before"));
+        assert!(before_raw.tcp_whitelist.is_none());
+        assert!(before_raw.udp_whitelist.is_none());
+        assert!(before_raw.routes.is_none());
+        assert!(before_raw.mapped_listeners.is_none());
+        assert!(before_raw.port_forward.is_none());
+        assert!(before_raw.proxy_network.is_none());
+        assert!(before_raw.exit_nodes.is_none());
+
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                hostname: Some("after".to_owned()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let after_raw = instance.config_store().snapshot().raw().clone();
+        assert_eq!(after_raw.hostname.as_deref(), Some("after"));
+        // Crucial invariant: other unset fields remain unset!
+        assert!(after_raw.tcp_whitelist.is_none());
+        assert!(after_raw.udp_whitelist.is_none());
+        assert!(after_raw.routes.is_none());
+        assert!(after_raw.mapped_listeners.is_none());
+        assert!(after_raw.port_forward.is_none());
+        assert!(after_raw.proxy_network.is_none());
+        assert!(after_raw.exit_nodes.is_none());
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_flags_explicit_false_and_zero_preserves_unprovided() {
+        use easytier_proto::api::config::InstanceConfigPatch;
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
+                r#"
+instance_name = "test-flags-patch"
+[flags]
+enable_encryption = true
+latency_first = true
+"#,
+            )
+            .unwrap(),
+            adapters(None, Arc::new(packet_sink)),
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let before_raw = instance.config_store().snapshot().raw().clone();
+        assert_eq!(before_raw.flags.enable_encryption, Some(true));
+        assert_eq!(before_raw.flags.latency_first, Some(true));
+        assert_eq!(before_raw.flags.disable_relay_data, None);
+        assert_eq!(before_raw.flags.prefer_peer_relay, None);
+
+        // Explicitly set disable_relay_data to false, leaving prefer_peer_relay unset
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                disable_relay_data: Some(false),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let after_raw = instance.config_store().snapshot().raw().clone();
+        assert_eq!(after_raw.flags.enable_encryption, Some(true));
+        assert_eq!(after_raw.flags.latency_first, Some(true));
+        assert_eq!(after_raw.flags.disable_relay_data, Some(false));
+        assert_eq!(after_raw.flags.prefer_peer_relay, None);
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_clear_collections_follows_each_field_convention() {
+        use easytier_proto::api::config::{
+            ConfigPatchAction, ExitNodePatch, InstanceConfigPatch, PortForwardPatch,
+            ProxyNetworkPatch, RoutePatch, UrlPatch,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.config.ignore_unsupported_config = true;
+        host_adapters.config.gateway_enabled = false;
+        host_adapters.config.proxy_enabled = false;
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
+                r#"
+instance_name = "test-clear-collections"
+ipv4 = "10.0.0.1/24"
+exit_nodes = ["10.0.0.2"]
+routes = ["10.10.0.0/16"]
+mapped_listeners = ["tcp://1.2.3.4:11010"]
+
+[flags]
+proxy_forward_by_system = true
+
+[[port_forward]]
+bind_addr = "0.0.0.0:11011"
+dst_addr = "10.0.0.3:11011"
+proto = "tcp"
+
+[[proxy_network]]
+cidr = "10.20.0.0/24"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let snap = instance.config_store().snapshot();
+        assert!(snap.raw().routes.is_some());
+        assert!(snap.raw().mapped_listeners.is_some());
+        assert!(snap.raw().port_forward.is_some());
+        assert!(snap.raw().exit_nodes.is_some());
+        assert!(snap.raw().proxy_network.is_some());
+
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                routes: vec![RoutePatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    cidr: None,
+                }],
+                mapped_listeners: vec![UrlPatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    url: None,
+                }],
+                port_forwards: vec![PortForwardPatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    cfg: None,
+                }],
+                exit_nodes: vec![ExitNodePatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    node: None,
+                }],
+                proxy_networks: vec![ProxyNetworkPatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    cidr: None,
+                    mapped_cidr: None,
+                }],
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let after = instance.config_store().snapshot();
+        // routes and mapped_listeners become None when empty
+        assert_eq!(after.raw().routes, None);
+        assert_eq!(after.raw().mapped_listeners, None);
+        // port_forward and exit_nodes become Some([])
+        assert_eq!(after.raw().port_forward, Some(vec![]));
+        assert_eq!(after.raw().exit_nodes, Some(vec![]));
+        // proxy_network becomes None on clear
+        assert_eq!(after.raw().proxy_network, None);
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_proxy_networks_later_failure_commits_valid_prefix() {
+        use easytier_proto::api::config::{
+            ConfigPatchAction, InstanceConfigPatch, ProxyNetworkPatch,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.config.ignore_unsupported_config = true;
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
+                r#"
+instance_name = "test-proxy-prefix"
+ipv4 = "10.0.0.1/24"
+
+[flags]
+proxy_forward_by_system = true
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                proxy_networks: vec![
+                    ProxyNetworkPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        cidr: Some("10.1.0.0/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
+                        mapped_cidr: None,
+                    },
+                    ProxyNetworkPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        cidr: Some("10.2.0.0/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
+                        // Invalid: mismatched mask length /16 vs /24
+                        mapped_cidr: Some("10.3.0.0/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
+                    },
+                ],
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mapped CIDR must have the same network length")
+        );
+
+        // Valid prefix (10.1.0.0/24) was committed!
+        let snapshot = instance.config_store().snapshot();
+        let proxies = snapshot.raw().proxy_network.as_ref().unwrap();
+        assert_eq!(proxies.len(), 1);
+        assert_eq!(
+            proxies[0].cidr,
+            "10.1.0.0/24".parse::<cidr::Ipv4Cidr>().unwrap()
+        );
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_acl_validation_failure_does_not_commit_partial_acl() {
+        use easytier_proto::api::config::{
+            AclPatch, ConfigPatchAction, InstanceConfigPatch, StringPatch,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
+                r#"
+instance_name = "test-acl-validation"
+ipv4 = "10.0.0.1/24"
+"#,
+            )
+            .unwrap(),
+            adapters(None, Arc::new(packet_sink)),
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    acl: None,
+                    tcp_whitelist: vec![StringPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        value: "invalid-syntax-rule-!!!".to_owned(),
+                    }],
+                    udp_whitelist: vec![],
+                }),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("Invalid port range format"),
+            "unexpected error: {error:#}"
+        );
+
+        // Raw ACL fields were not modified with invalid data
+        let snapshot = instance.config_store().snapshot();
+        assert!(snapshot.raw().tcp_whitelist.is_none());
+        assert!(snapshot.raw().udp_whitelist.is_none());
+        assert!(snapshot.raw().acl.is_none());
+    }
+
+    #[cfg(all(feature = "management", feature = "vpn-portal"))]
+    #[tokio::test]
+    async fn patch_portal_group_failure_does_not_commit_partial_clients() {
+        use easytier_proto::api::{
+            config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+            manage::VpnPortalClientConfig,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.vpn_portal = Some(Arc::new(SucceedingPortalHost));
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "test",
+                r#"
+instance_name = "test-portal-group"
+ipv4 = "10.0.0.1/24"
+[network_identity]
+network_name = "test-portal-net"
+network_secret = "test-portal-secret"
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51820"
+[[vpn_portal_config.clients]]
+name = "alice"
+virtual_ip = "10.0.0.2/24"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        // Group patch: 1 valid add, 1 invalid remove (ghost does not exist)
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                vpn_portal_clients: vec![
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "bob".to_owned(),
+                            virtual_ip: "10.0.0.3/24".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Remove as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "ghost".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                ],
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not found"));
+
+        // Neither bob nor ghost removal was committed
+        let snapshot = instance.config_store().snapshot();
+        let clients = snapshot
+            .parsed()
+            .vpn_portal_config
+            .as_ref()
+            .unwrap()
+            .clients
+            .clone();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "alice");
     }
 
     #[tokio::test]
@@ -1408,11 +1906,11 @@ virtual_ip = "10.82.0.2/24"
 
             fn create(
                 &self,
-                config: TomlConfig,
+                config: InstanceConfig,
                 (): Self::CreateContext,
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-                CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink)))
+                CoreInstance::new(config, adapters(None, Arc::new(packet_sink)))
             }
         }
 
@@ -1420,7 +1918,11 @@ virtual_ip = "10.82.0.2/24"
             manager: &InstanceManager<StateTestFactory>,
             name: &str,
         ) -> Arc<CoreInstance<TestHost>> {
-            let config = TomlConfig::new_from_str(&format!("instance_name = \"{name}\"")).unwrap();
+            let config = crate::config::parse_instance_config(
+                "test",
+                &format!("instance_name = \"{name}\""),
+            )
+            .unwrap();
             manager.create(config, ()).unwrap()
         }
 
@@ -1519,7 +2021,7 @@ virtual_ip = "10.82.0.2/24"
         use std::{path::Path, path::PathBuf};
 
         use crate::{
-            config::toml::TomlConfig,
+            config::{InstanceConfig, InstanceConfigRaw},
             instance::manager::InstanceFactory,
             management::{
                 ConfigFileControl, ConfigFilePermission, ConfigFileStorage, InstanceManager,
@@ -1564,7 +2066,7 @@ virtual_ip = "10.82.0.2/24"
 
             fn create(
                 &self,
-                config: TomlConfig,
+                config: InstanceConfig,
                 (): Self::CreateContext,
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
@@ -1574,7 +2076,7 @@ virtual_ip = "10.82.0.2/24"
                     self.process_runtime.clone(),
                 );
                 adapters.instance_runtime = self.runtime_host.clone();
-                CoreInstance::from_toml(config, adapters)
+                CoreInstance::new(config, adapters)
             }
         }
 
@@ -1630,9 +2132,12 @@ virtual_ip = "10.82.0.2/24"
             },
             Some(tokio::runtime::Handle::current()),
         ));
-        let config = TomlConfig::default();
-        config.set_listeners(Vec::new());
-        let instance_id = config.get_id();
+        let raw = InstanceConfigRaw {
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
+        let config = InstanceConfig::try_from(raw).unwrap();
+        let instance_id = config.parsed().instance_id;
         instances
             .run_network_instance(
                 config,
@@ -1693,7 +2198,7 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn process_management_rpc_owns_instance_create_list_and_delete() {
         use crate::{
-            config::toml::TomlConfig,
+            config::InstanceConfig,
             instance::manager::InstanceFactory,
             management::{
                 InstanceManager, ProcessManagementRpc, UnsupportedConfigFileStorage,
@@ -1719,11 +2224,11 @@ virtual_ip = "10.82.0.2/24"
 
             fn create(
                 &self,
-                config: TomlConfig,
+                config: InstanceConfig,
                 (): Self::CreateContext,
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-                CoreInstance::from_toml(
+                CoreInstance::new(
                     config,
                     adapters_with_process_runtime(None, Arc::new(packet_sink), self.0.clone()),
                 )
@@ -1813,7 +2318,7 @@ virtual_ip = "10.82.0.2/24"
         use std::{collections::VecDeque, sync::Mutex as StdMutex};
 
         use crate::{
-            config::toml::TomlConfig,
+            config::{InstanceConfig, InstanceConfigRaw},
             instance::manager::InstanceFactory,
             management::{InstanceManager, ProcessManagementRpc, UnsupportedConfigFileStorage},
         };
@@ -1856,7 +2361,7 @@ virtual_ip = "10.82.0.2/24"
 
             fn create(
                 &self,
-                config: TomlConfig,
+                config: InstanceConfig,
                 (): Self::CreateContext,
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let runtime_host = self.runtime_hosts.lock().unwrap().pop_front().unwrap();
@@ -1867,7 +2372,7 @@ virtual_ip = "10.82.0.2/24"
                     self.process_runtime.clone(),
                 );
                 adapters.instance_runtime = runtime_host;
-                CoreInstance::from_toml(config, adapters)
+                CoreInstance::new(config, adapters)
             }
         }
 
@@ -1886,9 +2391,12 @@ virtual_ip = "10.82.0.2/24"
         let requested_id = uuid::Uuid::new_v4();
         let unrequested_id = uuid::Uuid::new_v4();
         for instance_id in [requested_id, unrequested_id] {
-            let config = TomlConfig::default();
-            config.set_id(instance_id);
-            config.set_listeners(Vec::new());
+            let raw = InstanceConfigRaw {
+                instance_id: Some(instance_id),
+                listeners: Some(Vec::new()),
+                ..Default::default()
+            };
+            let config = InstanceConfig::try_from(raw).unwrap();
             instances
                 .create(config, ())
                 .unwrap()
@@ -1947,7 +2455,7 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn owned_selection_and_cleanup_share_the_canonical_transaction() {
         use crate::{
-            config::toml::TomlConfig,
+            config::{InstanceConfig, InstanceConfigRaw},
             instance::manager::InstanceFactory,
             management::{
                 ConfigFileControl, InstanceManager, InstanceMutationHooks, ProcessManagement,
@@ -1964,11 +2472,11 @@ virtual_ip = "10.82.0.2/24"
 
             fn create(
                 &self,
-                config: TomlConfig,
+                config: InstanceConfig,
                 (): Self::CreateContext,
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-                CoreInstance::from_toml(
+                CoreInstance::new(
                     config,
                     adapters_with_process_runtime(None, Arc::new(packet_sink), self.0.clone()),
                 )
@@ -2005,9 +2513,12 @@ virtual_ip = "10.82.0.2/24"
             ManagementTestFactory(CoreProcessRuntime::new()),
             Some(tokio::runtime::Handle::current()),
         ));
-        let config = TomlConfig::default();
-        config.set_listeners(Vec::new());
-        let instance_id = config.get_id();
+        let raw = InstanceConfigRaw {
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
+        let config = InstanceConfig::try_from(raw).unwrap();
+        let instance_id = config.parsed().instance_id;
         instances
             .run_network_instance(config, ConfigFileControl::STATIC_CONFIG)
             .unwrap();
@@ -2038,10 +2549,13 @@ virtual_ip = "10.82.0.2/24"
 
         let old_name = format!("old-{instance_id}");
         let new_name = format!("new-{instance_id}");
-        let old_config = TomlConfig::default();
-        old_config.set_id(instance_id);
-        old_config.set_inst_name(old_name.clone());
-        old_config.set_listeners(Vec::new());
+        let old_raw = InstanceConfigRaw {
+            instance_id: Some(instance_id),
+            instance_name: Some(old_name.clone()),
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
+        let old_config = InstanceConfig::try_from(old_raw).unwrap();
         instances
             .run_network_instance(old_config, ConfigFileControl::STATIC_CONFIG)
             .unwrap();
@@ -2058,10 +2572,13 @@ virtual_ip = "10.82.0.2/24"
             .delete_network_instances([instance_id])
             .await
             .unwrap();
-        let new_config = TomlConfig::default();
-        new_config.set_id(instance_id);
-        new_config.set_inst_name(new_name.clone());
-        new_config.set_listeners(Vec::new());
+        let new_raw = InstanceConfigRaw {
+            instance_id: Some(instance_id),
+            instance_name: Some(new_name.clone()),
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
+        let new_config = InstanceConfig::try_from(new_raw).unwrap();
         instances
             .run_network_instance(new_config, ConfigFileControl::STATIC_CONFIG)
             .unwrap();
@@ -2115,7 +2632,7 @@ virtual_ip = "10.82.0.2/24"
         };
 
         use crate::{
-            config::toml::TomlConfig,
+            config::{InstanceConfig, InstanceConfigRaw},
             instance::manager::InstanceFactory,
             management::{
                 ConfigFileControl, ConfigFilePermission, ConfigFileStorage, InstanceManager,
@@ -2138,11 +2655,11 @@ virtual_ip = "10.82.0.2/24"
 
             fn create(
                 &self,
-                config: TomlConfig,
+                config: InstanceConfig,
                 (): Self::CreateContext,
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-                CoreInstance::from_toml(
+                CoreInstance::new(
                     config,
                     adapters_with_process_runtime(None, Arc::new(packet_sink), self.0.clone()),
                 )
@@ -2211,10 +2728,13 @@ virtual_ip = "10.82.0.2/24"
             .lock()
             .unwrap()
             .insert(config_path.clone(), original_file.clone());
-        let original = TomlConfig::default();
-        original.set_id(instance_id);
-        original.set_inst_name("original-instance".to_owned());
-        original.set_listeners(Vec::new());
+        let original_raw = InstanceConfigRaw {
+            instance_id: Some(instance_id),
+            instance_name: Some("original-instance".to_owned()),
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
+        let original = InstanceConfig::try_from(original_raw).unwrap();
         instances
             .run_network_instance(
                 original,
@@ -2458,8 +2978,8 @@ virtual_ip = "10.82.0.2/24"
                 .avoid_relay_data
         );
 
-        let mut enabled = runtime_snapshot(&config);
-        Arc::make_mut(&mut enabled.peer).avoid_relay_data_preference = true;
+        let mut enabled = config.clone();
+        enabled.parsed_mut().flags.disable_relay_data = true;
         instance.update_runtime_config(enabled).await.unwrap();
         assert!(
             instance
@@ -2469,8 +2989,8 @@ virtual_ip = "10.82.0.2/24"
                 .avoid_relay_data
         );
 
-        let mut disabled = runtime_snapshot(&config);
-        Arc::make_mut(&mut disabled.peer).avoid_relay_data_preference = false;
+        let mut disabled = config.clone();
+        disabled.parsed_mut().flags.disable_relay_data = false;
         instance.update_runtime_config(disabled).await.unwrap();
         assert!(
             !instance
@@ -2493,22 +3013,16 @@ virtual_ip = "10.82.0.2/24"
         instance.start().await.unwrap();
 
         let original = instance.node_snapshot().await;
-        let mut full = runtime_snapshot(&config);
-        full.services.dhcp_ipv4 = true;
-        full.services.acl.tcp_whitelist = vec!["80".to_owned()];
-        {
-            let peer = Arc::make_mut(&mut full.peer);
-            peer.runtime.core.node.hostname = Some("full".to_owned());
-            peer.runtime.core.routes.proxy_networks =
-                vec![proxy_network("192.0.2.0/24", Some("198.51.100.0/24"))];
-        }
+        let mut full = config.clone();
+        full.parsed_mut().dhcp = true;
+        full.parsed_mut().tcp_whitelist = vec!["80".to_owned()];
+        full.parsed_mut().hostname = "full".to_owned();
+        full.parsed_mut().proxy_network =
+            vec![proxy_network("192.0.2.0/24", Some("198.51.100.0/24"))];
         let mut peer_update = full.clone();
-        {
-            let peer = Arc::make_mut(&mut peer_update.peer);
-            peer.runtime.core.node.hostname = Some("peer".to_owned());
-            peer.runtime.core.routes.proxy_networks =
-                vec![proxy_network("203.0.113.0/24", Some("10.20.30.0/24"))];
-        }
+        peer_update.parsed_mut().hostname = "peer".to_owned();
+        peer_update.parsed_mut().proxy_network =
+            vec![proxy_network("203.0.113.0/24", Some("10.20.30.0/24"))];
 
         let start = Arc::new(tokio::sync::Barrier::new(3));
         let full_update = tokio::spawn({
@@ -2532,14 +3046,14 @@ virtual_ip = "10.82.0.2/24"
         peer_update.await.unwrap().unwrap();
 
         let final_config = instance.runtime_config.snapshot();
-        assert!(final_config.services.dhcp_ipv4);
+        assert!(final_config.dhcp);
         assert_eq!(instance.acl_whitelist_snapshot().tcp_ports, ["80"]);
         assert_eq!(instance.acl_reload_count.load(Ordering::Relaxed), 1);
         let node = instance.node_snapshot().await;
         assert_eq!(node.peer_id, original.peer_id);
         assert_eq!(node.instance_id, original.instance_id);
         assert_eq!(
-            final_config.peer.runtime.core.node.hostname.as_deref(),
+            Some(final_config.hostname.as_str()),
             Some(node.hostname.as_str())
         );
         match node.hostname.as_str() {
@@ -2568,24 +3082,20 @@ virtual_ip = "10.82.0.2/24"
         let instance = build_instance(config.clone()).unwrap();
         instance.start().await.unwrap();
 
-        let mut unrelated = runtime_snapshot(&config);
-        Arc::make_mut(&mut unrelated.peer)
-            .runtime
-            .core
-            .node
-            .hostname = Some("accepted".to_owned());
+        let mut unrelated = config.clone();
+        unrelated.parsed_mut().hostname = "accepted".to_owned();
         instance.update_runtime_config(unrelated).await.unwrap();
         assert_eq!(instance.acl_reload_count.load(Ordering::Relaxed), 0);
         let before = instance.node_snapshot().await;
 
-        let mut rejected = runtime_snapshot(&config);
-        rejected.services.dhcp_ipv4 = true;
-        rejected.services.acl.tcp_whitelist = vec!["invalid".to_owned()];
-        Arc::make_mut(&mut rejected.peer).runtime.core.node.hostname = Some("rejected".to_owned());
+        let mut rejected = config.clone();
+        rejected.parsed_mut().dhcp = true;
+        rejected.parsed_mut().tcp_whitelist = vec!["invalid".to_owned()];
+        rejected.parsed_mut().hostname = "rejected".to_owned();
 
         let error = instance.update_runtime_config(rejected).await.unwrap_err();
         assert!(error.to_string().contains("Invalid port number"));
-        assert!(!instance.runtime_config.snapshot().services.dhcp_ipv4);
+        assert!(!instance.runtime_config.snapshot().dhcp);
         assert!(instance.acl_whitelist_snapshot().tcp_ports.is_empty());
         assert_eq!(instance.acl_reload_count.load(Ordering::Relaxed), 0);
         assert_eq!(instance.node_snapshot().await.hostname, before.hostname);
@@ -2596,10 +3106,12 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn runtime_core_instance_owns_connectivity_lifecycle() {
         let mut config = test_config("connectivity-lifecycle");
-        config.peer.snapshot.runtime.core.routes.proxy_networks =
-            vec![proxy_network("10.1.2.0/24", None)];
+        config.parsed_mut().proxy_network = vec![proxy_network("10.1.2.0/24", None)];
         let initial_peer: Url = "tcp://127.0.0.1:29999".parse().unwrap();
-        config.connectivity.initial_peers = vec![initial_peer.clone()];
+        config.parsed_mut().peer = vec![crate::config::toml::PeerConfig {
+            uri: initial_peer.clone(),
+            peer_public_key: None,
+        }];
         let proxy = Arc::new(RecordingProxyService::default());
         let instance = build_with_engines(
             config,
@@ -2628,31 +3140,32 @@ virtual_ip = "10.82.0.2/24"
     #[cfg(feature = "proxy-smoltcp-stack")]
     #[tokio::test]
     async fn startup_plan_controls_gateway_for_initial_and_updated_config() {
-        fn build(config: CoreInstanceConfig) -> (Arc<CoreInstance<TestHost>>, Arc<TestHost>) {
+        fn build(
+            config: InstanceConfig,
+            gateway_enabled: bool,
+        ) -> (Arc<CoreInstance<TestHost>>, Arc<TestHost>) {
             let host = Arc::new(TestHost {
                 reject_socks5_listener: true,
                 ..Default::default()
             });
             let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-            let adapters = adapters_with_host(host.clone(), None, Arc::new(packet_sink));
+            let mut adapters = adapters_with_host(host.clone(), None, Arc::new(packet_sink));
+            adapters.config.gateway_enabled = gateway_enabled;
             (CoreInstance::new(config, adapters).unwrap(), host)
         }
 
         let mut enabled_config = test_config("gateway-enabled-by-default");
-        enabled_config.connectivity.runtime.gateway.socks5_bind =
-            Some("127.0.0.1:1080".parse().unwrap());
-        let (enabled, _) = build(enabled_config);
+        enabled_config.parsed_mut().socks5_proxy = Some("socks5://127.0.0.1:1080".parse().unwrap());
+        let (enabled, _) = build(enabled_config, true);
         let error = enabled.start().await.unwrap_err();
         assert!(error.to_string().contains("rejected SOCKS5 listener"));
         assert_eq!(enabled.state(), CoreInstanceState::Stopped);
 
         let mut disabled_config = test_config("gateway-disabled-by-plan");
-        disabled_config.connectivity.startup_plan.gateway = false;
-        disabled_config.peer.snapshot.runtime.core.routes.ipv4 =
-            Some(IpPrefix::new("10.144.0.1".parse().unwrap(), 24).unwrap());
-        let (disabled, _) = build(disabled_config.clone());
-        let mut updated = runtime_snapshot(&disabled_config);
-        updated.services.gateway.socks5_bind = Some("127.0.0.1:1080".parse().unwrap());
+        disabled_config.parsed_mut().ipv4 = Some("10.144.0.1/24".parse().unwrap());
+        let (disabled, _) = build(disabled_config.clone(), false);
+        let mut updated = disabled_config.clone();
+        updated.parsed_mut().socks5_proxy = Some("socks5://127.0.0.1:1080".parse().unwrap());
         disabled.update_runtime_config(updated).await.unwrap();
         disabled.start().await.unwrap();
         assert_eq!(disabled.state(), CoreInstanceState::Running);
@@ -2668,7 +3181,7 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn failed_port_forward_start_releases_started_listeners() {
         let mut config = test_config("port-forward-start-rollback");
-        config.connectivity.runtime.gateway.port_forwards = vec![
+        config.parsed_mut().port_forward = vec![
             PortForwardConfig {
                 bind_addr: "127.0.0.1:18080".parse().unwrap(),
                 dst_addr: "10.144.0.2:80".parse().unwrap(),
@@ -2696,8 +3209,8 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn runtime_core_instance_owns_wrapped_transport_source_nat() {
         let mut config = test_config("wrapped-source");
-        config.peer.snapshot.flags.enable_kcp_proxy = true;
-        config.peer.snapshot.flags.disable_kcp_input = true;
+        config.parsed_mut().flags.enable_kcp_proxy = true;
+        config.parsed_mut().flags.disable_kcp_input = true;
         let engine = Arc::new(RecordingProxyService::default());
         let instance = build_with_engines(
             config,
@@ -2738,8 +3251,8 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn runtime_core_instance_owns_wrapped_transport_destination_sessions() {
         let mut config = test_config("wrapped-destination");
-        config.peer.snapshot.flags.enable_kcp_proxy = false;
-        config.peer.snapshot.flags.disable_kcp_input = false;
+        config.parsed_mut().flags.enable_kcp_proxy = false;
+        config.parsed_mut().flags.disable_kcp_input = false;
         let engine = Arc::new(RecordingProxyService::default());
         let (connections, mut connection_receiver) = tokio::sync::mpsc::unbounded_channel();
         let host = Arc::new(TestHost {
@@ -2881,10 +3394,10 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn runtime_core_instance_owns_the_transport_proxy_cidr_table() {
         let mut config = test_config("transport-proxy-cidr");
-        config.connectivity.runtime.proxy.forward_by_system = true;
-        config.peer.snapshot.runtime.core.routes.proxy_networks =
+        config.parsed_mut().flags.proxy_forward_by_system = true;
+        config.parsed_mut().proxy_network =
             vec![proxy_network("192.0.2.0/24", Some("198.51.100.0/24"))];
-        let mut updated = runtime_snapshot(&config);
+        let mut updated = config.clone();
         let proxy = Arc::new(RecordingProxyService::default());
         let instance = build_with_engines(
             config,
@@ -2899,20 +3412,21 @@ virtual_ip = "10.82.0.2/24"
         instance.start().await.unwrap();
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
 
-        Arc::make_mut(&mut updated.peer)
-            .runtime
-            .core
-            .routes
-            .proxy_networks = vec![proxy_network("203.0.113.0/24", Some("10.20.30.0/24"))];
+        updated.parsed_mut().proxy_network =
+            vec![proxy_network("203.0.113.0/24", Some("10.20.30.0/24"))];
         instance.update_runtime_config(updated).await.unwrap();
         let proxy_networks = instance.node_snapshot().await.proxy_networks;
         assert_eq!(proxy_networks.len(), 1);
         assert_eq!(
-            proxy_networks[0].real.address,
+            proxy_networks[0].cidr.first_address(),
             "203.0.113.0".parse::<IpAddr>().unwrap()
         );
         assert_eq!(
-            proxy_networks[0].mapped.as_ref().unwrap().address,
+            proxy_networks[0]
+                .mapped_cidr
+                .as_ref()
+                .unwrap()
+                .first_address(),
             "10.20.30.0".parse::<IpAddr>().unwrap()
         );
 
@@ -2927,8 +3441,8 @@ virtual_ip = "10.82.0.2/24"
         let instance = build_instance(config.clone()).unwrap();
         assert_eq!(instance.acl_whitelist_snapshot(), Default::default());
 
-        let mut updated = runtime_snapshot(&config);
-        updated.services.acl.tcp_whitelist = vec!["invalid".to_owned()];
+        let mut updated = config.clone();
+        updated.parsed_mut().tcp_whitelist = vec!["invalid".to_owned()];
         let error = instance.update_runtime_config(updated).await.unwrap_err();
         assert!(error.to_string().contains("Invalid port number"));
         assert!(instance.acl_whitelist_snapshot().tcp_ports.is_empty());
@@ -2941,8 +3455,8 @@ virtual_ip = "10.82.0.2/24"
     async fn runtime_core_accepts_explicit_dhcp_runtime_snapshot() {
         let config = test_config("explicit-dhcp");
         let instance = build_instance(config.clone()).unwrap();
-        let mut updated = runtime_snapshot(&config);
-        updated.services.dhcp_ipv4 = true;
+        let mut updated = config.clone();
+        updated.parsed_mut().dhcp = true;
         instance.update_runtime_config(updated).await.unwrap();
         let error = instance.start().await.unwrap_err();
         assert!(error.to_string().contains("no host adapter was provided"));
@@ -2954,11 +3468,9 @@ virtual_ip = "10.82.0.2/24"
     async fn runtime_core_accepts_explicit_public_ipv6_runtime_snapshot() {
         let config = test_config("explicit-public-ipv6");
         let instance = build_instance(config.clone()).unwrap();
-        let mut updated = runtime_snapshot(&config);
-        updated.services.public_ipv6_provider.provider_enabled = true;
-        updated.services.public_ipv6_provider.provider_supported = true;
-        updated.services.public_ipv6_provider.configured_prefix =
-            Some("fd00::/64".parse().unwrap());
+        let mut updated = config.clone();
+        updated.parsed_mut().ipv6_public_addr_provider = true;
+        updated.parsed_mut().ipv6_public_addr_prefix = Some("fd00::/64".parse().unwrap());
         instance.update_runtime_config(updated).await.unwrap();
 
         let error = instance.start().await.unwrap_err();
@@ -2970,7 +3482,7 @@ virtual_ip = "10.82.0.2/24"
     #[test]
     fn runtime_core_rejects_packet_proxy_requests_when_unavailable() {
         let mut config = test_config("packet-proxy-unavailable");
-        config.connectivity.runtime.proxy.enable_exit_node = true;
+        config.parsed_mut().flags.enable_exit_node = true;
 
         let error = match build_instance(config) {
             Ok(_) => panic!("packet proxy request unexpectedly succeeded"),
@@ -2989,8 +3501,8 @@ virtual_ip = "10.82.0.2/24"
     async fn runtime_core_rejects_unavailable_gateway_updates() {
         let config = test_config("smoltcp-gateway-update-unavailable");
         let instance = build_instance(config.clone()).unwrap();
-        let mut updated = runtime_snapshot(&config);
-        updated.services.gateway.socks5_bind = Some("127.0.0.1:1080".parse().unwrap());
+        let mut updated = config.clone();
+        updated.parsed_mut().socks5_proxy = Some("socks5://127.0.0.1:1080".parse().unwrap());
 
         let error = instance.update_runtime_config(updated).await.unwrap_err();
 
@@ -3004,10 +3516,13 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn stopping_while_transport_proxy_starts_rolls_back_once() {
         let mut config = test_config("blocking-transport-proxy");
-        config.connectivity.runtime.proxy.forward_by_system = true;
-        config.peer.snapshot.runtime.core.routes.proxy_networks =
-            vec![proxy_network("10.1.2.0/24", None)];
-        config.connectivity.initial_peers = vec!["tcp://127.0.0.1:29998".parse().unwrap()];
+        config.parsed_mut().flags.proxy_forward_by_system = true;
+        config.parsed_mut().proxy_network = vec![proxy_network("10.1.2.0/24", None)];
+        let initial_peer: Url = "tcp://127.0.0.1:29998".parse().unwrap();
+        config.parsed_mut().peer = vec![crate::config::toml::PeerConfig {
+            uri: initial_peer,
+            peer_public_key: None,
+        }];
         let (proxy, start_gate) = RecordingProxyService::blocking();
         let instance = build_with_engines(
             config,
@@ -3043,12 +3558,10 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn start_serializes_runtime_updates() {
         let mut config = test_config("serialized-start");
-        config.connectivity.runtime.proxy.forward_by_system = true;
-        config.peer.snapshot.runtime.core.routes.proxy_networks =
-            vec![proxy_network("10.1.4.0/24", None)];
-        let mut updated = runtime_snapshot(&config);
-        Arc::make_mut(&mut updated.peer).runtime.core.node.hostname =
-            Some("updated-after-start".to_owned());
+        config.parsed_mut().flags.proxy_forward_by_system = true;
+        config.parsed_mut().proxy_network = vec![proxy_network("10.1.4.0/24", None)];
+        let mut updated = config.clone();
+        updated.parsed_mut().hostname = "updated-after-start".to_owned();
         let (proxy, start_gate) = RecordingProxyService::blocking();
         let instance = build_with_engines(
             config,
@@ -3085,9 +3598,8 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn aborting_start_stops_partial_runtime() {
         let mut config = test_config("aborted-start");
-        config.connectivity.runtime.proxy.forward_by_system = true;
-        config.peer.snapshot.runtime.core.routes.proxy_networks =
-            vec![proxy_network("10.1.3.0/24", None)];
+        config.parsed_mut().flags.proxy_forward_by_system = true;
+        config.parsed_mut().proxy_network = vec![proxy_network("10.1.3.0/24", None)];
         let (proxy, start_gate) = RecordingProxyService::blocking();
         let instance = build_with_engines(
             config,
@@ -3121,8 +3633,10 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn invalid_initial_peer_fails_during_construction() {
         let mut config = test_config("invalid-initial-peer");
-        config.connectivity.initial_peers =
-            vec!["unsupported://peer.example:1234".parse().unwrap()];
+        config.parsed_mut().peer = vec![crate::config::toml::PeerConfig {
+            uri: "unsupported://peer.example:1234".parse().unwrap(),
+            peer_public_key: None,
+        }];
 
         let error = build_instance(config)
             .err()
@@ -3167,11 +3681,9 @@ virtual_ip = "10.82.0.2/24"
     async fn stop_cancels_pending_listener_start() {
         let state = Arc::new(BlockingListenerState::default());
         let mut config = test_config("pending-listener");
-        config.connectivity.listeners = Some(ListenerRuntimeConfig::new(
-            vec!["unix:///tmp/easytier-pending-listener".parse().unwrap()],
-            false,
-            SocketContext::default(),
-        ));
+        config.parsed_mut().listeners = Some(vec![
+            "unix:///tmp/easytier-pending-listener".parse().unwrap(),
+        ]);
         let instance = build_with_engines_and_listener(
             config,
             WrappedTransportEngines::default(),
@@ -3202,11 +3714,7 @@ virtual_ip = "10.82.0.2/24"
             .parse()
             .unwrap();
         let mut config = test_config("external-listener-registry");
-        config.connectivity.listeners = Some(ListenerRuntimeConfig::new(
-            vec![external_url.clone()],
-            false,
-            SocketContext::default(),
-        ));
+        config.parsed_mut().listeners = Some(vec![external_url.clone()]);
         let instance = build_with_engines_and_listener(
             config,
             WrappedTransportEngines::default(),
@@ -3228,13 +3736,13 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn inbound_only_uses_host_registered_listener_lifecycle() {
         let external_url: Url = "unix:///tmp/easytier-host-listener-test".parse().unwrap();
-        let mut config = test_config("host-listener");
-        config.connectivity.startup_plan.connectivity = CoreConnectivityMode::InboundOnly;
+        let config = test_config("host-listener");
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
         let mut adapters = adapters(
             Some(Arc::new(ReadyExternalListenerFactory)),
             Arc::new(packet_sink),
         );
+        adapters.config.connectivity = CoreConnectivityMode::InboundOnly;
         adapters
             .host_listener_registrations
             .push(ExternalListenerRequest {
@@ -3258,13 +3766,18 @@ virtual_ip = "10.82.0.2/24"
     #[tokio::test]
     async fn inbound_only_rejects_initial_peers() {
         let mut config = test_config("inbound-only-peer");
-        config.connectivity.startup_plan.connectivity = CoreConnectivityMode::InboundOnly;
         config
-            .connectivity
-            .initial_peers
-            .push("tcp://127.0.0.1:11010".parse().unwrap());
+            .parsed_mut()
+            .peer
+            .push(crate::config::toml::PeerConfig {
+                uri: "tcp://127.0.0.1:11010".parse().unwrap(),
+                peer_public_key: None,
+            });
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut adapters = adapters(None, Arc::new(packet_sink));
+        adapters.config.connectivity = CoreConnectivityMode::InboundOnly;
 
-        let Err(error) = build_instance(config) else {
+        let Err(error) = CoreInstance::new(config, adapters) else {
             panic!("inbound-only instance accepted an outbound peer");
         };
         assert!(
@@ -3284,17 +3797,13 @@ virtual_ip = "10.82.0.2/24"
             .parse()
             .unwrap();
         let mut config = test_config("outbound-only-listeners");
-        config.connectivity.startup_plan.connectivity = CoreConnectivityMode::OutboundOnly;
-        config.connectivity.listeners = Some(ListenerRuntimeConfig::new(
-            vec![configured_url],
-            false,
-            SocketContext::default(),
-        ));
+        config.parsed_mut().listeners = Some(vec![configured_url]);
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
         let mut adapters = adapters(
             Some(Arc::new(ReadyExternalListenerFactory)),
             Arc::new(packet_sink),
         );
+        adapters.config.connectivity = CoreConnectivityMode::OutboundOnly;
         adapters
             .host_listener_registrations
             .push(ExternalListenerRequest {
@@ -3307,5 +3816,301 @@ virtual_ip = "10.82.0.2/24"
         assert!(instance.running_listeners().is_empty());
 
         instance.stop().await;
+    }
+
+    #[tokio::test]
+    async fn compose_does_not_alias_caller_raw() {
+        let original = crate::config::parse_instance_config("test", "hostname = 'before'").unwrap();
+        let mut cloned_raw = original.raw().clone();
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let host_config = CoreInstanceHostConfig::default();
+        let instance = CoreInstance::compose(original, host_config, |_store| {
+            Ok(adapters(None, Arc::new(packet_sink)))
+        })
+        .unwrap();
+
+        cloned_raw.hostname = Some("after".into());
+        assert_eq!(
+            instance
+                .config_store()
+                .snapshot()
+                .parsed()
+                .hostname
+                .as_str(),
+            "before"
+        );
+    }
+
+    #[tokio::test]
+    async fn compose_rejects_mismatched_host_config() {
+        let original = crate::config::parse_instance_config("test", "hostname = 'test'").unwrap();
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let host_config = CoreInstanceHostConfig::default();
+        let mut mismatched_adapters = adapters(None, Arc::new(packet_sink));
+        mismatched_adapters.config.gateway_enabled = !host_config.gateway_enabled;
+
+        let result = CoreInstance::compose(original, host_config, |_store| Ok(mismatched_adapters));
+        let Err(err) = result else {
+            panic!("expected error for mismatched host config");
+        };
+        assert!(
+            err.to_string()
+                .contains("adapters host configuration does not match")
+        );
+    }
+
+    #[tokio::test]
+    async fn compose_materializes_keys_in_management_config() {
+        let raw = crate::config::InstanceConfigRaw {
+            secure_mode: Some(crate::proto::common::SecureModeConfig {
+                enabled: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let config = crate::config::InstanceConfig::try_from(raw).unwrap();
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let host_config = CoreInstanceHostConfig::default();
+        let instance = CoreInstance::compose(config, host_config, |_store| {
+            Ok(adapters(None, Arc::new(packet_sink)))
+        })
+        .unwrap();
+
+        let saved_has_key = instance
+            .config_store()
+            .snapshot()
+            .parsed()
+            .secure_mode
+            .as_ref()
+            .unwrap()
+            .local_private_key
+            .is_some();
+        assert!(saved_has_key);
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn get_config_returns_consistent_config_and_toml_from_store_snapshot() {
+        use crate::{
+            instance::manager::{InstanceFactory, InstanceManager},
+            management::InstanceManagementRpc,
+        };
+        use easytier_proto::{
+            api::config::{
+                ConfigRpc as _, GetConfigRequest, InstanceConfigPatch, PatchConfigRequest,
+            },
+            api::instance::{
+                InstanceIdentifier,
+                instance_identifier::{InstanceSelector, Selector},
+            },
+            rpc_types::controller::BaseController,
+        };
+
+        struct ConsistentGetFactory;
+
+        impl InstanceFactory for ConsistentGetFactory {
+            type Instance = CoreInstance<TestHost>;
+            type CreateContext = ();
+            type Error = anyhow::Error;
+
+            fn create(
+                &self,
+                config: InstanceConfig,
+                (): Self::CreateContext,
+            ) -> Result<Arc<Self::Instance>, Self::Error> {
+                let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+                let adapters = adapters(None, Arc::new(packet_sink));
+                CoreInstance::new(config, adapters)
+            }
+        }
+
+        let manager = Arc::new(InstanceManager::new(ConsistentGetFactory, None));
+        let config = crate::config::parse_instance_config(
+            "test",
+            r#"
+instance_name = "test-consistent-get"
+hostname = "host-initial"
+ipv4 = "10.14.0.1/24"
+dhcp = false
+
+[network_identity]
+network_name = "test-network"
+network_secret = "test-secret"
+"#,
+        )
+        .unwrap();
+        let instance = manager.create(config, ()).unwrap();
+        instance.start().await.unwrap();
+        let rpc = InstanceManagementRpc::<ConsistentGetFactory>::new(manager);
+
+        let selector = || InstanceIdentifier {
+            selector: Some(Selector::InstanceSelector(InstanceSelector {
+                name: Some("test-consistent-get".to_owned()),
+            })),
+        };
+
+        // 1. Initial read: both config and toml_config match Store snapshot
+        let res = rpc
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(selector()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let net_cfg = res.config.expect("config must be present");
+        let toml_str = res.toml_config;
+
+        assert_eq!(net_cfg.hostname.as_deref(), Some("host-initial"));
+        assert_eq!(net_cfg.dhcp, Some(false));
+        assert_eq!(net_cfg.virtual_ipv4.as_deref(), Some("10.14.0.1"));
+        assert!(toml_str.contains("hostname = \"host-initial\""));
+        assert!(toml_str.contains("dhcp = false"));
+        assert!(toml_str.contains("ipv4 = \"10.14.0.1/24\""));
+
+        let parsed_toml = crate::config::parse_instance_config("test", &toml_str).unwrap();
+        assert_eq!(parsed_toml.parsed().hostname, "host-initial");
+        assert!(!parsed_toml.parsed().dhcp);
+
+        // 2. Patch config
+        rpc.patch_config(
+            BaseController::default(),
+            PatchConfigRequest {
+                patch: Some(InstanceConfigPatch {
+                    hostname: Some("host-updated".to_owned()),
+                    ..Default::default()
+                }),
+                instance: Some(selector()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // 3. Subsequent read immediately returns updated values from Store in both representations
+        let res2 = rpc
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(selector()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let net_cfg2 = res2.config.expect("config must be present");
+        let toml_str2 = res2.toml_config;
+
+        assert_eq!(net_cfg2.hostname.as_deref(), Some("host-updated"));
+        assert!(toml_str2.contains("hostname = \"host-updated\""));
+
+        let parsed_toml2 = crate::config::parse_instance_config("test", &toml_str2).unwrap();
+        assert_eq!(parsed_toml2.parsed().hostname, "host-updated");
+
+        let store_snap = instance.config_store().snapshot();
+        assert_eq!(store_snap.raw().hostname.as_deref(), Some("host-updated"));
+    }
+
+    #[cfg(all(feature = "management", feature = "vpn-portal"))]
+    #[tokio::test]
+    async fn persistence_failure_in_subsequent_step_leaves_previously_accepted_candidate_committed()
+    {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+        use easytier_proto::api::{
+            config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+            manage::{ManagedCredentialConfig, ManagedCredentialSet, VpnPortalClientConfig},
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.vpn_portal = Some(Arc::new(SucceedingPortalHost));
+        let instance = CoreInstance::new(
+            crate::config::parse_instance_config(
+                "partial-commit-test",
+                r#"
+instance_name = "partial-commit-test"
+ipv4 = "10.83.0.1/24"
+
+[network_identity]
+network_name = "partial-commit-network"
+network_secret = "network-secret"
+
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51821"
+
+[source]
+source = "web"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let persistence = RecordingConfigPatchPersistence::fail_after(1);
+        let secret = BASE64_STANDARD.encode([8u8; 32]);
+
+        let patch = InstanceConfigPatch {
+            vpn_portal_clients: vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Add as i32,
+                client: Some(VpnPortalClientConfig {
+                    name: "step-1-client".to_owned(),
+                    virtual_ip: "10.83.0.2/24".to_owned(),
+                    ..Default::default()
+                }),
+            }],
+            managed_credentials: Some(ManagedCredentialSet {
+                entries: vec![ManagedCredentialConfig {
+                    credential_id: "step-2-cred".to_owned(),
+                    credential_secret: secret.clone(),
+                    groups: vec!["ops".to_owned()],
+                    allow_relay: false,
+                    allowed_proxy_cidrs: Vec::new(),
+                    expiry_unix: 2_000_000_000,
+                    reusable: Some(true),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let error = crate::management::apply_config_patch(&instance, patch, Some(&persistence))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected config persistence failure after limit")
+        );
+
+        let snapshot = instance.config_store().snapshot();
+        let portal_clients = snapshot
+            .parsed()
+            .vpn_portal_config
+            .as_ref()
+            .unwrap()
+            .clients
+            .clone();
+        assert_eq!(portal_clients.len(), 1);
+        assert_eq!(portal_clients[0].name, "step-1-client");
+
+        assert!(snapshot.parsed().managed_credentials.is_empty());
+
+        let private_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
+        let public_key =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(private_bytes));
+        assert!(
+            !instance
+                .credential_manager()
+                .is_pubkey_trusted(public_key.as_bytes())
+        );
+
+        let persisted = persistence.writes.lock().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert!(persisted[0].contains("step-1-client"));
+        assert!(!persisted[0].contains("step-2-cred"));
     }
 }

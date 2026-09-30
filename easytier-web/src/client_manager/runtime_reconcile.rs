@@ -1,10 +1,9 @@
 use anyhow::Context as _;
 use easytier::{
     common::config::{
-        ConfigLoader, EncryptionAlgorithm, NetworkConfigExt,
-        PortForwardConfig as RuntimePortForwardConfig,
+        EncryptionAlgorithm, NetworkConfigExt, PortForwardConfig as RuntimePortForwardConfig,
         VpnPortalClientConfig as RuntimeVpnPortalClientConfig,
-        VpnPortalConfig as RuntimeVpnPortalConfig,
+        VpnPortalConfig as RuntimeVpnPortalConfig, network_config_from_raw,
     },
     proto::{
         acl::Acl,
@@ -20,10 +19,11 @@ use easytier::{
                 RunNetworkInstanceRequest,
             },
         },
-        common::{CompressionAlgoPb, Ipv4Inet as RpcIpv4Inet},
+        common::{CompressionAlgoPb, FlagsPatch, Ipv4Inet as RpcIpv4Inet},
         rpc_types::controller::BaseController,
     },
 };
+use optionize::{Optionizable as _, Retain};
 
 use super::session::{SessionConfigClient, SessionRpcClient};
 
@@ -53,7 +53,10 @@ fn instance_identifier(inst_id: &str) -> anyhow::Result<InstanceIdentifier> {
 fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     let data_compress_algo = normalized_data_compress_algo(config.data_compress_algo);
     let encryption_algorithm = normalized_encryption_algorithm(config.encryption_algorithm.clone());
-    let mut config = NetworkConfig::new_from_config(config.gen_config()?)?;
+    let instance_config = config.gen_config()?;
+    let mut raw = instance_config.raw().clone();
+    raw.flags = instance_config.parsed().flags.clone().downgrade();
+    let mut config = network_config_from_raw(&raw);
     let is_credential_mode = config.network_secret.is_none()
         && config
             .secure_mode
@@ -188,7 +191,9 @@ fn normalized_port_forwards(
 ) -> anyhow::Result<Vec<RuntimePortForwardConfig>> {
     Ok(config
         .gen_config()?
-        .get_port_forwards()
+        .parsed()
+        .port_forward
+        .clone()
         .into_iter()
         .map(|cfg| {
             RuntimePortForwardConfig::from(easytier::proto::common::PortForwardConfigPb::from(cfg))
@@ -199,7 +204,9 @@ fn normalized_port_forwards(
 fn normalized_proxy_networks(config: &NetworkConfig) -> anyhow::Result<Vec<RuntimeProxyNetwork>> {
     Ok(config
         .gen_config()?
-        .get_proxy_cidrs()
+        .parsed()
+        .proxy_network
+        .clone()
         .into_iter()
         .map(|proxy_network| RuntimeProxyNetwork {
             cidr: proxy_network.cidr.to_string(),
@@ -208,16 +215,8 @@ fn normalized_proxy_networks(config: &NetworkConfig) -> anyhow::Result<Vec<Runti
         .collect())
 }
 
-fn normalized_disable_relay_data(config: &NetworkConfig) -> anyhow::Result<bool> {
-    Ok(config.gen_config()?.get_flags().disable_relay_data)
-}
-
-fn normalized_prefer_peer_relay(config: &NetworkConfig) -> anyhow::Result<bool> {
-    Ok(config.gen_config()?.get_flags().prefer_peer_relay)
-}
-
 fn normalized_vpn_portal(config: &NetworkConfig) -> anyhow::Result<Option<RuntimeVpnPortalConfig>> {
-    Ok(config.gen_config()?.get_vpn_portal_config())
+    Ok(config.gen_config()?.parsed().vpn_portal_config.clone())
 }
 
 fn diff_vpn_portal_clients(
@@ -266,7 +265,8 @@ fn client_name_only(name: &str) -> easytier::proto::api::manage::VpnPortalClient
 fn normalized_managed_credentials(
     config: &NetworkConfig,
 ) -> anyhow::Result<Vec<ManagedCredentialConfig>> {
-    Ok(NetworkConfig::new_from_config(config.gen_config()?)?.managed_credentials)
+    let generated = config.gen_config()?;
+    Ok(network_config_from_raw(generated.raw()).managed_credentials)
 }
 
 fn is_automatic_windows_dev_name(dev_name: &str) -> bool {
@@ -335,17 +335,16 @@ fn web_source_runtime_patch(
             diff_proxy_networks(&current_proxy_networks, &desired_proxy_networks)?;
     }
 
-    let current_disable_relay_data = normalized_disable_relay_data(current)?;
-    let desired_disable_relay_data = normalized_disable_relay_data(desired)?;
-    if current_disable_relay_data != desired_disable_relay_data {
-        patch.disable_relay_data = Some(desired_disable_relay_data);
-    }
-
-    let current_prefer_peer_relay = normalized_prefer_peer_relay(current)?;
-    let desired_prefer_peer_relay = normalized_prefer_peer_relay(desired)?;
-    if current_prefer_peer_relay != desired_prefer_peer_relay {
-        patch.prefer_peer_relay = Some(desired_prefer_peer_relay);
-    }
+    let current_flags = current.gen_config()?.parsed().flags.clone();
+    let desired_flags = desired.gen_config()?.parsed().flags.clone();
+    let mut flags = FlagsPatch {
+        disable_relay_data: Some(desired_flags.disable_relay_data),
+        prefer_peer_relay: Some(desired_flags.prefer_peer_relay),
+        ..Default::default()
+    };
+    flags.retain(&current_flags);
+    patch.disable_relay_data = flags.disable_relay_data;
+    patch.prefer_peer_relay = flags.prefer_peer_relay;
 
     match (
         normalized_vpn_portal(current)?,

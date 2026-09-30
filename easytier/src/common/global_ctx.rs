@@ -4,19 +4,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::connectivity::composite::ConnectorRuntime as _;
 use easytier_core::peers::public_ipv6::PublicIpv6Host;
 use easytier_core::socket::{NetNamespace, SocketContext};
 use easytier_core::tunnel::effective_encryption_uses_xor;
 use easytier_core::{
-    config::{PeerId, peers::PeerRuntimeSnapshot, runtime::CoreInstanceRuntimeConfig},
-    instance::{CoreInstanceConfig, CoreInstanceHostConfig},
+    config::{PeerId, runtime::InstanceConfigStore},
+    instance::CoreInstanceHostConfig,
 };
 
 use super::{
-    config::{ConfigLoader, Flags, NetworkIdentity},
+    config::{Flags, NetworkIdentity},
     netns::NetNS,
 };
 #[cfg(feature = "management")]
@@ -80,20 +79,17 @@ pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
 pub struct GlobalCtx {
     pub inst_name: String,
     pub id: uuid::Uuid,
-    pub config: Box<dyn ConfigLoader>,
     pub net_ns: NetNS,
     pub network: NetworkIdentity,
 
     event_bus: EventBus,
 
-    cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
-    cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
-    hostname: Mutex<String>,
+    applied_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
 
     tun_device_name: Mutex<Option<String>>,
 
-    flags: ArcSwap<Flags>,
     runtime_endpoint_protocols: Option<HashSet<String>>,
+    runtime_config_store: InstanceConfigStore,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -103,7 +99,7 @@ impl std::fmt::Debug for GlobalCtx {
             .field("id", &self.id)
             .field("net_ns", &self.net_ns.name())
             .field("event_bus", &"EventBus")
-            .field("ipv4", &self.cached_ipv4)
+            .field("applied_ipv4", &self.applied_ipv4)
             .finish()
     }
 }
@@ -142,89 +138,43 @@ impl PublicIpv6Host for GlobalCtx {
 }
 
 impl GlobalCtx {
-    pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
-        Self::new_inner(config_fs, None, None)
-    }
-
-    pub(crate) fn new_with_runtime_config(
-        config_fs: impl ConfigLoader + 'static,
-        runtime: &CoreInstanceConfig,
-        host: &CoreInstanceHostConfig,
-    ) -> Self {
-        let runtime = CoreInstanceRuntimeConfig {
-            services: runtime.connectivity.runtime.clone(),
-            peer: Arc::new(runtime.peer.snapshot.clone()),
-        };
+    pub fn new(store: InstanceConfigStore, host: &CoreInstanceHostConfig) -> Self {
+        let snapshot = store.snapshot();
+        let parsed = snapshot.parsed();
+        let id = parsed.instance_id;
+        let network = parsed.network_identity.clone();
+        let net_ns = NetNS::new(parsed.netns.clone());
         let protocols = host.ignore_unsupported_config.then(|| {
             host.endpoint_protocols
                 .iter()
                 .map(|protocol| protocol.to_ascii_lowercase())
                 .collect()
         });
-        Self::new_inner(config_fs, Some(&runtime), protocols)
-    }
-
-    fn new_inner(
-        config_fs: impl ConfigLoader + 'static,
-        runtime: Option<&CoreInstanceRuntimeConfig>,
-        runtime_endpoint_protocols: Option<HashSet<String>>,
-    ) -> Self {
-        let id = config_fs.get_id();
-        let network = config_fs.get_network_identity();
-        let net_ns = NetNS::new(config_fs.get_netns());
-        let hostname = runtime
-            .and_then(|runtime| runtime.peer.runtime.core.node.hostname.clone())
-            .unwrap_or_else(|| match config_fs.get_hostname() {
-                hostname if !hostname.is_empty() => hostname,
-                _ => gethostname::gethostname().to_string_lossy().to_string(),
-            });
-        let flags = runtime
-            .map(|runtime| runtime.peer.flags.clone())
-            .unwrap_or_else(|| config_fs.get_flags());
-        let ipv4 = runtime
-            .map(|runtime| Self::runtime_ipv4(&runtime.peer))
-            .unwrap_or_else(|| config_fs.get_ipv4());
-        let ipv6 = runtime
-            .map(|runtime| Self::runtime_ipv6(&runtime.peer))
-            .unwrap_or_else(|| config_fs.get_ipv6());
-        if flags.enable_encryption && effective_encryption_uses_xor(&flags.encryption_algorithm) {
+        if parsed.flags.enable_encryption
+            && effective_encryption_uses_xor(&parsed.flags.encryption_algorithm)
+        {
             tracing::warn!("using insecure XOR because no AEAD encryption is configured");
         }
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
         GlobalCtx {
-            inst_name: config_fs.get_inst_name(),
+            inst_name: parsed.instance_name.clone(),
             id,
-            config: Box::new(config_fs),
-            net_ns: net_ns.clone(),
+            net_ns,
             network,
 
             event_bus,
-            cached_ipv4: AtomicCell::new(ipv4),
-            cached_ipv6: AtomicCell::new(ipv6),
-            hostname: Mutex::new(hostname),
+            applied_ipv4: AtomicCell::new(None),
 
             tun_device_name: Mutex::new(None),
 
-            flags: ArcSwap::new(Arc::new(flags)),
-            runtime_endpoint_protocols,
+            runtime_endpoint_protocols: protocols,
+            runtime_config_store: store,
         }
     }
 
-    pub(crate) fn runtime_ipv4(peer: &PeerRuntimeSnapshot) -> Option<cidr::Ipv4Inet> {
-        let prefix = peer.runtime.core.routes.ipv4.as_ref()?;
-        let IpAddr::V4(address) = prefix.address else {
-            return None;
-        };
-        cidr::Ipv4Inet::new(address, prefix.prefix_len).ok()
-    }
-
-    pub(crate) fn runtime_ipv6(peer: &PeerRuntimeSnapshot) -> Option<cidr::Ipv6Inet> {
-        let prefix = peer.runtime.core.routes.ipv6.as_ref()?;
-        let IpAddr::V6(address) = prefix.address else {
-            return None;
-        };
-        cidr::Ipv6Inet::new(address, prefix.prefix_len).ok()
+    pub fn runtime_config_store(&self) -> &InstanceConfigStore {
+        &self.runtime_config_store
     }
 
     pub fn subscribe(&self) -> EventBusSubscriber {
@@ -264,19 +214,24 @@ impl GlobalCtx {
     }
 
     pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
-        self.cached_ipv4.load()
-    }
-
-    pub fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
-        self.cached_ipv4.store(addr);
+        let config = self.runtime_config_store.snapshot();
+        if config.dhcp {
+            self.applied_ipv4.load()
+        } else {
+            config.ipv4
+        }
     }
 
     pub fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
-        self.cached_ipv6.load()
+        self.runtime_config_store.snapshot().ipv6
     }
 
-    pub fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
-        self.cached_ipv6.store(addr);
+    pub fn applied_ipv4(&self) -> Option<cidr::Ipv4Inet> {
+        self.applied_ipv4.load()
+    }
+
+    pub fn set_applied_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
+        self.applied_ipv4.store(addr);
     }
 
     pub fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
@@ -284,7 +239,7 @@ impl GlobalCtx {
     }
 
     pub fn get_id(&self) -> uuid::Uuid {
-        self.config.get_id()
+        self.runtime_config_store.snapshot().instance_id
     }
 
     pub fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
@@ -302,7 +257,10 @@ impl GlobalCtx {
     }
 
     pub fn get_network_identity(&self) -> NetworkIdentity {
-        self.config.get_network_identity()
+        self.runtime_config_store
+            .snapshot()
+            .network_identity
+            .clone()
     }
 
     pub fn get_network_name(&self) -> String {
@@ -310,39 +268,38 @@ impl GlobalCtx {
     }
 
     pub fn get_hostname(&self) -> String {
-        return self.hostname.lock().unwrap().clone();
-    }
-
-    pub fn set_hostname(&self, hostname: String) {
-        *self.hostname.lock().unwrap() = hostname;
+        self.runtime_config_store.snapshot().hostname.clone()
     }
 
     pub fn get_flags(&self) -> Flags {
-        self.flags.load().as_ref().clone()
-    }
-
-    pub fn set_flags(&self, flags: Flags) {
-        self.flags.store(Arc::new(flags));
+        self.runtime_config_store.snapshot().flags.clone()
     }
 
     pub fn flags_arc(&self) -> Arc<Flags> {
-        self.flags.load_full()
+        Arc::new(self.get_flags())
     }
 
     pub fn enable_exit_node(&self) -> bool {
-        self.flags.load().enable_exit_node || cfg!(target_env = "ohos")
+        self.runtime_config_store.snapshot().flags.enable_exit_node || cfg!(target_env = "ohos")
     }
 
     pub fn proxy_forward_by_system(&self) -> bool {
-        self.flags.load().proxy_forward_by_system
+        self.runtime_config_store
+            .snapshot()
+            .flags
+            .proxy_forward_by_system
     }
 
     pub fn no_tun(&self) -> bool {
-        self.flags.load().no_tun
+        self.runtime_config_store.snapshot().flags.no_tun
     }
 
     pub fn runtime_mapped_listeners(&self) -> Vec<url::Url> {
-        let listeners = self.config.get_mapped_listeners();
+        let listeners = self
+            .runtime_config_store
+            .snapshot()
+            .mapped_listeners
+            .clone();
         let Some(protocols) = &self.runtime_endpoint_protocols else {
             return listeners;
         };
@@ -355,14 +312,13 @@ impl GlobalCtx {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::common::config::TomlConfigLoader;
+    use easytier_core::config::{InstanceConfig, parse_instance_config, serialize_raw_to_toml};
 
     use super::*;
 
     #[tokio::test]
     async fn test_global_ctx() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
+        let global_ctx = get_mock_global_ctx();
 
         let mut subscriber = global_ctx.subscribe();
         let peer_id = rand::random();
@@ -391,8 +347,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_tun_device_name_tracks_explicit_runtime_state() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
+        let global_ctx = get_mock_global_ctx();
 
         assert_eq!(global_ctx.get_tun_device_name(), None);
 
@@ -421,75 +376,316 @@ pub mod tests {
 
     #[test]
     fn host_hostname_fallback_does_not_materialize_in_toml() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config.clone());
+        let config = parse_instance_config("test", "").unwrap();
+        let global_ctx = get_mock_global_ctx_with_config(config.clone());
 
         assert!(!global_ctx.get_hostname().is_empty());
-        assert!(!config.dump().contains("hostname"));
+        assert!(
+            !serialize_raw_to_toml(config.raw())
+                .unwrap()
+                .contains("hostname")
+        );
     }
 
     #[test]
     fn active_dhcp_ipv4_survives_declarative_config_replacement() {
-        let config = TomlConfigLoader::default();
-        config.set_dhcp(true);
-        let global_ctx = GlobalCtx::new(config.clone());
+        let config = parse_instance_config("test", "dhcp = true\n").unwrap();
+        let global_ctx = get_mock_global_ctx_with_config(config);
         let lease = "10.144.144.7/24".parse().unwrap();
 
-        global_ctx.set_ipv4(Some(lease));
-        config.set_ipv4(None);
+        global_ctx.set_applied_ipv4(Some(lease));
 
         assert_eq!(global_ctx.get_ipv4(), Some(lease));
     }
 
     #[test]
     fn runtime_state_does_not_rewrite_toml_config() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config.clone());
-        let mut runtime_flags = global_ctx.get_flags();
-        runtime_flags.enable_exit_node = true;
+        let config = parse_instance_config("test", "dhcp = true\n").unwrap();
+        let global_ctx = get_mock_global_ctx_with_config(config);
 
-        global_ctx.set_ipv4(Some("10.144.144.7/24".parse().unwrap()));
-        global_ctx.set_ipv6(Some("fd00::7/64".parse().unwrap()));
-        global_ctx.set_flags(runtime_flags);
+        global_ctx.set_applied_ipv4(Some("10.144.144.7/24".parse().unwrap()));
 
-        assert_eq!(config.get_ipv4(), None);
-        assert_eq!(config.get_ipv6(), None);
-        assert!(!config.get_flags().enable_exit_node);
         assert_eq!(
             global_ctx.get_ipv4(),
             Some("10.144.144.7/24".parse().unwrap())
         );
-        assert_eq!(global_ctx.get_ipv6(), Some("fd00::7/64".parse().unwrap()));
-        assert!(global_ctx.get_flags().enable_exit_node);
+        assert_eq!(global_ctx.runtime_config_store.snapshot().ipv4, None);
     }
 
     #[test]
     fn compact_runtime_does_not_advertise_unsupported_mapped_listeners() {
-        let config = TomlConfigLoader::default();
-        config.set_mapped_listeners(Some(vec![
-            "tcp://127.0.0.1:11010".parse().unwrap(),
-            "quic://127.0.0.1:11011".parse().unwrap(),
-        ]));
+        let config = parse_instance_config(
+            "test",
+            r#"mapped_listeners = ["tcp://127.0.0.1:11010", "quic://127.0.0.1:11011"]"#,
+        )
+        .unwrap();
         let host = crate::instance::config::compact_runtime_core_host_config();
-        let normalized =
-            easytier_core::instance::CoreInstanceConfig::from_toml_with_host(&config, &host)
-                .unwrap();
+        let prepared = easytier_core::instance::prepare_instance_config(config, &host).unwrap();
+        let store = InstanceConfigStore::new(prepared);
 
-        let global_ctx = GlobalCtx::new_with_runtime_config(config.clone(), &normalized, &host);
+        let global_ctx = GlobalCtx::new(store, &host);
 
-        assert_eq!(config.get_mapped_listeners().len(), 2);
         assert_eq!(global_ctx.runtime_mapped_listeners().len(), 1);
         assert_eq!(global_ctx.runtime_mapped_listeners()[0].scheme(), "tcp");
+    }
+
+    #[tokio::test]
+    async fn global_ctx_reads_hostname_and_flags_directly_from_runtime_config_store() {
+        let config = parse_instance_config(
+            "test",
+            r#"
+hostname = "before"
+[network_identity]
+network_name = "test"
+network_secret = "secret"
+"#,
+        )
+        .unwrap();
+        let instance = crate::instance::test_instance::TestInstance::new_with_process_runtime(
+            config,
+            easytier_core::process_runtime::CoreProcessRuntime::new(),
+        );
+        let global_ctx = instance.get_global_ctx();
+        let core = instance.get_core_instance();
+
+        assert_eq!(global_ctx.get_hostname(), "before");
+        assert!(!global_ctx.get_flags().disable_relay_data);
+
+        // Store updates via update_runtime_config must be immediately visible to GlobalCtx
+        let mut raw = core.config_store().snapshot().raw().clone();
+        raw.hostname = Some("after".to_owned());
+        raw.flags.disable_relay_data = Some(true);
+        let update = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+        core.update_runtime_config(update).await.unwrap();
+
+        assert_eq!(global_ctx.get_hostname(), "after");
+        assert!(global_ctx.get_flags().disable_relay_data);
+    }
+
+    #[tokio::test]
+    async fn updating_static_ipv4_and_ipv6_is_consistent_between_core_and_global_ctx() {
+        let config = parse_instance_config(
+            "test",
+            r#"
+hostname = "addr-sync"
+ipv4 = "10.144.144.1/24"
+[network_identity]
+network_name = "test"
+network_secret = "secret"
+"#,
+        )
+        .unwrap();
+        let instance = crate::instance::test_instance::TestInstance::new_with_process_runtime(
+            config,
+            easytier_core::process_runtime::CoreProcessRuntime::new(),
+        );
+        let global_ctx = instance.get_global_ctx();
+        let core = instance.get_core_instance();
+
+        assert_eq!(
+            global_ctx.get_ipv4(),
+            Some("10.144.144.1/24".parse().unwrap())
+        );
+
+        let mut raw = core.config_store().snapshot().raw().clone();
+        raw.ipv4 = Some("10.144.144.2/24".parse().unwrap());
+        raw.ipv6 = Some("fd00::2/64".parse().unwrap());
+        let update = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+        core.update_runtime_config(update).await.unwrap();
+
+        assert_eq!(
+            global_ctx.get_ipv4(),
+            Some("10.144.144.2/24".parse().unwrap())
+        );
+        assert_eq!(global_ctx.get_ipv6(), Some("fd00::2/64".parse().unwrap()));
+        assert_eq!(
+            core.config_store().snapshot().ipv4,
+            Some("10.144.144.2/24".parse().unwrap())
+        );
+        assert_eq!(
+            core.config_store().snapshot().ipv6,
+            Some("fd00::2/64".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn management_patch_mapped_listeners_updates_runtime_mapped_listeners() {
+        let config = parse_instance_config(
+            "test",
+            r#"
+hostname = "listeners-patch"
+mapped_listeners = ["tcp://127.0.0.1:11010"]
+[network_identity]
+network_name = "test"
+network_secret = "secret"
+"#,
+        )
+        .unwrap();
+        let mut instance = crate::instance::test_instance::TestInstance::new_with_process_runtime(
+            config,
+            easytier_core::process_runtime::CoreProcessRuntime::new(),
+        );
+        let global_ctx = instance.get_global_ctx();
+        assert_eq!(global_ctx.runtime_mapped_listeners().len(), 1);
+
+        instance.run().await.unwrap();
+        let patcher = instance.get_config_patcher();
+        let patch = crate::proto::api::config::InstanceConfigPatch {
+            mapped_listeners: vec![crate::proto::api::config::UrlPatch {
+                action: crate::proto::api::config::ConfigPatchAction::Add.into(),
+                url: Some("tcp://127.0.0.1:11012".parse::<url::Url>().unwrap().into()),
+            }],
+            ..Default::default()
+        };
+        patcher.apply_patch(patch).await.unwrap();
+
+        assert_eq!(global_ctx.runtime_mapped_listeners().len(), 2);
+        instance.clear_resources().await;
+    }
+
+    #[test]
+    fn get_flags_is_consistent_with_convenience_getters() {
+        let config = parse_instance_config(
+            "test",
+            r#"[flags]
+enable_exit_node = true
+proxy_forward_by_system = true
+no_tun = true
+"#,
+        )
+        .unwrap();
+
+        let global_ctx = get_mock_global_ctx_with_config(config);
+        let gflags = global_ctx.get_flags();
+
+        assert_eq!(gflags.enable_exit_node, global_ctx.enable_exit_node());
+        assert_eq!(
+            gflags.proxy_forward_by_system,
+            global_ctx.proxy_forward_by_system()
+        );
+        assert_eq!(gflags.no_tun, global_ctx.no_tun());
+    }
+
+    #[test]
+    fn modifying_hostname_retains_raw_fields_ignored_by_host() {
+        let mut raw = easytier_core::config::InstanceConfigRaw {
+            hostname: Some("original".to_string()),
+            network_identity: Some(NetworkIdentity::new("test".into(), "secret".into())),
+            proxy_network: Some(vec![easytier_core::config::toml::ProxyNetworkConfig {
+                cidr: "10.1.2.0/24".parse().unwrap(),
+                mapped_cidr: None,
+                allow: None,
+            }]),
+            ..Default::default()
+        };
+
+        raw.hostname = Some("renamed".to_string());
+        let candidate = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+
+        assert_eq!(candidate.parsed().hostname, "renamed");
+        assert_eq!(candidate.raw().proxy_network.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn secure_mode_default_admin_identity_preserved_across_serialization_and_reload() {
+        let config = parse_instance_config(
+            "test",
+            r#"
+[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        assert!(config.parsed().network_identity.network_secret.is_some());
+        assert_eq!(
+            config.parsed().network_identity.network_secret.as_deref(),
+            Some("")
+        );
+        assert_eq!(config.raw().network_identity, None);
+
+        let mut raw = config.into_raw();
+        raw.hostname = Some("new-host".to_string());
+        let updated = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+
+        assert_eq!(
+            updated.parsed().network_identity.network_secret.as_deref(),
+            Some("")
+        );
+        assert_eq!(updated.raw().network_identity, None);
+    }
+
+    #[tokio::test]
+    async fn dhcp_allocated_address_not_overwritten_by_runtime_update_and_failure_returns_actual() {
+        let config = parse_instance_config(
+            "test",
+            r#"
+hostname = "dhcp-node"
+dhcp = true
+[network_identity]
+network_name = "test"
+network_secret = "secret"
+"#,
+        )
+        .unwrap();
+        let instance = crate::instance::test_instance::TestInstance::new_with_process_runtime(
+            config,
+            easytier_core::process_runtime::CoreProcessRuntime::new(),
+        );
+        let global_ctx = instance.get_global_ctx();
+        let core = instance.get_core_instance();
+
+        let lease: cidr::Ipv4Inet = "10.144.144.99/24".parse().unwrap();
+        global_ctx.set_applied_ipv4(Some(lease));
+        assert_eq!(global_ctx.get_ipv4(), Some(lease));
+
+        let mut raw = core.config_store().snapshot().raw().clone();
+        raw.hostname = Some("renamed-dhcp-node".to_string());
+        let update = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+        core.update_runtime_config(update).await.unwrap();
+
+        assert_eq!(global_ctx.get_hostname(), "renamed-dhcp-node");
+        assert_eq!(global_ctx.get_ipv4(), Some(lease));
+        assert_eq!(global_ctx.applied_ipv4(), Some(lease));
+    }
+
+    #[test]
+    fn windows_auto_device_name_does_not_pollute_config() {
+        let config = parse_instance_config(
+            "test",
+            r#"
+hostname = "win-tun-test"
+[network_identity]
+network_name = "test"
+network_secret = "secret"
+"#,
+        )
+        .unwrap();
+        let global_ctx = get_mock_global_ctx_with_config(config);
+
+        assert_eq!(global_ctx.get_flags().dev_name, "");
+        assert_eq!(
+            global_ctx.runtime_config_store.snapshot().flags.dev_name,
+            ""
+        );
+    }
+
+    pub fn get_mock_global_ctx_with_config(config: InstanceConfig) -> ArcGlobalCtx {
+        let host = crate::instance::config::runtime_core_host_config();
+        let prepared = easytier_core::instance::prepare_instance_config(config, &host).unwrap();
+        let store = InstanceConfigStore::new(prepared);
+        Arc::new(GlobalCtx::new(store, &host))
     }
 
     pub fn get_mock_global_ctx_with_network(
         network_identy: Option<NetworkIdentity>,
     ) -> ArcGlobalCtx {
-        let config_fs = TomlConfigLoader::default();
-        config_fs.set_inst_name(format!("test_{}", config_fs.get_id()));
-        config_fs.set_network_identity(network_identy.unwrap_or_default());
-
-        Arc::new(GlobalCtx::new(config_fs))
+        let mut raw = easytier_core::config::InstanceConfigRaw::default();
+        if let Some(id) = network_identy {
+            raw.network_identity = Some(id);
+        }
+        let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+        get_mock_global_ctx_with_config(config)
     }
 
     pub fn get_mock_global_ctx() -> ArcGlobalCtx {

@@ -537,10 +537,7 @@ mod tests {
 
     use axum::{Json, Router, extract::State, routing::post};
     use easytier::{
-        common::{
-            MachineIdOptions,
-            config::{ConfigSource, NetworkConfigExt},
-        },
+        common::{MachineIdOptions, config::ConfigSource},
         instance::factory::{
             NativeInstanceManager, native_compact_instance_manager_with_runtime,
             native_instance_manager,
@@ -903,7 +900,7 @@ mod tests {
             loop {
                 if let Some(config) = manager
                     .config(inst_id)
-                    .and_then(|config| NetworkConfig::new_from_config(&config).ok())
+                    .map(|config| easytier_core::config::api::network_config_from_raw(config.raw()))
                     .filter(|config| predicate(config))
                 {
                     break config;

@@ -1,14 +1,15 @@
 use super::{CoreInstance, CoreInstanceHost, CoreInstanceHostConfig};
+use crate::config::runtime::InstanceConfigStore;
 
 impl<H> CoreInstance<H>
 where
     H: CoreInstanceHost,
 {
-    pub fn toml_config(&self) -> Option<crate::config::toml::TomlConfig> {
-        self.management.toml_config()
+    pub(crate) fn host_config(&self) -> &CoreInstanceHostConfig {
+        &self.host_config
     }
 
-    pub(crate) fn host_config(&self) -> &CoreInstanceHostConfig {
-        self.management.host_config()
+    pub fn config_store(&self) -> &InstanceConfigStore {
+        &self.runtime_config
     }
 }

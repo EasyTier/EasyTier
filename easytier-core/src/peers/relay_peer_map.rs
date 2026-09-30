@@ -774,13 +774,13 @@ mod tests {
     use super::*;
     use crate::{
         peers::context::{ArcPeerContext, NetworkIdentity, PeerContext},
-        proto::common::{FlagsInConfig, SecureModeConfig},
+        proto::common::{Flags, SecureModeConfig},
     };
 
     struct RelayTestContext {
         network_identity: NetworkIdentity,
         secure_mode: SecureModeConfig,
-        flags: FlagsInConfig,
+        flags: Flags,
     }
 
     impl PeerContext for RelayTestContext {
@@ -792,7 +792,7 @@ mod tests {
             Some(self.secure_mode.clone())
         }
 
-        fn flags(&self) -> FlagsInConfig {
+        fn flags(&self) -> Flags {
             self.flags.clone()
         }
     }
@@ -866,7 +866,7 @@ mod tests {
                 local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
                 local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
             },
-            flags: FlagsInConfig {
+            flags: Flags {
                 encryption_algorithm: "aes-gcm".to_owned(),
                 ..Default::default()
             },

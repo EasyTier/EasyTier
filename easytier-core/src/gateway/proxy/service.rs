@@ -11,8 +11,7 @@ use cidr::Ipv4Inet;
 use tokio::sync::Mutex;
 
 use crate::{
-    config::IpPrefix,
-    config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
+    config::{InstanceConfig, runtime::InstanceConfigStore},
     connectivity::{
         direct::DirectConnectorHost, hole_punch::tcp::TcpHolePunchHost, protocol::protocol_uses_udp,
     },
@@ -44,38 +43,27 @@ const PROXY_FRAGMENT_TIMEOUT: Duration = Duration::from_secs(10);
 fn udp_proxy_bind_options(context: SocketContext) -> UdpBindOptions {
     UdpBindOptions::proxy_nat().with_context(context.with_ip_version(IpVersion::V4))
 }
-
-fn ipv4_inet(prefix: &IpPrefix) -> Option<Ipv4Inet> {
-    let IpAddr::V4(address) = prefix.address else {
-        return None;
-    };
-    Ipv4Inet::new(address, prefix.prefix_len).ok()
-}
-
-fn smoltcp_proxy_inet() -> Ipv4Inet {
+pub fn smoltcp_proxy_inet() -> Ipv4Inet {
     Ipv4Inet::new(Ipv4Addr::new(192, 88, 99, 254), 24)
         .expect("smoltcp proxy address must be a valid IPv4 interface")
 }
 
+pub(crate) use super::ProxyHostPolicy;
+
 fn runtime_snapshot(
-    config: &CoreInstanceRuntimeConfig,
+    config: &InstanceConfig,
+    effective_ipv4: Option<Ipv4Inet>,
     smoltcp_enabled: bool,
+    force_exit_node: bool,
 ) -> ProxyRuntimeSnapshot {
-    let virtual_inet = config
-        .peer
-        .runtime
-        .core
-        .routes
-        .ipv4
-        .as_ref()
-        .and_then(ipv4_inet);
+    let virtual_inet = effective_ipv4;
     ProxyRuntimeSnapshot {
         local_inet: smoltcp_enabled.then(smoltcp_proxy_inet).or(virtual_inet),
         virtual_ipv4: virtual_inet.map(|inet| inet.address()),
-        no_tun: config.services.proxy.no_tun,
-        enable_exit_node: config.services.proxy.enable_exit_node,
+        no_tun: config.flags.no_tun,
+        enable_exit_node: config.flags.enable_exit_node || force_exit_node,
         smoltcp_enabled,
-        latency_first: config.peer.flags.latency_first && !config.peer.flags.p2p_only,
+        latency_first: config.flags.latency_first && !config.flags.p2p_only,
     }
 }
 
@@ -87,10 +75,11 @@ where
     host: Arc<H>,
     protected_tcp_ports: Arc<ProtectedTcpPortRegistry>,
     running_listeners: Arc<RunningListenerRegistry>,
-    config: CoreRuntimeConfigStore,
+    config: InstanceConfigStore,
     stats: Arc<StatsManager>,
     protocol_label: &'static str,
     smoltcp_enabled: AtomicBool,
+    host_policy: ProxyHostPolicy,
 }
 
 impl<H> CoreProxyRuntime<H>
@@ -103,8 +92,9 @@ where
         host: Arc<H>,
         protected_tcp_ports: Arc<ProtectedTcpPortRegistry>,
         running_listeners: Arc<RunningListenerRegistry>,
-        config: CoreRuntimeConfigStore,
+        config: InstanceConfigStore,
         protocol_label: &'static str,
+        host_policy: ProxyHostPolicy,
     ) -> Arc<Self> {
         Arc::new(Self {
             stats: peer_manager.stats_manager(),
@@ -115,14 +105,17 @@ where
             config,
             protocol_label,
             smoltcp_enabled: AtomicBool::new(false),
+            host_policy,
         })
     }
 
     pub(crate) fn latch_smoltcp(&self) {
-        self.smoltcp_enabled.store(
-            self.config.snapshot().services.proxy.force_smoltcp,
-            Ordering::Release,
-        );
+        let snapshot = self.config.snapshot();
+        let force_smoltcp = self.host_policy.smoltcp_available
+            && (snapshot.flags.use_smoltcp
+                || snapshot.flags.no_tun
+                || self.host_policy.requires_smoltcp);
+        self.smoltcp_enabled.store(force_smoltcp, Ordering::Release);
     }
 
     fn should_deny_proxy(&self, destination: SocketAddr, is_udp: bool) -> bool {
@@ -149,8 +142,10 @@ where
 {
     fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
         runtime_snapshot(
-            self.config.snapshot().as_ref(),
+            &self.config.snapshot(),
+            self.peer_manager.my_ipv4(),
             self.smoltcp_enabled.load(Ordering::Acquire),
+            self.host_policy.force_exit_node,
         )
     }
 
@@ -207,7 +202,7 @@ where
     }
 
     fn udp_response_ipv4_mtu(&self) -> usize {
-        self.config.snapshot().services.proxy.udp_response_ipv4_mtu
+        1280
     }
 }
 
@@ -288,20 +283,22 @@ where
         host: Arc<H>,
         protected_tcp_ports: Arc<ProtectedTcpPortRegistry>,
         running_listeners: Arc<RunningListenerRegistry>,
-        config: CoreRuntimeConfigStore,
+        config: InstanceConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         tcp_socket_context: SocketContext,
         udp_socket_context: SocketContext,
         icmp_socket_context: SocketContext,
         icmp_host: Option<Arc<dyn IcmpProxyHost>>,
+        host_policy: ProxyHostPolicy,
     ) -> Arc<Self> {
         let runtime = CoreProxyRuntime::new(
             peer_manager.clone(),
             host.clone(),
             protected_tcp_ports,
             running_listeners,
-            config.clone(),
+            config,
             "TCP",
+            host_policy,
         );
         let tcp_connector = Arc::new(
             TcpSocketProxyConnector::new(host.clone())
@@ -390,14 +387,7 @@ where
             self.icmp_started.store(true, Ordering::Release);
             if let Err(error) = icmp.start().await {
                 self.icmp_started.store(false, Ordering::Release);
-                if self
-                    .runtime
-                    .config
-                    .snapshot()
-                    .services
-                    .proxy
-                    .icmp_failure_is_fatal
-                {
+                if self.runtime.host_policy.icmp_failure_is_fatal {
                     self.stop_started();
                     return Err(error);
                 }
@@ -418,80 +408,58 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::Ipv4Addr;
 
-    use crate::{
-        config::gateway::ProxyRuntimeConfig,
-        config::peers::{PeerRuntimeConfig, PeerRuntimeSnapshot},
-        config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
-        config::{CoreConfig, IpPrefix, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig},
-    };
+    use optionize::Optionizable;
 
     use super::*;
 
-    fn test_config() -> CoreInstanceRuntimeConfig {
-        let mut peer = PeerRuntimeSnapshot::new(
-            PeerRuntimeConfig {
-                core: CoreConfig {
-                    routes: RouteConfig {
-                        ipv4: Some(IpPrefix {
-                            address: IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3)),
-                            prefix_len: 24,
-                        }),
-                        proxy_networks: vec![ProxyNetworkConfig {
-                            real: IpPrefix {
-                                address: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)),
-                                prefix_len: 24,
-                            },
-                            mapped: Some(IpPrefix {
-                                address: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 0)),
-                                prefix_len: 24,
-                            }),
-                        }],
-                        ..Default::default()
-                    },
-                    peer_policy: PeerPolicyConfig {
-                        latency_first: true,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                network_identity: Default::default(),
-                stun_info: Default::default(),
-                feature_flags: Default::default(),
-                secure_mode: None,
-                host_routing: Default::default(),
-            },
-            Default::default(),
-        );
-        peer.flags.latency_first = true;
-        CoreInstanceRuntimeConfig {
-            services: CoreRuntimeConfig {
-                proxy: ProxyRuntimeConfig {
-                    enable_exit_node: true,
-                    no_tun: true,
-                    ..Default::default()
-                },
+    fn test_config() -> InstanceConfig {
+        let parsed = crate::config::InstanceConfigParsed {
+            ipv4: Some(cidr::Ipv4Inet::new(Ipv4Addr::new(10, 1, 2, 3), 24).unwrap()),
+            flags: crate::config::toml::Flags {
+                enable_exit_node: true,
+                no_tun: true,
+                latency_first: true,
                 ..Default::default()
             },
-            peer: Arc::new(peer),
-        }
+            ..Default::default()
+        };
+        let raw = parsed.clone().downgrade();
+        InstanceConfig::new(parsed, raw, ())
     }
 
     #[test]
     fn runtime_snapshot_uses_submitted_policy_and_latched_smoltcp() {
         let config = test_config();
 
-        let kernel = runtime_snapshot(&config, false);
+        let kernel = runtime_snapshot(&config, config.ipv4, false, false);
         assert_eq!(kernel.local_inet.unwrap().to_string(), "10.1.2.3/24");
         assert_eq!(kernel.virtual_ipv4, Some(Ipv4Addr::new(10, 1, 2, 3)));
         assert!(kernel.enable_exit_node);
         assert!(kernel.no_tun);
         assert!(kernel.latency_first);
 
-        let smoltcp = runtime_snapshot(&config, true);
+        let smoltcp = runtime_snapshot(&config, config.ipv4, true, false);
         assert_eq!(smoltcp.local_inet, Some(smoltcp_proxy_inet()));
         assert_eq!(smoltcp.virtual_ipv4, kernel.virtual_ipv4);
+
+        // Host policy force_exit_node overrides disabled exit node in config
+        let mut disabled_exit_node_parsed = config.parsed().clone();
+        disabled_exit_node_parsed.flags.enable_exit_node = false;
+        disabled_exit_node_parsed.ipv4 = None;
+        let disabled_raw = disabled_exit_node_parsed.clone().downgrade();
+        let disabled_config = InstanceConfig::new(disabled_exit_node_parsed, disabled_raw, ());
+
+        let forced = runtime_snapshot(&disabled_config, None, false, true);
+        assert!(forced.enable_exit_node);
+        assert_eq!(forced.virtual_ipv4, None);
+
+        // Effective IPv4 provided from DHCP (even when config.ipv4 is unset)
+        let dhcp_inet: Ipv4Inet = "10.126.1.5/24".parse().unwrap();
+        let dhcp_snapshot = runtime_snapshot(&disabled_config, Some(dhcp_inet), false, false);
+        assert_eq!(dhcp_snapshot.local_inet, Some(dhcp_inet));
+        assert_eq!(dhcp_snapshot.virtual_ipv4, Some(dhcp_inet.address()));
     }
 
     #[test]

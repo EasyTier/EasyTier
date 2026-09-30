@@ -30,10 +30,6 @@ pub(super) fn node_config<H>(instance: &CoreInstance<H>) -> anyhow::Result<Strin
 where
     H: CoreInstanceHost,
 {
-    use crate::config::toml::ConfigLoader as _;
-
-    instance
-        .toml_config()
-        .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))
-        .map(|config| config.dump())
+    let snapshot = instance.config_store().snapshot();
+    crate::config::serialize_raw_to_toml(snapshot.raw()).map_err(|e| anyhow::anyhow!(e))
 }

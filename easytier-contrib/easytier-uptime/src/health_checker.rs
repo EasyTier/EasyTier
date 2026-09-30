@@ -8,7 +8,8 @@ use anyhow::Context as _;
 use dashmap::DashMap;
 use easytier::{
     common::config::{
-        ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
+        ConfigFileControl, InstanceConfig, InstanceConfigRaw, NetworkIdentity, PeerConfig,
+        serialize_raw_to_toml,
     },
     instance::factory::{NativeInstanceManager, native_instance_manager},
 };
@@ -267,7 +268,7 @@ pub struct HealthChecker {
     inst_id_map: DashMap<i32, uuid::Uuid>,
     node_tasks: DashMap<i32, AbortOnDropHandle<()>>,
     node_records: Arc<DashMap<i32, HealthyMemRecord>>,
-    node_cfg: Arc<DashMap<i32, TomlConfigLoader>>,
+    node_cfg: Arc<DashMap<i32, InstanceConfig>>,
 }
 
 impl HealthChecker {
@@ -360,9 +361,11 @@ impl HealthChecker {
             .get(&node_id)
             .ok_or_else(|| anyhow::anyhow!("old node cfg not found, node_id: {}", node_id))?
             .clone();
-        let new_cfg = self.get_node_cfg(node_id, Some(old_cfg.get_id())).await?;
+        let new_cfg = self
+            .get_node_cfg(node_id, Some(old_cfg.parsed().instance_id))
+            .await?;
 
-        if new_cfg.dump() != old_cfg.dump() {
+        if serialize_raw_to_toml(new_cfg.raw()).ok() != serialize_raw_to_toml(old_cfg.raw()).ok() {
             self.remove_node(node_id).await?;
             self.add_node(node_id).await?;
             info!("node {} cfg updated", node_id);
@@ -375,9 +378,8 @@ impl HealthChecker {
         &self,
         node_info: &shared_nodes::Model,
         inst_id: Option<uuid::Uuid>,
-    ) -> anyhow::Result<TomlConfigLoader> {
-        let cfg = TomlConfigLoader::default();
-        cfg.set_peers(vec![PeerConfig {
+    ) -> anyhow::Result<InstanceConfig> {
+        let peer_config = PeerConfig {
             uri: format!(
                 "{}://{}:{}",
                 node_info.protocol, node_info.host, node_info.port
@@ -385,25 +387,28 @@ impl HealthChecker {
             .parse()
             .with_context(|| "failed to parse peer uri")?,
             peer_public_key: None,
-        }]);
+        };
 
-        let inst_id = inst_id.unwrap_or(uuid::Uuid::new_v4());
-        cfg.set_id(inst_id);
-        cfg.set_network_identity(NetworkIdentity::new(
+        let inst_id = inst_id.unwrap_or_else(uuid::Uuid::new_v4);
+        let mut raw = InstanceConfigRaw {
+            peer: Some(vec![peer_config]),
+            instance_id: Some(inst_id),
+            hostname: Some("HealthCheckNode".to_string()),
+            ..Default::default()
+        };
+        raw.set_network_identity(NetworkIdentity::new(
             node_info.network_name.clone(),
             node_info.network_secret.clone(),
         ));
 
-        cfg.set_hostname(Some("HealthCheckNode".to_string()));
-
-        let mut flags = cfg.get_flags();
+        let mut flags = raw.get_flags();
         flags.no_tun = true;
         flags.disable_p2p = true;
         flags.disable_udp_hole_punching = true;
         flags.disable_tcp_hole_punching = true;
-        cfg.set_flags(flags);
+        raw.set_flags(flags);
 
-        Ok(cfg)
+        InstanceConfig::try_from(raw).with_context(|| "failed to build InstanceConfig")
     }
 
     pub async fn test_connection(
@@ -417,7 +422,7 @@ impl HealthChecker {
             .with_context(|| "failed to run network instance")?;
         let cleanup = InstanceCleanupGuard {
             manager: self.instance_mgr.clone(),
-            instance_id: Some(cfg.get_id()),
+            instance_id: Some(cfg.parsed().instance_id),
             runtime: tokio::runtime::Handle::current(),
         };
 
@@ -425,7 +430,9 @@ impl HealthChecker {
             let now = Instant::now();
             let mut err = None;
             while now.elapsed() < max_time {
-                match Self::test_node_healthy(cfg.get_id(), self.instance_mgr.clone()).await {
+                match Self::test_node_healthy(cfg.parsed().instance_id, self.instance_mgr.clone())
+                    .await
+                {
                     Ok(_) => {
                         return Ok(());
                     }
@@ -450,7 +457,7 @@ impl HealthChecker {
         &self,
         node_id: i32,
         inst_id: Option<uuid::Uuid>,
-    ) -> anyhow::Result<TomlConfigLoader> {
+    ) -> anyhow::Result<InstanceConfig> {
         let node_info = NodeOperations::get_node_by_id(&self.db, node_id)
             .await
             .with_context(|| format!("failed to get node by id: {}", node_id))?
@@ -463,13 +470,13 @@ impl HealthChecker {
         info!(
             "Add node {} to health checker, cfg: {}",
             node_id,
-            cfg.dump()
+            serialize_raw_to_toml(cfg.raw()).unwrap_or_default()
         );
 
         self.instance_mgr
             .run_network_instance(cfg.clone(), ConfigFileControl::STATIC_CONFIG)
             .with_context(|| "failed to run network instance")?;
-        self.inst_id_map.insert(node_id, cfg.get_id());
+        self.inst_id_map.insert(node_id, cfg.parsed().instance_id);
 
         // 初始化内存记录（如果不存在）
         if !self.node_records.contains_key(&node_id) {
@@ -497,7 +504,7 @@ impl HealthChecker {
         // 启动健康检查任务
         let task = AbortOnDropHandle::new(tokio::spawn(Self::node_health_check_task(
             node_id,
-            cfg.get_id(),
+            cfg.parsed().instance_id,
             Arc::clone(&self.instance_mgr),
             self.db.clone(),
             Arc::clone(&self.node_records),

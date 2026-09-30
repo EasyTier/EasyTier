@@ -7,7 +7,7 @@ use tokio::runtime::Builder;
 use url::Url;
 
 use crate::{
-    config::{api_input::NetworkConfigExt, toml::ConfigLoader},
+    config::{api_input::NetworkConfigExt, serialize_raw_to_toml, toml::ConfigSourceConfig},
     connectivity::{
         connector_host::{ConnectorHost, new_connector_host},
         manual::{
@@ -81,57 +81,20 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
             Err(_) => NetworkingMethod::Standalone,
         };
 
-    NetworkConfig {
-        instance_id: config.instance_id.clone(),
-        dhcp: config.dhcp,
-        virtual_ipv4: config.virtual_ipv4.clone(),
-        network_length: config.network_length,
-        hostname: config.hostname.clone(),
-        network_name: config.network_name.clone(),
-        network_secret: config.network_secret.clone(),
-        networking_method: Some(networking_method as i32),
-        public_server_url,
-        peer_urls: config
-            .peer_urls
-            .iter()
-            .filter(|url| supports_hosted_tunnel_url(url))
-            .cloned()
-            .collect(),
-        proxy_cidrs: config.proxy_cidrs.clone(),
-        listener_urls: config
-            .listener_urls
-            .iter()
-            .filter(|url| supports_hosted_tunnel_url(url))
-            .cloned()
-            .collect(),
-        latency_first: config.latency_first,
-        disable_ipv6: config.disable_ipv6,
-        disable_p2p: config.disable_p2p,
-        no_tun: config.no_tun,
-        relay_all_peer_rpc: config.relay_all_peer_rpc,
-        enable_relay_network_whitelist: config.enable_relay_network_whitelist,
-        relay_network_whitelist: config.relay_network_whitelist.clone(),
-        disable_encryption: config.disable_encryption,
-        disable_udp_hole_punching: config.disable_udp_hole_punching,
-        mtu: config.mtu,
-        enable_private_mode: config.enable_private_mode,
-        disable_sym_hole_punching: config.disable_sym_hole_punching,
-        p2p_only: config.p2p_only,
-        disable_tcp_hole_punching: config.disable_tcp_hole_punching,
-        secure_mode: config.secure_mode.clone(),
-        acl: config.acl.clone(),
-        port_forwards: config.port_forwards.clone(),
-        lazy_p2p: config.lazy_p2p,
-        need_p2p: config.need_p2p,
-        instance_recv_bps_limit: config.instance_recv_bps_limit,
-        disable_upnp: config.disable_upnp,
-        disable_relay_data: config.disable_relay_data,
-        prefer_peer_relay: config.prefer_peer_relay,
-        enable_udp_broadcast_relay: config.enable_udp_broadcast_relay,
-        managed_credentials: config.managed_credentials.clone(),
-        peers,
-        ..Default::default()
-    }
+    let mut hosted = config.clone();
+    hosted.public_server_url = public_server_url;
+    hosted.peers = peers;
+    hosted.networking_method = Some(networking_method as i32);
+    hosted
+        .peer_urls
+        .retain(|url| supports_hosted_tunnel_url(url));
+    hosted
+        .listener_urls
+        .retain(|url| supports_hosted_tunnel_url(url));
+    hosted.enable_vpn_portal = None;
+    hosted.data_compress_algo = None;
+    hosted.credential_file = None;
+    hosted
 }
 
 struct WasiConfigServerConnector {
@@ -217,7 +180,8 @@ impl Handler for HostManagementHandler {
                 let network_config = request.config.unwrap_or_default();
                 let config = hosted_network_config(&network_config).gen_config()?;
                 Ok(ValidateConfigResponse {
-                    toml_config: config.dump(),
+                    toml_config: serialize_raw_to_toml(config.raw())
+                        .map_err(anyhow::Error::from)?,
                 }
                 .encode_to_vec()
                 .into())
@@ -229,19 +193,19 @@ impl Handler for HostManagementHandler {
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("config is required"))?;
                 let config = hosted_network_config(&network_config).gen_config()?;
+                let mut raw = config.into_raw();
                 let instance_id = request
                     .inst_id
                     .map(Into::into)
-                    .unwrap_or_else(|| config.get_id());
-                config.set_id(instance_id);
-                config.set_network_config_source(config_source_from_rpc(request.source));
-                self.forward(
-                    full_method_name,
-                    input,
-                    Some(config.dump()),
-                    Some(instance_id),
-                )
-                .await
+                    .or(raw.instance_id)
+                    .unwrap_or_else(uuid::Uuid::new_v4);
+                raw.instance_id = Some(instance_id);
+                if let Some(source) = config_source_from_rpc(request.source) {
+                    raw.source = Some(ConfigSourceConfig { source });
+                }
+                let toml_dump = serialize_raw_to_toml(&raw).map_err(anyhow::Error::from)?;
+                self.forward(full_method_name, input, Some(toml_dump), Some(instance_id))
+                    .await
             }
             _ => self.forward(full_method_name, input, None, None).await,
         }

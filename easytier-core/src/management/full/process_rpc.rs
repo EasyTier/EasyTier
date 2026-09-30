@@ -19,9 +19,11 @@ use easytier_proto::{
 
 use crate::{
     config::{
-        api::network_config_from_toml,
+        InstanceConfig,
+        api::network_config_from_raw,
         api_input::NetworkConfigExt as _,
-        toml::{ConfigLoader as _, ConfigSource, TomlConfig},
+        serialize_raw_to_toml,
+        toml::{ConfigSource, ConfigSourceConfig},
     },
     instance::{CoreInstance, CoreInstanceHost, manager::InstanceFactory},
 };
@@ -37,7 +39,7 @@ pub trait InstanceMutationHooks: Send + Sync + 'static {
         false
     }
 
-    async fn pre_run_network_instance(&self, _config: &TomlConfig) -> Result<(), String> {
+    async fn pre_run_network_instance(&self, _config: &InstanceConfig) -> Result<(), String> {
         Ok(())
     }
 
@@ -196,7 +198,7 @@ where
         &self,
         started_instance_id: Option<uuid::Uuid>,
         file_cleanup: Option<ConfigFileCleanup>,
-        restore_instance: Option<(TomlConfig, ConfigFileControl)>,
+        restore_instance: Option<(InstanceConfig, ConfigFileControl)>,
     ) {
         if let Some(instance_id) = started_instance_id
             && let Err(error) = self.instances.delete_network_instances([instance_id]).await
@@ -216,16 +218,17 @@ where
 
     pub async fn run_network_instance(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         requested_id: Option<uuid::Uuid>,
         overwrite: bool,
         requested_source: Option<ConfigSource>,
     ) -> anyhow::Result<uuid::Uuid> {
-        let mut instance_id = config.get_id();
-        if let Some(requested_id) = requested_id {
-            instance_id = requested_id;
-            config.set_id(instance_id);
-        }
+        let mut raw = config.into_raw();
+        let instance_id = requested_id
+            .or(raw.instance_id)
+            .unwrap_or_else(uuid::Uuid::new_v4);
+        raw.instance_id = Some(instance_id);
+
         let _mutation = self.mutation_lock.lock().await;
         let remote_managed = self.hooks.manages_remote_config_instances();
 
@@ -244,23 +247,31 @@ where
             }
             self.ensure_overwritable(instance_id, &control, remote_managed)
                 .await?;
-            config.set_network_config_source(requested_source.or(existing_source));
+            if let Some(source) = requested_source.or(existing_source) {
+                raw.source = Some(ConfigSourceConfig { source });
+            }
             replacing = true;
             restore_instance = self
                 .instances
                 .config(instance_id)
-                .map(|config| (config, control.clone()));
+                .map(|config| ((*config).clone(), control.clone()));
             control
         } else if let Some(config_dir) = self.instances.config_dir() {
-            config.set_network_config_source(requested_source);
+            if let Some(source) = requested_source {
+                raw.source = Some(ConfigSourceConfig { source });
+            }
             ConfigFileControl::new(
                 Some(config_dir.join(format!("{instance_id}.toml"))),
                 ConfigFilePermission::default(),
             )
         } else {
-            config.set_network_config_source(requested_source);
+            if let Some(source) = requested_source {
+                raw.source = Some(ConfigSourceConfig { source });
+            }
             ConfigFileControl::new(None, ConfigFilePermission::default())
         };
+
+        let config = InstanceConfig::try_from(raw)?;
 
         self.hooks
             .pre_run_network_instance(&config)
@@ -289,7 +300,8 @@ where
                     ));
                 }
             };
-            if let Err(error) = self.storage.write(path, config.dump().as_bytes()).await {
+            let toml_str = serialize_raw_to_toml(config.raw())?;
+            if let Err(error) = self.storage.write(path, toml_str.as_bytes()).await {
                 tracing::warn!(%error, path = %path.display(), "failed to write config file");
                 control.set_read_only(true);
             } else {
@@ -435,16 +447,16 @@ where
     /// Starts one caller-owned Instance while preserving its static control.
     pub async fn run_owned_network_instance(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         control: ConfigFileControl,
     ) -> anyhow::Result<uuid::Uuid> {
         let _mutation = self.mutation_lock.lock().await;
-        let instance_id = config.get_id();
+        let instance_id = config.parsed().instance_id;
         if self.instances.instance(instance_id).is_some() {
             anyhow::bail!("instance {instance_id} already exists");
         }
-        let instance_name = config.get_inst_name();
-        if super::resolve_optional_instance_by_name(self.instances.as_ref(), &instance_name)?
+        let instance_name = &config.parsed().instance_name;
+        if super::resolve_optional_instance_by_name(self.instances.as_ref(), instance_name)?
             .is_some()
         {
             anyhow::bail!("instance name {instance_name} already exists");
@@ -576,8 +588,9 @@ where
         _: BaseController,
         request: ValidateConfigRequest,
     ) -> rpc_types::error::Result<ValidateConfigResponse> {
+        let config = request.config.unwrap_or_default().gen_config()?;
         Ok(ValidateConfigResponse {
-            toml_config: request.config.unwrap_or_default().gen_config()?.dump(),
+            toml_config: serialize_raw_to_toml(config.raw()).map_err(|e| anyhow::anyhow!(e))?,
         })
     }
 
@@ -716,12 +729,11 @@ where
                 anyhow::anyhow!("configuration for instance {instance_id} is read-only").into(),
             );
         }
+        let snapshot = self.management.instances.config(instance_id);
         Ok(GetNetworkInstanceConfigResponse {
-            config: self
-                .management
-                .instances
-                .config(instance_id)
-                .map(|config| network_config_from_toml(&config)),
+            config: snapshot
+                .as_ref()
+                .map(|config| network_config_from_raw(config.raw())),
             source: config_source_to_rpc(
                 self.management
                     .instances
@@ -741,18 +753,22 @@ where
             let Some(instance) = self.management.instances.instance(instance_id) else {
                 continue;
             };
-            let Some(config) = instance.toml_config() else {
-                continue;
-            };
             let Some(control) = self.management.instances.config_control(instance_id) else {
                 continue;
             };
+            let snapshot = instance.config_store().snapshot();
+            let source = snapshot
+                .parsed()
+                .source
+                .as_ref()
+                .map(|s| s.source)
+                .unwrap_or(ConfigSource::User);
             metas.push(NetworkMeta {
                 inst_id: Some(instance_id.into()),
-                network_name: config.get_network_identity().network_name,
+                network_name: snapshot.parsed().network_identity.network_name.clone(),
                 config_permission: control.permission.into(),
                 instance_name: instance.instance_name().to_owned(),
-                source: config_source_to_rpc(config.get_network_config_source()),
+                source: config_source_to_rpc(source),
             });
         }
         Ok(ListNetworkInstanceMetaResponse { metas })

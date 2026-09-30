@@ -12,7 +12,7 @@ use std::{
 use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     foundation::task::reap_joinset_background,
     gateway::dataplane::{
         DataPlaneConsumerLease, DataPlaneError, DataPlaneErrorKind, DataPlaneRuntime,
@@ -113,7 +113,7 @@ where
 {
     operation: Mutex<()>,
     started: AtomicBool,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     data_plane: Arc<DataPlaneRuntime<H>>,
     host: Arc<H>,
     socket_context: SocketContext,
@@ -127,7 +127,7 @@ where
     H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
     pub(crate) fn new(
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         data_plane: Arc<DataPlaneRuntime<H>>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
@@ -147,9 +147,19 @@ where
     }
 
     async fn start_inner(&self) -> anyhow::Result<()> {
-        let Some(bind_addr) = self.runtime_config.snapshot().services.gateway.socks5_bind else {
+        let snapshot = self.runtime_config.snapshot();
+        let Some(socks5_url) = snapshot.socks5_proxy.as_ref() else {
             return Ok(());
         };
+        let host = socks5_url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("SOCKS5 proxy host is missing"))?;
+        let port = socks5_url
+            .port()
+            .ok_or_else(|| anyhow::anyhow!("SOCKS5 proxy port is missing"))?;
+        let bind_addr: SocketAddr = format!("{host}:{port}")
+            .parse()
+            .map_err(|error| anyhow::anyhow!("invalid SOCKS5 proxy address: {error}"))?;
         let options = TcpListenOptions::socks5(bind_addr);
         let bind = options
             .bind

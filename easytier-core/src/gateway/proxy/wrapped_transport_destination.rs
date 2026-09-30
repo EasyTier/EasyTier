@@ -13,13 +13,14 @@ use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore, connectivity::direct::DirectConnectorHost,
+    config::runtime::InstanceConfigStore, connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost, listener::RunningListenerRegistry,
     peers::peer_manager::PeerManagerCore, process_runtime::ProtectedTcpPortRegistry,
     socket::SocketContext,
 };
 
 use super::{
+    ProxyHostPolicy,
     cidr_table::ProxyCidrTable,
     service::CoreProxyRuntime,
     tcp_proxy_engine::{TcpNatEntrySnapshot, TcpNatEntryState},
@@ -162,9 +163,10 @@ where
         host: Arc<H>,
         protected_tcp_ports: Arc<ProtectedTcpPortRegistry>,
         running_listeners: Arc<RunningListenerRegistry>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
+        host_policy: ProxyHostPolicy,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime: CoreProxyRuntime::new(
@@ -174,6 +176,7 @@ where
                 running_listeners,
                 runtime_config,
                 "TCP",
+                host_policy,
             ),
             connector: TcpSocketProxyConnector::new(host).with_socket_context(socket_context),
             cidr_table,

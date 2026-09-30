@@ -43,7 +43,7 @@ use easytier::common::config::NetworkConfigExt;
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::common::{
     MachineIdOptions,
-    config::{ConfigLoader, TomlConfigLoader},
+    config::{network_config_from_raw, parse_instance_config},
 };
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
@@ -94,7 +94,7 @@ struct ManagedWebClient {
 fn network_name_for_instance(id: &Uuid) -> Option<String> {
     INSTANCE_MANAGER
         .config(*id)
-        .map(|config| config.get_network_identity().network_name)
+        .map(|config| config.parsed().network_identity.network_name.clone())
         .filter(|name| !name.trim().is_empty())
 }
 
@@ -655,10 +655,8 @@ fn resolve_instance_id_inner(instance_name: &str) -> Option<String> {
 }
 
 fn convert_toml_to_network_config_inner(toml_text: &str) -> Result<String, String> {
-    let config = NetworkConfig::new_from_config(
-        TomlConfigLoader::new_from_str(toml_text).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    let instance_config = parse_instance_config("ohos", toml_text).map_err(|e| e.to_string())?;
+    let config = network_config_from_raw(instance_config.raw());
     serde_json::to_string(&config).map_err(|e| e.to_string())
 }
 
@@ -707,7 +705,7 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
         return false;
     }
 
-    let inst_id = cfg.get_id();
+    let inst_id = cfg.parsed().instance_id;
     if INSTANCE_MANAGER.instance_ids().contains(&inst_id) {
         ohrs_log_error!("[Rust] instance {} already exists", inst_id);
         return false;

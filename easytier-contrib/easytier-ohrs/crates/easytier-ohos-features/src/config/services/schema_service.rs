@@ -1,6 +1,8 @@
 use easytier::proto::ALL_DESCRIPTOR_BYTES;
 use once_cell::sync::Lazy;
-use prost_reflect::{Cardinality, DescriptorPool, FieldDescriptor, Kind, MessageDescriptor};
+use prost_reflect::{
+    Cardinality, DescriptorPool, FieldDescriptor, FileDescriptor, Kind, MessageDescriptor,
+};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,7 +206,15 @@ fn build_node(
     }
 }
 
-fn build_map_entry_node(message_desc: &MessageDescriptor) -> NetworkConfigSchema {
+/// The messages being expanded further up, by full name. The pool carries the
+/// descriptor's own schema, whose messages refer back to each other, so a type
+/// that reaches one it is already inside stops instead of recursing forever.
+type ExpansionPath = Vec<String>;
+
+fn build_map_entry_node(
+    message_desc: &MessageDescriptor,
+    path: &mut ExpansionPath,
+) -> NetworkConfigSchema {
     let key_field = message_desc.map_entry_key_field();
     let value_field = message_desc.map_entry_value_field();
 
@@ -221,35 +231,49 @@ fn build_map_entry_node(message_desc: &MessageDescriptor) -> NetworkConfigSchema
         Vec::new(),
         Vec::new(),
         vec![
-            build_schema_field_node(&key_field),
-            build_schema_field_node(&value_field),
+            build_schema_field_node(&key_field, path),
+            build_schema_field_node(&value_field, path),
         ],
         Vec::new(),
     )
 }
 
-fn field_children(field: &FieldDescriptor) -> Vec<NetworkConfigSchema> {
+fn field_children(field: &FieldDescriptor, path: &mut ExpansionPath) -> Vec<NetworkConfigSchema> {
     if field.is_map()
         && let Kind::Message(message_desc) = field.kind()
     {
-        return vec![build_map_entry_node(&message_desc)];
+        return vec![build_map_entry_node(&message_desc, path)];
     }
 
     match field.kind() {
-        Kind::Message(message_desc) => build_message_children(&message_desc),
+        Kind::Message(message_desc) => build_message_children(&message_desc, path),
         _ => Vec::new(),
     }
 }
 
-fn build_message_children(message_desc: &MessageDescriptor) -> Vec<NetworkConfigSchema> {
-    message_desc
-        .fields()
-        .filter(should_expose_field)
-        .map(|field| build_schema_field_node(&field))
-        .collect()
+fn build_message_children(
+    message_desc: &MessageDescriptor,
+    path: &mut ExpansionPath,
+) -> Vec<NetworkConfigSchema> {
+    let full_name = message_desc.full_name().to_string();
+    if path.contains(&full_name) {
+        return Vec::new();
+    }
+
+    path.push(full_name);
+    let mut children = Vec::new();
+    for field in message_desc.fields().filter(should_expose_field) {
+        children.push(build_schema_field_node(&field, path));
+    }
+    path.pop();
+
+    children
 }
 
-fn build_schema_field_node(field: &FieldDescriptor) -> NetworkConfigSchema {
+fn build_schema_field_node(
+    field: &FieldDescriptor,
+    path: &mut ExpansionPath,
+) -> NetworkConfigSchema {
     build_node(
         "field",
         field.name().to_string(),
@@ -262,9 +286,15 @@ fn build_schema_field_node(field: &FieldDescriptor) -> NetworkConfigSchema {
         field_default_value_text(field),
         enum_options(field.kind()),
         build_validations(field),
-        field_children(field),
+        field_children(field, path),
         Vec::new(),
     )
+}
+
+/// The descriptor's own schema is not configuration surface, and its messages
+/// are the ones that refer back to each other.
+fn is_descriptor_schema(file: &FileDescriptor) -> bool {
+    file.name() == "google/protobuf/descriptor.proto"
 }
 
 fn collect_definitions() -> Vec<NetworkConfigSchema> {
@@ -272,7 +302,10 @@ fn collect_definitions() -> Vec<NetworkConfigSchema> {
 
     for message_desc in descriptor_pool().all_messages() {
         let full_name = message_desc.full_name();
-        if full_name == NETWORK_CONFIG_MESSAGE_NAME || message_desc.is_map_entry() {
+        if full_name == NETWORK_CONFIG_MESSAGE_NAME
+            || message_desc.is_map_entry()
+            || is_descriptor_schema(&message_desc.parent_file())
+        {
             continue;
         }
 
@@ -288,12 +321,16 @@ fn collect_definitions() -> Vec<NetworkConfigSchema> {
             None,
             Vec::new(),
             Vec::new(),
-            build_message_children(&message_desc),
+            build_message_children(&message_desc, &mut Vec::new()),
             Vec::new(),
         ));
     }
 
     for enum_desc in descriptor_pool().all_enums() {
+        if is_descriptor_schema(&enum_desc.parent_file()) {
+            continue;
+        }
+
         definitions.push(build_node(
             "enum",
             enum_desc.full_name().to_string(),
@@ -329,7 +366,7 @@ fn build_network_config_schema() -> NetworkConfigSchema {
         None,
         Vec::new(),
         Vec::new(),
-        build_message_children(&network_config),
+        build_message_children(&network_config, &mut Vec::new()),
         collect_definitions(),
     )
 }

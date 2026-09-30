@@ -3,23 +3,20 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use optionize::Optionizable;
+
 use super::*;
 use crate::{
-    config::peers::PeerRuntimeSnapshot,
-    config::{IpPrefix, NetworkIdentity},
+    config::runtime::InstanceConfigStore,
     host::{
         packet::{HostPacketReceiver, host_packet_channel},
         testkit::TestHost,
     },
-    peers::peer_manager::PortablePeerManagerConfig,
     tunnel::ring::RingTunnelRegistry,
 };
 
 fn test_gateway() -> Arc<DataPlaneRuntime<TestHost>> {
-    let runtime_config = CoreRuntimeConfigStore::new(
-        crate::config::runtime::CoreRuntimeConfig::default(),
-        Arc::new(PeerRuntimeSnapshot::default()),
-    );
+    let runtime_config = InstanceConfigStore::new(crate::config::InstanceConfig::default());
     let host = Arc::new(TestHost::default());
     let (packet_sender, packet_recv) = mpsc::channel(16);
     Arc::new(DataPlaneRuntime {
@@ -52,30 +49,26 @@ struct DataPlaneEndpoint {
 fn data_plane_endpoint(host: Arc<TestHost>, ip: cidr::Ipv4Inet) -> DataPlaneEndpoint {
     const NETWORK_NAME: &str = "gateway-data-plane";
 
-    let mut runtime = PeerRuntimeSnapshot::default().runtime;
-    runtime.core.node.peer_id = None;
-    runtime.core.node.network_name = NETWORK_NAME.to_owned();
-    runtime.core.routes.ipv4 = Some(
-        IpPrefix::new(IpAddr::V4(ip.address()), ip.network_length())
-            .expect("test IPv4 prefix should be valid"),
-    );
-    runtime.network_identity = NetworkIdentity {
-        network_name: NETWORK_NAME.to_owned(),
-        network_secret: Some("shared-secret".to_owned()),
-        network_secret_digest: None,
+    let parsed = crate::config::InstanceConfigParsed {
+        instance_id: uuid::Uuid::new_v4(),
+        hostname: "gateway-endpoint".to_owned(),
+        ipv4: Some(ip),
+        network_identity: crate::config::toml::NetworkIdentity {
+            network_name: NETWORK_NAME.to_owned(),
+            network_secret: Some("shared-secret".to_owned()),
+            network_secret_digest: None,
+        },
+        ..Default::default()
     };
-    let peer_config = PortablePeerManagerConfig::new(runtime);
-    let runtime_config = CoreRuntimeConfigStore::new(
-        crate::config::runtime::CoreRuntimeConfig::default(),
-        Arc::new(peer_config.snapshot.clone()),
-    );
+    let raw = parsed.clone().downgrade();
+    let config = crate::config::InstanceConfig::new(parsed, raw, ());
     let (packet_sender, packet_receiver) = host_packet_channel();
     let peer_manager = Arc::new(
-        PeerManagerCore::new_portable_for_test(peer_config, packet_sender)
+        PeerManagerCore::new_portable_for_test(config, packet_sender)
             .expect("build portable peer manager"),
     );
     let gateway = DataPlaneRuntime::new(
-        runtime_config,
+        peer_manager.context().runtime_config_store(),
         peer_manager.clone(),
         None,
         host,
@@ -709,9 +702,11 @@ async fn tcp_connect_survives_ipv4_generation_replacement() {
 
     for ip in ["10.126.127.2", "10.126.126.2"] {
         let ip: IpAddr = ip.parse().unwrap();
-        b.gateway.runtime_config.update_peer_with(|peer| {
-            peer.runtime.core.routes.ipv4 = Some(IpPrefix::new(ip, 24).unwrap());
-        });
+        let mut config = (*b.gateway.runtime_config.snapshot()).clone();
+        if let IpAddr::V4(v4) = ip {
+            config.parsed_mut().ipv4 = Some(cidr::Ipv4Inet::new(v4, 24).unwrap());
+        }
+        b.gateway.runtime_config.replace(config);
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if b.gateway
@@ -761,10 +756,9 @@ async fn ipv4_change_closes_existing_generation_with_typed_error() {
         .await
         .unwrap();
 
-    endpoint.gateway.runtime_config.update_peer_with(|peer| {
-        peer.runtime.core.routes.ipv4 =
-            Some(IpPrefix::new("10.126.129.1".parse().unwrap(), 24).unwrap());
-    });
+    let mut config = (*endpoint.gateway.runtime_config.snapshot()).clone();
+    config.parsed_mut().ipv4 = Some("10.126.129.1/24".parse().unwrap());
+    endpoint.gateway.runtime_config.replace(config);
 
     let mut buf = [0u8; 1];
     let error = tokio::time::timeout(Duration::from_secs(1), socket.recv_from(&mut buf))
@@ -786,10 +780,9 @@ async fn ipv4_change_closes_existing_generation_with_typed_error() {
 async fn readiness_timeout_has_stable_error_kind() {
     let host = Arc::new(TestHost::default());
     let endpoint = data_plane_endpoint(host, "10.126.130.1/24".parse().unwrap());
-    endpoint
-        .gateway
-        .runtime_config
-        .update_peer_with(|peer| peer.runtime.core.routes.ipv4 = None);
+    let mut config = (*endpoint.gateway.runtime_config.snapshot()).clone();
+    config.parsed_mut().ipv4 = None;
+    endpoint.gateway.runtime_config.replace(config);
     endpoint.peer_manager.run().await.unwrap();
     endpoint.gateway.start_runtime().await.unwrap();
 

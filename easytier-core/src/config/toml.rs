@@ -1,292 +1,20 @@
 //! Complete EasyTier TOML configuration model.
 
-use std::{
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::net::SocketAddr;
 
-use super::normalize_secure_mode_config;
-pub use super::{EncryptionAlgorithm, gateway::PortForwardConfig};
-use anyhow::Context;
+pub use super::{
+    EncryptionAlgorithm, InstanceConfig, InstanceConfigRaw, gateway::PortForwardConfig,
+};
 #[cfg(feature = "rich-config-errors")]
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
 use serde::{Deserialize, Serialize};
 
-use crate::proto::{
-    acl::Acl,
-    common::{CompressionAlgoPb, SecureModeConfig},
-};
-
 pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
-pub type Flags = crate::proto::common::FlagsInConfig;
+pub use crate::proto::common::{Flags, FlagsPatch};
 
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
-}
-
-pub fn gen_default_flags() -> Flags {
-    #[allow(deprecated)]
-    Flags {
-        default_protocol: "tcp".to_string(),
-        dev_name: "".to_string(),
-        enable_encryption: true,
-        enable_ipv6: true,
-        mtu: 1380,
-        latency_first: false,
-        enable_exit_node: false,
-        proxy_forward_by_system: false,
-        no_tun: false,
-        use_smoltcp: false,
-        relay_network_whitelist: "*".to_string(),
-        disable_p2p: false,
-        p2p_only: false,
-        lazy_p2p: false,
-        relay_all_peer_rpc: false,
-        disable_tcp_hole_punching: false,
-        disable_udp_hole_punching: false,
-        multi_thread: true,
-        data_compress_algo: CompressionAlgoPb::None.into(),
-        bind_device: true,
-        enable_kcp_proxy: false,
-        disable_kcp_input: false,
-        disable_relay_kcp: false,
-        enable_relay_foreign_network_kcp: false,
-        accept_dns: false,
-        private_mode: false,
-        enable_quic_proxy: false,
-        disable_quic_input: false,
-        disable_relay_quic: false,
-        enable_relay_foreign_network_quic: false,
-        foreign_relay_bps_limit: u64::MAX,
-        multi_thread_count: 2,
-        encryption_algorithm: EncryptionAlgorithm::default().to_string(),
-        disable_sym_hole_punching: false,
-        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
-
-        quic_listen_port: u32::MAX,
-        need_p2p: false,
-        instance_recv_bps_limit: u64::MAX,
-        disable_upnp: false,
-        disable_relay_data: false,
-        prefer_peer_relay: false,
-        enable_udp_broadcast_relay: false,
-        socket_mark: None,
-    }
-}
-
-#[cfg(feature = "config-write")]
-macro_rules! define_flags_diff {
-    (
-        fields: [$($field:ident),* $(,)?],
-        u64s: [$($u64_field:ident),* $(,)?],
-        enums: [$($enum_field:ident),* $(,)?]
-    ) => {
-        #[allow(deprecated)]
-        fn flags_diff_from_default(flags: &Flags) -> serde_json::Map<String, serde_json::Value> {
-            let defaults = gen_default_flags();
-            let mut changed = serde_json::Map::new();
-            $(
-                if flags.$field != defaults.$field {
-                    changed.insert(
-                        stringify!($field).to_owned(),
-                        serde_json::to_value(&flags.$field)
-                            .expect("FlagsInConfig field should serialize to JSON"),
-                    );
-                }
-            )*
-            $(
-                if flags.$u64_field != defaults.$u64_field {
-                    changed.insert(
-                        stringify!($u64_field).to_owned(),
-                        serde_json::json!(flags.$u64_field.to_string()),
-                    );
-                }
-            )*
-            $(
-                if flags.$enum_field != defaults.$enum_field {
-                    let value = CompressionAlgoPb::try_from(flags.$enum_field)
-                        .map(|value| serde_json::to_value(value).expect("enum should serialize"))
-                        .unwrap_or_else(|_| serde_json::json!(flags.$enum_field));
-                    changed.insert(stringify!($enum_field).to_owned(), value);
-                }
-            )*
-            changed
-        }
-
-        #[cfg(all(test, feature = "config-write"))]
-        const FLAGS_DIFF_FIELDS: &[&str] = &[
-            $(stringify!($field),)*
-            $(stringify!($u64_field),)*
-            $(stringify!($enum_field),)*
-        ];
-    };
-}
-
-#[cfg(feature = "config-write")]
-define_flags_diff! {
-    fields: [
-        default_protocol,
-        dev_name,
-        enable_encryption,
-        enable_ipv6,
-        mtu,
-        latency_first,
-        enable_exit_node,
-        no_tun,
-        use_smoltcp,
-        relay_network_whitelist,
-        disable_p2p,
-        relay_all_peer_rpc,
-        disable_udp_hole_punching,
-        multi_thread,
-        bind_device,
-        enable_kcp_proxy,
-        disable_kcp_input,
-        disable_relay_kcp,
-        proxy_forward_by_system,
-        accept_dns,
-        private_mode,
-        enable_quic_proxy,
-        disable_quic_input,
-        disable_relay_quic,
-        quic_listen_port,
-        multi_thread_count,
-        enable_relay_foreign_network_kcp,
-        enable_relay_foreign_network_quic,
-        encryption_algorithm,
-        disable_sym_hole_punching,
-        tld_dns_zone,
-        p2p_only,
-        disable_tcp_hole_punching,
-        lazy_p2p,
-        need_p2p,
-        disable_upnp,
-        disable_relay_data,
-        prefer_peer_relay,
-        enable_udp_broadcast_relay,
-        socket_mark,
-    ],
-    u64s: [foreign_relay_bps_limit, instance_recv_bps_limit],
-    enums: [data_compress_algo]
-}
-
-#[auto_impl::auto_impl(Box, &)]
-pub trait ConfigLoader: Send + Sync {
-    fn get_id(&self) -> uuid::Uuid;
-    fn set_id(&self, id: uuid::Uuid);
-
-    fn get_hostname(&self) -> String;
-    fn set_hostname(&self, name: Option<String>);
-
-    fn get_inst_name(&self) -> String;
-    fn set_inst_name(&self, name: String);
-
-    fn get_netns(&self) -> Option<String>;
-    fn set_netns(&self, ns: Option<String>);
-
-    fn get_ipv4(&self) -> Option<cidr::Ipv4Inet>;
-    fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>);
-
-    fn get_ipv6(&self) -> Option<cidr::Ipv6Inet>;
-    fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>);
-
-    fn get_ipv6_public_addr_provider(&self) -> bool;
-    fn set_ipv6_public_addr_provider(&self, enabled: bool);
-
-    fn get_ipv6_public_addr_auto(&self) -> bool;
-    fn set_ipv6_public_addr_auto(&self, enabled: bool);
-
-    fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr>;
-    fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>);
-
-    fn get_dhcp(&self) -> bool;
-    fn set_dhcp(&self, dhcp: bool);
-
-    fn add_proxy_cidr(
-        &self,
-        cidr: cidr::Ipv4Cidr,
-        mapped_cidr: Option<cidr::Ipv4Cidr>,
-    ) -> Result<(), anyhow::Error>;
-    fn remove_proxy_cidr(&self, cidr: cidr::Ipv4Cidr);
-    fn clear_proxy_cidrs(&self);
-    fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig>;
-
-    fn get_network_identity(&self) -> NetworkIdentity;
-    fn set_network_identity(&self, identity: NetworkIdentity);
-
-    fn get_listener_uris(&self) -> Vec<url::Url>;
-
-    fn get_peers(&self) -> Vec<PeerConfig>;
-    fn set_peers(&self, peers: Vec<PeerConfig>);
-
-    fn get_listeners(&self) -> Option<Vec<url::Url>>;
-    fn set_listeners(&self, listeners: Vec<url::Url>);
-
-    fn get_mapped_listeners(&self) -> Vec<url::Url>;
-    fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>);
-
-    fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
-    fn set_vpn_portal_config(&self, config: VpnPortalConfig);
-
-    fn get_flags(&self) -> Flags;
-    fn set_flags(&self, flags: Flags);
-
-    fn get_exit_nodes(&self) -> Vec<IpAddr>;
-    fn set_exit_nodes(&self, nodes: Vec<IpAddr>);
-
-    fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>>;
-    fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>);
-
-    fn get_socks5_portal(&self) -> Option<url::Url>;
-    fn set_socks5_portal(&self, addr: Option<url::Url>);
-
-    fn get_port_forwards(&self) -> Vec<PortForwardConfig>;
-    fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>);
-
-    fn get_acl(&self) -> Option<Acl>;
-    fn set_acl(&self, acl: Option<Acl>);
-
-    fn get_tcp_whitelist(&self) -> Vec<String>;
-    fn set_tcp_whitelist(&self, whitelist: Vec<String>);
-
-    fn get_udp_whitelist(&self) -> Vec<String>;
-    fn set_udp_whitelist(&self, whitelist: Vec<String>);
-
-    fn get_stun_servers(&self) -> Option<Vec<String>>;
-    fn set_stun_servers(&self, servers: Option<Vec<String>>);
-
-    fn get_tcp_stun_servers(&self) -> Option<Vec<String>> {
-        None
-    }
-    fn set_tcp_stun_servers(&self, _servers: Option<Vec<String>>) {}
-
-    fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
-    fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
-
-    fn get_secure_mode(&self) -> Option<SecureModeConfig>;
-    fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>);
-
-    fn get_credential_file(&self) -> Option<std::path::PathBuf> {
-        None
-    }
-    fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
-
-    fn get_managed_credentials(&self) -> Vec<ManagedCredentialConfig> {
-        Vec::new()
-    }
-    fn set_managed_credentials(&self, _credentials: Vec<ManagedCredentialConfig>) {}
-
-    fn get_network_config_source(&self) -> ConfigSource {
-        ConfigSource::User
-    }
-    fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
-
-    fn dump(&self) -> String;
-    fn dump_redacted(&self) -> String {
-        self.dump()
-    }
 }
 
 pub trait LoggingConfigLoader {
@@ -295,45 +23,7 @@ pub trait LoggingConfigLoader {
     fn get_console_logger_config(&self) -> ConsoleLoggerConfig;
 }
 
-use super::NetworkSecretDigest;
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct NetworkIdentity {
-    pub network_name: String,
-    pub network_secret: Option<String>,
-    #[serde(skip)]
-    pub network_secret_digest: Option<NetworkSecretDigest>,
-}
-
-impl From<super::NetworkIdentity> for NetworkIdentity {
-    fn from(value: super::NetworkIdentity) -> Self {
-        Self {
-            network_name: value.network_name,
-            network_secret: value.network_secret,
-            network_secret_digest: value.network_secret_digest,
-        }
-    }
-}
-
-impl From<&NetworkIdentity> for super::NetworkIdentity {
-    fn from(value: &NetworkIdentity) -> Self {
-        Self {
-            network_name: value.network_name.clone(),
-            network_secret: value.network_secret.clone(),
-            network_secret_digest: value.network_secret_digest,
-        }
-    }
-}
-
-impl From<NetworkIdentity> for super::NetworkIdentity {
-    fn from(value: NetworkIdentity) -> Self {
-        Self {
-            network_name: value.network_name,
-            network_secret: value.network_secret,
-            network_secret_digest: value.network_secret_digest,
-        }
-    }
-}
+pub use super::NetworkIdentity;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -364,41 +54,9 @@ impl std::str::FromStr for ConfigSource {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-struct ConfigSourceConfig {
-    source: ConfigSource,
-}
-
-impl PartialEq for NetworkIdentity {
-    fn eq(&self, other: &Self) -> bool {
-        super::NetworkIdentity::from(self) == super::NetworkIdentity::from(other)
-    }
-}
-
-impl Eq for NetworkIdentity {}
-
-impl std::hash::Hash for NetworkIdentity {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&super::NetworkIdentity::from(self), state);
-    }
-}
-
-impl NetworkIdentity {
-    pub fn new(network_name: String, network_secret: String) -> Self {
-        super::NetworkIdentity::new(network_name, network_secret).into()
-    }
-
-    /// Create a NetworkIdentity for a credential node (no network_secret).
-    /// The node identifies by network_name only and authenticates via credential keypair.
-    pub fn new_credential(network_name: String) -> Self {
-        super::NetworkIdentity::new_credential(network_name).into()
-    }
-}
-
-impl Default for NetworkIdentity {
-    fn default() -> Self {
-        super::NetworkIdentity::default().into()
-    }
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+pub struct ConfigSourceConfig {
+    pub source: ConfigSource,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -483,19 +141,30 @@ fn default_true() -> bool {
     true
 }
 
+#[optionize::optionized]
+#[cfg_attr(any(feature = "web-client", feature = "browser-config"), optionize(object = easytier_proto::api::manage::ManagedCredentialConfig))]
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedCredentialConfig {
+    #[optionize(flatten)]
     pub credential_id: String,
+    #[optionize(flatten)]
     pub credential_secret: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[optionize(flatten)]
     pub groups: Vec<String>,
     #[serde(default)]
+    #[optionize(flatten)]
     pub allow_relay: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[optionize(flatten)]
     pub allowed_proxy_cidrs: Vec<String>,
+    #[optionize(flatten)]
     pub expiry_unix: i64,
     #[serde(default = "default_true")]
+    // The mapped field is `Option<bool>` (the protocol spells it `optional bool`),
+    // so this document default does not describe it.
+    #[optionize(attrs(.., -serde), default = |_| default_true())]
     pub reusable: bool,
 }
 
@@ -512,56 +181,6 @@ impl std::fmt::Debug for ManagedCredentialConfig {
             .field("reusable", &self.reusable)
             .finish()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[cfg_attr(feature = "config-write", derive(Serialize))]
-struct Config {
-    netns: Option<String>,
-    hostname: Option<String>,
-    instance_name: Option<String>,
-    instance_id: Option<uuid::Uuid>,
-    ipv4: Option<String>,
-    ipv6: Option<String>,
-    ipv6_public_addr_provider: Option<bool>,
-    ipv6_public_addr_auto: Option<bool>,
-    ipv6_public_addr_prefix: Option<String>,
-    dhcp: Option<bool>,
-    network_identity: Option<NetworkIdentity>,
-    listeners: Option<Vec<url::Url>>,
-    mapped_listeners: Option<Vec<url::Url>>,
-    exit_nodes: Option<Vec<IpAddr>>,
-
-    peer: Option<Vec<PeerConfig>>,
-    proxy_network: Option<Vec<ProxyNetworkConfig>>,
-
-    vpn_portal_config: Option<VpnPortalConfig>,
-
-    routes: Option<Vec<cidr::Ipv4Cidr>>,
-
-    socks5_proxy: Option<url::Url>,
-
-    port_forward: Option<Vec<PortForwardConfig>>,
-
-    secure_mode: Option<SecureModeConfig>,
-
-    flags: Option<serde_json::Map<String, serde_json::Value>>,
-
-    #[serde(skip)]
-    flags_struct: Option<Flags>,
-
-    acl: Option<Acl>,
-
-    tcp_whitelist: Option<Vec<String>>,
-    udp_whitelist: Option<Vec<String>>,
-    stun_servers: Option<Vec<String>>,
-    tcp_stun_servers: Option<Vec<String>>,
-    stun_servers_v6: Option<Vec<String>>,
-
-    credential_file: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    managed_credentials: Vec<ManagedCredentialConfig>,
-    source: Option<ConfigSourceConfig>,
 }
 
 #[cfg(feature = "rich-config-errors")]
@@ -603,599 +222,108 @@ fn format_toml_parse_error(
     format!("failed to parse config TOML from {source_name}: {error}")
 }
 
-#[derive(Debug, Clone)]
-pub struct TomlConfig {
-    config: Arc<Mutex<Config>>,
-}
-
-impl Default for TomlConfig {
-    fn default() -> Self {
-        TomlConfig::new_from_str("").unwrap()
+pub fn normalize_config_source(config: &mut InstanceConfigRaw) {
+    if matches!(
+        config.source.as_ref().map(|source| source.source),
+        Some(ConfigSource::User)
+    ) {
+        config.source = None;
     }
 }
 
-impl TomlConfig {
-    fn normalize_config_source(config: &mut Config) {
-        if matches!(
-            config.source.as_ref().map(|source| source.source),
-            Some(ConfigSource::User)
-        ) {
-            config.source = None;
-        }
+#[cfg(feature = "config-write")]
+pub fn redact_secrets(config: &mut InstanceConfigRaw) {
+    const REDACTED: &str = "<redacted>";
+
+    if let Some(secret) = config
+        .network_identity
+        .as_mut()
+        .and_then(|identity| identity.network_secret.as_mut())
+        && !secret.is_empty()
+    {
+        *secret = REDACTED.to_owned();
     }
-
-    #[cfg(feature = "config-write")]
-    fn config_for_dump(&self) -> Config {
-        let mut config = self.config.lock().unwrap().clone();
-        Self::normalize_config_source(&mut config);
-        config.flags = Some(flags_diff_from_default(&self.get_flags()));
-        config
+    if let Some(private_key) = config
+        .secure_mode
+        .as_mut()
+        .and_then(|secure_mode| secure_mode.local_private_key.as_mut())
+        && !private_key.is_empty()
+    {
+        *private_key = REDACTED.to_owned();
     }
-
-    #[cfg(feature = "config-write")]
-    fn redact_secrets(config: &mut Config) {
-        const REDACTED: &str = "<redacted>";
-
-        if let Some(secret) = config
-            .network_identity
-            .as_mut()
-            .and_then(|identity| identity.network_secret.as_mut())
-            && !secret.is_empty()
-        {
-            *secret = REDACTED.to_owned();
-        }
-        if let Some(private_key) = config
-            .secure_mode
-            .as_mut()
-            .and_then(|secure_mode| secure_mode.local_private_key.as_mut())
-            && !private_key.is_empty()
-        {
-            *private_key = REDACTED.to_owned();
-        }
-        if let Some(private_key) = config
-            .vpn_portal_config
-            .as_mut()
-            .and_then(|portal| portal.wireguard_private_key.as_mut())
-            && !private_key.is_empty()
-        {
-            *private_key = REDACTED.to_owned();
-        }
-        if let Some(declarations) = config
-            .acl
-            .as_mut()
-            .and_then(|acl| acl.acl_v1.as_mut())
-            .and_then(|acl| acl.group.as_mut())
-            .map(|group| &mut group.declares)
-        {
-            for declaration in declarations {
-                if !declaration.group_secret.is_empty() {
-                    declaration.group_secret = REDACTED.to_owned();
-                }
+    if let Some(private_key) = config
+        .vpn_portal_config
+        .as_mut()
+        .and_then(|portal| portal.wireguard_private_key.as_mut())
+        && !private_key.is_empty()
+    {
+        *private_key = REDACTED.to_owned();
+    }
+    if let Some(declarations) = config
+        .acl
+        .as_mut()
+        .and_then(|acl| acl.acl_v1.as_mut())
+        .and_then(|acl| acl.group.as_mut())
+        .map(|group| &mut group.declares)
+    {
+        for declaration in declarations {
+            if !declaration.group_secret.is_empty() {
+                declaration.group_secret = REDACTED.to_owned();
             }
         }
-        for credential in &mut config.managed_credentials {
+    }
+    if let Some(credentials) = config.managed_credentials.as_mut() {
+        for credential in credentials {
             if !credential.credential_secret.is_empty() {
                 credential.credential_secret = REDACTED.to_owned();
             }
         }
     }
-
-    pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
-        Self::new_from_str_with_source("inline config", config_str)
-    }
-
-    pub fn new_from_str_with_source(
-        source_name: &str,
-        config_str: &str,
-    ) -> Result<Self, anyhow::Error> {
-        let mut config = toml::de::from_str::<Config>(config_str).map_err(|err| {
-            let message = format_toml_parse_error(source_name, config_str, &err);
-            anyhow::Error::new(err).context(message)
-        })?;
-
-        Self::normalize_config_source(&mut config);
-
-        Self::new_from_config(config).map_err(|err| {
-            let message = format!("failed to load config from {source_name}: {err}");
-            err.context(message)
-        })
-    }
-
-    fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
-        config.flags_struct = Some(
-            Self::gen_flags(config.flags.clone().unwrap_or_default())
-                .context("failed to parse flags")?,
-        );
-        config.secure_mode = config
-            .secure_mode
-            .take()
-            .map(normalize_secure_mode_config)
-            .transpose()
-            .context("failed to normalize [secure_mode] config")?;
-        let has_network_identity = config.network_identity.is_some();
-
-        let config = TomlConfig {
-            config: Arc::new(Mutex::new(config)),
-        };
-
-        let old_ns = config.get_network_identity();
-
-        // Detect credential mode: secure_mode enabled + no network_secret in TOML
-        let is_credential = has_network_identity
-            && config
-                .get_secure_mode()
-                .map(|sm| sm.enabled)
-                .unwrap_or(false)
-            && old_ns
-                .network_secret
-                .as_deref()
-                .is_none_or(|s| s.is_empty());
-
-        if is_credential {
-            config.set_network_identity(NetworkIdentity::new_credential(old_ns.network_name));
-        } else {
-            config.set_network_identity(NetworkIdentity::new(
-                old_ns.network_name,
-                old_ns.network_secret.unwrap_or_default(),
-            ));
-        }
-
-        Ok(config)
-    }
-
-    fn gen_flags(
-        flags_hashmap: serde_json::Map<String, serde_json::Value>,
-    ) -> serde_json::Result<Flags> {
-        let mut merged_hashmap = match serde_json::to_value(gen_default_flags()) {
-            Ok(serde_json::Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
-        };
-        merged_hashmap.extend(flags_hashmap);
-        serde_json::from_value(serde_json::Value::Object(merged_hashmap))
-    }
 }
 
-#[cfg(feature = "web-client")]
-mod snapshot;
-
-impl ConfigLoader for TomlConfig {
-    fn get_inst_name(&self) -> String {
-        self.config
-            .lock()
-            .unwrap()
-            .instance_name
-            .clone()
-            .unwrap_or_else(default_instance_name)
-    }
-
-    fn set_inst_name(&self, name: String) {
-        self.config.lock().unwrap().instance_name = Some(name);
-    }
-
-    fn get_hostname(&self) -> String {
-        let hostname = self.config.lock().unwrap().hostname.clone();
-
-        match hostname {
-            Some(hostname) => {
-                let hostname = hostname
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(32)
-                    .collect::<String>();
-
-                if !hostname.is_empty() {
-                    self.set_hostname(Some(hostname.clone()));
-                    hostname
-                } else {
-                    self.set_hostname(None);
-                    String::new()
-                }
-            }
-            None => String::new(),
-        }
-    }
-
-    fn set_hostname(&self, name: Option<String>) {
-        self.config.lock().unwrap().hostname = name;
-    }
-
-    fn get_netns(&self) -> Option<String> {
-        self.config.lock().unwrap().netns.clone()
-    }
-
-    fn set_netns(&self, ns: Option<String>) {
-        self.config.lock().unwrap().netns = ns;
-    }
-
-    fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
-        let locked_config = self.config.lock().unwrap();
-        locked_config
-            .ipv4
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .map(|c: cidr::Ipv4Inet| {
-                if c.network_length() == 32 {
-                    cidr::Ipv4Inet::new(c.address(), 24).unwrap()
-                } else {
-                    c
-                }
-            })
-    }
-
-    fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
-        self.config.lock().unwrap().ipv4 = addr.map(|addr| addr.to_string());
-    }
-
-    fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
-        let locked_config = self.config.lock().unwrap();
-        locked_config.ipv6.as_ref().and_then(|s| s.parse().ok())
-    }
-
-    fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
-        self.config.lock().unwrap().ipv6 = addr.map(|addr| addr.to_string());
-    }
-
-    fn get_ipv6_public_addr_provider(&self) -> bool {
-        self.config
-            .lock()
-            .unwrap()
-            .ipv6_public_addr_provider
-            .unwrap_or_default()
-    }
-
-    fn set_ipv6_public_addr_provider(&self, enabled: bool) {
-        self.config.lock().unwrap().ipv6_public_addr_provider = Some(enabled);
-    }
-
-    fn get_ipv6_public_addr_auto(&self) -> bool {
-        self.config
-            .lock()
-            .unwrap()
-            .ipv6_public_addr_auto
-            .unwrap_or_default()
-    }
-
-    fn set_ipv6_public_addr_auto(&self, enabled: bool) {
-        self.config.lock().unwrap().ipv6_public_addr_auto = Some(enabled);
-    }
-
-    fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
-        let locked_config = self.config.lock().unwrap();
-        locked_config
-            .ipv6_public_addr_prefix
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-    }
-
-    fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>) {
-        self.config.lock().unwrap().ipv6_public_addr_prefix =
-            prefix.map(|prefix| prefix.to_string());
-    }
-
-    fn get_dhcp(&self) -> bool {
-        self.config.lock().unwrap().dhcp.unwrap_or_default()
-    }
-
-    fn set_dhcp(&self, dhcp: bool) {
-        self.config.lock().unwrap().dhcp = Some(dhcp);
-    }
-
-    fn add_proxy_cidr(
-        &self,
-        cidr: cidr::Ipv4Cidr,
-        mapped_cidr: Option<cidr::Ipv4Cidr>,
-    ) -> Result<(), anyhow::Error> {
-        let mut locked_config = self.config.lock().unwrap();
-        if locked_config.proxy_network.is_none() {
-            locked_config.proxy_network = Some(vec![]);
-        }
-        if let Some(mapped_cidr) = mapped_cidr.as_ref()
-            && cidr.network_length() != mapped_cidr.network_length()
-        {
-            return Err(anyhow::anyhow!(
-                "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
-                cidr.network_length(),
-                mapped_cidr.network_length()
-            ));
-        }
-        // insert if no duplicate
-        if !locked_config
-            .proxy_network
-            .as_ref()
-            .unwrap()
-            .iter()
-            .any(|c| c.cidr == cidr && c.mapped_cidr == mapped_cidr)
-        {
-            locked_config
-                .proxy_network
-                .as_mut()
-                .unwrap()
-                .push(ProxyNetworkConfig {
-                    cidr,
-                    mapped_cidr,
-                    allow: None,
-                });
-        }
-        Ok(())
-    }
-
-    fn remove_proxy_cidr(&self, cidr: cidr::Ipv4Cidr) {
-        let mut locked_config = self.config.lock().unwrap();
-        if let Some(proxy_cidrs) = &mut locked_config.proxy_network {
-            proxy_cidrs.retain(|c| c.cidr != cidr);
-        }
-    }
-
-    fn clear_proxy_cidrs(&self) {
-        let mut locked_config = self.config.lock().unwrap();
-        locked_config.proxy_network = None;
-    }
-
-    fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig> {
-        self.config
-            .lock()
-            .unwrap()
-            .proxy_network
-            .as_ref()
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    fn get_id(&self) -> uuid::Uuid {
-        let mut locked_config = self.config.lock().unwrap();
-        match locked_config.instance_id {
-            Some(id) => id,
-            None => {
-                let id = uuid::Uuid::new_v4();
-                locked_config.instance_id = Some(id);
-                id
-            }
-        }
-    }
-
-    fn set_id(&self, id: uuid::Uuid) {
-        self.config.lock().unwrap().instance_id = Some(id);
-    }
-
-    fn get_network_identity(&self) -> NetworkIdentity {
-        self.config
-            .lock()
-            .unwrap()
-            .network_identity
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_network_identity(&self, identity: NetworkIdentity) {
-        self.config.lock().unwrap().network_identity = Some(identity);
-    }
-
-    fn get_listener_uris(&self) -> Vec<url::Url> {
-        self.config
-            .lock()
-            .unwrap()
-            .listeners
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn get_peers(&self) -> Vec<PeerConfig> {
-        self.config.lock().unwrap().peer.clone().unwrap_or_default()
-    }
-
-    fn set_peers(&self, peers: Vec<PeerConfig>) {
-        self.config.lock().unwrap().peer = Some(peers);
-    }
-
-    fn get_listeners(&self) -> Option<Vec<url::Url>> {
-        self.config.lock().unwrap().listeners.clone()
-    }
-
-    fn set_listeners(&self, listeners: Vec<url::Url>) {
-        self.config.lock().unwrap().listeners = Some(listeners);
-    }
-
-    fn get_mapped_listeners(&self) -> Vec<url::Url> {
-        self.config
-            .lock()
-            .unwrap()
-            .mapped_listeners
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>) {
-        self.config.lock().unwrap().mapped_listeners = listeners;
-    }
-
-    fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig> {
-        self.config.lock().unwrap().vpn_portal_config.clone()
-    }
-    fn set_vpn_portal_config(&self, config: VpnPortalConfig) {
-        self.config.lock().unwrap().vpn_portal_config = Some(config);
-    }
-
-    fn get_flags(&self) -> Flags {
-        self.config
-            .lock()
-            .unwrap()
-            .flags_struct
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_flags(&self, flags: Flags) {
-        self.config.lock().unwrap().flags_struct = Some(flags);
-    }
-
-    fn get_exit_nodes(&self) -> Vec<IpAddr> {
-        self.config
-            .lock()
-            .unwrap()
-            .exit_nodes
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_exit_nodes(&self, nodes: Vec<IpAddr>) {
-        self.config.lock().unwrap().exit_nodes = Some(nodes);
-    }
-
-    fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>> {
-        self.config.lock().unwrap().routes.clone()
-    }
-
-    fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>) {
-        self.config.lock().unwrap().routes = routes;
-    }
-
-    fn get_socks5_portal(&self) -> Option<url::Url> {
-        self.config.lock().unwrap().socks5_proxy.clone()
-    }
-
-    fn set_socks5_portal(&self, addr: Option<url::Url>) {
-        self.config.lock().unwrap().socks5_proxy = addr;
-    }
-
-    fn get_port_forwards(&self) -> Vec<PortForwardConfig> {
-        self.config
-            .lock()
-            .unwrap()
-            .port_forward
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>) {
-        self.config.lock().unwrap().port_forward = Some(forwards);
-    }
-
-    fn get_acl(&self) -> Option<Acl> {
-        self.config.lock().unwrap().acl.clone()
-    }
-
-    fn set_acl(&self, acl: Option<Acl>) {
-        self.config.lock().unwrap().acl = acl;
-    }
-
-    fn get_tcp_whitelist(&self) -> Vec<String> {
-        self.config
-            .lock()
-            .unwrap()
-            .tcp_whitelist
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_tcp_whitelist(&self, whitelist: Vec<String>) {
-        self.config.lock().unwrap().tcp_whitelist = Some(whitelist);
-    }
-
-    fn get_udp_whitelist(&self) -> Vec<String> {
-        self.config
-            .lock()
-            .unwrap()
-            .udp_whitelist
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_udp_whitelist(&self, whitelist: Vec<String>) {
-        self.config.lock().unwrap().udp_whitelist = Some(whitelist);
-    }
-
-    fn get_stun_servers(&self) -> Option<Vec<String>> {
-        self.config.lock().unwrap().stun_servers.clone()
-    }
-
-    fn set_stun_servers(&self, servers: Option<Vec<String>>) {
-        self.config.lock().unwrap().stun_servers = servers;
-    }
-
-    fn get_tcp_stun_servers(&self) -> Option<Vec<String>> {
-        self.config.lock().unwrap().tcp_stun_servers.clone()
-    }
-
-    fn set_tcp_stun_servers(&self, servers: Option<Vec<String>>) {
-        self.config.lock().unwrap().tcp_stun_servers = servers;
-    }
-
-    fn get_stun_servers_v6(&self) -> Option<Vec<String>> {
-        self.config.lock().unwrap().stun_servers_v6.clone()
-    }
-
-    fn set_stun_servers_v6(&self, servers: Option<Vec<String>>) {
-        self.config.lock().unwrap().stun_servers_v6 = servers;
-    }
-
-    fn get_secure_mode(&self) -> Option<SecureModeConfig> {
-        self.config.lock().unwrap().secure_mode.clone()
-    }
-
-    fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>) {
-        self.config.lock().unwrap().secure_mode = secure_mode;
-    }
-
-    fn get_credential_file(&self) -> Option<PathBuf> {
-        self.config.lock().unwrap().credential_file.clone()
-    }
-
-    fn set_credential_file(&self, path: Option<PathBuf>) {
-        self.config.lock().unwrap().credential_file = path;
-    }
-
-    fn get_managed_credentials(&self) -> Vec<ManagedCredentialConfig> {
-        self.config.lock().unwrap().managed_credentials.clone()
-    }
-
-    fn set_managed_credentials(&self, credentials: Vec<ManagedCredentialConfig>) {
-        self.config.lock().unwrap().managed_credentials = credentials;
-    }
-
-    fn get_network_config_source(&self) -> ConfigSource {
-        self.config
-            .lock()
-            .unwrap()
-            .source
-            .as_ref()
-            .map(|source| source.source)
-            .unwrap_or(ConfigSource::User)
-    }
-
-    fn set_network_config_source(&self, source: Option<ConfigSource>) {
-        self.config.lock().unwrap().source = source.and_then(|source| match source {
-            ConfigSource::User => None,
-            other => Some(ConfigSourceConfig { source: other }),
-        });
-    }
-
-    fn dump(&self) -> String {
-        #[cfg(feature = "config-write")]
-        {
-            toml::to_string_pretty(&self.config_for_dump()).unwrap()
-        }
-        #[cfg(not(feature = "config-write"))]
-        {
-            panic!("this build does not include TOML configuration serialization")
-        }
-    }
-
-    fn dump_redacted(&self) -> String {
-        #[cfg(feature = "config-write")]
-        {
-            let mut config = self.config_for_dump();
-            Self::redact_secrets(&mut config);
-            toml::to_string_pretty(&config).unwrap()
-        }
-        #[cfg(not(feature = "config-write"))]
-        {
-            panic!("this build does not include TOML configuration serialization")
-        }
-    }
+pub fn parse_instance_config(
+    source_name: &str,
+    config_str: &str,
+) -> anyhow::Result<InstanceConfig> {
+    let mut config = toml::de::from_str::<InstanceConfigRaw>(config_str).map_err(|err| {
+        let message = format_toml_parse_error(source_name, config_str, &err);
+        anyhow::Error::new(err).context(message)
+    })?;
+
+    normalize_config_source(&mut config);
+
+    InstanceConfig::try_from(config).map_err(|err| {
+        let message = format!("failed to load config from {source_name}: {err}");
+        err.context(message)
+    })
 }
 
-/// Transitional name retained while native consumers migrate to [`TomlConfig`].
-pub type TomlConfigLoader = TomlConfig;
+#[cfg(feature = "config-write")]
+pub fn serialize_raw_to_toml(raw: &InstanceConfigRaw) -> Result<String, toml::ser::Error> {
+    let mut config = raw.clone();
+    normalize_config_source(&mut config);
+    toml::to_string_pretty(&config)
+}
+
+#[cfg(not(feature = "config-write"))]
+pub fn serialize_raw_to_toml(_raw: &InstanceConfigRaw) -> Result<String, toml::ser::Error> {
+    panic!("this build does not include TOML configuration serialization")
+}
+
+#[cfg(feature = "config-write")]
+pub fn serialize_raw_to_toml_redacted(raw: &InstanceConfigRaw) -> Result<String, toml::ser::Error> {
+    let mut config = raw.clone();
+    normalize_config_source(&mut config);
+    redact_secrets(&mut config);
+    toml::to_string_pretty(&config)
+}
+
+#[cfg(not(feature = "config-write"))]
+pub fn serialize_raw_to_toml_redacted(
+    _raw: &InstanceConfigRaw,
+) -> Result<String, toml::ser::Error> {
+    panic!("this build does not include TOML configuration serialization")
+}
 
 #[cfg(test)]
 mod tests {
@@ -1203,8 +331,7 @@ mod tests {
 
     #[test]
     fn parse_error_preserves_source_and_location() {
-        let error =
-            TomlConfig::new_from_str_with_source("fixture.toml", "dhcp = \"yes\"").unwrap_err();
+        let error = parse_instance_config("fixture.toml", "dhcp = \"yes\"").unwrap_err();
         let display = error.to_string();
 
         assert!(display.contains("fixture.toml"));
@@ -1220,7 +347,8 @@ mod tests {
     #[cfg(feature = "config-write")]
     #[test]
     fn toml_round_trip_preserves_config_and_non_default_flags() {
-        let config = TomlConfig::new_from_str(
+        let config = parse_instance_config(
+            "inline config",
             r#"
 instance_name = "node-a"
 instance_id = "018f85a8-a9d0-7d4c-b73d-4ab62c048a20"
@@ -1238,23 +366,24 @@ socket_mark = 0
         )
         .unwrap();
 
-        let dumped = config.dump();
-        let restored = TomlConfig::new_from_str(&dumped).unwrap();
+        let dumped = serialize_raw_to_toml(config.raw()).unwrap();
+        let restored = parse_instance_config("inline config", &dumped).unwrap();
 
-        assert_eq!(restored.get_id(), config.get_id());
-        assert_eq!(restored.get_hostname(), "host-a");
+        assert_eq!(restored.parsed().instance_id, config.parsed().instance_id);
+        assert_eq!(restored.parsed().hostname, "host-a");
         assert_eq!(
-            restored.get_network_identity(),
-            config.get_network_identity()
+            restored.parsed().network_identity,
+            config.parsed().network_identity
         );
-        assert_eq!(restored.get_listener_uris(), config.get_listener_uris());
-        assert_eq!(restored.get_flags().mtu, 1420);
-        assert_eq!(restored.get_flags().socket_mark, Some(0));
+        assert_eq!(restored.parsed().listeners, config.parsed().listeners);
+        assert_eq!(restored.parsed().flags.mtu, 1420);
+        assert_eq!(restored.parsed().flags.socket_mark, Some(0));
     }
 
     #[test]
     fn legacy_vpn_portal_client_cidr_is_rejected_explicitly() {
-        let error = TomlConfig::new_from_str(
+        let error = parse_instance_config(
+            "inline config",
             r#"
 [vpn_portal_config]
 client_cidr = "10.14.14.0/24"
@@ -1270,7 +399,8 @@ wireguard_listen = "0.0.0.0:51820"
     #[cfg(feature = "config-write")]
     #[test]
     fn vpn_portal_round_trip_and_redacted_dump_preserve_dump_semantics() {
-        let config = TomlConfig::new_from_str(
+        let config = parse_instance_config(
+            "inline config",
             r#"
 [network_identity]
 network_name = "network-a"
@@ -1298,19 +428,20 @@ group_secret = "group-secret"
         )
         .unwrap();
 
-        let dumped = config.dump();
+        let dumped = serialize_raw_to_toml(config.raw()).unwrap();
         assert!(dumped.contains("network-secret"));
         assert!(dumped.contains("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="));
         assert!(dumped.contains("wireguard-private-key"));
         assert!(dumped.contains("group-secret"));
         assert_eq!(
-            TomlConfig::new_from_str(&dumped)
+            parse_instance_config("inline config", &dumped)
                 .unwrap()
-                .get_vpn_portal_config(),
-            config.get_vpn_portal_config()
+                .parsed()
+                .vpn_portal_config,
+            config.parsed().vpn_portal_config
         );
 
-        let redacted = config.dump_redacted();
+        let redacted = serialize_raw_to_toml_redacted(config.raw()).unwrap();
         assert!(!redacted.contains("network-secret"));
         assert!(!redacted.contains("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="));
         assert!(!redacted.contains("wireguard-private-key"));
@@ -1321,7 +452,8 @@ group_secret = "group-secret"
     #[cfg(feature = "config-write")]
     #[test]
     fn managed_credentials_round_trip_and_redact_secret() {
-        let config = TomlConfig::new_from_str(
+        let config = parse_instance_config(
+            "inline config",
             r#"
 [[managed_credentials]]
 credential_id = "managed-a"
@@ -1334,32 +466,38 @@ expiry_unix = 2000000000
         )
         .unwrap();
 
-        let dumped = config.dump();
-        let restored = TomlConfig::new_from_str(&dumped).unwrap();
+        let dumped = serialize_raw_to_toml(config.raw()).unwrap();
+        let restored = parse_instance_config("inline config", &dumped).unwrap();
         assert_eq!(
-            restored.get_managed_credentials(),
-            config.get_managed_credentials()
+            restored.parsed().managed_credentials,
+            config.parsed().managed_credentials
         );
         assert!(dumped.contains("private-key-material"));
 
-        let redacted = config.dump_redacted();
+        let redacted = serialize_raw_to_toml_redacted(config.raw()).unwrap();
         assert!(!redacted.contains("private-key-material"));
         assert!(redacted.contains("<redacted>"));
-        assert!(!TomlConfig::default().dump().contains("managed_credentials"));
+        assert!(
+            !serialize_raw_to_toml(&InstanceConfigRaw::default())
+                .unwrap()
+                .contains("managed_credentials")
+        );
     }
 
     #[test]
     fn hostname_normalization_is_portable_and_has_no_host_fallback() {
-        let absent = TomlConfig::default();
-        assert_eq!(absent.get_hostname(), "");
+        let absent = InstanceConfig::try_from(InstanceConfigRaw::default()).unwrap();
+        assert_eq!(absent.parsed().hostname, "");
 
-        let configured = TomlConfig::new_from_str("hostname = \"node\\u0007-name\"").unwrap();
-        assert_eq!(configured.get_hostname(), "node-name");
+        let configured =
+            parse_instance_config("inline config", "hostname = \"node\\u0007-name\"").unwrap();
+        assert_eq!(configured.parsed().hostname, "node-name");
     }
 
     #[test]
     fn credential_mode_does_not_synthesize_a_network_secret() {
-        let config = TomlConfig::new_from_str(
+        let config = parse_instance_config(
+            "inline config",
             r#"
 [network_identity]
 network_name = "credential-network"
@@ -1370,7 +508,7 @@ enabled = true
         )
         .unwrap();
 
-        let identity = config.get_network_identity();
+        let identity = &config.parsed().network_identity;
         assert_eq!(identity.network_name, "credential-network");
         assert_eq!(identity.network_secret, None);
     }
@@ -1378,66 +516,53 @@ enabled = true
     #[cfg(feature = "config-write")]
     #[test]
     fn user_source_is_implicit_while_web_source_round_trips() {
-        let user = TomlConfig::new_from_str(
+        let user = parse_instance_config(
+            "inline config",
             r#"
 [source]
 source = "user"
 "#,
         )
         .unwrap();
-        assert_eq!(user.get_network_config_source(), ConfigSource::User);
-        assert!(!user.dump().contains("[source]"));
+        assert_eq!(user.raw().source, None);
+        assert!(
+            !serialize_raw_to_toml(user.raw())
+                .unwrap()
+                .contains("[source]")
+        );
 
-        let web = TomlConfig::new_from_str(
+        let web = parse_instance_config(
+            "inline config",
             r#"
 [source]
 source = "web"
 "#,
         )
         .unwrap();
-        assert_eq!(web.get_network_config_source(), ConfigSource::Web);
-        assert!(web.dump().contains("source = \"web\""));
+        assert_eq!(
+            web.raw().source.as_ref().map(|source| source.source),
+            Some(ConfigSource::Web)
+        );
+        assert!(
+            serialize_raw_to_toml(web.raw())
+                .unwrap()
+                .contains("source = \"web\"")
+        );
     }
 }
 
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
+    use crate::proto::common::CompressionAlgoPb;
     use base64::{Engine as _, prelude::BASE64_STANDARD};
-
-    #[cfg(feature = "config-write")]
-    #[test]
-    fn flags_diff_covers_every_protobuf_field() {
-        use prost::Message as _;
-
-        let descriptor_set =
-            prost_types::FileDescriptorSet::decode(crate::proto::DESCRIPTOR_POOL_BYTES).unwrap();
-        let proto_fields = descriptor_set
-            .file
-            .iter()
-            .find(|file| file.package.as_deref() == Some("common"))
-            .and_then(|file| {
-                file.message_type
-                    .iter()
-                    .find(|message| message.name.as_deref() == Some("FlagsInConfig"))
-            })
-            .unwrap()
-            .field
-            .iter()
-            .map(|field| field.name.as_deref().unwrap())
-            .collect::<std::collections::BTreeSet<_>>();
-        let diff_fields = FLAGS_DIFF_FIELDS
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-
-        assert_eq!(diff_fields, proto_fields);
-    }
+    use optionize::Optionizable as _;
 
     #[test]
     fn socket_mark_config_file_roundtrip_none_some_and_zero() {
         // Omitting the flag leaves socket_mark unset (None) -> SO_MARK untouched.
-        let cfg = TomlConfigLoader::new_from_str(
+        let cfg = parse_instance_config(
+            "inline config",
             r#"
 [network_identity]
 network_name = "n"
@@ -1445,10 +570,11 @@ network_secret = "s"
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.get_flags().socket_mark, None);
+        assert_eq!(cfg.parsed().flags.socket_mark, None);
 
         // socket_mark = 0 is a legitimate value distinct from "unset".
-        let cfg = TomlConfigLoader::new_from_str(
+        let cfg = parse_instance_config(
+            "inline config",
             r#"
 [network_identity]
 network_name = "n"
@@ -1459,10 +585,11 @@ socket_mark = 0
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.get_flags().socket_mark, Some(0));
+        assert_eq!(cfg.parsed().flags.socket_mark, Some(0));
 
         // A non-zero mark round-trips as Some(v).
-        let cfg = TomlConfigLoader::new_from_str(
+        let cfg = parse_instance_config(
+            "inline config",
             r#"
 [network_identity]
 network_name = "n"
@@ -1473,23 +600,113 @@ socket_mark = 66
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.get_flags().socket_mark, Some(66));
+        assert_eq!(cfg.parsed().flags.socket_mark, Some(66));
 
-        // set_flags(None) must serialize back through gen_config without
-        // resurrecting a value (guards the gen_flags merge against dropping
-        // the key when the serialized default is null).
-        cfg.set_flags(Flags {
-            socket_mark: None,
-            ..cfg.get_flags()
-        });
-        assert_eq!(cfg.get_flags().socket_mark, None);
+        let mut raw = cfg.into_raw();
+        raw.flags.socket_mark = None;
+        let updated = InstanceConfig::try_from(raw).unwrap();
+        assert_eq!(updated.parsed().flags.socket_mark, None);
+        #[cfg(feature = "config-write")]
+        assert_eq!(
+            parse_instance_config(
+                "inline config",
+                &serialize_raw_to_toml(updated.raw()).unwrap()
+            )
+            .unwrap()
+            .parsed()
+            .flags
+            .socket_mark,
+            None
+        );
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn flags_presence_survives_parse_patch_and_dump() {
+        for (input, expected) in [
+            ("", None),
+            ("enable_encryption = true", Some(true)),
+            ("enable_encryption = false", Some(false)),
+        ] {
+            let config =
+                parse_instance_config("inline config", &format!("[flags]\n{input}")).unwrap();
+            assert_eq!(config.raw().flags.enable_encryption, expected);
+            let mut raw = config.into_raw();
+            let patch = FlagsPatch {
+                latency_first: Some(false),
+                ..Default::default()
+            };
+            raw.patch_flags(patch);
+            let dumped = serialize_raw_to_toml(&raw).unwrap();
+            let restored = parse_instance_config("inline config", &dumped).unwrap();
+            assert_eq!(restored.raw().flags.enable_encryption, expected);
+            assert_eq!(restored.raw().flags.latency_first, Some(false));
+            assert_eq!(restored.raw().flags.mtu, None);
+            assert_eq!(
+                restored.parsed().flags.enable_encryption,
+                expected.unwrap_or(true)
+            );
+        }
+    }
+
+    #[test]
+    fn flags_accept_protobuf_aliases_and_numbers_without_default_collisions() {
+        let config = parse_instance_config(
+            "inline config",
+            r#"[flags]
+enableEncryption = false
+mtu = "1420"
+foreignRelayBpsLimit = "18446744073709551615"
+dataCompressAlgo = "Zstd"
+socketMark = "0"
+"#,
+        )
+        .unwrap();
+        let flags = &config.parsed().flags;
+        assert!(!flags.enable_encryption);
+        assert_eq!(flags.mtu, 1420);
+        assert_eq!(flags.foreign_relay_bps_limit, u64::MAX);
+        assert_eq!(flags.data_compress_algo, CompressionAlgoPb::Zstd as i32);
+        assert_eq!(flags.socket_mark, Some(0));
+        for fields in [
+            "enableEncryption = true\nenable_encryption = false",
+            "mtu = -1",
+            "mtu = 4294967296",
+            "unknown_flag = true",
+            "data_compress_algo = 99",
+        ] {
+            assert!(
+                parse_instance_config("inline config", &format!("[flags]\n{fields}")).is_err(),
+                "{fields}"
+            );
+        }
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn dump_omits_all_default_flags() {
+        let raw = InstanceConfigRaw::default();
+        let dumped = serialize_raw_to_toml(&raw).unwrap();
+        let document: toml::Table = toml::from_str(&dumped).unwrap();
+        assert!(
+            document
+                .get("flags")
+                .map(|f| f.as_table().unwrap().is_empty())
+                .unwrap_or(true)
+        );
+        assert_eq!(
+            parse_instance_config("inline config", &dumped)
+                .unwrap()
+                .parsed()
+                .flags,
+            Flags::resolve(FlagsPatch::default())
+        );
     }
 
     #[cfg(feature = "config-write")]
     #[test]
     fn dump_preserves_flags_that_differ_from_easytier_defaults() {
-        let cfg = TomlConfigLoader::default();
-        let mut flags = gen_default_flags();
+        let mut flags = Flags::resolve(FlagsPatch::default());
         flags.dev_name = "et_test".to_string();
         flags.enable_quic_proxy = true;
         flags.disable_tcp_hole_punching = true;
@@ -1504,9 +721,13 @@ socket_mark = 66
         flags.instance_recv_bps_limit = u64::MAX - 2;
         flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
         flags.socket_mark = Some(0);
-        cfg.set_flags(flags);
 
-        let dumped = cfg.dump();
+        let raw = InstanceConfigRaw {
+            flags: flags.downgrade(),
+            ..Default::default()
+        };
+
+        let dumped = serialize_raw_to_toml(&raw).unwrap();
 
         assert!(dumped.contains("dev_name = \"et_test\""));
         assert!(dumped.contains("enable_quic_proxy = true"));
@@ -1522,8 +743,8 @@ socket_mark = 66
         assert!(dumped.contains("data_compress_algo = \"Zstd\""));
         assert!(dumped.contains("socket_mark = 0"));
 
-        let reloaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
-        let reloaded_flags = reloaded.get_flags();
+        let reloaded = parse_instance_config("inline config", &dumped).unwrap();
+        let reloaded_flags = &reloaded.parsed().flags;
         assert_eq!(reloaded_flags.dev_name, "et_test");
         assert!(reloaded_flags.enable_quic_proxy);
         assert!(reloaded_flags.disable_tcp_hole_punching);
@@ -1545,23 +766,26 @@ socket_mark = 66
 
     #[test]
     fn test_stun_servers_config() {
-        let config = TomlConfigLoader::default();
-        let stun_servers = config.get_stun_servers();
-        assert!(stun_servers.is_none());
-        assert!(config.get_tcp_stun_servers().is_none());
+        let raw = InstanceConfigRaw::default();
+        let config = InstanceConfig::try_from(raw).unwrap();
+        assert!(config.raw().stun_servers.is_none());
+        assert!(config.raw().tcp_stun_servers.is_none());
 
-        // Test setting custom stun servers
         let custom_servers = vec!["txt:stun.easytier.cn".to_string()];
-        config.set_stun_servers(Some(custom_servers.clone()));
-
-        let retrieved_servers = config.get_stun_servers();
-        assert_eq!(retrieved_servers.unwrap(), custom_servers);
-
+        let mut raw = config.into_raw();
+        raw.stun_servers = Some(custom_servers.clone());
         let custom_tcp_servers = vec!["tcp-stun.example.com:3478".to_string()];
-        config.set_tcp_stun_servers(Some(custom_tcp_servers.clone()));
+        raw.tcp_stun_servers = Some(custom_tcp_servers.clone());
 
-        let retrieved_tcp_servers = config.get_tcp_stun_servers();
-        assert_eq!(retrieved_tcp_servers.unwrap(), custom_tcp_servers);
+        let updated = InstanceConfig::try_from(raw).unwrap();
+        assert_eq!(
+            updated.raw().stun_servers.as_ref().unwrap(),
+            &custom_servers
+        );
+        assert_eq!(
+            updated.raw().tcp_stun_servers.as_ref().unwrap(),
+            &custom_tcp_servers
+        );
     }
 
     #[test]
@@ -1577,20 +801,21 @@ tcp_stun_servers = [
     "tcp-stun.example.com:3478"
 ]"#;
 
-        let config = TomlConfigLoader::new_from_str(config_str).unwrap();
-        let stun_servers = config.get_stun_servers().unwrap();
-        let tcp_stun_servers = config.get_tcp_stun_servers().unwrap();
+        let config = parse_instance_config("test", config_str).unwrap();
+        let stun_servers = config.parsed().stun_servers.as_ref().unwrap();
+        let tcp_stun_servers = config.parsed().tcp_stun_servers.as_ref().unwrap();
 
         assert_eq!(stun_servers.len(), 3);
         assert_eq!(stun_servers[0], "stun.l.google.com:19302");
         assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
         assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
-        assert_eq!(tcp_stun_servers, ["tcp-stun.example.com:3478"]);
+        assert_eq!(tcp_stun_servers, &["tcp-stun.example.com:3478"]);
     }
 
     #[test]
     fn test_empty_tcp_stun_servers_toml_parsing() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 instance_name = "test"
 tcp_stun_servers = []
@@ -1598,31 +823,38 @@ tcp_stun_servers = []
         )
         .unwrap();
 
-        assert_eq!(config.get_tcp_stun_servers(), Some(Vec::new()));
+        assert_eq!(config.parsed().tcp_stun_servers.as_deref(), Some(&[][..]));
     }
 
     #[cfg(feature = "config-write")]
     #[test]
     fn test_network_config_source_toml_roundtrip() {
-        let config = TomlConfigLoader::default();
-        assert_eq!(config.get_network_config_source(), ConfigSource::User);
+        let mut raw = InstanceConfigRaw::default();
+        assert_eq!(raw.source, None);
 
-        config.set_network_config_source(Some(ConfigSource::Web));
-        let dumped = config.dump();
+        raw.source = Some(ConfigSourceConfig {
+            source: ConfigSource::Web,
+        });
+        let dumped = serialize_raw_to_toml(&raw).unwrap();
 
         assert!(dumped.contains("[source]"));
         assert!(dumped.contains("source = \"web\""));
 
-        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
-        assert_eq!(loaded.get_network_config_source(), ConfigSource::Web);
+        let loaded = parse_instance_config("test", &dumped).unwrap();
+        assert_eq!(
+            loaded.raw().source.as_ref().map(|s| s.source),
+            Some(ConfigSource::Web)
+        );
     }
 
     #[cfg(feature = "config-write")]
     #[test]
     fn test_toml_credential_mode_omits_network_secret() {
         for network_secret in ["", r#"network_secret = """#] {
-            let config = TomlConfigLoader::new_from_str(&format!(
-                r#"
+            let config = parse_instance_config(
+                "test",
+                &format!(
+                    r#"
 [network_identity]
 network_name = "credential-network"
 {network_secret}
@@ -1630,20 +862,26 @@ network_name = "credential-network"
 [secure_mode]
 enabled = true
 "#
-            ))
+                ),
+            )
             .unwrap();
 
-            let identity = config.get_network_identity();
+            let identity = &config.parsed().network_identity;
             assert_eq!(identity.network_name, "credential-network");
             assert_eq!(identity.network_secret, None);
             assert_eq!(identity.network_secret_digest, None);
-            assert!(!config.dump().contains("network_secret"));
+            assert!(
+                !serialize_raw_to_toml(config.raw())
+                    .unwrap()
+                    .contains("network_secret")
+            );
         }
     }
 
     #[test]
     fn test_toml_secure_mode_without_network_identity_uses_default_secret() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 [secure_mode]
 enabled = true
@@ -1651,7 +889,7 @@ enabled = true
         )
         .unwrap();
 
-        let identity = config.get_network_identity();
+        let identity = &config.parsed().network_identity;
         assert_eq!(identity.network_name, "default");
         assert_eq!(identity.network_secret.as_deref(), Some(""));
         assert!(identity.network_secret_digest.is_some());
@@ -1659,7 +897,8 @@ enabled = true
 
     #[test]
     fn test_toml_secure_mode_generates_keypair_when_keys_missing() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 [secure_mode]
 enabled = true
@@ -1667,7 +906,7 @@ enabled = true
         )
         .unwrap();
 
-        let secure_mode = config.get_secure_mode().unwrap();
+        let secure_mode = config.parsed().secure_mode.as_ref().unwrap();
         let private_key = secure_mode.private_key().unwrap();
         let public_key = secure_mode.public_key().unwrap();
         assert_eq!(
@@ -1679,17 +918,20 @@ enabled = true
     #[test]
     fn test_toml_secure_mode_derives_public_key_from_private_key() {
         let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
-        let config = TomlConfigLoader::new_from_str(&format!(
-            r#"
+        let config = parse_instance_config(
+            "test",
+            &format!(
+                r#"
 [secure_mode]
 enabled = true
 local_private_key = "{}"
 "#,
-            BASE64_STANDARD.encode(private.as_bytes())
-        ))
+                BASE64_STANDARD.encode(private.as_bytes())
+            ),
+        )
         .unwrap();
 
-        let secure_mode = config.get_secure_mode().unwrap();
+        let secure_mode = config.parsed().secure_mode.as_ref().unwrap();
         let private_key = secure_mode.private_key().unwrap();
         assert_eq!(private_key.as_bytes(), private.as_bytes());
         assert_eq!(
@@ -1704,16 +946,19 @@ local_private_key = "{}"
         let other_public = x25519_dalek::PublicKey::from(
             &x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng),
         );
-        let error = TomlConfigLoader::new_from_str(&format!(
-            r#"
+        let error = parse_instance_config(
+            "test",
+            &format!(
+                r#"
 [secure_mode]
 enabled = true
 local_private_key = "{}"
 local_public_key = "{}"
 "#,
-            BASE64_STANDARD.encode(private.as_bytes()),
-            BASE64_STANDARD.encode(other_public.as_bytes())
-        ))
+                BASE64_STANDARD.encode(private.as_bytes()),
+                BASE64_STANDARD.encode(other_public.as_bytes())
+            ),
+        )
         .unwrap_err();
         let error = format!("{error:#}");
 
@@ -1729,7 +974,8 @@ local_public_key = "{}"
 
     #[test]
     fn test_toml_secure_mode_disabled_keeps_keys_unset() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 [secure_mode]
 enabled = false
@@ -1737,7 +983,7 @@ enabled = false
         )
         .unwrap();
 
-        let secure_mode = config.get_secure_mode().unwrap();
+        let secure_mode = config.parsed().secure_mode.as_ref().unwrap();
         assert!(!secure_mode.enabled);
         assert_eq!(secure_mode.local_private_key, None);
         assert_eq!(secure_mode.local_public_key, None);
@@ -1746,7 +992,8 @@ enabled = false
     #[cfg(feature = "config-write")]
     #[test]
     fn test_toml_secure_mode_keypair_survives_roundtrip() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 [secure_mode]
 enabled = true
@@ -1754,13 +1001,10 @@ enabled = true
         )
         .unwrap();
 
-        let dumped = config.dump();
-        let restored = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        let dumped = serialize_raw_to_toml(config.raw()).unwrap();
+        let restored = parse_instance_config("test", &dumped).unwrap();
 
-        assert_eq!(
-            config.get_secure_mode().unwrap(),
-            restored.get_secure_mode().unwrap()
-        );
+        assert_eq!(config.parsed().secure_mode, restored.parsed().secure_mode);
     }
 
     #[test]
@@ -1783,9 +1027,9 @@ protocol = 5
 enabled = true
 "#;
 
-        let config = TomlConfigLoader::new_from_str(config_str).unwrap();
-        let acl = config.get_acl().unwrap();
-        let acl_v1 = acl.acl_v1.unwrap();
+        let config = parse_instance_config("test", config_str).unwrap();
+        let acl = config.parsed().acl.as_ref().unwrap();
+        let acl_v1 = acl.acl_v1.as_ref().unwrap();
         let chain = &acl_v1.chains[0];
         let rule = &chain.rules[0];
 
@@ -1813,8 +1057,18 @@ enabled = true
 group_name = "admin"
 group_secret = "admin-pw"
 "#;
-        let config = TomlConfigLoader::new_from_str(declares_only).unwrap();
-        let group = config.get_acl().unwrap().acl_v1.unwrap().group.unwrap();
+        let config = parse_instance_config("test", declares_only).unwrap();
+        let group = config
+            .parsed()
+            .acl
+            .as_ref()
+            .unwrap()
+            .acl_v1
+            .as_ref()
+            .unwrap()
+            .group
+            .as_ref()
+            .unwrap();
         assert_eq!(group.declares.len(), 1);
         assert!(group.members.is_empty());
 
@@ -1822,8 +1076,18 @@ group_secret = "admin-pw"
 [acl.acl_v1.group]
 members = ["admin"]
 "#;
-        let config = TomlConfigLoader::new_from_str(members_only).unwrap();
-        let group = config.get_acl().unwrap().acl_v1.unwrap().group.unwrap();
+        let config = parse_instance_config("test", members_only).unwrap();
+        let group = config
+            .parsed()
+            .acl
+            .as_ref()
+            .unwrap()
+            .acl_v1
+            .as_ref()
+            .unwrap()
+            .group
+            .as_ref()
+            .unwrap();
         assert!(group.declares.is_empty());
         assert_eq!(group.members, vec!["admin"]);
     }
@@ -1831,48 +1095,55 @@ members = ["admin"]
     #[cfg(feature = "config-write")]
     #[test]
     fn test_network_config_source_user_is_implicit() {
-        let config = TomlConfigLoader::default();
-        config.set_network_config_source(Some(ConfigSource::User));
-        let dumped = config.dump();
+        let raw = InstanceConfigRaw {
+            source: Some(ConfigSourceConfig {
+                source: ConfigSource::User,
+            }),
+            ..Default::default()
+        };
+        let dumped = serialize_raw_to_toml(&raw).unwrap();
 
         assert!(!dumped.contains("[source]"));
 
-        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
-        assert_eq!(loaded.get_network_config_source(), ConfigSource::User);
+        let loaded = parse_instance_config("test", &dumped).unwrap();
+        assert_eq!(loaded.raw().source, None);
 
-        let explicit_user = TomlConfigLoader::new_from_str(
+        let explicit_user = parse_instance_config(
+            "test",
             r#"
 [source]
 source = "user"
 "#,
         )
         .unwrap();
-        assert_eq!(
-            explicit_user.get_network_config_source(),
-            ConfigSource::User
+        assert_eq!(explicit_user.raw().source, None);
+        assert!(
+            !serialize_raw_to_toml(explicit_user.raw())
+                .unwrap()
+                .contains("[source]")
         );
-        assert!(!explicit_user.dump().contains("[source]"));
     }
 
     #[cfg(feature = "config-write")]
     #[test]
     fn test_ipv6_public_addr_config_roundtrip() {
-        let config = TomlConfigLoader::default();
         let prefix: cidr::Ipv6Cidr = "2001:db8:100::/64".parse().unwrap();
+        let raw = InstanceConfigRaw {
+            ipv6_public_addr_provider: Some(true),
+            ipv6_public_addr_auto: Some(true),
+            ipv6_public_addr_prefix: Some(prefix),
+            ..Default::default()
+        };
 
-        config.set_ipv6_public_addr_provider(true);
-        config.set_ipv6_public_addr_auto(true);
-        config.set_ipv6_public_addr_prefix(Some(prefix));
+        assert!(raw.ipv6_public_addr_provider.unwrap());
+        assert!(raw.ipv6_public_addr_auto.unwrap());
+        assert_eq!(raw.ipv6_public_addr_prefix, Some(prefix));
 
-        assert!(config.get_ipv6_public_addr_provider());
-        assert!(config.get_ipv6_public_addr_auto());
-        assert_eq!(config.get_ipv6_public_addr_prefix(), Some(prefix));
-
-        let dumped = config.dump();
-        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
-        assert!(loaded.get_ipv6_public_addr_provider());
-        assert!(loaded.get_ipv6_public_addr_auto());
-        assert_eq!(loaded.get_ipv6_public_addr_prefix(), Some(prefix));
+        let dumped = serialize_raw_to_toml(&raw).unwrap();
+        let loaded = parse_instance_config("test", &dumped).unwrap();
+        assert!(loaded.parsed().ipv6_public_addr_provider);
+        assert!(loaded.parsed().ipv6_public_addr_auto);
+        assert_eq!(loaded.parsed().ipv6_public_addr_prefix, Some(prefix));
     }
 }
 
@@ -1921,7 +1192,7 @@ bind_addr = "0.0.0.0:11011"
 dst_addr = "192.168.94.33:11011"
 proto = "tcp"
 "#;
-        let ret = TomlConfigLoader::new_from_str(config_str);
+        let ret = parse_instance_config("test", config_str);
         if let Err(e) = &ret {
             println!("{}", e);
         } else {
@@ -1930,11 +1201,14 @@ proto = "tcp"
         assert!(ret.is_ok());
 
         let ret = ret.unwrap();
-        assert_eq!("10.144.144.10/24", ret.get_ipv4().unwrap().to_string());
+        assert_eq!("10.144.144.10/24", ret.parsed().ipv4.unwrap().to_string());
 
         assert_eq!(
             vec!["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"],
-            ret.get_listener_uris()
+            ret.parsed()
+                .listeners
+                .as_ref()
+                .unwrap()
                 .iter()
                 .map(|u| u.to_string())
                 .collect::<Vec<String>>()
@@ -1946,9 +1220,9 @@ proto = "tcp"
                 dst_addr: "192.168.94.33:11011".parse().unwrap(),
                 proto: "tcp".to_string(),
             }],
-            ret.get_port_forwards()
+            ret.parsed().port_forward
         );
-        println!("{}", ret.dump());
+        println!("{}", serialize_raw_to_toml(ret.raw()).unwrap());
     }
 }
 
@@ -1958,7 +1232,7 @@ mod diagnostic_compatibility_tests {
 
     #[test]
     fn stdin_source_name_and_caret_are_preserved() {
-        let error = TomlConfig::new_from_str_with_source("stdin", "dhcp = \"yes\"")
+        let error = parse_instance_config("stdin", "dhcp = \"yes\"")
             .unwrap_err()
             .to_string();
 
@@ -1970,7 +1244,7 @@ mod diagnostic_compatibility_tests {
 
     #[test]
     fn non_ascii_before_typed_error_keeps_byte_location() {
-        let error = TomlConfig::new_from_str("hostname = \"节点\"\ndhcp = \"yes\"")
+        let error = parse_instance_config("inline config", "hostname = \"节点\"\ndhcp = \"yes\"")
             .unwrap_err()
             .to_string();
 
@@ -1982,7 +1256,7 @@ mod diagnostic_compatibility_tests {
     #[cfg(feature = "rich-config-errors")]
     #[test]
     fn non_ascii_on_syntax_error_line_keeps_source_location() {
-        let error = TomlConfig::new_from_str("hostname = \"节点\" dhcp = \"yes\"")
+        let error = parse_instance_config("inline config", "hostname = \"节点\" dhcp = \"yes\"")
             .unwrap_err()
             .to_string();
 
@@ -1993,21 +1267,19 @@ mod diagnostic_compatibility_tests {
     }
 
     #[test]
-    fn flags_conversion_error_keeps_source_and_cause_chain() {
-        let error = TomlConfig::new_from_str_with_source(
-            "flags-fixture.toml",
-            "[flags]\nsocket_mark = \"bad\"",
-        )
-        .unwrap_err();
+    fn flags_parse_error_keeps_source_span_and_cause_chain() {
+        let error = parse_instance_config("flags-fixture.toml", "[flags]\nsocket_mark = \"bad\"")
+            .unwrap_err();
         let display = error.to_string();
 
         assert!(display.contains("flags-fixture.toml"));
-        assert!(display.contains("failed to load config"));
-        assert!(display.contains("failed to parse flags"));
+        assert!(display.contains("failed to parse config TOML"));
+        assert!(display.contains("socket_mark = \"bad\""));
+        assert!(display.contains('^'));
         assert!(
             error
                 .chain()
-                .any(|cause| cause.to_string().contains("failed to parse flags"))
+                .any(|cause| cause.downcast_ref::<toml::de::Error>().is_some())
         );
     }
 }
