@@ -152,10 +152,12 @@ fn raw_unix_listener_does_not_require_a_server_protocol() {
 
 #[test]
 fn instance_config_round_trips_as_normalized_json() {
-    let mut parsed = crate::config::InstanceConfigParsed::default();
-    parsed.instance_name = "test-instance".to_owned();
-    parsed.hostname = "test-host".to_owned();
-    parsed.dhcp = true;
+    let parsed = crate::config::InstanceConfigParsed {
+        instance_name: "test-instance".to_owned(),
+        hostname: "test-host".to_owned(),
+        dhcp: true,
+        ..Default::default()
+    };
     let config = crate::config::InstanceConfig::from(parsed);
 
     let encoded = serde_json::to_value(&config).unwrap();
@@ -279,11 +281,15 @@ mod portable_runtime {
     }
 
     fn test_config(network_name: &str) -> InstanceConfig {
-        let mut parsed = InstanceConfigParsed::default();
-        parsed.instance_name = network_name.to_owned();
-        parsed.network_identity =
-            crate::config::NetworkIdentity::new(network_name.to_owned(), String::new());
-        parsed.into()
+        InstanceConfigParsed {
+            instance_name: network_name.to_owned(),
+            network_identity: crate::config::NetworkIdentity::new(
+                network_name.to_owned(),
+                String::new(),
+            ),
+            ..Default::default()
+        }
+        .into()
     }
 
     #[cfg(feature = "vpn-portal")]
@@ -554,12 +560,11 @@ mod portable_runtime {
         config.parsed_mut().acl = Some(acl);
         let instance = build_instance(config).unwrap();
         let mut updated = (*instance.runtime_config.snapshot()).clone();
-        if let Some(acl) = updated.parsed_mut().acl.as_mut() {
-            if let Some(acl_v1) = acl.acl_v1.as_mut() {
-                if let Some(group) = acl_v1.group.as_mut() {
-                    group.declares.clear();
-                }
-            }
+        if let Some(acl) = updated.parsed_mut().acl.as_mut()
+            && let Some(acl_v1) = acl.acl_v1.as_mut()
+            && let Some(group) = acl_v1.group.as_mut()
+        {
+            group.declares.clear();
         }
 
         instance.update_runtime_config(updated).await.unwrap();
@@ -2127,8 +2132,10 @@ virtual_ip = "10.0.0.2/24"
             },
             Some(tokio::runtime::Handle::current()),
         ));
-        let mut raw = InstanceConfigRaw::default();
-        raw.listeners = Some(Vec::new());
+        let raw = InstanceConfigRaw {
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
         let config = InstanceConfig::try_from(raw).unwrap();
         let instance_id = config.parsed().instance_id;
         instances
@@ -2384,9 +2391,11 @@ virtual_ip = "10.0.0.2/24"
         let requested_id = uuid::Uuid::new_v4();
         let unrequested_id = uuid::Uuid::new_v4();
         for instance_id in [requested_id, unrequested_id] {
-            let mut raw = InstanceConfigRaw::default();
-            raw.instance_id = Some(instance_id);
-            raw.listeners = Some(Vec::new());
+            let raw = InstanceConfigRaw {
+                instance_id: Some(instance_id),
+                listeners: Some(Vec::new()),
+                ..Default::default()
+            };
             let config = InstanceConfig::try_from(raw).unwrap();
             instances
                 .create(config, ())
@@ -2504,8 +2513,10 @@ virtual_ip = "10.0.0.2/24"
             ManagementTestFactory(CoreProcessRuntime::new()),
             Some(tokio::runtime::Handle::current()),
         ));
-        let mut raw = InstanceConfigRaw::default();
-        raw.listeners = Some(Vec::new());
+        let raw = InstanceConfigRaw {
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
         let config = InstanceConfig::try_from(raw).unwrap();
         let instance_id = config.parsed().instance_id;
         instances
@@ -2538,10 +2549,12 @@ virtual_ip = "10.0.0.2/24"
 
         let old_name = format!("old-{instance_id}");
         let new_name = format!("new-{instance_id}");
-        let mut old_raw = InstanceConfigRaw::default();
-        old_raw.instance_id = Some(instance_id);
-        old_raw.instance_name = Some(old_name.clone());
-        old_raw.listeners = Some(Vec::new());
+        let old_raw = InstanceConfigRaw {
+            instance_id: Some(instance_id),
+            instance_name: Some(old_name.clone()),
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
         let old_config = InstanceConfig::try_from(old_raw).unwrap();
         instances
             .run_network_instance(old_config, ConfigFileControl::STATIC_CONFIG)
@@ -2559,10 +2572,12 @@ virtual_ip = "10.0.0.2/24"
             .delete_network_instances([instance_id])
             .await
             .unwrap();
-        let mut new_raw = InstanceConfigRaw::default();
-        new_raw.instance_id = Some(instance_id);
-        new_raw.instance_name = Some(new_name.clone());
-        new_raw.listeners = Some(Vec::new());
+        let new_raw = InstanceConfigRaw {
+            instance_id: Some(instance_id),
+            instance_name: Some(new_name.clone()),
+            listeners: Some(Vec::new()),
+            ..Default::default()
+        };
         let new_config = InstanceConfig::try_from(new_raw).unwrap();
         instances
             .run_network_instance(new_config, ConfigFileControl::STATIC_CONFIG)
@@ -3846,11 +3861,13 @@ virtual_ip = "10.0.0.2/24"
 
     #[tokio::test]
     async fn compose_materializes_keys_in_management_config() {
-        let mut raw = crate::config::InstanceConfigRaw::default();
-        raw.secure_mode = Some(crate::proto::common::SecureModeConfig {
-            enabled: true,
+        let raw = crate::config::InstanceConfigRaw {
+            secure_mode: Some(crate::proto::common::SecureModeConfig {
+                enabled: true,
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         let config = crate::config::InstanceConfig::try_from(raw).unwrap();
 
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);

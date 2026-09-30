@@ -148,20 +148,21 @@ pub fn get_inst_config(
     ipv4: &str,
     ipv6: &str,
 ) -> InstanceConfigRaw {
-    let mut config = InstanceConfigRaw::default();
-    config.instance_name = Some(inst_name.to_owned());
-    config.netns = ns.map(|s| s.to_owned());
-    config.ipv4 = Some(ipv4.parse().unwrap());
-    config.ipv6 = Some(ipv6.parse().unwrap());
-    config.listeners = Some(vec![
-        "tcp://0.0.0.0:11010".parse().unwrap(),
-        "udp://0.0.0.0:11010".parse().unwrap(),
-        "wg://0.0.0.0:11011".parse().unwrap(),
-        "ws://0.0.0.0:11011".parse().unwrap(),
-        "wss://0.0.0.0:11012".parse().unwrap(),
-    ]);
-    config.socks5_proxy = Some("socks5://0.0.0.0:12345".parse().unwrap());
-    config
+    InstanceConfigRaw {
+        instance_name: Some(inst_name.to_owned()),
+        netns: ns.map(|s| s.to_owned()),
+        ipv4: Some(ipv4.parse().unwrap()),
+        ipv6: Some(ipv6.parse().unwrap()),
+        listeners: Some(vec![
+            "tcp://0.0.0.0:11010".parse().unwrap(),
+            "udp://0.0.0.0:11010".parse().unwrap(),
+            "wg://0.0.0.0:11011".parse().unwrap(),
+            "ws://0.0.0.0:11011".parse().unwrap(),
+            "wss://0.0.0.0:11012".parse().unwrap(),
+        ]),
+        socks5_proxy: Some("socks5://0.0.0.0:12345".parse().unwrap()),
+        ..Default::default()
+    }
 }
 
 pub async fn init_three_node(proto: &str) -> Vec<Instance> {

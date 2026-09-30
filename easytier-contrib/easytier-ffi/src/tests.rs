@@ -51,7 +51,11 @@ fn test_parse_config() {
     unsafe {
         assert_eq!(parse_config(bad_cstr.as_ptr()), -1);
     }
-    assert!(take_last_error().unwrap().contains("failed to parse config"));
+    assert!(
+        take_last_error()
+            .unwrap()
+            .contains("failed to parse config")
+    );
 }
 
 #[test]

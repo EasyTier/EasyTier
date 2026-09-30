@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use crate::{
-    config::runtime::InstanceConfigStore, connectivity::direct::DirectConnectorHost,
+    config::runtime::InstanceConfigStore,
+    connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
-    gateway::proxy::{cidr_table::ProxyCidrTable, ProxyHostPolicy},
-    listener::RunningListenerRegistry, peers::peer_manager::PeerManagerCore,
-    process_runtime::ProtectedTcpPortRegistry, socket::SocketContext,
+    gateway::proxy::{ProxyHostPolicy, cidr_table::ProxyCidrTable},
+    listener::RunningListenerRegistry,
+    peers::peer_manager::PeerManagerCore,
+    process_runtime::ProtectedTcpPortRegistry,
+    socket::SocketContext,
 };
 
 use super::{
