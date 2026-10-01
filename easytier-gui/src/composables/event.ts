@@ -21,7 +21,7 @@ const EVENTS = Object.freeze({
 });
 
 function onSaveConfigs(event: Event<StoredGuiConfig[]>) {
-    console.log(`Received event '${EVENTS.SAVE_CONFIGS}': ${event.payload}`);
+    if (type() === 'android') return;
     localStorage.setItem(
         'networkList',
         JSON.stringify(event.payload.map(({ config, source }) => ({

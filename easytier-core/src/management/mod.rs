@@ -31,7 +31,7 @@ pub(crate) use full::WebClientBackend;
 #[cfg(all(feature = "web-client", test))]
 pub(crate) use full::register_web_client_rpc;
 #[cfg(feature = "management")]
-pub use full::remote_client;
+pub use full::{application_client, application_snapshot, remote_client};
 #[cfg(feature = "web-client")]
 pub use full::{
     ConfigFileStorage, ConfigPatchPersistence, ConfigServerEndpoint, InstanceMutationHooks,

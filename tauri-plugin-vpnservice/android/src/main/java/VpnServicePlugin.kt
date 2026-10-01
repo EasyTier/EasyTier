@@ -19,6 +19,11 @@ class PingArgs {
 }
 
 @InvokeArg
+class ManagementSnapshotArgs {
+    var snapshot: String = ""
+}
+
+@InvokeArg
 class StartVpnArgs {
     var ipv4Addr: String? = null
     var routes: Array<String> = emptyArray()
@@ -29,6 +34,30 @@ class StartVpnArgs {
 
 @TauriPlugin
 class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
+    @Command
+    @androidx.annotation.RequiresApi(23)
+    fun readManagementSnapshot(invoke: Invoke) {
+        try {
+            val result = JSObject()
+            result.put("snapshot", ManagementStorage.read(activity) ?: org.json.JSONObject.NULL)
+            invoke.resolve(result)
+        } catch (_: Exception) {
+            invoke.reject("Unable to read management storage; existing data was not replaced")
+        }
+    }
+
+    @Command
+    @androidx.annotation.RequiresApi(23)
+    fun writeManagementSnapshot(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(ManagementSnapshotArgs::class.java)
+            ManagementStorage.write(activity, args.snapshot)
+            invoke.resolve()
+        } catch (_: Exception) {
+            invoke.reject("Unable to save management storage")
+        }
+    }
+
     companion object {
         @Volatile
         private var tileActionCallback: (String) -> Boolean = { false }

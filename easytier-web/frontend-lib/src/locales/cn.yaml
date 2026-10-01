@@ -88,6 +88,9 @@ logging_copy_dir: 复制日志路径
 vpn_tile_no_network: 没有已配置的网络
 vpn_tile_no_network_description: 请先在 EasyTier 中配置网络，再使用 VPN 快捷磁贴。
 vpn_tile_started: VPN 网络已启动
+management_warning: 网络管理警告
+management_persistence_warning: 配置未能保存，已执行的网络操作不会因此撤销
+management_reconciliation_warning: 网络或 VPN 状态需要重新同步
 vpn_tile_stopped: VPN 网络已停止
 vpn_tile_action_failed: 'VPN 磁贴操作失败：{error}'
 disable_auto_launch: 关闭开机自启
