@@ -1,46 +1,57 @@
-use std::{fmt, str::FromStr};
-
+use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 /// Stable configuration vocabulary for every known encryption algorithm.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, VariantArray)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    VariantArray,
+    strum::Display,
+    strum::EnumString,
+    strum::IntoStaticStr,
+    strum::AsRefStr,
+    Serialize,
+    Deserialize,
+)]
+#[strum(ascii_case_insensitive)]
 pub enum EncryptionAlgorithm {
+    #[strum(to_string = "xor", serialize = "xor")]
+    #[serde(rename = "xor")]
     Xor,
+
     #[default]
+    #[strum(
+        to_string = "aes-gcm",
+        serialize = "aes-gcm",
+        serialize = "openssl-aes-gcm"
+    )]
+    #[serde(rename = "aes-gcm", alias = "openssl-aes-gcm")]
     AesGcm,
+
+    #[strum(
+        to_string = "aes-256-gcm",
+        serialize = "aes-256-gcm",
+        serialize = "openssl-aes-256-gcm"
+    )]
+    #[serde(rename = "aes-256-gcm", alias = "openssl-aes-256-gcm")]
     Aes256Gcm,
+
+    #[strum(
+        to_string = "chacha20",
+        serialize = "chacha20",
+        serialize = "chacha20-poly1305",
+        serialize = "openssl-chacha20"
+    )]
+    #[serde(
+        rename = "chacha20",
+        alias = "chacha20-poly1305",
+        alias = "openssl-chacha20"
+    )]
     ChaCha20,
-}
-
-impl EncryptionAlgorithm {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Xor => "xor",
-            Self::AesGcm => "aes-gcm",
-            Self::Aes256Gcm => "aes-256-gcm",
-            Self::ChaCha20 => "chacha20",
-        }
-    }
-}
-
-impl fmt::Display for EncryptionAlgorithm {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for EncryptionAlgorithm {
-    type Err = ();
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "xor" => Ok(Self::Xor),
-            "aes-gcm" | "openssl-aes-gcm" => Ok(Self::AesGcm),
-            "aes-256-gcm" | "openssl-aes-256-gcm" => Ok(Self::Aes256Gcm),
-            "chacha20" | "chacha20-poly1305" | "openssl-chacha20" => Ok(Self::ChaCha20),
-            _ => Err(()),
-        }
-    }
 }
 
 #[cfg(test)]

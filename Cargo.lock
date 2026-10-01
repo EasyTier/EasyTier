@@ -2595,6 +2595,7 @@ dependencies = [
  "pin-project-lite",
  "pnet_datalink",
  "prost 0.14.4",
+ "prost-types 0.14.4",
  "quanta",
  "quinn",
  "quinn-proto",
@@ -2692,6 +2693,7 @@ dependencies = [
  "hyper-util",
  "idna",
  "openssl",
+ "optionize",
  "ordered_hash_map",
  "parking_lot",
  "percent-encoding",
@@ -2699,6 +2701,7 @@ dependencies = [
  "pin-project-lite",
  "prefix-trie 0.10.1",
  "prost 0.14.4",
+ "prost-reflect 0.16.5",
  "prost-types 0.14.4",
  "quanta",
  "rand 0.8.8",
@@ -2816,7 +2819,7 @@ dependencies = [
  "flate2",
  "gethostname",
  "once_cell",
- "prost-reflect",
+ "prost-reflect 0.14.7",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2864,11 +2867,13 @@ dependencies = [
  "cidr",
  "hmac 0.13.0",
  "indoc",
+ "optionize",
  "pbjson",
  "pbjson-build",
  "proc-macro2",
  "prost 0.14.4",
  "prost-build",
+ "prost-reflect 0.16.5",
  "prost-types 0.14.4",
  "prost-wkt-types",
  "quote",
@@ -2876,6 +2881,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "strum 0.28.0",
  "thiserror 2.0.20",
  "tokio",
  "url",
@@ -2935,6 +2941,7 @@ dependencies = [
  "maxminddb",
  "mimalloc",
  "openidconnect",
+ "optionize",
  "password-auth",
  "rand 0.8.8",
  "reqwest 0.13.5",
@@ -6408,6 +6415,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "optionize"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b6a0111dde86433acde952fdb2757eb65a79ae0e3e58acf378544280d9c3104"
+dependencies = [
+ "derive_more",
+ "optionize-macros",
+]
+
+[[package]]
+name = "optionize-macros"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92f30b98a08383cf48fd3d5cc3e3dd27b4a537d94e8488aadff7f3625288b360"
+dependencies = [
+ "darling 0.24.1",
+ "derive_more",
+ "proc-macro-crate 3.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "ordered-float"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7280,6 +7311,16 @@ dependencies = [
  "prost 0.13.5",
  "prost-reflect-derive",
  "prost-types 0.13.5",
+]
+
+[[package]]
+name = "prost-reflect"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
+dependencies = [
+ "prost 0.14.4",
+ "prost-types 0.14.4",
 ]
 
 [[package]]

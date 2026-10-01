@@ -530,3 +530,8 @@ acl:
     name: Name
     type: Type
   match: Match
+
+disable_relay_data: Disable Data Relay
+disable_relay_data_help: Do not relay data packets for other peers, so this node carries no traffic it did not originate.
+prefer_peer_relay: Prefer Peer Relay
+prefer_peer_relay_help: Prefer a credential peer that already relays to a destination over advertising another direct edge to the same destination.

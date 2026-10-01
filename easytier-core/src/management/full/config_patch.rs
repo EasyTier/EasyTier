@@ -5,10 +5,11 @@ use easytier_proto::api::config::{
     self, AclPatch, ConfigPatchAction, ExitNodePatch, InstanceConfigPatch, Patchable,
     PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch, VpnPortalClientPatch,
 };
+use easytier_proto::common::FlagsPatch;
+use optionize::Optionized as _;
 
 use crate::{
     config::{
-        api_input::managed_credential_from_proto,
         peers::AclRuleConfig,
         runtime::CoreInstanceRuntimeConfig,
         toml::{ConfigLoader as _, TomlConfig},
@@ -93,16 +94,11 @@ where
         if let Some(ipv6) = patch.ipv6 {
             candidate.set_ipv6(Some(ipv6.into()));
         }
-        if let Some(disable_relay_data) = patch.disable_relay_data {
-            let mut flags = candidate.get_flags();
-            flags.disable_relay_data = disable_relay_data;
-            candidate.set_flags(flags);
-        }
-        if let Some(prefer_peer_relay) = patch.prefer_peer_relay {
-            let mut flags = candidate.get_flags();
-            flags.prefer_peer_relay = prefer_peer_relay;
-            candidate.set_flags(flags);
-        }
+        candidate.patch_flags(FlagsPatch {
+            disable_relay_data: patch.disable_relay_data,
+            prefer_peer_relay: patch.prefer_peer_relay,
+            ..Default::default()
+        });
         if let Some(enabled) = patch.ipv6_public_addr_provider {
             candidate.set_ipv6_public_addr_provider(enabled);
             provider_config_changed = true;
@@ -188,8 +184,8 @@ where
             let entries = managed
                 .entries
                 .iter()
-                .map(managed_credential_from_proto)
-                .collect::<Vec<_>>();
+                .map(|credential| credential.clone().upgrade())
+                .collect::<Result<Vec<_>, _>>()?;
             let replacement = credential_manager
                 .validate_managed_credentials(&entries)
                 .map_err(anyhow::Error::msg)?;

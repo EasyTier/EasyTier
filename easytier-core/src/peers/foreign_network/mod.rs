@@ -11,7 +11,7 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
-use easytier_proto::common::FlagsInConfig;
+use easytier_proto::common::Flags;
 use guarden::defer;
 use tokio::sync::{
     Mutex, RwLock, RwLockReadGuard,
@@ -84,7 +84,7 @@ fn build_foreign_peer_context(
     network: &NetworkIdentity,
     parent_context: &Arc<CorePeerContext>,
     relay_data: bool,
-    mut flags: FlagsInConfig,
+    mut flags: Flags,
 ) -> Arc<CorePeerContext> {
     let parent_context_dyn: ArcPeerContext = parent_context.clone();
     let parent_flags = parent_context_dyn.flags();
@@ -372,7 +372,7 @@ impl ForeignNetworkEntry {
         my_peer_id: PeerId,
         rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
         parent_context: Arc<CorePeerContext>,
-        foreign_context_default_flags: FlagsInConfig,
+        foreign_context_default_flags: Flags,
         relay_data: bool,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: PacketRecvChan,
@@ -822,7 +822,7 @@ impl ForeignNetworkManagerData {
         relay_data: bool,
         rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
         parent_context: Arc<CorePeerContext>,
-        foreign_context_default_flags: FlagsInConfig,
+        foreign_context_default_flags: Flags,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: &PacketRecvChan,
     ) -> Option<(Arc<ForeignNetworkEntry>, bool)> {
@@ -874,7 +874,7 @@ enum ForeignNetworkManagerState {
 pub(crate) struct ForeignNetworkManager {
     rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     parent_context: Arc<CorePeerContext>,
-    foreign_context_default_flags: FlagsInConfig,
+    foreign_context_default_flags: Flags,
     peer_session_store: Arc<PeerSessionStore>,
     packet_sender_to_mgr: PacketRecvChan,
 
@@ -912,7 +912,7 @@ impl ForeignNetworkManager {
     pub fn new(
         rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
         parent_context: Arc<CorePeerContext>,
-        foreign_context_default_flags: FlagsInConfig,
+        foreign_context_default_flags: Flags,
         peer_session_store: Arc<PeerSessionStore>,
         packet_sender_to_mgr: PacketRecvChan,
         global_peer_map: Weak<PeerMap>,
@@ -1593,7 +1593,7 @@ mod tests {
     };
 
     use dashmap::DashMap;
-    use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag};
+    use easytier_proto::common::{Flags, PeerFeatureFlag};
 
     use super::{
         ForeignNetworkEntry, ForeignNetworkManager, ForeignNetworkManagerData,
@@ -1638,7 +1638,7 @@ mod tests {
             1,
             Arc::new(()),
             parent,
-            FlagsInConfig::default(),
+            Flags::default(),
             true,
             Arc::new(PeerSessionStore::new()),
             packet_sender,
@@ -1825,7 +1825,7 @@ mod tests {
 
     struct FeatureContext {
         avoid_relay_data: AtomicBool,
-        flags: FlagsInConfig,
+        flags: Flags,
         hostname: String,
     }
 
@@ -1833,7 +1833,7 @@ mod tests {
         fn new(avoid_relay_data: bool) -> Self {
             Self {
                 avoid_relay_data: AtomicBool::new(avoid_relay_data),
-                flags: FlagsInConfig::default(),
+                flags: Flags::default(),
                 hostname: String::new(),
             }
         }
@@ -1851,7 +1851,7 @@ mod tests {
             }
         }
 
-        fn flags(&self) -> FlagsInConfig {
+        fn flags(&self) -> Flags {
             self.flags.clone()
         }
 
@@ -1873,6 +1873,8 @@ mod tests {
         assert!(check_network_in_relay_whitelist("*", "any-network").is_ok());
         assert!(check_network_in_relay_whitelist("", "net1").is_err());
         assert!(check_network_in_relay_whitelist("net1 net2*", "net3").is_err());
+        assert!(check_network_in_relay_whitelist("net1,net2*", "net1").is_ok());
+        assert!(check_network_in_relay_whitelist("net1, net2*", "net2-west").is_ok());
     }
 
     #[test]
@@ -1943,7 +1945,7 @@ mod tests {
             network_secret: Some("secret".to_owned()),
             network_secret_digest: None,
         };
-        let mut defaults = FlagsInConfig::default();
+        let mut defaults = Flags::default();
         defaults.mtu = 1400;
         defaults.relay_network_whitelist = "baseline".to_owned();
         let foreign = build_foreign_peer_context(&network, &parent, false, defaults);

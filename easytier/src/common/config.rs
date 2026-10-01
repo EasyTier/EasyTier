@@ -28,12 +28,6 @@ pub fn parse_mapped_listener_urls(
         .parse_urls(mapped_listeners)
 }
 
-pub fn parse_encryption_algorithm(value: &str) -> Result<EncryptionAlgorithm, String> {
-    value
-        .parse()
-        .map_err(|_| format!("'{value}' is not a valid encryption algorithm"))
-}
-
 pub fn load_toml_config_from_path(path: &PathBuf) -> Result<TomlConfigLoader, anyhow::Error> {
     let config = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;

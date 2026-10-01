@@ -37,7 +37,7 @@ use crate::{
         CompressorAlgo, PacketType, ZCPacket,
         compressor::{Compressor as _, DefaultCompressor},
     },
-    proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
+    proto::common::{Flags, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     tunnel::{
         Tunnel,
@@ -213,14 +213,14 @@ pub struct PortablePeerManagerConfig {
     ///
     /// This is explicit because those contexts participate in the same
     /// handshake as the parent but do not inherit all parent policy flags.
-    pub foreign_context_default_flags: FlagsInConfig,
+    pub foreign_context_default_flags: Flags,
 }
 
 impl PortablePeerManagerConfig {
     pub fn new(mut runtime: PeerRuntimeConfig) -> Self {
         let policy = &runtime.core.peer_policy;
         let traffic = &runtime.core.traffic;
-        let flags = FlagsInConfig {
+        let flags = Flags {
             enable_encryption: policy.encryption_required,
             encryption_algorithm: crate::config::EncryptionAlgorithm::default().to_string(),
             disable_p2p: !policy.p2p_enabled,
@@ -956,7 +956,7 @@ impl PeerManagerCore {
         is_secure_mode_enabled: bool,
         data_compress_algo: CompressorAlgo,
         exit_nodes: Vec<IpAddr>,
-        foreign_context_default_flags: FlagsInConfig,
+        foreign_context_default_flags: Flags,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> Self {
         let stats_manager = core_context.stats_manager();

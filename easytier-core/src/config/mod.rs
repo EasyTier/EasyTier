@@ -48,6 +48,7 @@ use std::{
 use anyhow::Context as _;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use easytier_proto::{common as common_pb, core_config as pb};
+use optionize::Optionizable;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -280,6 +281,8 @@ pub struct ForeignNetworkConfig {
     pub cidrs: Vec<IpPrefix>,
 }
 
+#[optionize::optionized]
+#[optionize(object = pb::PeerPolicyConfig)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerPolicyConfig {
     pub p2p_enabled: bool,
@@ -522,28 +525,15 @@ impl From<ForeignNetworkConfig> for pb::ForeignNetworkConfig {
 
 impl From<pb::PeerPolicyConfig> for PeerPolicyConfig {
     fn from(value: pb::PeerPolicyConfig) -> Self {
-        let default = Self::default();
-        Self {
-            p2p_enabled: value.p2p_enabled.unwrap_or(default.p2p_enabled),
-            relay_peer_rpc: value.relay_peer_rpc.unwrap_or(default.relay_peer_rpc),
-            relay_data: value.relay_data.unwrap_or(default.relay_data),
-            latency_first: value.latency_first.unwrap_or(default.latency_first),
-            encryption_required: value
-                .encryption_required
-                .unwrap_or(default.encryption_required),
-        }
+        let mut config = Self::default();
+        config.load(value);
+        config
     }
 }
 
 impl From<PeerPolicyConfig> for pb::PeerPolicyConfig {
     fn from(value: PeerPolicyConfig) -> Self {
-        Self {
-            p2p_enabled: Some(value.p2p_enabled),
-            relay_peer_rpc: Some(value.relay_peer_rpc),
-            relay_data: Some(value.relay_data),
-            latency_first: Some(value.latency_first),
-            encryption_required: Some(value.encryption_required),
-        }
+        value.downgrade()
     }
 }
 

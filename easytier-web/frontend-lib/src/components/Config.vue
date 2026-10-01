@@ -6,6 +6,8 @@ import InputGroupAddon from 'primevue/inputgroupaddon'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
+  defaultFlagValue,
+  formFlags,
   NetworkConfig,
   normalizeNetworkConfig,
   removeRow,
@@ -87,33 +89,27 @@ interface BoolFlag {
 }
 
 const bool_flags: BoolFlag[] = [
-  { field: 'latency_first', help: 'latency_first_help' },
-  { field: 'use_smoltcp', help: 'use_smoltcp_help' },
-  { field: 'disable_ipv6', help: 'disable_ipv6_help' },
+  // Every boolean flag the schema declares, plus the one network option the
+  // form offers as a checkbox.
+  ...formFlags(),
   { field: 'ipv6_public_addr_auto', help: 'ipv6_public_addr_auto_help' },
-  { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
-  { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
-  { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
-  { field: 'disable_quic_input', help: 'disable_quic_input_help' },
-  { field: 'disable_p2p', help: 'disable_p2p_help' },
-  { field: 'p2p_only', help: 'p2p_only_help' },
-  { field: 'lazy_p2p', help: 'lazy_p2p_help' },
-  { field: 'bind_device', help: 'bind_device_help' },
-  { field: 'no_tun', help: 'no_tun_help' },
-  { field: 'enable_exit_node', help: 'enable_exit_node_help' },
-  { field: 'relay_all_peer_rpc', help: 'relay_all_peer_rpc_help' },
-  { field: 'need_p2p', help: 'need_p2p_help' },
-  { field: 'multi_thread', help: 'multi_thread_help' },
-  { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
-  { field: 'disable_encryption', help: 'disable_encryption_help' },
-  { field: 'disable_tcp_hole_punching', help: 'disable_tcp_hole_punching_help' },
-  { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
-  { field: 'enable_udp_broadcast_relay', help: 'enable_udp_broadcast_relay_help' },
-  { field: 'disable_upnp', help: 'disable_upnp_help' },
-  { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
-  { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
-  { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
+
+/**
+ * Whether a flag's checkbox is on: what the configuration states, or the value
+ * the network runs with when it states nothing. A flag this config leaves unset
+ * is not off, it is the default, and several default to on.
+ */
+function flagChecked(field: keyof NetworkConfig): boolean {
+  const value = curNetwork.value[field]
+
+  return typeof value === 'boolean' ? value : defaultFlagValue(field)
+}
+
+/** A checkbox states a flag; leaving it alone leaves the config silent. */
+function setFlag(field: keyof NetworkConfig, value: boolean) {
+  Object.assign(curNetwork.value, { [field]: value })
+}
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
 
@@ -321,7 +317,8 @@ function removeVpnPortalClient(index: number) {
                   <div class="flex flex-row flex-wrap">
 
                     <div class="basis-[20rem] flex items-center" v-for="flag in bool_flags">
-                      <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" />
+                      <Checkbox :model-value="flagChecked(flag.field)" :input-id="flag.field" :binary="true"
+                        @update:model-value="setFlag(flag.field, $event)" />
                       <label :for="flag.field" class="ml-2"> {{ t(flag.field) }} </label>
                       <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
                     </div>
