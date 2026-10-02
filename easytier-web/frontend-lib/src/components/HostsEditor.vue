@@ -167,10 +167,8 @@ function cancelRawMode() {
             <InputGroup>
               <InputText v-model="row.domains[0]"
                 :placeholder="t('hosts.domain_placeholder')" />
-              <Button v-if="row.domains.length <= 1" icon="pi pi-plus" severity="secondary" text rounded
-                :aria-label="t('hosts.add_domain')" @click="addDomain(rowIndex)" />
-              <Button v-else icon="pi pi-minus" severity="secondary" text rounded
-                :aria-label="t('hosts.remove_domain')" @click="removeDomain(rowIndex, row.domains.length - 1)" />
+              <Button icon="pi pi-minus" severity="danger" text rounded
+                :aria-label="t('hosts.remove_domain')" @click="removeDomain(rowIndex, 0)" />
             </InputGroup>
             <div v-for="(_, di) in row.domains.slice(1)" :key="di" class="mt-1">
               <InputGroup>
@@ -179,6 +177,10 @@ function cancelRawMode() {
                 <Button icon="pi pi-minus" severity="danger" text rounded
                   :aria-label="t('hosts.remove_domain')" @click="removeDomain(rowIndex, di + 1)" />
               </InputGroup>
+            </div>
+            <div class="mt-1">
+              <Button icon="pi pi-plus" severity="secondary" text rounded size="small"
+                :aria-label="t('hosts.add_domain')" @click="addDomain(rowIndex)" />
             </div>
           </div>
           <Button icon="pi pi-trash" severity="danger" text rounded
