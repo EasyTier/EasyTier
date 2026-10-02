@@ -144,25 +144,25 @@ function cancelRawMode() {
         @change="rawMode && enterRawMode()" />
       <Button icon="pi pi-plus" :label="t('hosts.add_entry')" severity="secondary" size="small"
         @click="addRow" />
+      <template v-if="!rawMode">
+        <Button icon="pi pi-save" :label="t('hosts.save')" size="small" :disabled="!hasChanges" @click="saveRows" />
+        <span v-if="hasChanges" class="text-xs text-amber-500">●</span>
+      </template>
     </div>
 
     <!-- 可视化模式 -->
     <div v-if="!rawMode" class="flex flex-col gap-y-2">
-      <div class="flex items-center gap-2">
-        <Button icon="pi pi-save" :label="t('hosts.save')" size="small" :disabled="!hasChanges" @click="saveRows" />
-        <span v-if="hasChanges" class="text-xs text-amber-500">{{ '● ' }}</span>
-      </div>
       <div v-for="(row, rowIndex) in rows" :key="rowIndex"
         class="flex flex-col gap-2 rounded border border-surface-200 dark:border-surface-700 p-3">
-        <div class="flex items-center gap-2">
-          <div class="flex flex-col gap-1 grow basis-4/12">
+        <div class="flex items-center gap-4">
+          <div class="flex flex-col gap-1 basis-[200px] shrink-0">
             <label :for="`hosts_ip_${rowIndex}`" class="text-sm font-medium">
               {{ t('hosts.ip_address') }}
             </label>
             <InputText :id="`hosts_ip_${rowIndex}`" v-model="row.ip"
               :placeholder="t('hosts.ip_placeholder')" />
           </div>
-          <div class="flex flex-col gap-1 grow basis-6/12">
+          <div class="flex flex-col gap-1 grow">
             <label class="text-sm font-medium">{{ t('hosts.domains') }}</label>
             <InputGroup>
               <InputText v-model="row.domains[0]"
