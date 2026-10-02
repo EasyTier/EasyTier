@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Dialog, InputText, Panel, Textarea, ToggleButton } from 'primevue'
+import { Button, Dialog, InputText, Textarea, ToggleButton } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
+import type { HostsEntry } from '../generated/proto/api_manage'
 
 const { t } = useI18n()
 
 const hosts = defineModel('hosts', {
-  type: Object as () => Record<string, string[]>,
+  type: Object as () => Record<string, HostsEntry>,
   default: () => ({}),
 })
 
@@ -21,24 +22,27 @@ const rows = ref<HostsRow[]>([])
 
 function loadRows() {
   const entries = Object.entries(hosts.value || {})
-  rows.value = entries.map(([ip, domains]) => ({
-    ip,
-    domains: [...domains],
-    key: `${ip}:${domains.join(',')}`,
-  }))
+  rows.value = entries.map(([ip, entry]) => {
+    const domains = entry?.domains ? [...entry.domains] : ['']
+    return {
+      ip,
+      domains,
+      key: `${ip}:${domains.join(',')}`,
+    }
+  })
   if (rows.value.length === 0) {
     addRow()
   }
 }
 
 function saveRows() {
-  const result: Record<string, string[]> = {}
+  const result: Record<string, HostsEntry> = {}
   for (const row of rows.value) {
     const ip = row.ip.trim()
     if (!ip) continue
     const domains = row.domains.filter((d) => d.trim().length > 0)
     if (domains.length > 0) {
-      result[ip] = domains
+      result[ip] = { domains }
     }
   }
   hosts.value = result
@@ -76,7 +80,8 @@ const rawText = ref('')
 
 function enterRawMode() {
   const lines: string[] = []
-  for (const [ip, domains] of Object.entries(hosts.value || {})) {
+  for (const [ip, entry] of Object.entries(hosts.value || {})) {
+    const domains = entry?.domains ?? []
     for (const domain of domains) {
       lines.push(`${ip} ${domain}`)
     }
@@ -86,7 +91,7 @@ function enterRawMode() {
 }
 
 function saveRawMode() {
-  const result: Record<string, string[]> = {}
+  const result: Record<string, HostsEntry> = {}
   const domainsByIp: Record<string, Set<string>> = {}
 
   for (const line of rawText.value.split('\n')) {
@@ -104,7 +109,7 @@ function saveRawMode() {
   }
 
   for (const [ip, domains] of Object.entries(domainsByIp)) {
-    result[ip] = [...domains]
+    result[ip] = { domains: [...domains] }
   }
 
   hosts.value = result
