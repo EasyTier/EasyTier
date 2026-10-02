@@ -184,9 +184,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     if !hosts.is_empty() {
         result.hosts = hosts
             .into_iter()
-            .map(|(ip, domains)| {
-                manage::HostsConfig { ip, domains }
-            })
+            .map(|(ip, domains)| manage::HostsConfig { ip, domains })
             .collect();
     }
 

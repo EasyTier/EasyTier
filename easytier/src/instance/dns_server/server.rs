@@ -79,8 +79,7 @@ impl Server {
         let mut catalog = Catalog::new();
 
         // Merge config zones with hosts entries
-        let mut all_zones: std::collections::HashMap<String, Vec<Record>> =
-            config.zones().clone();
+        let mut all_zones: std::collections::HashMap<String, Vec<Record>> = config.zones().clone();
 
         for (ip, domains) in config.hosts().iter() {
             for domain in domains {
