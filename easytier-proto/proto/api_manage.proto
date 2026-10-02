@@ -132,6 +132,8 @@ message VpnPortalConfig {
   string wireguard_listen = 1;
   optional string wireguard_private_key = 2;
   repeated VpnPortalClientConfig clients = 3;
+  // Omitted in existing configurations, where the portal is enabled.
+  optional bool enabled = 4;
 }
 
 message NetworkPeerConfig {

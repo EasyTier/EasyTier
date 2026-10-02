@@ -1076,8 +1076,7 @@ impl Session {
         self.data.read().await.req()
     }
 
-    #[cfg(test)]
-    pub(super) async fn applied_config_revision(&self) -> Option<String> {
+    pub(crate) async fn applied_config_revision(&self) -> Option<String> {
         let data = self.data.read().await;
         data.managed_runtime().applied_config_revision.clone()
     }

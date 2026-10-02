@@ -15,23 +15,56 @@ virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name
 network_secret: Network Secret
+secure_mode: Secure Mode
+secure_mode_hint: Noise-encrypted handshake between nodes; peers must support secure mode
+credential_secret: Temporary Credential
+credential_secret_hint: Paste the credential issued by your network admin
+use_credential: I have a temporary credential from my admin
+use_network_secret: Use the network secret instead
+credential_mode_hint: "Join with an admin-issued credential: connections are encrypted automatically and expire on their own. If you did not receive one, use the network secret instead."
 public_server_url: Public Server URL
 peer_urls: Peer URLs
 proxy_cidrs: Subnet Proxy CIDRs
+vpn_portal_enable: "Enable WireGuard"
+vpn_portal_setup_help: "After starting the node, open WireGuard devices on the status page to add a device and scan its QR code. Disabling keeps your keys and devices."
+vpn_portal_advanced: "Advanced settings"
+vpn_portal_config_clients_help: "Device changes are saved with the member configuration and applied to the node."
+vpn_portal_devices: "WireGuard devices"
+vpn_portal_devices_help: "Each device has its own connection configuration."
+vpn_portal_client_address: "Device virtual IP"
+vpn_portal_client_prefix: "Network prefix length"
+vpn_portal_address_help: "The device uses its own address in the EasyTier network. Suggested addresses exclude known occupied addresses."
+vpn_portal_invalid_name: "Use a unique name with 1–63 letters, digits or hyphens, starting and ending with a letter or digit."
+vpn_portal_invalid_address: "Enter a valid, unused device IP and check the network prefix in advanced settings."
+vpn_portal_generate_config: "Generate connection config"
+vpn_portal_save_failed: "Failed to add device"
+vpn_portal_remove_failed: "Failed to delete device"
+vpn_portal_remove_confirm: "This device will no longer be able to connect."
+vpn_portal_connect_device: "Connection config"
+vpn_portal_server_endpoint: "Server address"
+vpn_portal_custom_endpoint: "Custom connection address"
+vpn_portal_endpoint_help: "Uses this node’s public address by default. Override it to use a domain or a different forwarded port."
+vpn_portal_endpoint_required: "No valid connection address is available. Enter a reachable IP or domain and UDP port."
+vpn_portal_scan_help: "Scan the QR code in the WireGuard app, or import the downloaded configuration file."
+vpn_portal_qr_alt: "WireGuard connection QR code"
+vpn_portal_qr_failed: "Could not generate the QR code. Download or copy the configuration instead."
+vpn_portal_download_config: "Download config"
+vpn_portal_show_config: "Show config text"
+vpn_portal_copy_failed: "Could not copy the configuration. Please download it."
 vpn_portal_wireguard_listen: WireGuard Listen Address
 vpn_portal_wireguard_listen_placeholder: "Example: 0.0.0.0:22022"
 vpn_portal_wireguard_private_key: WireGuard Server Private Key
 vpn_portal_wireguard_private_key_placeholder: Required base64 key (generate with wg genkey)
 vpn_portal_clients: WireGuard Clients
-vpn_portal_add_client: Add Client
-vpn_portal_no_clients: No clients configured
-vpn_portal_client_name: Client Name
+vpn_portal_add_client: "Add device"
+vpn_portal_no_clients: "No devices yet. Add one to scan a QR code or download its configuration."
+vpn_portal_client_name: "Device name (optional)"
 vpn_portal_client_name_placeholder: "Example: alice-phone"
 vpn_portal_client_virtual_ip: Virtual Network CIDR
 vpn_portal_client_virtual_ip_placeholder: "Example: 10.126.126.10/24"
 vpn_portal_client_groups: ACL Groups
 vpn_portal_client_groups_placeholder: Select ACL groups
-vpn_portal_remove_client: Remove Client
+vpn_portal_remove_client: "Delete device"
 dev_name: TUN interface name
 advanced_settings: Advanced Settings
 basic_settings: Basic Settings
@@ -115,7 +148,7 @@ upload: Upload
 download: Download
 show_vpn_portal_config: Show VPN Portal Config
 vpn_portal_config: VPN Portal Config
-vpn_portal_not_configured: VPN Portal is not configured on this node
+vpn_portal_not_configured: "WireGuard is disabled or has not started listening yet."
 vpn_portal_load_failed: Failed to load VPN Portal information
 vpn_portal_listener: Listener
 vpn_portal_type: Type
@@ -123,7 +156,7 @@ vpn_portal_state: State
 vpn_portal_peer_id: Peer ID
 vpn_portal_endpoint: Client Endpoint
 vpn_portal_tunnel_ip: Client Tunnel Address
-vpn_portal_client_config: Client Config
+vpn_portal_client_config: "Connection config"
 vpn_portal_copy_client_config: Copy Client Config
 vpn_portal_state_unspecified: Unknown
 vpn_portal_state_offline: Offline
@@ -316,6 +349,70 @@ event:
   UdpBroadcastRelayStartResult: UDP Broadcast Relay Start Result
 
 web:
+  console:
+    theme_mode: Theme (light / dark / system)
+    location: "Location"
+    console: "Management console"
+    workspace: "Workspace"
+    navigation: "Navigation"
+    documentation: "Documentation"
+    language: "Switch language"
+    account: "Account"
+    skip_content: "Skip to content"
+    devices_description: "Inspect connected devices and manage their network instances."
+    device_count: "Devices"
+    online_device_count: "Online"
+    network_count: "Managed networks"
+    instance_count: "Running instances"
+    device_note: "Total registered devices"
+    online_device_note: "Devices currently online"
+    delete_device: "Delete Device"
+    set_alias: "Set Alias"
+    alias_dialog_title: "Set Device Alias"
+    alias_hint: "The alias is shown in place of the hostname across the console. Leave empty to clear."
+    delete_device_confirm: "Delete device {device}? It will be removed from its networks and its managed configs withdrawn."
+    block_device: "Also block this device"
+    block_device_hint: "A blocked device cannot re-register; unblock it from the bell menu."
+    no_block_device_hint: "Without blocking, the device re-registers itself automatically on its next connection."
+    enroll_title: "Device Enrollment"
+    enroll_hint: "Run this command on a device to enroll it with this console:"
+    enroll_copy: "Copy enrollment command"
+    enroll_token_note: "The path at the end is the enrollment token (your username). Enrolled devices show up in the device list."
+    enroll_webhook_note: "This console issues enrollment tokens through an external auth system; replace the username at the end with the token it assigned."
+    blocked_devices: "Blocked Devices"
+    blocked_empty: "No blocked devices."
+    blocked_attempted: "{time} connection attempt blocked ({count} total)"
+    blocked_no_attempt: "Blocked, no connection attempts so far."
+    unblock: "Unblock"
+    network_note: "Centrally managed networks"
+    instance_note: "Across connected devices"
+    view_all: "View all"
+    refresh: "Refresh"
+    retry: "Retry"
+    load_failed: "Unable to refresh data. Any displayed data is from the last successful refresh."
+    devices_empty: "No devices yet"
+    devices_empty_hint: "Connect an EasyTier client to this controller to start managing it here."
+    networks_empty: "No managed networks yet"
+    networks_empty_hint: "Create a network, then add devices to connect them."
+    search_devices: "Search name or address"
+    search_networks: "Search networks"
+    no_results: "No matching results"
+    clear_search: "Clear search"
+    manage: "Manage"
+    details: "Details"
+    more_details: "More details"
+    items: "{count} items"
+    automatic_refresh: "Updates automatically every 2 seconds"
+    online_members: "Online / total members"
+    back_networks: "Back to networks"
+    all_details: "Expand all details"
+    ascending: "Ascending"
+    descending: "Descending"
+    device_missing: "This device is no longer in the device list."
+    loading: "Loading"
+    instances: "instances"
+    view_table: "Table view"
+    view_card: "Card view"
   login:
     title: Login
     username: Username
@@ -323,7 +420,6 @@ web:
     submit: Login
     register: Register
     remember_me: Remember Me
-    api_host: API Host
     captcha: Captcha
     back_to_login: Back to Login
     login: Login
@@ -346,6 +442,7 @@ web:
     logout: Logout
     language: Language
     change_password: Change Password
+    network_list: Networks
 
   device:
     list: Device List
@@ -358,16 +455,6 @@ web:
     offline: Offline
     last_seen: Last Seen
     no_devices: No Devices Found
-    sort_by: Sort By
-    sort_direction: Sort Direction
-    show_detailed_view: Show Details
-    hide_detailed_view: Hide Details
-    sort_by_hostname: Hostname
-    sort_by_public_ip: Public IP
-    sort_by_version: Version
-    sort_by_networks: Network Count
-    sort_direction_asc: Currently ascending, click to switch to descending
-    sort_direction_desc: Currently descending, click to switch to ascending
     hostname: Hostname
     public_ip: Public IP
     networks: Network Count
@@ -375,6 +462,7 @@ web:
     version: Version
     machine_id: Machine ID
     unknown_location: Unknown Location
+    central_networks: Joined Networks
     
   device_management:
     edit_network: Edit Network
@@ -410,6 +498,188 @@ web:
     import: Import Config
     export: Export Config
 
+  network_list:
+    title: Networks
+    create: Create Network
+    empty: No networks yet. Click "Create Network" to manage devices centrally
+    members: Member Devices
+    display_name: Display Name
+    virtual_cidr: Virtual Subnet
+    secure_mode: Secure Mode
+    secure_mode_hint: Noise encrypted handshakes with identity verification; enables temporary credentials. Member instances restart on change
+    virtual_cidr_hint: When set, members get static IPs assigned from this subnet in join order (.1, .2, ...); leave empty for node-negotiated DHCP
+    virtual_cidr_placeholder: e.g. 10.200.0.0/24, empty for auto
+    peer_urls_placeholder: One peer URL per line, e.g. tcp://10.0.0.1:11010
+    create_hint: The network secret is generated automatically and can be viewed or reset in the network detail page
+    gateway_mode: Gateway
+    gateway_hint: Members are meshed automatically through this console's built-in gateway (discovery and hole-punch assistance, no data relay by default)
+    advanced_mode: "Advanced: specify initial nodes manually"
+    use_gateway: "Back: use the console gateway"
+
+  network_detail:
+    tab_members: Members
+    mesh_name: Mesh name (auto-generated, used when joining devices)
+    tab_settings: Settings
+    tab_status: Status
+    members_hint: Member configs are delivered centrally by this console; changes apply when offline devices reconnect
+    add_member: Add Devices
+    add_temporary_member: Add as temporary node
+    add_temporary_hint: Temporary nodes join with a dedicated credential and never receive the network secret; they disconnect when it expires or is revoked
+    add_temporary_needs_secure: Enable secure mode in the network settings before adding temporary nodes
+    expires_at: expires
+    locate_credential: Show credential
+    no_candidate_devices: No devices available to add
+    remove_member: Remove Device
+    remove_member_confirm: Remove device {device} from this network? Its managed config will be withdrawn
+    edit_member: Edit Member
+    tab_basic_settings: Basic Settings
+    hostname_override: Hostname Override
+    hostname_override_placeholder: Leave empty to use the device-reported hostname
+    static_ip: Static Virtual IP
+    static_ip_hint: Leave empty for DHCP; a fixed IP (/24) is assigned when set
+    settings: Network Settings
+    regenerate_secret: Regenerate network secret
+    danger_zone: Danger Zone
+    delete: Delete Network
+    delete_confirm: Delete network {name}? Managed configs of all members will be withdrawn
+    delete_hint: Deleting a network removes all members and withdraws their managed configs
+    gateway_followed: The initial-node list keeps only the console gateway; member configs follow the gateway URL automatically
+    advanced_config: Advanced Config
+    has_override: This member has an advanced override
+    identity_ignored: Network name and secret are owned by the network settings; those edits are ignored
+    reset_default: Reset to Default
+    config_reset: Member reset to default compilation
+    proxy_cidr_hint: Real subnets this member routes into the mesh; click a detected subnet below to add it
+    proxy_add_suggestion: Add {cidr}
+    proxy_remove_suggestion: Remove {cidr}
+    proxy_no_suggestions: No shareable local subnet detected; enter one manually
+    proxy_cidr_placeholder: e.g. 192.168.1.1 or 10.0.0.0/16, Enter to add
+    proxy_cidr_invalid: Unrecognized address; enter an IPv4 address or CIDR like 192.168.1.0/24
+    tab_credentials: Credentials
+    credentials_hint: Credentials grant temporary devices short-lived access to this network; they expire automatically
+    generate_credential: Generate Credential
+    credential_id: Credential ID
+    credential_secret: Credential Secret
+    credential_show_secret: Show secret
+    credential_hide_secret: Hide secret
+    credential_copy_secret: Copy secret
+    credential_show_command: Show join command
+    credential_copy_command: Copy join command
+    credential_join_cli: Command line
+    credential_join_toml: Config file
+    copy_failed: Copy failed; select the text and copy manually
+    credential_online_devices: Online Devices
+    credential_expiry: Expires
+    credential_status: Status
+    credential_active: Active
+    credential_expired: Expired
+    credential_reusable: Reusable
+    revoke_credential: Revoke
+    revoke_credential_confirm: Revoke credential {id}? Devices using it will be disconnected
+    credential_ttl: Validity
+    ttl_1h: 1 hour
+    ttl_24h: 1 day
+    ttl_7d: 7 days
+    ttl_30d: 30 days
+    credential_reusable_hint: "Unchecked means only one device may use the credential at a time"
+    credential_secret_hint: "Credential secret (saved and always visible in the credential list):"
+    join_command: Temporary device join command
+    temporary_devices: Temporary Devices
+    temporary_devices_hint: Devices online via credentials; revoke the credential to disconnect them
+    temporary_device: Temporary device
+    temporary_tag: Temporary
+    temporary_credential: Credential
+    temporary_credential_unknown: unknown credential (possibly revoked)
+    member_error: Error
+    tab_general: General
+    node_overview: Overview
+    node_actions: Settings & actions
+    node_peers: Peers
+    node_no_peers: No other nodes yet
+    node_no_peers_hint: Other nodes in this network will appear here when they connect.
+    peer_ipv4: Virtual IP
+    log_level: Log Level
+    log_level_hint: Applies to the whole device process (all instances)
+    log_disabled: Disabled
+    log_error: Error
+    log_warning: Warning
+    log_info: Info
+    log_debug: Debug
+    log_trace: Trace
+    export_config: Export Config
+    export_config_hint: The node's effective TOML config (as easytier-cli node config)
+    download: Download
+    node_detail: Node Detail
+    node_detail_offline: Node detail requires the device to be online
+    node_routes: Routes
+    node_conns: Connections
+    route_cost: Path
+    path_latency: Latency
+    conn_type: Type
+    conn_remote: Remote
+    loss_rate: Loss
+    traffic: Traffic
+    acl_stats: ACL Stats
+    acl_rule: Rule
+    acl_packets: Packets
+    acl_bytes: Bytes
+    instance_state: Instance State
+    running: Running
+    stopped: Stopped
+
+  acl:
+    trust_hint: Permanent members are trusted administrators. ACL rules manage their traffic but do not prevent a device administrator from changing its identity or policy. Use temporary credentials for untrusted devices.
+    tab: Access Control
+    default_action: When no rule matches
+    default_allow: Allow by default
+    default_deny: Deny by default
+    default_allow_hint: Traffic that matches no rule is allowed
+    default_deny_hint: Traffic that matches no rule is dropped
+    rule_summary: "{total} rules · {enabled} enabled"
+    unsaved: Unsaved changes
+    saved: Access policy saved
+    save_failed: Save failed
+    save: Save Policy
+    add_rule: Add Rule
+    edit_rule: Edit Rule
+    save_rule: Save Rule
+    rule_name: Rule Name
+    name_placeholder: "For example: allow finance devices to reach MySQL"
+    action: Action
+    allow: Allow
+    deny: Deny
+    enabled: Enabled
+    disabled: Disabled
+    source: Source
+    target: Target
+    all_members: All members
+    subnet: Subnet
+    source_placeholder: Search and choose the members that initiate access
+    target_placeholder: Search and choose target members or subnets
+    target_hint: Pick members or subnets proxied by members
+    protocols: Protocols
+    stateful: Stateful tracking
+    stateful_hint: Track established TCP connections; applies to allow rules
+    port_single: Single
+    port_range: Range
+    port_start: Start port
+    port_end: End port
+    port_to: to
+    add_port: Add Port
+    add_range: Add Range
+    all_ports: All Ports
+    quick_add: Quick add
+    icmp_note: ICMP needs no ports
+    swap: Swap with target
+    drag_hint: Drag to reorder
+    empty_title: No access rules yet
+    empty_allow: The network keeps default-allow behavior; unmatched traffic is unrestricted
+    empty_deny: The network denies unmatched traffic by default
+    error_name: Rule name is required
+    error_source: Pick at least one source
+    error_target: Pick at least one target or add a custom CIDR
+    error_protocol: Pick at least one protocol
+    error_ports: "{protocol} rules need at least one port (or use All Ports)"
   common:
     confirm: Confirm
     cancel: Cancel

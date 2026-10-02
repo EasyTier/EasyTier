@@ -103,3 +103,22 @@ The Browser Adapter is an outbound-only EasyTier instance with a smoltcp TCP
 data plane. The Cloudflare Adapter is an inbound-only relay hosted by one named
 Durable Object. Their public configuration exposes only capabilities each Host
 can execute; guest ABI details and serialized TOML remain internal.
+
+## Web configuration consumers
+
+Central network management and an external Console are alternative consumers
+of `ClientManager`. An external webhook selects Console mode; otherwise the
+central service registers devices through an in-process webhook handler and
+publishes each device's complete compiled configuration through the existing
+Full reconcile API. `ClientManager` owns persistence, offline replay, and
+runtime reconciliation without knowing central network business state.
+
+The central service owns network intent, device registration and bans, and
+Gateway runtimes. Central HTTP mutations and direct public configuration writes
+share its mutation lock so ownership checks cannot race with enrollment.
+Internal Console APIs retain their upstream behavior and central routes and
+publication workers are disabled in Console mode.
+
+Device deletion uses the upstream disconnect semantics: an already in-flight
+validation may register the device again. A persisted ban rejects subsequent
+validations. Deletion does not introduce device generations or session fences.

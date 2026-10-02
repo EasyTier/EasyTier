@@ -745,6 +745,7 @@ async fn credential_peer_reconnects_to_admin_with_portal_client_online() {
 
     let admin_config = create_need_p2p_admin_config("udp");
     admin_config.set_vpn_portal_config(VpnPortalConfig {
+        enabled: None,
         wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
         wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
         clients: vec![VpnPortalClientConfig {

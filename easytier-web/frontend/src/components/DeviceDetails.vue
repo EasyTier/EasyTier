@@ -22,6 +22,14 @@ defineProps<{
       <div class="detail-label">{{ t('web.device.hostname') }}</div>
       <div class="detail-value">{{ device.hostname }}</div>
     </div>
+    <div class="detail-item status">
+      <div class="detail-label">{{ t('web.device.status') }}</div>
+      <div class="detail-value">{{ device.online ? t('web.device.online') : t('web.device.offline') }}</div>
+    </div>
+    <div v-if="!device.online && device.last_seen" class="detail-item last-seen">
+      <div class="detail-label">{{ t('web.device.last_seen') }}</div>
+      <div class="detail-value">{{ device.last_seen }}</div>
+    </div>
     <div class="detail-item public-ip">
       <div class="detail-label">{{ t('web.device.public_ip') }}</div>
       <div class="detail-value">{{ device.public_ip }}</div>
@@ -30,60 +38,58 @@ defineProps<{
       <div class="detail-label">{{ t('web.device.networks') }}</div>
       <div class="detail-value">{{ device.running_network_count }}</div>
     </div>
-    <div class="detail-item last-report">
-      <div class="detail-label">{{ t('web.device.last_report') }}</div>
-      <div class="detail-value">{{ device.report_time }}</div>
+    <div class="detail-item location">
+      <div class="detail-label">{{ t('web.console.location') }}</div>
+      <div class="detail-value">{{ device.location ? [device.location.country, device.location.region, device.location.city].filter(Boolean).join(' · ') : t('web.device.unknown_location') }}</div>
+    </div>
+    <div v-if="(device.networks?.length ?? 0) > 0" class="detail-item central-networks">
+      <div class="detail-label">{{ t('web.device.central_networks') }}</div>
+      <div class="detail-value">
+        <span v-for="network in device.networks" :key="network.network_id" class="central-network-name"
+          :title="network.network_name">{{ network.display_name }}</span>
+      </div>
     </div>
     <div class="detail-item version">
       <div class="detail-label">{{ t('web.device.version') }}</div>
       <div class="detail-value">{{ device.easytier_version }}</div>
     </div>
-    <div class="detail-item machine-id">
-      <div class="detail-label">{{ t('web.device.machine_id') }}</div>
-      <div class="detail-value">
-        <span class="machine-id-value" :title="device.machine_id">{{ device.machine_id }}</span>
+    <details class="more-details">
+      <summary>{{ t('web.console.more_details') }}</summary>
+      <div class="detail-item last-report">
+        <div class="detail-label">{{ t('web.device.last_report') }}</div>
+        <div class="detail-value">{{ device.report_time }}</div>
       </div>
-    </div>
+      <div class="detail-item machine-id">
+        <div class="detail-label">{{ t('web.device.machine_id') }}</div>
+        <div class="detail-value">
+          <span class="machine-id-value" :title="device.machine_id">{{ device.machine_id }}</span>
+        </div>
+      </div>
+    </details>
   </div>
 </template>
 
 <style scoped>
-/* 基础布局 */
-.device-details {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 0.75rem;
+/* 紧凑布局样式 */
+.device-details.compact {
+  gap: 0.4rem;
 }
 
-/* 标准布局的详情项样式 */
 .detail-item {
   position: relative;
-  border-bottom: 1px solid var(--surface-border, #e9ecef);
-  padding-bottom: 0.75rem;
   transition: all 0.2s;
   border-radius: 0.25rem;
 }
 
+.more-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--console-muted, #64748b);
+  margin-top: 10px;
+}
+
 .detail-item:hover {
   background-color: var(--surface-hover, rgba(245, 247, 250, 0.5));
-}
-
-.detail-item:last-child {
-  border-bottom: none;
-}
-
-.detail-label {
-  font-weight: 600;
-  color: var(--text-color, #334155);
-  font-size: 0.95rem;
-  margin-bottom: 0.375rem;
-  display: flex;
-  align-items: center;
-}
-
-/* 紧凑布局样式 */
-.device-details.compact {
-  gap: 0.4rem;
 }
 
 .compact .detail-item {
@@ -93,69 +99,37 @@ defineProps<{
   align-items: center;
 }
 
-.compact .detail-label {
-  margin-bottom: 0;
+.detail-label {
+  font-weight: 600;
+  margin-bottom: 0.375rem;
+  display: flex;
+  align-items: center;
 }
 
-.detail-label::before {
-  content: "";
-  display: inline-block;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background-color: #3b82f6;
-  margin-right: 0.5rem;
+.compact .detail-label {
+  margin-bottom: 0;
 }
 
 .detail-value {
   color: var(--text-color-secondary, #475569);
   word-break: break-all;
-  padding-left: 1rem;
   line-height: 1.4;
-  font-size: 0.95rem;
 }
 
-/* 紧凑布局的标签和值样式 */
-.compact .detail-label::before {
-  width: 3px;
-  height: 3px;
-  margin-right: 0.3rem;
-}
-
+/* 紧凑布局的值样式 */
 .compact .detail-value {
   padding-left: 0.3rem;
   line-height: 1.2;
 }
 
-/* 特定字段的样式 */
-.hostname .detail-label::before {
-  background-color: #3b82f6;
-  /* 蓝色 */
-}
-
-.public-ip .detail-label::before {
-  background-color: #10b981;
-  /* 绿色 */
-}
-
-.running-networks .detail-label::before {
-  background-color: #f59e0b;
-  /* 橙色 */
-}
-
-.last-report .detail-label::before {
-  background-color: #8b5cf6;
-  /* 紫色 */
-}
-
-.version .detail-label::before {
-  background-color: #ec4899;
-  /* 粉色 */
-}
-
-.machine-id .detail-label::before {
-  background-color: #6b7280;
-  /* 灰色 */
+.central-network-name {
+  display: inline-block;
+  background-color: var(--surface-ground, #f1f5f9);
+  border: 1px solid var(--surface-border, #e2e8f0);
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.4rem;
+  margin: 0.1rem 0.2rem 0.1rem 0;
+  font-size: 0.85rem;
 }
 
 /* 机器ID特殊样式 */
@@ -178,34 +152,5 @@ defineProps<{
   font-size: 0.75rem;
   padding: 0.15rem 0.3rem;
   border-radius: 0.2rem;
-}
-
-/* 暗黑模式适配 */
-@media (prefers-color-scheme: dark) {
-  .detail-item {
-    border-bottom: 1px solid var(--surface-border, #334155);
-  }
-
-  .detail-item:last-child {
-    border-bottom: none;
-  }
-
-  .detail-item:hover {
-    background-color: var(--surface-hover, rgba(30, 41, 59, 0.4));
-  }
-
-  .detail-value {
-    color: var(--text-color-secondary, #cbd5e1);
-  }
-
-  .detail-label {
-    color: var(--text-color, #e2e8f0);
-  }
-
-  .machine-id-value {
-    background-color: var(--surface-ground, #1e293b);
-    color: var(--text-color, #f1f5f9);
-    border-color: var(--surface-border, #334155);
-  }
 }
 </style>

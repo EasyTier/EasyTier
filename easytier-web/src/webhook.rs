@@ -255,6 +255,22 @@ pub struct WebhookConfig {
 
     validate_limiter: Arc<AdaptiveValidateLimiter>,
     client: reqwest::Client,
+    handler: Option<Arc<dyn WebhookHandler>>,
+}
+
+/// An in-process consumer of the same management callbacks as an HTTP webhook.
+#[async_trait::async_trait]
+pub trait WebhookHandler: fmt::Debug + Send + Sync {
+    async fn validate_token(
+        &self,
+        request: &ValidateTokenRequest,
+    ) -> anyhow::Result<ValidateTokenResponse>;
+
+    async fn node_connected(&self, _request: &NodeConnectedRequest) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn node_disconnected(&self, _request: &NodeDisconnectedRequest) {}
 }
 
 impl WebhookConfig {
@@ -271,6 +287,7 @@ impl WebhookConfig {
             internal_auth_token,
             web_instance_id,
             web_instance_api_base_url,
+            handler: None,
             validate_limiter: AdaptiveValidateLimiter::new(),
             client: reqwest::Client::builder()
                 .timeout(WEBHOOK_HTTP_TIMEOUT)
@@ -280,9 +297,19 @@ impl WebhookConfig {
     }
 
     pub fn is_enabled(&self) -> bool {
+        self.handler.is_some() || self.has_external_endpoint()
+    }
+
+    pub fn has_external_endpoint(&self) -> bool {
         self.webhook_url
             .as_deref()
             .is_some_and(|url| !url.trim().is_empty())
+    }
+
+    pub fn with_handler(mut self, handler: Arc<dyn WebhookHandler>) -> Self {
+        assert!(!self.has_external_endpoint());
+        self.handler = Some(handler);
+        self
     }
 
     pub fn has_internal_auth(&self) -> bool {
@@ -396,6 +423,9 @@ impl WebhookConfig {
         &self,
         req: &ValidateTokenRequest,
     ) -> anyhow::Result<ValidateTokenResponse> {
+        if let Some(handler) = &self.handler {
+            return handler.validate_token(req).await;
+        }
         self.validate_token_with_http_timeout(req, WEBHOOK_HTTP_TIMEOUT)
             .await
     }
@@ -452,6 +482,12 @@ impl WebhookConfig {
         &self,
         req: &NodeConnectedRequest,
     ) -> Result<(), WebhookDeliveryError> {
+        if let Some(handler) = &self.handler {
+            return handler
+                .node_connected(req)
+                .await
+                .map_err(WebhookDeliveryError::Configuration);
+        }
         if !self.is_enabled() {
             return Ok(());
         }
@@ -474,6 +510,10 @@ impl WebhookConfig {
 
     /// Notify the webhook receiver that a node has disconnected.
     pub async fn notify_node_disconnected(&self, req: &NodeDisconnectedRequest) {
+        if let Some(handler) = &self.handler {
+            handler.node_disconnected(req).await;
+            return;
+        }
         if !self.is_enabled() {
             return;
         }

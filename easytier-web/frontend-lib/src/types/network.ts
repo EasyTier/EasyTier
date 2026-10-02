@@ -48,6 +48,10 @@ export type NetworkConfig = Omit<
   mtu: number | null
   instance_recv_bps_limit: number | string | null
   networking_method: NetworkingMethod | string
+  /// Form-only field: an admin-issued credential secret for joining as a
+  /// temporary device. Saved as secure_mode.local_private_key with an empty
+  /// network_secret - the CLI `--credential` equivalent.
+  credential_secret?: string
 }
 
 export type NormalizedAclV1 = AclV1 & {
@@ -323,6 +327,15 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   }
   normalized.acl = config.acl === undefined ? undefined : normalizeAcl(normalized.acl)
 
+  // A credential-mode instance (no network secret, private key from the
+  // admin-issued credential) surfaces its key in the form's credential
+  // field instead of a raw secure_mode key.
+  normalized.credential_secret = config.credential_secret
+  if (!normalized.network_secret && normalized.secure_mode?.local_private_key) {
+    normalized.credential_secret ??= normalized.secure_mode.local_private_key
+    normalized.secure_mode = { enabled: true }
+  }
+
   return normalized
 }
 
@@ -336,6 +349,15 @@ export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
   backend.instance_recv_bps_limit = toBackendUint64(config.instance_recv_bps_limit)
   if (config.acl === undefined || isAclEmpty(config.acl)) {
     backend.acl = undefined
+  }
+
+  // The form credential field compiles into the credential-identity shape:
+  // empty network secret plus secure mode keyed by the credential (the CLI
+  // `--credential` equivalent); the node derives the matching public key.
+  const credentialSecret = (config.credential_secret ?? '').trim()
+  if (credentialSecret) {
+    backend.network_secret = undefined
+    backend.secure_mode = { enabled: true, local_private_key: credentialSecret }
   }
 
   return NetworkConfigPb.toJson(backend, {
