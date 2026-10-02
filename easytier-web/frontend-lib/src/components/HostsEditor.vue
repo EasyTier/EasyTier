@@ -20,6 +20,8 @@ interface HostsRow {
 
 const rows = ref<HostsRow[]>([])
 
+const savedSnapshot = ref('')
+
 let initialLoad = true
 
 function loadRows() {
@@ -54,8 +56,6 @@ function saveRows() {
 
 watch(hosts, loadRows, { immediate: true })
 
-
-const savedSnapshot = ref('')
 
 const hasChanges = computed(() => {
   const current: HostsConfig[] = []
