@@ -154,15 +154,15 @@ function cancelRawMode() {
     <div v-if="!rawMode" class="flex flex-col gap-y-2">
       <div v-for="(row, rowIndex) in rows" :key="rowIndex"
         class="flex flex-col gap-2 rounded border border-surface-200 dark:border-surface-700 p-3">
-        <div class="flex items-center gap-4">
-          <div class="flex flex-col gap-1 basis-[200px] shrink-0">
+        <div class="flex items-start gap-4">
+          <div class="flex flex-col gap-1 flex-1 min-w-0">
             <label :for="`hosts_ip_${rowIndex}`" class="text-sm font-medium">
               {{ t('hosts.ip_address') }}
             </label>
             <InputText :id="`hosts_ip_${rowIndex}`" v-model="row.ip"
               :placeholder="t('hosts.ip_placeholder')" />
           </div>
-          <div class="flex flex-col gap-1 grow">
+          <div class="flex flex-col gap-1 flex-1 min-w-0">
             <label class="text-sm font-medium">{{ t('hosts.domains') }}</label>
             <InputGroup>
               <InputText v-model="row.domains[0]"
@@ -184,7 +184,7 @@ function cancelRawMode() {
             </div>
           </div>
           <Button icon="pi pi-trash" severity="danger" text rounded
-            :aria-label="t('hosts.remove_entry')" class="self-end" @click="removeRow(rowIndex)" />
+            :aria-label="t('hosts.remove_entry')" class="self-end shrink-0" @click="removeRow(rowIndex)" />
         </div>
       </div>
     </div>
