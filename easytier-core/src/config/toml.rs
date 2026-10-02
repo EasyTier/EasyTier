@@ -278,6 +278,11 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_managed_credentials(&self, _credentials: Vec<ManagedCredentialConfig>) {}
 
+    fn get_hosts(&self) -> std::collections::HashMap<String, Vec<String>> {
+        std::collections::HashMap::new()
+    }
+    fn set_hosts(&self, _hosts: std::collections::HashMap<String, Vec<String>>) {}
+
     fn get_network_config_source(&self) -> ConfigSource {
         ConfigSource::User
     }
@@ -565,6 +570,9 @@ struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     managed_credentials: Vec<ManagedCredentialConfig>,
     source: Option<ConfigSourceConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hosts: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
 #[cfg(feature = "rich-config-errors")]
@@ -1153,6 +1161,19 @@ impl ConfigLoader for TomlConfig {
 
     fn set_managed_credentials(&self, credentials: Vec<ManagedCredentialConfig>) {
         self.config.lock().unwrap().managed_credentials = credentials;
+    }
+
+    fn get_hosts(&self) -> std::collections::HashMap<String, Vec<String>> {
+        self.config
+            .lock()
+            .unwrap()
+            .hosts
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_hosts(&self, hosts: std::collections::HashMap<String, Vec<String>>) {
+        self.config.lock().unwrap().hosts = if hosts.is_empty() { None } else { Some(hosts) };
     }
 
     fn get_network_config_source(&self) -> ConfigSource {

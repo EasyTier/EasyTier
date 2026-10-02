@@ -800,3 +800,18 @@ acl:
     name: 名称
     type: 类型
   match: 匹配
+
+hosts:
+  title: Hosts 配置
+  help: 配置自定义 DNS 映射，将域名解析到指定的虚拟 IP 地址。
+  ip_address: 目标 IP
+  ip_placeholder: 192.168.1.100
+  domains: 域名列表
+  domain_placeholder: app1.local
+  add_entry: 添加映射
+  add_domain: 添加域名
+  remove_domain: 删除域名
+  remove_entry: 删除映射
+  raw_mode: 表格模式
+  visual_mode: 文本模式
+  raw_help: "每行一条记录，格式：IP 域名（空格分隔）。例如：\n192.168.1.100 app1.local\n192.168.1.100 app2.local"

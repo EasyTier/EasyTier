@@ -180,6 +180,19 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
             .collect();
     }
 
+    let hosts = config.get_hosts();
+    if !hosts.is_empty() {
+        result.hosts = hosts
+            .into_iter()
+            .map(|(ip, domains)| {
+                (
+                    ip,
+                    manage::HostsEntry { domains },
+                )
+            })
+            .collect();
+    }
+
     result
 }
 

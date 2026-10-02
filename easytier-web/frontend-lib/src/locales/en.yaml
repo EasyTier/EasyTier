@@ -800,3 +800,18 @@ acl:
     name: Name
     type: Type
   match: Match
+
+hosts:
+  title: Hosts Configuration
+  help: Configure custom DNS mappings to resolve domain names to specified virtual IPs.
+  ip_address: Target IP
+  ip_placeholder: 192.168.1.100
+  domains: Domains
+  domain_placeholder: app1.local
+  add_entry: Add Mapping
+  add_domain: Add Domain
+  remove_domain: Remove Domain
+  remove_entry: Remove Mapping
+  raw_mode: Table Mode
+  visual_mode: Text Mode
+  raw_help: "One entry per line, format: IP domain (space separated). Example:\n192.168.1.100 app1.local\n192.168.1.100 app2.local"

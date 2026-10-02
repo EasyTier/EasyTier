@@ -110,6 +110,7 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "acl",
     "credential_file",
     "managed_credentials",
+    "hosts",
 ];
 
 #[cfg(all(
@@ -626,6 +627,15 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_acl(Some(acl.clone()));
         }
 
+        if !self.hosts.is_empty() {
+            cfg.set_hosts(
+                self.hosts
+                    .iter()
+                    .map(|(ip, entry)| (ip.clone(), entry.domains.clone()))
+                    .collect(),
+            );
+        }
+
         if let Some(data_compress_algo) = self.data_compress_algo {
             if data_compress_algo < 1 {
                 flags.data_compress_algo = 1;
@@ -807,6 +817,14 @@ impl NetworkConfigExt for NetworkConfig {
         result.enable_private_mode = Some(flags.private_mode);
 
         result.acl = config.get_acl();
+
+        let hosts = config.get_hosts();
+        if !hosts.is_empty() {
+            result.hosts = hosts
+                .into_iter()
+                .map(|(ip, domains)| (ip, manage::HostsEntry { domains }))
+                .collect();
+        }
 
         if flags.relay_network_whitelist == "*" {
             result.enable_relay_network_whitelist = Some(false);

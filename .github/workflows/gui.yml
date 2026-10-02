@@ -1,6 +1,7 @@
 name: EasyTier GUI
 
 on:
+  workflow_dispatch:
   push:
     branches: ["develop", "main", "releases/**"]
   pull_request:
