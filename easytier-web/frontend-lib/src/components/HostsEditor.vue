@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button, InputText, Textarea, ToggleButton } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
@@ -20,6 +20,8 @@ interface HostsRow {
 
 const rows = ref<HostsRow[]>([])
 
+let initialLoad = true
+
 function loadRows() {
   const list: HostsConfig[] = Array.isArray(hosts.value) ? hosts.value : []
   rows.value = list.map((entry, idx) => ({
@@ -29,6 +31,10 @@ function loadRows() {
   }))
   if (rows.value.length === 0) {
     addRow()
+  }
+  if (initialLoad) {
+    savedSnapshot.value = JSON.stringify(hosts.value)
+    initialLoad = false
   }
 }
 
@@ -43,9 +49,27 @@ function saveRows() {
     }
   }
   hosts.value = result
+  savedSnapshot.value = JSON.stringify(result)
 }
 
-watch(hosts, loadRows, { immediate: true, deep: true })
+watch(hosts, loadRows, { immediate: true })
+
+
+const savedSnapshot = ref('')
+
+const hasChanges = computed(() => {
+  const current: HostsConfig[] = []
+  for (const row of rows.value) {
+    const ip = row.ip.trim()
+    if (!ip) continue
+    const domains = row.domains.filter((d) => d.trim().length > 0)
+    if (domains.length > 0) {
+      current.push({ ip, domains })
+    }
+  }
+  return JSON.stringify(current) !== savedSnapshot.value
+})
+
 
 function addRow() {
   rows.value.push({ ip: '', domains: [''], key: `new:${Date.now()}` })
@@ -53,12 +77,10 @@ function addRow() {
 
 function removeRow(index: number) {
   rows.value.splice(index, 1)
-  saveRows()
 }
 
 function updateDomain(index: number, domainIndex: number, value: string) {
   rows.value[index].domains[domainIndex] = value
-  saveRows()
 }
 
 function addDomain(rowIndex: number) {
@@ -68,7 +90,6 @@ function addDomain(rowIndex: number) {
 function removeDomain(rowIndex: number, domainIndex: number) {
   if (rows.value[rowIndex].domains.length > 1) {
     rows.value[rowIndex].domains.splice(domainIndex, 1)
-    saveRows()
   }
 }
 
@@ -110,6 +131,7 @@ function saveRawMode() {
   }
 
   hosts.value = result
+  savedSnapshot.value = JSON.stringify(result)
   rawMode.value = false
 }
 
@@ -130,7 +152,11 @@ function cancelRawMode() {
 
     <!-- 可视化模式 -->
     <div v-if="!rawMode" class="flex flex-col gap-y-2">
-      <div v-for="(row, rowIndex) in rows" :key="row.key"
+      <div class="flex items-center gap-2">
+        <Button icon="pi pi-save" :label="t('hosts.save')" size="small" :disabled="!hasChanges" @click="saveRows" />
+        <span v-if="hasChanges" class="text-xs text-amber-500">{{ '● ' }}</span>
+      </div>
+      <div v-for="(row, rowIndex) in rows" :key="rowIndex"
         class="flex flex-col gap-2 rounded border border-surface-200 dark:border-surface-700 p-3">
         <div class="flex items-center gap-2">
           <div class="flex flex-col gap-1 grow basis-4/12">
@@ -138,14 +164,13 @@ function cancelRawMode() {
               {{ t('hosts.ip_address') }}
             </label>
             <InputText :id="`hosts_ip_${rowIndex}`" v-model="row.ip"
-              :placeholder="t('hosts.ip_placeholder')" @blur="saveRows" />
+              :placeholder="t('hosts.ip_placeholder')" />
           </div>
           <div class="flex flex-col gap-1 grow basis-6/12">
             <label class="text-sm font-medium">{{ t('hosts.domains') }}</label>
             <InputGroup>
               <InputText v-model="row.domains[0]"
-                :placeholder="t('hosts.domain_placeholder')"
-                @blur="updateDomain(rowIndex, 0, row.domains[0])" />
+                :placeholder="t('hosts.domain_placeholder')" />
               <Button v-if="row.domains.length <= 1" icon="pi pi-plus" severity="secondary" text rounded
                 :aria-label="t('hosts.add_domain')" @click="addDomain(rowIndex)" />
               <Button v-else icon="pi pi-minus" severity="secondary" text rounded
@@ -154,8 +179,7 @@ function cancelRawMode() {
             <div v-for="(_, di) in row.domains.slice(1)" :key="di" class="mt-1">
               <InputGroup>
                 <InputText v-model="row.domains[di + 1]"
-                  :placeholder="t('hosts.domain_placeholder')"
-                  @blur="updateDomain(rowIndex, di + 1, row.domains[di + 1])" />
+                  :placeholder="t('hosts.domain_placeholder')" />
                 <Button icon="pi pi-minus" severity="danger" text rounded
                   :aria-label="t('hosts.remove_domain')" @click="removeDomain(rowIndex, di + 1)" />
               </InputGroup>
