@@ -815,3 +815,5 @@ hosts:
   raw_mode: 表格模式
   visual_mode: 文本模式
   raw_help: "每行一条记录，格式：IP 域名（空格分隔）。例如：\n192.168.1.100 app1.local\n192.168.1.100 app2.local"
+  save: 保存
+  cancel: 取消

@@ -815,3 +815,5 @@ hosts:
   raw_mode: Table Mode
   visual_mode: Text Mode
   raw_help: "One entry per line, format: IP domain (space separated). Example:\n192.168.1.100 app1.local\n192.168.1.100 app2.local"
+  save: Save
+  cancel: Cancel

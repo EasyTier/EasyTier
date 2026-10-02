@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Dialog, InputText, Textarea, ToggleButton } from 'primevue'
+import { Button, InputText, Textarea, ToggleButton } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import type { HostsConfig } from '../generated/proto/api_manage'
 
@@ -173,6 +173,10 @@ function cancelRawMode() {
         {{ t('hosts.raw_help') }}
       </div>
       <Textarea v-model="rawText" class="font-mono" rows="10" spellcheck="false" />
+      <div class="flex gap-2">
+        <Button icon="pi pi-check" :label="t('hosts.save')" size="small" @click="saveRawMode" />
+        <Button icon="pi pi-times" :label="t('hosts.cancel')" severity="secondary" size="small" @click="cancelRawMode" />
+      </div>
     </div>
   </div>
 </template>
