@@ -79,10 +79,6 @@ function removeRow(index: number) {
   rows.value.splice(index, 1)
 }
 
-function updateDomain(index: number, domainIndex: number, value: string) {
-  rows.value[index].domains[domainIndex] = value
-}
-
 function addDomain(rowIndex: number) {
   rows.value[rowIndex].domains.push('')
 }
