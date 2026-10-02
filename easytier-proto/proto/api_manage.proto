@@ -106,11 +106,12 @@ message NetworkConfig {
   optional VpnPortalConfig vpn_portal_config = 69;
   repeated ManagedCredentialConfig managed_credentials = 71;
   optional bool prefer_peer_relay = 72;
-  map<string, HostsEntry> hosts = 73;
+  repeated HostsConfig hosts = 73;
 }
 
-message HostsEntry {
-  repeated string domains = 1;
+message HostsConfig {
+  string ip = 1;
+  repeated string domains = 2;
 }
 
 message ManagedCredentialConfig {

@@ -185,10 +185,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
         result.hosts = hosts
             .into_iter()
             .map(|(ip, domains)| {
-                (
-                    ip,
-                    manage::HostsEntry { domains },
-                )
+                manage::HostsConfig { ip, domains }
             })
             .collect();
     }

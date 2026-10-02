@@ -631,7 +631,7 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_hosts(
                 self.hosts
                     .iter()
-                    .map(|(ip, entry)| (ip.clone(), entry.domains.clone()))
+                    .map(|entry| (entry.ip.clone(), entry.domains.clone()))
                     .collect(),
             );
         }
@@ -822,7 +822,9 @@ impl NetworkConfigExt for NetworkConfig {
         if !hosts.is_empty() {
             result.hosts = hosts
                 .into_iter()
-                .map(|(ip, domains)| (ip, manage::HostsEntry { domains }))
+                .map(|(ip, domains)| {
+                    manage::HostsConfig { ip, domains }
+                })
                 .collect();
         }
 
