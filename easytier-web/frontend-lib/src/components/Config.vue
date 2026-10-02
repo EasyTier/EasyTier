@@ -687,6 +687,8 @@ function removeVpnPortalClient(index: number) {
             </div>
           </Panel>
 
+          <Divider />
+
           <Panel :header="t('hosts.title')" toggleable collapsed>
             <HostsEditor v-model:hosts="curNetwork.hosts" />
           </Panel>

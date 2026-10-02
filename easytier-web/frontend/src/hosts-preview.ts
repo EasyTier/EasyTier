@@ -1,24 +1,23 @@
 import { createApp, ref, h } from 'vue'
 import PrimeVue from 'primevue/config'
 import Aura from '@primeuix/themes/aura'
-import HostsEditor from '../../frontend-lib/src/components/HostsEditor.vue'
+import Config from '../../frontend-lib/src/components/Config.vue'
 import { I18nUtils } from 'easytier-frontend-lib'
+import { DEFAULT_NETWORK_CONFIG } from '../../frontend-lib/src/types/network'
 import 'easytier-frontend-lib/style.css'
 import './style.css'
 
 const app = createApp({
   setup() {
-    const hosts = ref<any[]>([])
+    const curNetwork = ref<any>({ ...DEFAULT_NETWORK_CONFIG })
     return () =>
-      h('div', { style: 'max-width:860px;margin:40px auto;padding:0 16px;font-family:sans-serif;' }, [
-        h('h2', 'Hosts Editor 本地预览'),
-        h(HostsEditor, { hosts: hosts.value, 'onUpdate:hosts': (v: any[]) => (hosts.value = v) }),
-        h('h3', { style: 'margin-top:24px;' }, '当前 hosts 值（JSON）'),
-        h(
-          'pre',
-          { style: 'background:#f5f5f5;padding:12px;border-radius:8px;font-size:12px;font-family:monospace;' },
-          JSON.stringify(hosts.value, null, 2),
-        ),
+      h('div', { style: 'max-width:1100px;margin:24px auto;padding:0 16px;font-family:sans-serif;' }, [
+        h(Config, {
+          curNetwork: curNetwork.value,
+          'onUpdate:curNetwork': (v: any) => (curNetwork.value = v),
+          actionLabel: '运行网络',
+          configInvalid: false,
+        }),
       ])
   },
 })
