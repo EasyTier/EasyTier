@@ -1127,7 +1127,7 @@ mod tests {
             group_name: "ops".to_owned(),
             group_secret: "ops-secret".to_owned(),
         }];
-        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(peer))
+        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(peer), None)
     }
 
     fn client(name: &str, virtual_ip: Ipv4Addr, groups: &[&str]) -> PortalClientConfig {
@@ -1276,6 +1276,7 @@ mod tests {
                 Arc::new(()),
                 None,
                 Arc::new(()),
+                None,
             )
             .unwrap(),
         );
