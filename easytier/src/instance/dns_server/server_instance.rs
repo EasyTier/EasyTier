@@ -12,11 +12,10 @@ use super::{
     server::Server,
     system_config::{OSConfig, SystemConfig},
 };
+#[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+use crate::common::ifcfg::{IfConfiger, IfConfiguerTrait};
 use crate::{
-    common::{
-        global_ctx::ArcGlobalCtx,
-        ifcfg::{IfConfiger, IfConfiguerTrait},
-    },
+    common::global_ctx::ArcGlobalCtx,
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
@@ -50,6 +49,7 @@ use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, tim
 
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
+    #[allow(dead_code)]
     tun_dev: Option<String>,
     fake_ip: Ipv4Addr,
     route_store: MagicDnsRecordStore,
@@ -332,7 +332,9 @@ pub struct MagicDnsServerInstance {
     _rpc_server: StandAloneServer<RuntimeRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     packet_filter: MagicDnsResolverRegistration,
+    #[allow(dead_code)]
     tun_inet: Ipv4Inet,
+    _route_lease: Option<crate::instance::route::RouteLease>,
 }
 
 fn get_system_config(
@@ -374,19 +376,30 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        if !tun_inet.contains(&fake_ip)
-            && let Some(tun_dev_name) = &tun_dev
-        {
-            let cost = if cfg!(target_os = "windows") {
-                Some(4)
+        let route_lease = if !tun_inet.contains(&fake_ip) {
+            if let Some(lease) = global_ctx.register_route_lease() {
+                if let Ok(cidr) = cidr::Ipv4Cidr::new(fake_ip, 32) {
+                    lease.set(std::collections::BTreeSet::from([cidr::IpCidr::V4(cidr)]));
+                }
+                Some(lease)
             } else {
+                #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+                if let Some(tun_dev_name) = &tun_dev {
+                    let cost = if cfg!(target_os = "windows") {
+                        Some(4)
+                    } else {
+                        None
+                    };
+                    let ifcfg = IfConfiger {};
+                    ifcfg
+                        .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
+                        .await?;
+                }
                 None
-            };
-            let ifcfg = IfConfiger {};
-            ifcfg
-                .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
-                .await?;
-        }
+            }
+        } else {
+            None
+        };
 
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
@@ -427,6 +440,7 @@ impl MagicDnsServerInstance {
             data,
             packet_filter,
             tun_inet,
+            _route_lease: route_lease,
         })
     }
 
@@ -436,6 +450,9 @@ impl MagicDnsServerInstance {
             if let Err(e) = ret {
                 tracing::error!("Failed to close system config: {:?}", e);
             }
+        }
+        if self._route_lease.is_none() {
+            #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
             if !self.tun_inet.contains(&self.data.fake_ip)
                 && let Some(tun_dev_name) = &self.data.tun_dev
             {

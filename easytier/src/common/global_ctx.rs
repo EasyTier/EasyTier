@@ -91,9 +91,12 @@ pub struct GlobalCtx {
     hostname: Mutex<String>,
 
     tun_device_name: Mutex<Option<String>>,
+    tun_device_index: Mutex<Option<u32>>,
 
     flags: ArcSwap<Flags>,
     runtime_endpoint_protocols: Option<HashSet<String>>,
+
+    route_handle: parking_lot::RwLock<Option<crate::instance::route::RouteHandle>>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -205,9 +208,12 @@ impl GlobalCtx {
             hostname: Mutex::new(hostname),
 
             tun_device_name: Mutex::new(None),
+            tun_device_index: Mutex::new(None),
 
             flags: ArcSwap::new(Arc::new(flags)),
             runtime_endpoint_protocols,
+
+            route_handle: parking_lot::RwLock::new(None),
         }
     }
 
@@ -245,10 +251,19 @@ impl GlobalCtx {
     #[cfg(any(feature = "tun", test))]
     fn set_tun_device_name(&self, name: Option<String>) {
         *self.tun_device_name.lock().unwrap() = name;
+        if self.tun_device_name.lock().unwrap().is_none() {
+            *self.tun_device_index.lock().unwrap() = None;
+        }
     }
 
     #[cfg(any(feature = "tun", test))]
     pub(crate) fn set_tun_device_ready(&self, name: String) {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        {
+            let ifindex =
+                crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&name).ok();
+            *self.tun_device_index.lock().unwrap() = ifindex;
+        }
         self.set_tun_device_name(Some(name.clone()));
         self.issue_event(GlobalCtxEvent::TunDeviceReady(name));
     }
@@ -256,11 +271,30 @@ impl GlobalCtx {
     #[cfg(any(feature = "tun", test))]
     pub(crate) fn set_tun_device_error(&self, error: String) {
         self.set_tun_device_name(None);
+        *self.tun_device_index.lock().unwrap() = None;
         self.issue_event(GlobalCtxEvent::TunDeviceError(error));
     }
 
     pub fn get_tun_device_name(&self) -> Option<String> {
         self.tun_device_name.lock().unwrap().clone()
+    }
+
+    pub fn get_tun_device_index(&self) -> Option<u32> {
+        if let Some(idx) = *self.tun_device_index.lock().unwrap() {
+            return Some(idx);
+        }
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        {
+            let name = self.get_tun_device_name()?;
+            crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&name).ok()
+        }
+        #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+        None
+    }
+
+    #[cfg(test)]
+    pub fn set_tun_device_index_for_test(&self, ifindex: Option<u32>) {
+        *self.tun_device_index.lock().unwrap() = ifindex;
     }
 
     pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
@@ -350,6 +384,18 @@ impl GlobalCtx {
             .into_iter()
             .filter(|listener| protocols.contains(&listener.scheme().to_ascii_lowercase()))
             .collect()
+    }
+
+    pub fn set_route_handle(&self, handle: Option<crate::instance::route::RouteHandle>) {
+        *self.route_handle.write() = handle;
+    }
+
+    pub fn get_route_handle(&self) -> Option<crate::instance::route::RouteHandle> {
+        self.route_handle.read().clone()
+    }
+
+    pub fn register_route_lease(&self) -> Option<crate::instance::route::RouteLease> {
+        self.route_handle.read().as_ref().map(|h| h.register())
     }
 }
 
