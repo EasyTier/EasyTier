@@ -133,6 +133,7 @@ fn dump_netlink_messages<T: NetlinkDecode>(
     receive_netlink_dump(builder)
 }
 
+#[derive(Default)]
 pub struct NetlinkIfConfiger {}
 
 impl NetlinkIfConfiger {
@@ -335,6 +336,27 @@ impl NetlinkIfConfiger {
             })
             .collect())
     }
+
+    fn ipv4_route_message(
+        ifindex: u32,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> RouteMessage {
+        let mut builder = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination(IpAddr::V4(address), cidr_prefix)
+            .oif(ifindex)
+            .priority(cost.unwrap_or(65535) as u32)
+            .table(libc::RT_TABLE_MAIN.into())
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast);
+        if let Some(source_hint) = source_hint {
+            builder = builder.preferred_source(IpAddr::V4(source_hint));
+        }
+        builder.build()
+    }
 }
 
 #[async_trait]
@@ -346,15 +368,25 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let message = RouteMessageBuilder::new(libc::AF_INET as u8)
-            .destination(IpAddr::V4(address), cidr_prefix)
-            .oif(Self::get_interface_index(name)?)
-            .priority(cost.unwrap_or(65535) as u32)
-            .table(libc::RT_TABLE_MAIN.into())
-            .static_protocol()
-            .universe_scope()
-            .route_type(RouteType::Unicast)
-            .build();
+        self.add_ipv4_route_with_source_hint(name, address, cidr_prefix, cost, None)
+            .await
+    }
+
+    async fn add_ipv4_route_with_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        let message = NetlinkIfConfiger::ipv4_route_message(
+            NetlinkIfConfiger::get_interface_index(name)?,
+            address,
+            cidr_prefix,
+            cost,
+            source_hint,
+        );
         let request = message_request(
             RTM_NEWROUTE,
             NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
@@ -388,6 +420,28 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         }
 
         Ok(())
+    }
+
+    async fn remove_ipv4_route_with_cost_and_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        let message = Self::ipv4_route_message(
+            Self::get_interface_index(name)?,
+            address,
+            cidr_prefix,
+            cost,
+            source_hint,
+        );
+        let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &message)?;
+        match send_netlink_req_and_wait_ack(request) {
+            Err(Error::IOError(err)) if err.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            result => result,
+        }
     }
 
     async fn add_ipv4_ip(
@@ -694,6 +748,49 @@ mod tests {
             .filter_map(|route| route.destination().copied())
             .collect::<Vec<_>>();
         assert!(!routes.contains(&IpAddr::V4("10.5.5.0".parse().unwrap())));
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn remove_ipv4_route_with_source_hint_keeps_other_metric() {
+        let iface = test_iface_name("rm");
+        let _link = ScopedDummyLink::new(&iface);
+        let ifcfg = NetlinkIfConfiger {};
+        let address = "10.231.1.1".parse().unwrap();
+        let destination = "10.99.0.0".parse().unwrap();
+
+        ifcfg.add_ipv4_ip(&iface, address, 24).await.unwrap();
+        for cost in [123, 124] {
+            ifcfg
+                .add_ipv4_route_with_source_hint(&iface, destination, 24, Some(cost), Some(address))
+                .await
+                .unwrap();
+        }
+
+        ifcfg
+            .remove_ipv4_route_with_cost_and_source_hint(
+                &iface,
+                destination,
+                24,
+                Some(123),
+                Some(address),
+            )
+            .await
+            .unwrap();
+        let routes = run_cmd(&format!("ip -4 route show 10.99.0.0/24 dev {iface}"));
+        assert!(!routes.contains("metric 123"));
+        assert!(routes.contains("metric 124"));
+
+        ifcfg
+            .remove_ipv4_route_with_cost_and_source_hint(
+                &iface,
+                destination,
+                24,
+                Some(123),
+                Some(address),
+            )
+            .await
+            .unwrap();
     }
 
     #[serial_test::serial]

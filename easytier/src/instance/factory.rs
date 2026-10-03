@@ -1,5 +1,10 @@
 use std::sync::Arc;
 
+#[cfg(feature = "tun")]
+use tokio::sync::Mutex;
+
+#[cfg(all(feature = "management-rpc", feature = "tun", mobile))]
+use easytier_core::instance::CoreInstanceState;
 #[cfg(any(feature = "management-rpc", test))]
 use easytier_core::instance::manager::InstanceManager;
 #[cfg(feature = "management-rpc")]
@@ -12,6 +17,8 @@ use easytier_core::{
 
 use crate::common::global_ctx::EventBusSubscriber;
 
+#[cfg(feature = "tun")]
+use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicRegistry};
 use super::{
     composition::compose_native_core_instance, host::NativeInstanceHost,
     runtime_host::NativeInstanceRuntimeHost,
@@ -49,6 +56,58 @@ pub fn subscribe_native_instance_event(
     instance
         .runtime_host::<NativeInstanceRuntimeHost>()
         .map(NativeInstanceRuntimeHost::subscribe_event)
+}
+
+#[cfg(all(feature = "management-rpc", feature = "tun", mobile))]
+pub async fn attach_mobile_tun_fd(manager: &NativeInstanceManager, fd: i32) -> anyhow::Result<()> {
+    let instances = manager
+        .instances()
+        .into_iter()
+        .filter(|instance| instance.state() == CoreInstanceState::Running)
+        .filter(|instance| {
+            instance
+                .runtime_host::<NativeInstanceRuntimeHost>()
+                .is_some_and(NativeInstanceRuntimeHost::tun_enabled)
+        })
+        .collect::<Vec<_>>();
+    if fd > 0 && instances.is_empty() {
+        anyhow::bail!("no running TUN-enabled instance is available for fd attachment");
+    }
+
+    let mut errors = Vec::new();
+    // The first member opens the TUN; the remaining members join its dispatcher.
+    for (index, instance) in instances.iter().enumerate() {
+        if let Err(error) = attach_mobile_tun_fd_to_instance(instance, fd, index == 0).await {
+            errors.push(format!("{}: {error}", instance.instance_id()));
+            if fd > 0 {
+                break;
+            }
+        }
+    }
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    if fd > 0 {
+        for instance in &instances {
+            if let Err(error) = attach_mobile_tun_fd_to_instance(instance, 0, false).await {
+                errors.push(format!("cleanup {}: {error}", instance.instance_id()));
+            }
+        }
+    }
+    anyhow::bail!("failed to attach mobile TUN fd: {}", errors.join("; "))
+}
+
+#[cfg(all(feature = "management-rpc", feature = "tun", mobile))]
+async fn attach_mobile_tun_fd_to_instance(
+    instance: &NativeCoreInstance,
+    fd: i32,
+    replace_tun_fd: bool,
+) -> anyhow::Result<()> {
+    let runtime = instance
+        .runtime_host::<NativeInstanceRuntimeHost>()
+        .ok_or_else(|| anyhow::anyhow!("native runtime host is unavailable"))?;
+    runtime.attach_mobile_tun_fd(fd, replace_tun_fd).await
 }
 
 #[cfg(feature = "management-rpc")]
@@ -97,6 +156,8 @@ fn native_instance_manager_with_optional_runtime(
 /// Native construction Adapter for the canonical core InstanceManager.
 pub struct NativeInstanceFactory {
     process_runtime: Arc<CoreProcessRuntime>,
+    #[cfg(feature = "tun")]
+    shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     runtime_handle: Option<tokio::runtime::Handle>,
     compact_runtime: bool,
     #[cfg(feature = "logging")]
@@ -107,6 +168,8 @@ impl NativeInstanceFactory {
     pub fn new(process_runtime: Arc<CoreProcessRuntime>) -> Self {
         Self {
             process_runtime,
+            #[cfg(feature = "tun")]
+            shared_virtual_nic_registry: Arc::new(Mutex::new(SharedVirtualNicRegistry::new())),
             runtime_handle: None,
             compact_runtime: false,
             #[cfg(feature = "logging")]
@@ -126,6 +189,7 @@ impl NativeInstanceFactory {
         self
     }
 
+    #[cfg(feature = "management-rpc")]
     fn with_compact_runtime(mut self) -> Self {
         self.compact_runtime = true;
         self
@@ -149,6 +213,8 @@ impl InstanceFactory for NativeInstanceFactory {
         let instance = compose_native_core_instance(
             config,
             self.process_runtime.clone(),
+            #[cfg(feature = "tun")]
+            self.shared_virtual_nic_registry.clone(),
             self.compact_runtime,
         )?;
         #[cfg(feature = "logging")]
