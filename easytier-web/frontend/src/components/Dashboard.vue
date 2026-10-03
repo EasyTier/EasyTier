@@ -21,8 +21,9 @@ const periodFunc = new Utils.PeriodicTask(async () => {
     try {
         await loadSummary();
     } catch (e) {
-        toast.add({ severity: 'error', summary: 'Load Summary Failed', detail: e, life: 2000 });
-        console.error(e);
+        const message = e instanceof Error ? e.message : typeof e === 'string' ? e : 'Unknown error';
+        toast.add({ severity: 'error', summary: 'Load Summary Failed', detail: message, life: 2000 });
+        console.error('Load Summary Failed:', message);
     }
 }, 1000);
 
