@@ -10,6 +10,7 @@ use async_trait::async_trait;
 
 use crate::{
     connectivity::{
+        configured_bind_addr,
         direct::DirectConnectorHost,
         hole_punch::port_mapping::{UdpPortMappingPlatform, start_udp_port_mapping},
         hole_punch::{HolePunchRpcRegistry, HolePunchTunnelSink},
@@ -139,6 +140,7 @@ where
         platform: Option<Arc<dyn UdpPortMappingPlatform>>,
         events: Arc<dyn crate::events::CoreEventSink>,
         socket_context: SocketContext,
+        bind_address: Option<IpAddr>,
         protocol: Arc<dyn ClientProtocolUpgrader<HostTcpSocket<H>>>,
     ) -> Self {
         let stun_mapper = stun.clone();
@@ -154,6 +156,7 @@ where
             platform,
             events,
             socket_context,
+            bind_address,
         ));
         let sym_punch_lock = UdpSymPunchLock::default();
         let client = UdpHolePunchConnector::new(
@@ -274,6 +277,7 @@ where
     platform: Option<Arc<dyn UdpPortMappingPlatform>>,
     events: Arc<dyn crate::events::CoreEventSink>,
     socket_context: SocketContext,
+    bind_address: Option<IpAddr>,
 }
 
 impl<H, P> CoreUdpHolePunchRuntime<H, P>
@@ -289,6 +293,7 @@ where
         platform: Option<Arc<dyn UdpPortMappingPlatform>>,
         events: Arc<dyn crate::events::CoreEventSink>,
         socket_context: SocketContext,
+        bind_address: Option<IpAddr>,
     ) -> Self {
         Self {
             host,
@@ -297,6 +302,7 @@ where
             platform,
             events,
             socket_context,
+            bind_address,
         }
     }
 
@@ -314,12 +320,14 @@ where
     ) -> anyhow::Result<UdpPunchListener<HostUdpSocket<H>>> {
         let bind = match port {
             Some(port) => UdpBindOptions::hole_punch_candidate().with_local_addr(Some(
-                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
+                configured_bind_addr(self.bind_address, IpVersion::V4, port).unwrap_or_else(|| {
+                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port))
+                }),
             )),
             None => UdpBindOptions::hole_punch_control(),
         }
         .with_context(self.socket_context.clone().with_ip_version(IpVersion::V4));
-        let socket = self.host.bind_udp(bind).await?;
+        let socket = UdpHolePunchRuntime::bind_udp(self, bind).await?;
         let local_port = socket.local_addr()?.port();
         let resolved = if resolve_public_addr {
             self.resolve_public_addr(socket.clone()).await?
@@ -402,16 +410,35 @@ where
     }
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        let local_addr = options.local_addr;
+        let ip_version = local_addr
+            .map(|addr| {
+                if addr.is_ipv6() {
+                    IpVersion::V6
+                } else {
+                    IpVersion::V4
+                }
+            })
+            .unwrap_or(options.context.ip_version);
+        let port = local_addr.map(|addr| addr.port()).unwrap_or(0);
+        let options = if local_addr.is_none_or(|addr| addr.ip().is_unspecified()) {
+            match configured_bind_addr(self.bind_address, ip_version, port) {
+                Some(addr) => options.with_local_addr(Some(addr)),
+                None => options,
+            }
+        } else {
+            options
+        };
         self.host.bind_udp(options).await
     }
 
     async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
-        self.host
-            .bind_udp(
-                UdpBindOptions::hole_punch_candidate()
-                    .with_context(self.socket_context.clone().with_ip_version(IpVersion::V4)),
-            )
-            .await
+        UdpHolePunchRuntime::bind_udp(
+            self,
+            UdpBindOptions::hole_punch_candidate()
+                .with_context(self.socket_context.clone().with_ip_version(IpVersion::V4)),
+        )
+        .await
     }
 
     async fn resolve_udp_public_addr(

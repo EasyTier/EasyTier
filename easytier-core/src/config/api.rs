@@ -141,6 +141,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.p2p_only = Some(flags.p2p_only);
     result.lazy_p2p = Some(flags.lazy_p2p);
     result.bind_device = Some(flags.bind_device);
+    result.bind_address = (!flags.bind_address.is_empty()).then_some(flags.bind_address);
     result.socket_mark = flags.socket_mark;
     result.no_tun = Some(flags.no_tun);
     result.enable_exit_node = Some(flags.enable_exit_node);

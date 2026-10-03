@@ -146,6 +146,17 @@ impl RuntimeUdpSocketFactory {
             return BindDev::from(bind_device.as_str());
         }
 
+        // An explicit non-wildcard local address identifies the underlay
+        // interface. Keep the socket on that interface even for STUN and
+        // hole-punch sockets, whose purpose defaults historically skipped
+        // automatic device binding.
+        if options
+            .local_addr
+            .is_some_and(|local_addr| !local_addr.ip().is_unspecified())
+        {
+            return BindDev::Auto;
+        }
+
         if matches!(
             options.purpose,
             UdpSocketPurpose::DirectConnect
@@ -383,6 +394,20 @@ mod tests {
         assert!(matches!(
             factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
             BindDev::Disabled
+        ));
+        assert!(matches!(
+            factory.bind_device_for(
+                &UdpBindOptions::hole_punch_control()
+                    .with_local_addr(Some("192.0.2.10:0".parse().unwrap()))
+            ),
+            BindDev::Auto
+        ));
+        assert!(matches!(
+            factory.bind_device_for(
+                &UdpBindOptions::stun_probe()
+                    .with_local_addr(Some("192.0.2.10:0".parse().unwrap()))
+            ),
+            BindDev::Auto
         ));
         assert_eq!(
             factory.reuse_addr_for(&UdpBindOptions::port_bound_listener(listener_addr)),

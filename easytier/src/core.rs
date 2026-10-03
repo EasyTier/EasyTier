@@ -555,6 +555,13 @@ struct NetworkOptions {
     )]
     bind_device: Option<bool>,
 
+    #[arg(
+        long,
+        env = "ET_BIND_ADDRESS",
+        help = t!("core_clap.bind_address").to_string()
+    )]
+    bind_address: Option<IpAddr>,
+
     // SO_MARK (fwmark) is a Linux-family kernel feature. Gate the flag out
     // entirely on other targets so users on Windows/macOS/BSD don't see a
     // `--socket-mark` they can't act on.
@@ -1276,6 +1283,9 @@ impl NetworkOptions {
             .into();
         }
         f.bind_device = self.bind_device.unwrap_or(f.bind_device);
+        if let Some(bind_address) = self.bind_address {
+            f.bind_address = bind_address.to_string();
+        }
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         {
             f.socket_mark = self.socket_mark.or(f.socket_mark);

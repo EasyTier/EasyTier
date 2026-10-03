@@ -21,6 +21,7 @@ use url::Url;
 use crate::tunnel::ring::RingTunnelRegistry;
 use crate::{
     connectivity::{
+        configured_bind_addr,
         protocol::{ClientProtocolUpgrader, ProtocolTransport, protocol_transport},
         transport::{self, ConnectedByteStream, ConnectedTransport, UdpSessionMode},
     },
@@ -289,6 +290,7 @@ pub struct ManualConnectorOptions {
     pub connect_timeout: Duration,
     pub endpoint_discovery_timeout: Duration,
     pub bind_device: bool,
+    pub bind_address: Option<IpAddr>,
     pub allow_interface_bind: bool,
     pub tcp_bind: TcpBindOptions,
     pub udp_bind: UdpBindOptions,
@@ -301,6 +303,7 @@ impl Default for ManualConnectorOptions {
             connect_timeout: Duration::from_secs(2),
             endpoint_discovery_timeout: Duration::from_secs(20),
             bind_device: false,
+            bind_address: None,
             allow_interface_bind: true,
             tcp_bind: TcpBindOptions::default(),
             udp_bind: UdpBindOptions::direct_connect(),
@@ -825,7 +828,17 @@ where
                     data.options.socket_context(transport, ip_version),
                 )
                 .await?;
-                let bind_addrs = if data.options.bind_device
+                let bind_addrs = if let Some(bind_addr) = configured_bind_addr(
+                    data.options.bind_address,
+                    if remote_addr.is_ipv6() {
+                        IpVersion::V6
+                    } else {
+                        IpVersion::V4
+                    },
+                    0,
+                ) {
+                    vec![bind_addr]
+                } else if data.options.bind_device
                     && data.options.allow_interface_bind
                     && transport.supports_interface_bind()
                 {
