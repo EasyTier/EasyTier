@@ -172,10 +172,12 @@ async fn upsert_network_config(
         ON CONFLICT(user_id, device_id, network_instance_id) DO UPDATE SET
             network_config = excluded.network_config,
             source = excluded.source,
-            disabled = excluded.disabled,
-            update_time = excluded.update_time
     "#
     .to_string();
+    if !web_only_update {
+        query.push_str(" disabled = excluded.disabled,\n");
+    }
+    query.push_str(" update_time = excluded.update_time\n    ");
     if web_only_update {
         query.push_str(" WHERE user_running_network_configs.source = 'web'");
     }

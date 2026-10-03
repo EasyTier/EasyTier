@@ -393,12 +393,22 @@ fn collect_web_source_instance_ids(metas: &[NetworkMeta]) -> HashSet<String> {
         .collect()
 }
 
-pub(super) fn desired_web_source_instance_ids(
+pub(super) fn web_source_instance_ids(
     local_configs: &[crate::db::entity::user_running_network_configs::Model],
 ) -> HashSet<String> {
     local_configs
         .iter()
         .filter(|cfg| cfg.get_runtime_network_config_source() == ConfigSource::Web)
+        .map(|cfg| cfg.network_instance_id.clone())
+        .collect()
+}
+
+pub(super) fn desired_web_source_instance_ids(
+    local_configs: &[crate::db::entity::user_running_network_configs::Model],
+) -> HashSet<String> {
+    local_configs
+        .iter()
+        .filter(|cfg| !cfg.disabled && cfg.get_runtime_network_config_source() == ConfigSource::Web)
         .map(|cfg| cfg.network_instance_id.clone())
         .collect()
 }
@@ -1230,6 +1240,82 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(updated.get_network_config_source(), ConfigSource::Web);
+    }
+
+    #[tokio::test]
+    async fn disabled_web_configs_are_not_auto_run() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage
+            .db()
+            .auto_create_user("web-user-disabled")
+            .await
+            .unwrap()
+            .id;
+        let machine_id = uuid::Uuid::new_v4();
+        let enabled_id = uuid::Uuid::new_v4();
+        let disabled_id = uuid::Uuid::new_v4();
+
+        let desired_configs = || {
+            [enabled_id, disabled_id]
+                .into_iter()
+                .map(|instance_id| crate::webhook::ManagedNetworkConfig {
+                    instance_id: instance_id.to_string(),
+                    network_config: serde_json::json!({
+                        "instance_id": instance_id.to_string(),
+                        "network_name": "disabled-preservation"
+                    }),
+                })
+                .collect()
+        };
+        reconcile_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            desired_configs(),
+            None,
+            ExpectedConfigRevision::Any,
+        )
+        .await
+        .unwrap();
+        storage
+            .db()
+            .update_network_config_state((user_id, machine_id), disabled_id, true)
+            .await
+            .unwrap();
+        reconcile_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            desired_configs(),
+            None,
+            ExpectedConfigRevision::Any,
+        )
+        .await
+        .unwrap();
+
+        let configs = storage
+            .db()
+            .list_network_configs((user_id, machine_id), ListNetworkProps::All)
+            .await
+            .unwrap();
+        let all_web = web_source_instance_ids(&configs);
+        let desired = desired_web_source_instance_ids(&configs);
+
+        assert!(
+            configs
+                .iter()
+                .find(|cfg| cfg.network_instance_id == disabled_id.to_string())
+                .unwrap()
+                .disabled
+        );
+        assert!(desired.contains(&enabled_id.to_string()));
+        assert!(!desired.contains(&disabled_id.to_string()));
+        assert!(all_web.contains(&enabled_id.to_string()));
+        assert!(all_web.contains(&disabled_id.to_string()));
+
+        let running = HashSet::from([disabled_id.to_string()]);
+        let running_web = running_web_source_instance_ids(&running, &all_web, None);
+        assert!(running_web.contains(&disabled_id.to_string()));
     }
 
     #[test]
