@@ -46,11 +46,8 @@ where
     pub async fn admit_client_tunnel_for_test(
         &self,
         tunnel: Box<dyn crate::tunnel::Tunnel>,
-        is_directly_connected: bool,
     ) -> Result<(crate::config::PeerId, PeerConnId), crate::peers::error::Error> {
-        self.peer_manager
-            .add_client_tunnel(tunnel, is_directly_connected)
-            .await
+        self.peer_manager.add_client_tunnel(tunnel).await
     }
 
     #[doc(hidden)]

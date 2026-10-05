@@ -28,8 +28,9 @@ use crate::{
     foundation::task::{PeerTaskLauncher, PeerTaskManager},
     host::dns::DnsResolver,
     peers::{
-        conn::peer_conn::PeerConnId, foreign_network::ForeignNetworkRpcRegistrar,
-        peer_manager::PeerManagerCore, peer_rpc::PeerRpcManager,
+        PeerConnectionOrigin, conn::peer_conn::PeerConnId,
+        foreign_network::ForeignNetworkRpcRegistrar, peer_manager::PeerManagerCore,
+        peer_rpc::PeerRpcManager,
     },
     process_runtime::ProtectedTcpPortRegistry,
     proto::{
@@ -870,7 +871,11 @@ where
         dst_peer_id: PeerId,
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
         self.peer_manager
-            .add_client_tunnel_with_peer_id_hint(tunnel, true, Some(dst_peer_id))
+            .add_client_tunnel_with_peer_id_hint(
+                tunnel,
+                PeerConnectionOrigin::Direct,
+                Some(dst_peer_id),
+            )
             .await
             .map_err(Into::into)
     }
