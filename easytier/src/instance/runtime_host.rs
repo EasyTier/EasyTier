@@ -39,7 +39,7 @@ use anyhow::Context as _;
 use tokio::task::JoinHandle;
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use crate::instance::route::{HostRouteManager, PlatformRouteBackend, RouteLease, stop_manager};
+use crate::instance::route::{PlatformRouteBackend, RouteLease, RouteMgr, stop_route_mgr};
 
 pub(crate) struct NativeInstanceRuntimeHost {
     global_ctx: ArcGlobalCtx,
@@ -84,7 +84,7 @@ impl NativeInstanceRuntimeHost {
             let backend = PlatformRouteBackend::new()
                 .context("failed to initialize platform netlink route backend")?;
             let default_metric = 65535;
-            let manager = HostRouteManager::new(
+            let manager = RouteMgr::new(
                 self.global_ctx.clone(),
                 backend,
                 cancel_token.clone(),
@@ -127,7 +127,7 @@ impl NativeInstanceRuntimeHost {
             self.global_ctx.set_route_handle(None);
             let mut join_guard = self.route_task.lock().await;
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            let res = stop_manager(&self.route_cancel, &mut join_guard, deadline).await;
+            let res = stop_route_mgr(&self.route_cancel, &mut join_guard, deadline).await;
             if let Err(err) = res {
                 tracing::warn!(?err, "failed or incomplete route manager shutdown cleanup");
             }
