@@ -13,35 +13,6 @@ use super::backend::RouteBackend;
 use super::handle::{RouteHandle, RouteSlot};
 use super::model::{CleanupIncomplete, DeviceId, RetryState, Route, RouteError};
 
-/// Helper to stop a route manager task with timeout and cancel-safety.
-/// If timeout occurs, the JoinHandle remains in `join_handle` so the caller can wait again.
-pub async fn stop_route_mgr(
-    cancel_token: &CancellationToken,
-    join_handle: &mut Option<tokio::task::JoinHandle<Result<(), CleanupIncomplete>>>,
-    deadline: tokio::time::Instant,
-) -> Result<(), CleanupIncomplete> {
-    cancel_token.cancel();
-    let Some(handle) = join_handle.as_mut() else {
-        return Ok(());
-    };
-    match tokio::time::timeout_at(deadline, handle).await {
-        Ok(join_res) => {
-            let _ = join_handle.take();
-            match join_res {
-                Ok(manager_res) => manager_res,
-                Err(panic_err) => Err(CleanupIncomplete {
-                    reason: format!("route manager task terminated abnormally: {panic_err}"),
-                    ..Default::default()
-                }),
-            }
-        }
-        Err(_) => Err(CleanupIncomplete {
-            reason: "deadline exceeded while waiting for stop cleanup; manager task running in background".to_string(),
-            ..Default::default()
-        }),
-    }
-}
-
 pub struct RouteMgr<B> {
     global_ctx: ArcGlobalCtx,
     backend: B,
@@ -522,7 +493,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stop_route_mgr_timeout_and_completion() {
+    async fn test_manager_stop_on_cancellation() {
         let cancel_token = CancellationToken::new();
 
         let global_ctx = get_mock_global_ctx();
@@ -531,13 +502,11 @@ mod tests {
 
         let manager = RouteMgr::new(global_ctx, backend, cancel_token.clone(), 65535);
 
-        let mut join_handle = Some(tokio::spawn(async move { manager.run().await }));
+        let join_handle = tokio::spawn(async move { manager.run().await });
 
-        // Stop manager
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        let res = stop_route_mgr(&cancel_token, &mut join_handle, deadline).await;
+        cancel_token.cancel();
+        let res = join_handle.await.unwrap();
         assert!(res.is_ok());
-        assert!(join_handle.is_none());
     }
 
     #[tokio::test]

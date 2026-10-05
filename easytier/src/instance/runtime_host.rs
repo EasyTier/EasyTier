@@ -13,6 +13,7 @@ mod event_journal;
 mod implementation;
 #[cfg(feature = "tun")]
 mod magic_dns;
+mod route_runtime;
 #[cfg(feature = "tun")]
 mod tun_common;
 #[cfg(not(feature = "tun"))]
@@ -28,18 +29,8 @@ mod tun_runtime;
 use event_journal::EventJournal;
 #[cfg(feature = "tun")]
 use magic_dns::MagicDnsRuntime;
+use route_runtime::NativeRouteRuntime;
 use tun_runtime::NativeTunRuntime;
-
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use std::time::Duration;
-
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use anyhow::Context as _;
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use tokio::task::JoinHandle;
-
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use crate::instance::route::{PlatformRouteBackend, RouteLease, RouteMgr, stop_route_mgr};
 
 pub(crate) struct NativeInstanceRuntimeHost {
     global_ctx: ArcGlobalCtx,
@@ -47,10 +38,7 @@ pub(crate) struct NativeInstanceRuntimeHost {
     cancel: CancellationToken,
     event_journal: EventJournal,
     tun: NativeTunRuntime,
-    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-    route_task: Mutex<Option<JoinHandle<Result<(), crate::instance::route::CleanupIncomplete>>>>,
-    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-    route_cancel: CancellationToken,
+    route: NativeRouteRuntime,
 }
 
 impl NativeInstanceRuntimeHost {
@@ -58,16 +46,14 @@ impl NativeInstanceRuntimeHost {
         let cancel = CancellationToken::new();
         let tun = NativeTunRuntime::new(global_ctx.clone(), cancel.clone());
         let event_journal = EventJournal::new(&global_ctx);
+        let route = NativeRouteRuntime::new(global_ctx.clone());
         Arc::new(Self {
             global_ctx,
             event_journal,
             operation: Arc::new(Mutex::new(())),
             cancel,
             tun,
-            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-            route_task: Mutex::new(None),
-            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-            route_cancel: CancellationToken::new(),
+            route,
         })
     }
 
@@ -77,40 +63,7 @@ impl NativeInstanceRuntimeHost {
     ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
         self.event_journal.start(self.cancel.clone()).await;
         self.tun.prepare(packet_plane.clone()).await?;
-
-        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-        if !self.global_ctx.get_flags().no_tun {
-            let cancel_token = self.route_cancel.clone();
-            let backend = PlatformRouteBackend::new()
-                .context("failed to initialize platform netlink route backend")?;
-            let default_metric = 65535;
-            let manager = RouteMgr::new(
-                self.global_ctx.clone(),
-                backend,
-                cancel_token.clone(),
-                default_metric,
-            );
-
-            let handle = manager.handle();
-            self.global_ctx.set_route_handle(Some(handle.clone()));
-
-            let proxy_lease = handle.register();
-            let p_global_ctx = self.global_ctx.clone();
-            let p_packet_plane = packet_plane.clone();
-            let p_cancel = cancel_token.clone();
-            tokio::spawn(async move {
-                Self::run_proxy_routes_publisher(
-                    p_global_ctx,
-                    p_packet_plane,
-                    proxy_lease,
-                    p_cancel,
-                )
-                .await;
-            });
-
-            let join_handle = tokio::spawn(manager.run());
-            *self.route_task.lock().await = Some(join_handle);
-        }
+        self.route.prepare(packet_plane.clone()).await?;
 
         Ok(Some(
             self.tun.dhcp_host(self.operation.clone(), packet_plane),
@@ -121,18 +74,7 @@ impl NativeInstanceRuntimeHost {
         self.cancel.cancel();
         let _operation = self.operation.lock().await;
 
-        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-        {
-            self.route_cancel.cancel();
-            self.global_ctx.set_route_handle(None);
-            let mut join_guard = self.route_task.lock().await;
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            let res = stop_route_mgr(&self.route_cancel, &mut join_guard, deadline).await;
-            if let Err(err) = res {
-                tracing::warn!(?err, "failed or incomplete route manager shutdown cleanup");
-            }
-        }
-
+        self.route.shutdown().await;
         self.event_journal.stop().await;
         self.tun.shutdown().await;
     }
@@ -190,67 +132,6 @@ impl NativeInstanceRuntimeHost {
 
     fn install_packet_receiver(&self, receiver: HostPacketReceiver) -> anyhow::Result<()> {
         self.tun.install_packet_receiver(receiver)
-    }
-
-    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-    async fn run_proxy_routes_publisher(
-        global_ctx: ArcGlobalCtx,
-        packet_plane: Arc<CorePacketPlane>,
-        lease: RouteLease,
-        cancel: CancellationToken,
-    ) {
-        use crate::common::global_ctx::GlobalCtxEvent;
-
-        let mut cur_proxy_cidrs = std::collections::BTreeSet::<cidr::Ipv4Cidr>::new();
-        let mut event_receiver = global_ctx.subscribe();
-
-        if let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await {
-            cur_proxy_cidrs = diff.current;
-            let set: std::collections::BTreeSet<cidr::IpCidr> = cur_proxy_cidrs
-                .iter()
-                .copied()
-                .map(cidr::IpCidr::V4)
-                .collect();
-            lease.set(set);
-        }
-
-        loop {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => break,
-                res = event_receiver.recv() => {
-                    match res {
-                        Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => {
-                            if let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await {
-                                cur_proxy_cidrs = diff.current;
-                                let set: std::collections::BTreeSet<cidr::IpCidr> = cur_proxy_cidrs
-                                    .iter()
-                                    .copied()
-                                    .map(cidr::IpCidr::V4)
-                                    .collect();
-                                lease.set(set);
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            event_receiver = event_receiver.resubscribe();
-                            if let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await {
-                                cur_proxy_cidrs = diff.current;
-                                let set: std::collections::BTreeSet<cidr::IpCidr> = cur_proxy_cidrs
-                                    .iter()
-                                    .copied()
-                                    .map(cidr::IpCidr::V4)
-                                    .collect();
-                                lease.set(set);
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
