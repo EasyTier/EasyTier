@@ -87,10 +87,9 @@ pub struct BufPoolWriter<'t> {
 impl<'t> BufPoolWriter<'t> {
     #[inline(always)]
     pub fn reserve(&mut self, additional: usize) {
-        if self.capacity < additional {
-            self.pool.reserve(additional);
-            self.capacity += additional;
-        }
+        let capacity = self.capacity.checked_add(additional).unwrap();
+        self.pool.reserve(capacity);
+        self.capacity = capacity;
     }
 
     #[inline(always)]
