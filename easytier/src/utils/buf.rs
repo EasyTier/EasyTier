@@ -98,12 +98,18 @@ impl<'t> BufPoolWriter<'t> {
     }
 
     #[inline(always)]
+    pub fn remaining(&self) -> usize {
+        self.capacity.saturating_sub(self.margins.size())
+    }
+
+    #[inline(always)]
     pub fn as_slice(&mut self) -> &mut [MaybeUninit<u8>] {
-        unsafe {
-            self.pool
-                .pool
-                .spare_capacity_mut()
-                .get_unchecked_mut(self.margins.header..self.capacity - self.margins.trailer)
+        let remaining = self.remaining();
+        if remaining == 0 {
+            &mut []
+        } else {
+            &mut self.pool.pool.spare_capacity_mut()
+                [self.margins.header..self.margins.header + remaining]
         }
     }
 
