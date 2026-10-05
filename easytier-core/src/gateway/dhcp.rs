@@ -22,10 +22,15 @@ pub enum DhcpIpv4Decision {
     },
 }
 
+// Give an already-addressed peer time to announce its subnet before a fresh
+// network's first node falls back to the bootstrap subnet.
+const BOOTSTRAP_WAIT_ROUNDS: u32 = 2;
+
 #[derive(Debug, Default)]
 pub struct DhcpIpv4Allocator {
     default_subnet: Option<Ipv4Inet>,
     current: Option<Ipv4Inet>,
+    no_ipv4_rounds: u32,
 }
 
 impl DhcpIpv4Allocator {
@@ -33,6 +38,7 @@ impl DhcpIpv4Allocator {
         Self {
             default_subnet: Some(default_subnet),
             current: None,
+            no_ipv4_rounds: 0,
         }
     }
 
@@ -42,23 +48,57 @@ impl DhcpIpv4Allocator {
 
     pub fn reset(&mut self) {
         self.current = None;
+        self.no_ipv4_rounds = 0;
     }
 
     pub fn commit(&mut self, next: Option<Ipv4Inet>) {
         self.current = next;
     }
 
-    pub fn evaluate(&self, has_routes: bool, used_ipv4: &HashSet<Ipv4Inet>) -> DhcpIpv4Decision {
-        if !has_routes {
+    pub fn evaluate(
+        &mut self,
+        has_routes: bool,
+        used_ipv4: &HashSet<Ipv4Inet>,
+    ) -> DhcpIpv4Decision {
+        self.evaluate_with_rng(has_routes, used_ipv4, &mut rand::thread_rng())
+    }
+
+    fn evaluate_with_rng(
+        &mut self,
+        has_routes: bool,
+        used_ipv4: &HashSet<Ipv4Inet>,
+        rng: &mut impl Rng,
+    ) -> DhcpIpv4Decision {
+        if !has_routes && self.default_subnet.is_none() {
             return DhcpIpv4Decision::WaitForPeers;
         }
 
-        let Some(subnet) = self
-            .default_subnet
-            .as_ref()
-            .or_else(|| used_ipv4.iter().next())
-        else {
-            return DhcpIpv4Decision::WaitForPeers;
+        let preferred = used_ipv4
+            .iter()
+            .filter(|subnet| {
+                self.current
+                    .is_some_and(|current| current.network() == subnet.network())
+            })
+            .min_by_key(|subnet| (subnet.first_address(), subnet.network_length()));
+        let advertised = preferred.or_else(|| {
+            used_ipv4
+                .iter()
+                .min_by_key(|subnet| (subnet.first_address(), subnet.network_length()))
+        });
+        let subnet = if let Some(subnet) = advertised {
+            self.no_ipv4_rounds = 0;
+            *subnet
+        } else if self.current.is_some() {
+            return DhcpIpv4Decision::Unchanged;
+        } else {
+            let Some(default_subnet) = self.default_subnet else {
+                return DhcpIpv4Decision::WaitForPeers;
+            };
+            self.no_ipv4_rounds = self.no_ipv4_rounds.saturating_add(1);
+            if self.no_ipv4_rounds <= BOOTSTRAP_WAIT_ROUNDS {
+                return DhcpIpv4Decision::WaitForPeers;
+            }
+            default_subnet
         };
         if let Some(current) = self.current
             && current.network() == subnet.network()
@@ -67,10 +107,18 @@ impl DhcpIpv4Allocator {
             return DhcpIpv4Decision::Unchanged;
         }
 
-        let next = subnet.network().iter().find(|candidate| {
-            candidate.address() != subnet.first_address()
-                && candidate.address() != subnet.last_address()
-                && !used_ipv4.contains(candidate)
+        let first = u32::from(subnet.first_address());
+        let span = u32::from(subnet.last_address()) - first;
+        // Spread simultaneous bootstrap allocations and conflict retries across
+        // the subnet. Existing route announcements still detect collisions.
+        let offset = if span > 1 && (used_ipv4.is_empty() || self.current.is_some()) {
+            rng.gen_range(1..span)
+        } else {
+            1
+        };
+        let next = (offset..span).chain(1..offset).find_map(|offset| {
+            let candidate = Ipv4Inet::new((first + offset).into(), subnet.network_length()).ok()?;
+            (!used_ipv4.contains(&candidate)).then_some(candidate)
         });
         if self.current == next {
             return DhcpIpv4Decision::Unchanged;
@@ -216,7 +264,10 @@ impl DhcpIpv4Service {
     ) -> Arc<Self> {
         Arc::new(Self {
             operation: tokio::sync::Mutex::new(()),
-            allocator: std::sync::Mutex::new(DhcpIpv4Allocator::default()),
+            allocator: std::sync::Mutex::new(DhcpIpv4Allocator::new(
+                Ipv4Inet::new(std::net::Ipv4Addr::new(10, 126, 126, 0), 24)
+                    .expect("valid bootstrap subnet"),
+            )),
             route_source,
             runtime_config,
             host,
@@ -401,7 +452,7 @@ mod tests {
 
     #[test]
     fn waits_until_at_least_one_route_exists() {
-        let allocator = DhcpIpv4Allocator::default();
+        let mut allocator = DhcpIpv4Allocator::default();
 
         assert_eq!(
             allocator.evaluate(false, &HashSet::new()),
@@ -411,11 +462,131 @@ mod tests {
 
     #[test]
     fn does_not_fall_back_to_a_builtin_subnet_without_assigned_ipv4() {
-        let allocator = DhcpIpv4Allocator::default();
+        let mut allocator = DhcpIpv4Allocator::default();
 
         assert_eq!(
             allocator.evaluate(true, &HashSet::new()),
             DhcpIpv4Decision::WaitForPeers
+        );
+    }
+
+    #[test]
+    fn bootstraps_default_subnet_after_bounded_wait() {
+        let mut allocator = DhcpIpv4Allocator::new("10.126.126.0/24".parse().unwrap());
+
+        for _ in 0..2 {
+            assert_eq!(
+                allocator.evaluate(true, &HashSet::new()),
+                DhcpIpv4Decision::WaitForPeers
+            );
+        }
+        let DhcpIpv4Decision::Change {
+            previous: None,
+            next: Some(address),
+        } = allocator.evaluate(true, &HashSet::new())
+        else {
+            panic!("expected bootstrap address")
+        };
+        assert_eq!(
+            address.network(),
+            "10.126.126.0/24".parse::<Ipv4Inet>().unwrap().network()
+        );
+        assert_ne!(address.address(), address.first_address());
+        assert_ne!(address.address(), address.last_address());
+    }
+
+    #[test]
+    fn announced_peer_subnet_takes_priority_over_bootstrap_subnet() {
+        let mut allocator = DhcpIpv4Allocator::new("10.126.126.0/24".parse().unwrap());
+        let used = HashSet::from(["198.18.106.5/24".parse().unwrap()]);
+
+        assert_eq!(
+            allocator.evaluate(true, &used),
+            DhcpIpv4Decision::Change {
+                previous: None,
+                next: Some("198.18.106.1/24".parse().unwrap()),
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_current_address_when_peers_stop_announcing_ipv4() {
+        let mut allocator = DhcpIpv4Allocator::new("10.126.126.0/24".parse().unwrap());
+        let current = "198.18.106.1/24".parse().unwrap();
+        allocator.commit(Some(current));
+
+        for _ in 0..BOOTSTRAP_WAIT_ROUNDS + 2 {
+            assert_eq!(
+                allocator.evaluate(true, &HashSet::new()),
+                DhcpIpv4Decision::Unchanged
+            );
+            assert_eq!(allocator.current(), Some(current));
+        }
+    }
+
+    #[test]
+    fn simultaneous_dhcp_only_peers_resolve_conflicts() {
+        use rand::SeedableRng;
+        let subnet = "10.126.126.0/24".parse().unwrap();
+        let mut allocators = (0..32)
+            .map(|_| DhcpIpv4Allocator::new(subnet))
+            .collect::<Vec<_>>();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        for round in 0..30 {
+            // All peers evaluate the same previous-round snapshot before any
+            // candidate is published, including simultaneous empty startup.
+            let current = allocators
+                .iter()
+                .map(|allocator| allocator.current())
+                .collect::<Vec<_>>();
+            let decisions = allocators
+                .iter_mut()
+                .enumerate()
+                .map(|(index, allocator)| {
+                    let used = current
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(peer, address)| (peer != index).then_some(*address).flatten())
+                        .collect();
+                    allocator.evaluate_with_rng(true, &used, &mut rng)
+                })
+                .collect::<Vec<_>>();
+            for (allocator, decision) in allocators.iter_mut().zip(decisions) {
+                if let DhcpIpv4Decision::Change { next, .. } = decision {
+                    allocator.commit(next);
+                }
+            }
+            if round > BOOTSTRAP_WAIT_ROUNDS {
+                let addresses = allocators
+                    .iter()
+                    .filter_map(|allocator| allocator.current())
+                    .collect::<HashSet<_>>();
+                if addresses.len() == allocators.len() {
+                    return;
+                }
+            }
+        }
+        panic!("simultaneous allocations did not converge");
+    }
+
+    #[test]
+    fn keeps_advertised_current_subnet_and_uses_deterministic_fallback() {
+        let mut allocator = DhcpIpv4Allocator::default();
+        allocator.commit(Some("10.2.0.8/24".parse().unwrap()));
+        let used = HashSet::from([
+            "10.1.0.2/24".parse().unwrap(),
+            "10.2.0.2/24".parse().unwrap(),
+        ]);
+        for _ in 0..20 {
+            assert_eq!(allocator.evaluate(true, &used), DhcpIpv4Decision::Unchanged);
+        }
+        allocator.reset();
+        assert_eq!(
+            allocator.evaluate(true, &used),
+            DhcpIpv4Decision::Change {
+                previous: None,
+                next: Some("10.1.0.1/24".parse().unwrap()),
+            }
         );
     }
 
@@ -429,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_first_available_host_after_a_conflict() {
+    fn selects_an_unused_host_after_a_conflict() {
         let mut allocator = DhcpIpv4Allocator::default();
         allocator.commit(Some("10.1.2.1/24".parse().unwrap()));
         let used = HashSet::from([
@@ -437,13 +608,16 @@ mod tests {
             "10.1.2.2/24".parse().unwrap(),
         ]);
 
-        assert_eq!(
-            allocator.evaluate(true, &used),
-            DhcpIpv4Decision::Change {
-                previous: Some("10.1.2.1/24".parse().unwrap()),
-                next: Some("10.1.2.3/24".parse().unwrap()),
-            }
-        );
+        let DhcpIpv4Decision::Change {
+            previous,
+            next: Some(next),
+        } = allocator.evaluate(true, &used)
+        else {
+            panic!("expected conflict resolution");
+        };
+        assert_eq!(previous, Some("10.1.2.1/24".parse().unwrap()));
+        assert!(!used.contains(&next));
+        assert_eq!(next.network(), previous.unwrap().network());
     }
 
     #[test]
@@ -457,17 +631,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn service_does_not_apply_ipv4_when_no_peer_has_one() {
+    async fn service_bootstraps_ipv4_when_no_peer_has_one() {
+        check_service_bootstrap(true).await;
+    }
+
+    #[tokio::test]
+    async fn service_bootstraps_ipv4_without_other_peers() {
+        check_service_bootstrap(false).await;
+    }
+
+    async fn check_service_bootstrap(has_routes: bool) {
         let host = Arc::new(RecordingHost::default());
         let (service, runtime_config) = service(
             DhcpIpv4RouteSnapshot {
-                has_routes: true,
+                has_routes,
                 used_ipv4: HashSet::new(),
             },
             host.clone(),
         );
 
-        assert!(service.reconcile_once().await);
+        for _ in 0..BOOTSTRAP_WAIT_ROUNDS {
+            assert_eq!(service.reconcile_once().await, has_routes);
+        }
 
         assert_eq!(service.current(), None);
         assert!(host.changes.lock().unwrap().is_empty());
@@ -482,6 +667,24 @@ mod tests {
                 .ipv4
                 .is_none()
         );
+
+        assert_eq!(service.reconcile_once().await, has_routes);
+        let address = service.current().expect("bootstrap address");
+        assert_eq!(
+            address.network(),
+            "10.126.126.0/24".parse::<Ipv4Inet>().unwrap().network()
+        );
+        assert_eq!(*host.changes.lock().unwrap(), [(None, Some(address))]);
+        assert_eq!(
+            runtime_config.snapshot().peer.runtime.core.routes.ipv4,
+            Some(IpPrefix {
+                address: address.address().into(),
+                prefix_len: address.network_length(),
+            })
+        );
+        assert_eq!(service.reconcile_once().await, has_routes);
+        assert_eq!(service.current(), Some(address));
+        assert_eq!(host.changes.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

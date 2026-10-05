@@ -384,6 +384,7 @@ mod tests {
     #[test]
     fn vpn_portal_debug_redacts_private_key() {
         let config = super::manage::VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "0.0.0.0:51820".to_owned(),
             wireguard_private_key: Some("private-key-material".to_owned()),
             clients: Vec::new(),

@@ -255,7 +255,11 @@ fn configure_runtime_core_host_adapters(
     if host_config.vpn_portal_enabled {
         use crate::common::config::ConfigLoader as _;
 
-        if let Some(config) = global_ctx.config.get_vpn_portal_config() {
+        if let Some(config) = global_ctx
+            .config
+            .get_vpn_portal_config()
+            .filter(|config| config.enabled != Some(false))
+        {
             adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
                 global_ctx.clone(),
                 config,

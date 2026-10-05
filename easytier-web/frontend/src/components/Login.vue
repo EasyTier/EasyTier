@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { Card, InputText, Password, Button, AutoComplete } from 'primevue';
+import { computed, onMounted, ref } from 'vue';
+import { Card, InputText, Password, Button } from 'primevue';
 import { useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
 import { I18nUtils } from 'easytier-frontend-lib';
-import { getInitialApiHost, cleanAndLoadApiHosts, saveApiHost } from "../modules/api-host"
+import { getApiBase } from "../modules/api-host"
 import { useI18n } from 'vue-i18n'
 import ApiClient, { Credential, RegisterData } from '../modules/api';
 
@@ -14,7 +14,7 @@ defineProps<{
     isRegistering: boolean;
 }>();
 
-const api = computed<ApiClient>(() => new ApiClient(apiHost.value));
+const api = computed<ApiClient>(() => new ApiClient(getApiBase()));
 const router = useRouter();
 const toast = useToast();
 
@@ -25,25 +25,18 @@ const registerPassword = ref('');
 const captcha = ref('');
 const captchaSrc = computed(() => api.value.captcha_url());
 
-
 const onSubmit = async () => {
     // Add your login logic here
-    saveApiHost(apiHost.value);
     const credential: Credential = { username: username.value, password: password.value, };
     let ret = await api.value?.login(credential);
     if (ret.success) {
-        localStorage.setItem('apiHost', btoa(apiHost.value));
-        router.push({
-            name: 'dashboard',
-            params: { apiHost: btoa(apiHost.value) },
-        });
+        router.push({ name: 'dashboard' });
     } else {
         toast.add({ severity: 'error', summary: 'Login Failed', detail: ret.message, life: 2000 });
     }
 };
 
 const onRegister = async () => {
-    saveApiHost(apiHost.value);
     const credential: Credential = { username: registerUsername.value, password: registerPassword.value };
     const registerReq: RegisterData = { credentials: credential, captcha: captcha.value };
     let ret = await api.value?.register(registerReq);
@@ -55,56 +48,18 @@ const onRegister = async () => {
     }
 };
 
-const apiHost = ref<string>(getInitialApiHost())
-const apiHostSuggestions = ref<Array<string>>([])
-const apiHostSearch = async (event: { query: string }) => {
-    apiHostSuggestions.value = [];
-    let hosts = cleanAndLoadApiHosts();
-    if (event.query) {
-        apiHostSuggestions.value.push(event.query);
-    }
-    hosts.forEach((host) => {
-        apiHostSuggestions.value.push(host.value);
-    });
-}
-
 const oidcEnabled = ref(false);
-const lastCheckedHost = ref('');
-const oidcCheckTimer = ref<ReturnType<typeof setTimeout> | null>(null);
-const checkOidcConfig = () => {
-    if (oidcCheckTimer.value) clearTimeout(oidcCheckTimer.value);
-    oidcCheckTimer.value = setTimeout(async () => {
-        const host = apiHost.value;
-        if (host === lastCheckedHost.value) return;
 
-        const enabled = (await new ApiClient(host).getOidcConfig()).enabled;
-        // If host changes while request is in-flight, do not overwrite UI state.
-        if (apiHost.value !== host) return;
-
-        lastCheckedHost.value = host;
-        oidcEnabled.value = enabled;
-    }, 300);
+const checkOidcConfig = async () => {
+    oidcEnabled.value = (await api.value.getOidcConfig()).enabled;
 };
 
-watch(apiHost, () => {
-    checkOidcConfig();
-});
-
 const onSsoLogin = () => {
-    saveApiHost(apiHost.value);
-    localStorage.setItem('apiHost', btoa(apiHost.value));
     window.location.href = api.value.oidcLoginUrl();
 };
 
-onMounted(() => {
-    checkOidcConfig();
-});
-
-onBeforeUnmount(() => {
-    if (oidcCheckTimer.value) {
-        clearTimeout(oidcCheckTimer.value);
-        oidcCheckTimer.value = null;
-    }
+onMounted(async () => {
+    await checkOidcConfig();
 });
 
 </script>
@@ -118,11 +73,6 @@ onBeforeUnmount(() => {
                 </h2>
             </template>
             <template #content>
-                <div class="p-field mb-4">
-                    <label for="api-host" class="block text-sm font-medium">{{ t('web.login.api_host') }}</label>
-                    <AutoComplete id="api-host" v-model="apiHost" dropdown :suggestions="apiHostSuggestions"
-                        @complete="apiHostSearch" class="w-full" />
-                </div>
                 <form v-if="!isRegistering" @submit.prevent="onSubmit" class="space-y-4">
                     <div class="p-field">
                         <label for="username" class="block text-sm font-medium">{{ t('web.login.username') }}</label>
@@ -137,7 +87,7 @@ onBeforeUnmount(() => {
                     </div>
                     <div class="flex items-center justify-between">
                         <Button :label="t('web.login.register')" type="button" class="w-full"
-                            @click="saveApiHost(apiHost); $router.replace({ name: 'register' })" severity="secondary" />
+                            @click="$router.replace({ name: 'register' })" severity="secondary" />
                     </div>
                     <div v-if="oidcEnabled" class="flex items-center justify-between">
                         <Button :label="t('web.login.sso_login')" type="button" class="w-full" severity="info"
@@ -148,14 +98,14 @@ onBeforeUnmount(() => {
                 <form v-else @submit.prevent="onRegister" class="space-y-4">
                     <div class="p-field">
                         <label for="register-username" class="block text-sm font-medium">{{ t('web.login.username')
-                            }}</label>
+                        }}</label>
                         <InputText id="register-username" v-model="registerUsername" required class="w-full" />
                     </div>
                     <div class="p-field">
                         <label for="register-password" class="block text-sm font-medium">{{ t('web.login.password')
-                            }}</label>
+                        }}</label>
                         <Password id="register-password" v-model="registerPassword" required toggleMask
-                            :feedback="false" class="w-full" />
+                            :feedback="false" />
                     </div>
                     <div class="p-field">
                         <label for="captcha" class="block text-sm font-medium">{{ t('web.login.captcha') }}</label>
@@ -167,7 +117,7 @@ onBeforeUnmount(() => {
                     </div>
                     <div class="flex items-center justify-between">
                         <Button :label="t('web.login.back_to_login')" type="button" class="w-full"
-                            @click="saveApiHost(apiHost); $router.replace({ name: 'login' })" severity="secondary" />
+                            @click="$router.replace({ name: 'login' })" severity="secondary" />
                     </div>
                 </form>
 

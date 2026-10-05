@@ -449,6 +449,8 @@ impl LoggingConfigLoader for &LoggingConfig {
 #[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VpnPortalConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     pub wireguard_listen: SocketAddr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_private_key: Option<String>,
@@ -460,6 +462,7 @@ impl std::fmt::Debug for VpnPortalConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("VpnPortalConfig")
+            .field("enabled", &self.enabled)
             .field("wireguard_listen", &self.wireguard_listen)
             .field(
                 "wireguard_private_key",

@@ -47,7 +47,8 @@ fn is_manual_endpoint_scheme(scheme: &str) -> bool {
     matches!(scheme, "http" | "https" | "txt" | "srv")
 }
 
-fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
+/// Checks supported connector and discovery schemes without resolving the URL.
+pub fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
     if ManualTransport::from_url(url).is_ok() || is_manual_endpoint_scheme(url.scheme()) {
         Ok(())
     } else {
