@@ -59,7 +59,11 @@ impl std::fmt::Debug for PingIntervalController {
 }
 
 impl PingIntervalController {
-    fn new(throughput: Arc<Throughput>, loss_counter: Arc<AtomicU32>) -> Self {
+    fn new(
+        throughput: Arc<Throughput>,
+        loss_counter: Arc<AtomicU32>,
+        is_tcp_hole_punched: bool,
+    ) -> Self {
         let last_throughput = (*throughput).clone();
 
         Self {
@@ -70,7 +74,8 @@ impl PingIntervalController {
             last_send_logic_time: 0,
 
             backoff_idx: 0,
-            max_backoff_idx: 5,
+            // TCP hole-punched connections need frequent traffic to stay alive.
+            max_backoff_idx: if is_tcp_hole_punched { 0 } else { 5 },
 
             last_throughput,
         }
@@ -106,7 +111,10 @@ impl PingIntervalController {
         self.backoff_idx = std::cmp::min(self.backoff_idx + 1, self.max_backoff_idx);
 
         // use this makes two peers not pingpong at the same time
-        if self.backoff_idx > self.max_backoff_idx - 2 && thread_rng().gen_bool(0.2) {
+        if self.backoff_idx > 0
+            && self.backoff_idx > self.max_backoff_idx - 2
+            && thread_rng().gen_bool(0.2)
+        {
             self.backoff_idx -= 1;
         }
 
@@ -126,6 +134,7 @@ pub struct PeerConnPinger {
     context: ArcPeerContext,
     network_name: String,
     liveness: PeerConnLiveness,
+    is_tcp_hole_punched: bool,
 }
 
 impl std::fmt::Debug for PeerConnPinger {
@@ -150,6 +159,7 @@ impl PeerConnPinger {
         context: ArcPeerContext,
         network_name: String,
         liveness: PeerConnLiveness,
+        is_tcp_hole_punched: bool,
     ) -> Self {
         Self {
             my_peer_id,
@@ -162,6 +172,7 @@ impl PeerConnPinger {
             context,
             network_name,
             liveness,
+            is_tcp_hole_punched,
         }
     }
 
@@ -245,8 +256,13 @@ impl PeerConnPinger {
         let mut controller_tasks = JoinSet::new();
         let throughput = self.throughput_stats.clone();
         let controller_loss_counter = loss_counter.clone();
+        let is_tcp_hole_punched = self.is_tcp_hole_punched;
         controller_tasks.spawn(async move {
-            let mut controller = PingIntervalController::new(throughput, controller_loss_counter);
+            let mut controller = PingIntervalController::new(
+                throughput,
+                controller_loss_counter,
+                is_tcp_hole_punched,
+            );
             loop {
                 controller.tick().await;
                 if !controller.should_send_ping() {
@@ -337,6 +353,41 @@ mod tests {
         },
     };
 
+    #[cfg(not(target_os = "wasi"))]
+    #[tokio::test(start_paused = true)]
+    async fn tcp_hole_punched_connection_pings_every_second() {
+        let mut controller = PingIntervalController::new(
+            Arc::new(Throughput::new()),
+            Arc::new(AtomicU32::new(0)),
+            true,
+        );
+
+        for _ in 0..100 {
+            controller.tick().await;
+            assert!(controller.should_send_ping());
+            assert!(!controller.should_send_ping());
+        }
+    }
+
+    #[cfg(not(target_os = "wasi"))]
+    #[tokio::test(start_paused = true)]
+    async fn other_connections_back_off_and_retry_losses() {
+        let loss_counter = Arc::new(AtomicU32::new(0));
+        let mut controller =
+            PingIntervalController::new(Arc::new(Throughput::new()), loss_counter.clone(), false);
+
+        for second in 1..=14 {
+            controller.tick().await;
+            assert_eq!(controller.should_send_ping(), matches!(second, 1 | 3 | 7));
+        }
+
+        loss_counter.store(1, Ordering::Relaxed);
+        for _ in 0..3 {
+            controller.tick().await;
+            assert!(controller.should_send_ping());
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn ingress_traffic_does_not_mask_failed_round_trips() {
         let (local_tunnel, _remote_tunnel) = create_ring_tunnel_pair();
@@ -354,6 +405,7 @@ mod tests {
             Arc::new(NoopPeerContext::default()),
             "test".to_owned(),
             PeerConnLiveness::new(),
+            false,
         );
 
         let ingress = tokio::spawn(async move {
@@ -412,6 +464,7 @@ mod tests {
             Arc::new(NoopPeerContext::default()),
             "test".to_owned(),
             local_liveness,
+            false,
         );
 
         let result = timeout(Duration::from_secs(12), pinger.pingpong()).await;

@@ -1377,6 +1377,11 @@ impl PeerConn {
             self.context.clone(),
             self.get_conn_info().network_name,
             self.liveness.clone(),
+            self.is_hole_punched
+                && self
+                    .tunnel_info
+                    .as_ref()
+                    .is_some_and(|info| info.tunnel_type == "tcp"),
         );
 
         let close_event_notifier = self.close_event_notifier.clone();
