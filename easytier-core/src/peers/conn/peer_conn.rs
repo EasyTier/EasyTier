@@ -293,9 +293,6 @@ pub struct PeerConn {
     info: Option<HandshakeRequest>,
     is_client: Option<bool>,
 
-    // remote or local
-    is_hole_punched: bool,
-
     close_event_notifier: Arc<PeerConnCloseNotify>,
 
     ctrl_resp_sender: broadcast::Sender<ZCPacket>,
@@ -333,7 +330,7 @@ impl PeerConn {
             tunnel,
             None,
             peer_session_store,
-            PeerConnectionOrigin::Network,
+            PeerConnectionOrigin::Manual,
         )
     }
 
@@ -396,8 +393,6 @@ impl PeerConn {
             info: None,
             is_client: None,
 
-            is_hole_punched: true,
-
             close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id)),
 
             ctrl_resp_sender: ctrl_sender,
@@ -443,12 +438,23 @@ impl PeerConn {
         self.origin == PeerConnectionOrigin::Attached
     }
 
-    pub fn set_is_hole_punched(&mut self, is_hole_punched: bool) {
-        self.is_hole_punched = is_hole_punched;
+    pub fn is_hole_punched(&self) -> bool {
+        matches!(
+            self.origin,
+            PeerConnectionOrigin::TcpHolePunch | PeerConnectionOrigin::UdpHolePunch
+        )
     }
 
-    pub fn is_hole_punched(&self) -> bool {
-        self.is_hole_punched
+    fn max_ping_interval(&self) -> Duration {
+        match self.origin {
+            // TCP hole-punched connections need frequent traffic to stay alive.
+            PeerConnectionOrigin::TcpHolePunch => Duration::from_secs(1),
+            PeerConnectionOrigin::Manual
+            | PeerConnectionOrigin::Direct
+            | PeerConnectionOrigin::Listener
+            | PeerConnectionOrigin::UdpHolePunch
+            | PeerConnectionOrigin::Attached => Duration::from_secs(32),
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -1377,11 +1383,7 @@ impl PeerConn {
             self.context.clone(),
             self.get_conn_info().network_name,
             self.liveness.clone(),
-            self.is_hole_punched
-                && self
-                    .tunnel_info
-                    .as_ref()
-                    .is_some_and(|info| info.tunnel_type == "tcp"),
+            self.max_ping_interval(),
         );
 
         let close_event_notifier = self.close_event_notifier.clone();
@@ -1529,5 +1531,42 @@ impl Drop for PeerConn {
     fn drop(&mut self) {
         // if someone drop a conn manually, the notifier is not called.
         self.close_event_notifier.notify_close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{peers::test_support::NoopPeerContext, tunnel::ring::create_ring_tunnel_pair};
+
+    #[tokio::test]
+    async fn connection_origin_determines_hole_punch_and_ping_policy() {
+        for (origin, is_hole_punched, max_interval) in [
+            (PeerConnectionOrigin::Manual, false, 32),
+            (PeerConnectionOrigin::Direct, false, 32),
+            (PeerConnectionOrigin::Listener, false, 32),
+            (PeerConnectionOrigin::TcpHolePunch, true, 1),
+            (PeerConnectionOrigin::UdpHolePunch, true, 32),
+            (PeerConnectionOrigin::Attached, false, 32),
+        ] {
+            // Admission determines the policy even when the transport is a ring.
+            let (tunnel, _remote_tunnel) = create_ring_tunnel_pair();
+            let conn = PeerConn::new_with_peer_id_hint_and_origin(
+                1,
+                Arc::new(NoopPeerContext::default()),
+                tunnel,
+                None,
+                Arc::new(PeerSessionStore::new()),
+                origin,
+            );
+
+            assert_eq!(conn.is_hole_punched(), is_hole_punched, "{origin:?}");
+            assert_eq!(
+                conn.max_ping_interval(),
+                Duration::from_secs(max_interval),
+                "{origin:?}",
+            );
+            assert_eq!(conn.is_attached(), origin == PeerConnectionOrigin::Attached);
+        }
     }
 }

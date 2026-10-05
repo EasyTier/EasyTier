@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 
+use crate::peers::PeerConnectionOrigin;
 use crate::proto::rpc_types::{controller::BaseController, handler::Handler};
 use crate::tunnel::Tunnel;
 
@@ -27,7 +28,15 @@ pub(crate) trait HolePunchRpcRegistry: Send + Sync + 'static {
 
 #[async_trait]
 pub(crate) trait HolePunchTunnelSink: Send + Sync + 'static {
-    async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()>;
+    async fn add_client_tunnel(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        origin: PeerConnectionOrigin,
+    ) -> anyhow::Result<()>;
 
-    async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()>;
+    async fn add_server_tunnel(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        origin: PeerConnectionOrigin,
+    ) -> anyhow::Result<()>;
 }

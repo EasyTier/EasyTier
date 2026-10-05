@@ -26,7 +26,7 @@ use crate::{
     },
     events::{CoreEvent, CoreEventSink},
     host::dns::{DnsQuery, DnsResolver},
-    peers::peer_manager::PeerManagerCore,
+    peers::{PeerConnectionOrigin, peer_manager::PeerManagerCore},
     proto::common::TunnelInfo,
     socket::{
         IpVersion, SocketContext,
@@ -891,7 +891,7 @@ where
     let (peer_id, conn_id) =
         with_timeout_budget("handshake", started_at, connect_timeout, async move {
             peer_manager
-                .add_client_tunnel_with_peer_id_hint(tunnel, true, None)
+                .add_client_tunnel_with_peer_id_hint(tunnel, PeerConnectionOrigin::Manual, None)
                 .await
                 .map_err(anyhow::Error::from)
         })

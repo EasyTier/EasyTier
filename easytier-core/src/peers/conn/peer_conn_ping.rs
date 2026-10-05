@@ -34,6 +34,7 @@ struct PingIntervalController {
     loss_counter: Arc<AtomicU32>,
 
     interval: Interval,
+    max_interval: Duration,
 
     logic_time: u64,
     last_send_logic_time: u64,
@@ -53,6 +54,7 @@ impl std::fmt::Debug for PingIntervalController {
             .field("last_send_logic_time", &self.last_send_logic_time)
             .field("backoff_idx", &self.backoff_idx)
             .field("max_backoff_idx", &self.max_backoff_idx)
+            .field("max_interval", &self.max_interval)
             .field("last_throughput", &self.last_throughput)
             .finish()
     }
@@ -62,7 +64,7 @@ impl PingIntervalController {
     fn new(
         throughput: Arc<Throughput>,
         loss_counter: Arc<AtomicU32>,
-        is_tcp_hole_punched: bool,
+        max_interval: Duration,
     ) -> Self {
         let last_throughput = (*throughput).clone();
 
@@ -70,12 +72,12 @@ impl PingIntervalController {
             throughput,
             loss_counter,
             interval: interval(Duration::from_secs(1)),
+            max_interval,
             logic_time: 0,
             last_send_logic_time: 0,
 
             backoff_idx: 0,
-            // TCP hole-punched connections need frequent traffic to stay alive.
-            max_backoff_idx: if is_tcp_hole_punched { 0 } else { 5 },
+            max_backoff_idx: 5,
 
             last_throughput,
         }
@@ -104,17 +106,15 @@ impl PingIntervalController {
 
         self.last_throughput = (*self.throughput).clone();
 
-        if (self.logic_time - self.last_send_logic_time) < (1 << self.backoff_idx) {
+        let send_interval = Duration::from_secs(1 << self.backoff_idx).min(self.max_interval);
+        if Duration::from_secs(self.logic_time - self.last_send_logic_time) < send_interval {
             return false;
         }
 
         self.backoff_idx = std::cmp::min(self.backoff_idx + 1, self.max_backoff_idx);
 
         // use this makes two peers not pingpong at the same time
-        if self.backoff_idx > 0
-            && self.backoff_idx > self.max_backoff_idx - 2
-            && thread_rng().gen_bool(0.2)
-        {
+        if self.backoff_idx > self.max_backoff_idx - 2 && thread_rng().gen_bool(0.2) {
             self.backoff_idx -= 1;
         }
 
@@ -134,7 +134,7 @@ pub struct PeerConnPinger {
     context: ArcPeerContext,
     network_name: String,
     liveness: PeerConnLiveness,
-    is_tcp_hole_punched: bool,
+    max_interval: Duration,
 }
 
 impl std::fmt::Debug for PeerConnPinger {
@@ -159,7 +159,7 @@ impl PeerConnPinger {
         context: ArcPeerContext,
         network_name: String,
         liveness: PeerConnLiveness,
-        is_tcp_hole_punched: bool,
+        max_interval: Duration,
     ) -> Self {
         Self {
             my_peer_id,
@@ -172,7 +172,7 @@ impl PeerConnPinger {
             context,
             network_name,
             liveness,
-            is_tcp_hole_punched,
+            max_interval,
         }
     }
 
@@ -256,13 +256,10 @@ impl PeerConnPinger {
         let mut controller_tasks = JoinSet::new();
         let throughput = self.throughput_stats.clone();
         let controller_loss_counter = loss_counter.clone();
-        let is_tcp_hole_punched = self.is_tcp_hole_punched;
+        let max_interval = self.max_interval;
         controller_tasks.spawn(async move {
-            let mut controller = PingIntervalController::new(
-                throughput,
-                controller_loss_counter,
-                is_tcp_hole_punched,
-            );
+            let mut controller =
+                PingIntervalController::new(throughput, controller_loss_counter, max_interval);
             loop {
                 controller.tick().await;
                 if !controller.should_send_ping() {
@@ -355,15 +352,17 @@ mod tests {
 
     #[cfg(not(target_os = "wasi"))]
     #[tokio::test(start_paused = true)]
-    async fn tcp_hole_punched_connection_pings_every_second() {
+    async fn one_second_limit_disables_ping_backoff() {
         let mut controller = PingIntervalController::new(
             Arc::new(Throughput::new()),
             Arc::new(AtomicU32::new(0)),
-            true,
+            Duration::from_secs(1),
         );
 
-        for _ in 0..100 {
+        let started_at = tokio::time::Instant::now();
+        for second in 0..100 {
             controller.tick().await;
+            assert_eq!(started_at.elapsed(), Duration::from_secs(second));
             assert!(controller.should_send_ping());
             assert!(!controller.should_send_ping());
         }
@@ -371,10 +370,28 @@ mod tests {
 
     #[cfg(not(target_os = "wasi"))]
     #[tokio::test(start_paused = true)]
-    async fn other_connections_back_off_and_retry_losses() {
+    async fn ping_backoff_respects_non_power_of_two_limit() {
+        let mut controller = PingIntervalController::new(
+            Arc::new(Throughput::new()),
+            Arc::new(AtomicU32::new(0)),
+            Duration::from_secs(3),
+        );
+
+        for tick in 1..=100 {
+            controller.tick().await;
+            assert_eq!(controller.should_send_ping(), tick == 1 || tick % 3 == 0);
+        }
+    }
+
+    #[cfg(not(target_os = "wasi"))]
+    #[tokio::test(start_paused = true)]
+    async fn default_limit_preserves_backoff_and_loss_retries() {
         let loss_counter = Arc::new(AtomicU32::new(0));
-        let mut controller =
-            PingIntervalController::new(Arc::new(Throughput::new()), loss_counter.clone(), false);
+        let mut controller = PingIntervalController::new(
+            Arc::new(Throughput::new()),
+            loss_counter.clone(),
+            Duration::from_secs(32),
+        );
 
         for second in 1..=14 {
             controller.tick().await;
@@ -405,7 +422,7 @@ mod tests {
             Arc::new(NoopPeerContext::default()),
             "test".to_owned(),
             PeerConnLiveness::new(),
-            false,
+            Duration::from_secs(32),
         );
 
         let ingress = tokio::spawn(async move {
@@ -464,7 +481,7 @@ mod tests {
             Arc::new(NoopPeerContext::default()),
             "test".to_owned(),
             local_liveness,
-            false,
+            Duration::from_secs(32),
         );
 
         let result = timeout(Duration::from_secs(12), pinger.pingpong()).await;
