@@ -18,6 +18,13 @@ impl BufMargins {
     }
 }
 
+/// A reusable packet buffer pool.
+///
+/// # Initialization contract
+///
+/// Buffers may contain uninitialized bytes in their [`BufMargins::header`] and
+/// [`BufMargins::trailer`] regions. These regions must be fully initialized
+/// before they are read or otherwise consumed.
 #[derive(Debug)]
 pub struct BufPool {
     pool: BytesMut,
@@ -40,6 +47,10 @@ impl BufPool {
         }
     }
 
+    /// Returns the accumulated buffer.
+    ///
+    /// The caller must ensure all reserved header and trailer regions have been
+    /// initialized before reading or consuming the returned buffer.
     #[inline(always)]
     pub fn split(&mut self) -> BytesMut {
         self.pool.split()
@@ -49,6 +60,8 @@ impl BufPool {
     pub fn write(&mut self, chunk: &[u8], margins: BufMargins) {
         let len = margins.size() + chunk.len();
         self.reserve(len);
+        // Header and trailer are intentionally left uninitialized. Users of this
+        // buffer must initialize both regions before reading or consuming it.
         unsafe {
             copy_nonoverlapping(
                 chunk.as_ptr(),
@@ -59,6 +72,10 @@ impl BufPool {
         }
     }
 
+    /// Writes `chunk` with the requested margins and returns the resulting buffer.
+    ///
+    /// The header and trailer regions are left uninitialized and must be filled
+    /// before the returned buffer is read or consumed.
     #[inline(always)]
     pub fn buf(&mut self, chunk: &[u8], margins: BufMargins) -> BytesMut {
         self.write(chunk, margins);
@@ -77,6 +94,12 @@ impl BufPool {
     }
 }
 
+/// A writer into a [`BufPool`].
+///
+/// # Initialization contract
+///
+/// Committing data does not initialize the reserved header or trailer regions.
+/// They must be fully initialized before the resulting buffer is read or consumed.
 #[derive(Debug)]
 pub struct BufPoolWriter<'t> {
     pool: &'t mut BufPool,
@@ -92,6 +115,10 @@ impl<'t> BufPoolWriter<'t> {
         self.capacity = capacity;
     }
 
+    /// Returns the accumulated buffer.
+    ///
+    /// Reserved header and trailer regions must be initialized before the returned
+    /// buffer is read or consumed.
     #[inline(always)]
     pub fn split(&mut self) -> BytesMut {
         self.pool.split()
@@ -118,6 +145,8 @@ impl<'t> BufPoolWriter<'t> {
         let len = self.margins.size() + written;
         assert!(self.capacity >= len);
         self.capacity -= len;
+        // `commit` marks the margins as part of the buffer without initializing them.
+        // They must be initialized before the resulting buffer is consumed.
         unsafe {
             self.pool.pool.advance_mut(len);
         }
