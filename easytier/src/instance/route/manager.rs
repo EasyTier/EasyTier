@@ -6,10 +6,13 @@ use registry::Registry;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use easytier_core::host::route::{
+    resolve_route_demands, RouteDemand, RouteHandle,
+};
+
 use crate::common::global_ctx::ArcGlobalCtx;
 
 use super::backend::RouteBackend;
-use super::handle::{RouteHandle, RouteSet};
 use super::model::{CleanupIncomplete, DeviceId, RetryState, Route, RouteError};
 
 const DEFAULT_METRIC: u32 = 65535;
@@ -19,7 +22,7 @@ pub struct RouteMgr<B> {
     backend: B,
 
     /// Live route declarations of all publishers.
-    routes: Registry<RouteSet>,
+    routes: Registry<RouteDemand>,
     /// Wakes the reconcile loop when a declaration changes.
     changed: watch::Receiver<()>,
 
@@ -38,9 +41,9 @@ impl<B: RouteBackend> RouteMgr<B> {
     pub fn new(
         global_ctx: ArcGlobalCtx,
         backend: B,
+        routes: Registry<RouteDemand>,
         cancel: CancellationToken,
     ) -> Self {
-        let routes = Registry::default();
         let changed = routes.subscribe();
         Self {
             global_ctx,
@@ -114,25 +117,8 @@ impl<B: RouteBackend> RouteMgr<B> {
     }
 
     pub async fn reconcile(&mut self) {
-        // 1. Collect the demanded CIDRs. The snapshot only clones `Arc`s; the
-        //    per-source sets are aggregated here, outside the registry lock.
-        let cidrs: BTreeSet<IpCidr> = self
-            .routes
-            .snapshot()
-            .iter()
-            .flat_map(|set| set.iter().copied())
-            .collect();
-
-        for cidr in &cidrs {
-            if matches!(cidr, IpCidr::V6(_)) {
-                unimplemented!("ipv6 route is not supported yet");
-            }
-        }
-
-        // 2. Read latest device fact
+        // 1. Read latest device fact and handle interface destruction / recreation
         let device_fact = self.get_tun_device();
-
-        // 3. Handle interface destruction / recreation via host_instance and ifindex
         let device_changed = match (&self.current_tun_device, &device_fact) {
             (Some(old_dev), Some(new_dev)) => {
                 old_dev.host_instance != new_dev.host_instance || old_dev.ifindex != new_dev.ifindex
@@ -163,7 +149,23 @@ impl<B: RouteBackend> RouteMgr<B> {
             self.desired = None;
         }
 
-        // 4. Compute desired routes from active slots
+        // 2. Resolve demanded CIDRs from snapshot
+        let snapshot = self.routes.snapshot();
+        let cidrs = match resolve_route_demands(&snapshot) {
+            Ok(cidrs) => cidrs,
+            Err(err) => {
+                tracing::error!(?err, "failed to resolve route demands");
+                return;
+            }
+        };
+
+        for cidr in &cidrs {
+            if matches!(cidr, IpCidr::V6(_)) {
+                unimplemented!("ipv6 route is not supported yet");
+            }
+        }
+
+        // 3. Compute desired routes from active slots
         let desired = match &self.current_tun_device {
             Some(dev) => cidrs
                 .into_iter()
@@ -398,8 +400,9 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(TEST_DEVICE_INDEX));
         let cancel_token = CancellationToken::new();
-        let manager = RouteMgr::new(global_ctx, backend, cancel_token.clone());
-        let handle = manager.handle();
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let manager = RouteMgr::new(global_ctx, backend, routes, cancel_token.clone());
         (manager, handle, cancel_token)
     }
 
@@ -484,10 +487,13 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
 
-        let mut manager = RouteMgr::new(global_ctx, backend, cancel_token.clone());
-        let handle = manager.handle();
-        let lease = handle.register().unwrap();
+        let mut manager = RouteMgr::new(global_ctx, backend, routes, cancel_token.clone());
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .unwrap();
 
         // Initial reconcile should populate without waiting for notify
         manager.reconcile().await;
@@ -495,7 +501,8 @@ mod tests {
 
         // Now add an extra route
         let cidr = IpCidr::V4(Ipv4Cidr::new(Ipv4Addr::new(7, 7, 7, 7), 32).unwrap());
-        lease.set(BTreeSet::from([cidr]));
+        reg.replace(RouteDemand::Additional(BTreeSet::from([cidr])))
+            .unwrap();
 
         // Reconcile
         manager.reconcile().await;
@@ -528,10 +535,14 @@ mod tests {
         // Mark it external present in backend
         backend.external_present.insert(fake_route.clone());
 
-        let mut manager = RouteMgr::new(global_ctx, backend, cancel_token.clone());
-        let handle = manager.handle();
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([fake_route.destination]));
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let mut manager = RouteMgr::new(global_ctx, backend, routes, cancel_token.clone());
+        let _reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                fake_route.destination,
+            ])))
+            .unwrap();
 
         manager.reconcile().await;
         // Should not be in installed_routes, but in external_present!
@@ -560,10 +571,12 @@ mod tests {
         let fake_ip = Ipv4Addr::new(7, 7, 7, 7);
         let cidr = IpCidr::V4(Ipv4Cidr::new(fake_ip, 32).unwrap());
 
-        let mut manager = RouteMgr::new(global_ctx.clone(), backend, cancel_token);
-        let handle = manager.handle();
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([cidr]));
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let mut manager = RouteMgr::new(global_ctx.clone(), backend, routes, cancel_token);
+        let _reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([cidr])))
+            .unwrap();
 
         manager.reconcile().await;
         assert_eq!(manager.installed.len(), 1);
@@ -586,11 +599,15 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
 
-        let manager = RouteMgr::new(global_ctx, backend, cancel_token.clone());
-        let handle = manager.handle();
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([test_route("7.7.7.7/32").destination]));
+        let manager = RouteMgr::new(global_ctx, backend, routes, cancel_token.clone());
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                test_route("7.7.7.7/32").destination,
+            ])))
+            .unwrap();
 
         let join_handle = tokio::spawn(async move { manager.run().await });
 
@@ -600,9 +617,15 @@ mod tests {
 
         // Normal exit closes the registry before the asynchronous cleanup, so
         // publishers that are still alive lose their authority.
-        assert!(handle.register().is_none());
-        lease.set(BTreeSet::from([test_route("8.8.8.8/32").destination]));
-        assert!(lease.list().is_empty());
+        assert!(handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(reg
+            .replace(RouteDemand::Additional(BTreeSet::from([
+                test_route("8.8.8.8/32").destination
+            ])))
+            .is_none());
+        assert!(reg.get().is_none());
     }
 
     #[tokio::test]
@@ -627,10 +650,14 @@ mod tests {
             RouteError::Unknown(anyhow::anyhow!("timeout")),
         );
 
-        let mut manager = RouteMgr::new(global_ctx, backend, cancel_token.clone());
-        let handle = manager.handle();
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([route.destination.clone()]));
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let mut manager = RouteMgr::new(global_ctx, backend, routes, cancel_token.clone());
+        let _reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                route.destination.clone(),
+            ])))
+            .unwrap();
 
         manager.reconcile().await;
 
@@ -664,16 +691,21 @@ mod tests {
 
         backend.external_present.insert(route.clone());
 
-        let mut manager = RouteMgr::new(global_ctx, backend, cancel_token);
-        let handle = manager.handle();
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([route.destination.clone()]));
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let mut manager = RouteMgr::new(global_ctx, backend, routes, cancel_token);
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                route.destination.clone(),
+            ])))
+            .unwrap();
 
         manager.reconcile().await;
         assert!(manager.external.contains(&route));
 
         // Withdraw extra demand
-        lease.clear();
+        reg.replace(RouteDemand::Additional(BTreeSet::new()))
+            .unwrap();
         manager.reconcile().await;
         // external_present should now be cleared because the route is no longer desired
         assert!(manager.external.is_empty());
@@ -687,15 +719,17 @@ mod tests {
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
 
-        let mut manager = RouteMgr::new(global_ctx, backend, cancel_token);
-        let handle = manager.handle();
-
-        let lease1 = handle.register().unwrap();
-        let lease2 = handle.register().unwrap();
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let mut manager = RouteMgr::new(global_ctx, backend, routes, cancel_token);
 
         let cidr = IpCidr::from_str("10.10.10.10/32").unwrap();
-        lease1.set(BTreeSet::from([cidr]));
-        lease2.set(BTreeSet::from([cidr]));
+        let reg1 = handle
+            .register(RouteDemand::Additional(BTreeSet::from([cidr])))
+            .unwrap();
+        let reg2 = handle
+            .register(RouteDemand::Additional(BTreeSet::from([cidr])))
+            .unwrap();
 
         manager.reconcile().await;
 
@@ -704,14 +738,14 @@ mod tests {
         assert_eq!(manager.backend.routes.len(), 1);
         assert_eq!(manager.backend.add_calls.len(), 1);
 
-        // 2. Drop lease1 -> route remains installed because lease2 still desires it!
-        drop(lease1);
+        // 2. Drop reg1 -> route remains installed because reg2 still desires it!
+        drop(reg1);
         manager.reconcile().await;
         assert_eq!(manager.installed.len(), 1);
         assert_eq!(manager.backend.routes.len(), 1);
 
-        // 3. Drop lease2 -> route removed from system
-        drop(lease2);
+        // 3. Drop reg2 -> route removed from system
+        drop(reg2);
         manager.reconcile().await;
         assert_eq!(manager.installed.len(), 0);
         assert_eq!(manager.backend.routes.len(), 0);
@@ -727,12 +761,14 @@ mod tests {
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
 
-        let mut manager = RouteMgr::new(global_ctx, backend, cancel_token);
-        let handle = manager.handle();
-        let lease = handle.register().unwrap();
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let mut manager = RouteMgr::new(global_ctx, backend, routes, cancel_token);
 
         let v6_cidr = IpCidr::from_str("fd00::/64").unwrap();
-        lease.set(BTreeSet::from([v6_cidr]));
+        let _reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([v6_cidr])))
+            .unwrap();
 
         manager.reconcile().await;
     }
@@ -740,8 +776,11 @@ mod tests {
     #[tokio::test]
     async fn test_normal_shutdown_closes_registry_but_external_leases_survive() {
         let (mut manager, handle, _cancel) = test_manager(MockRouteBackend::new());
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([test_route("7.7.7.7/32").destination]));
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                test_route("7.7.7.7/32").destination,
+            ])))
+            .unwrap();
 
         manager.reconcile().await;
         assert_eq!(manager.installed.len(), 1);
@@ -754,16 +793,22 @@ mod tests {
             "OS mock cleanup still runs"
         );
 
-        // The external handle and lease outlive the shutdown, but their
+        // The external handle and registration outlive the shutdown, but their
         // authority is revoked.
         assert!(
-            handle.register().is_none(),
+            handle
+                .register(RouteDemand::Additional(BTreeSet::new()))
+                .is_none(),
             "closed registry rejects publishers"
         );
         let remove_calls = manager.backend.remove_calls.len();
-        lease.set(BTreeSet::from([test_route("8.8.8.8/32").destination]));
-        lease.clear();
-        assert!(lease.list().is_empty());
+        assert!(reg
+            .replace(RouteDemand::Additional(BTreeSet::from([
+                test_route("8.8.8.8/32").destination
+            ])))
+            .is_none());
+        assert!(reg.get().is_none());
+        drop(reg);
         assert_eq!(
             manager.backend.remove_calls.len(),
             remove_calls,
@@ -774,30 +819,48 @@ mod tests {
     #[tokio::test]
     async fn test_dropping_manager_before_run_revokes_registration() {
         let (manager, handle, _cancel) = test_manager(MockRouteBackend::new());
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([test_route("7.7.7.7/32").destination]));
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                test_route("7.7.7.7/32").destination,
+            ])))
+            .unwrap();
 
         drop(manager);
 
-        assert!(handle.register().is_none());
-        lease.set(BTreeSet::from([test_route("8.8.8.8/32").destination]));
-        assert!(lease.list().is_empty());
+        assert!(handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(reg
+            .replace(RouteDemand::Additional(BTreeSet::from([
+                test_route("8.8.8.8/32").destination
+            ])))
+            .is_none());
+        assert!(reg.get().is_none());
     }
 
     #[tokio::test]
     async fn test_dropping_unpolled_run_future_revokes_registration() {
         let (manager, handle, _cancel) = test_manager(MockRouteBackend::new());
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([test_route("7.7.7.7/32").destination]));
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                test_route("7.7.7.7/32").destination,
+            ])))
+            .unwrap();
 
         // The future owns the manager and is never polled; dropping it must
         // still close the registry.
         let run = manager.run();
         drop(run);
 
-        assert!(handle.register().is_none());
-        lease.set(BTreeSet::from([test_route("8.8.8.8/32").destination]));
-        assert!(lease.list().is_empty());
+        assert!(handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(reg
+            .replace(RouteDemand::Additional(BTreeSet::from([
+                test_route("8.8.8.8/32").destination
+            ])))
+            .is_none());
+        assert!(reg.get().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -805,9 +868,10 @@ mod tests {
         let release = Arc::new(tokio::sync::Notify::new());
         let (backend, mut entered) = MockRouteBackend::paused(release);
         let (manager, handle, _cancel) = test_manager(backend);
-        let lease = handle.register().unwrap();
         let route = test_route("7.7.7.7/32");
-        lease.set(BTreeSet::from([route.destination]));
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
 
         let task = tokio::spawn(manager.run());
         let adding = tokio::time::timeout(Duration::from_secs(5), entered.recv())
@@ -825,9 +889,15 @@ mod tests {
 
         // The manager was dropped with the aborted task. This does not claim
         // that the asynchronous OS cleanup ran.
-        assert!(handle.register().is_none());
-        lease.set(BTreeSet::from([test_route("8.8.8.8/32").destination]));
-        assert!(lease.list().is_empty());
+        assert!(handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(reg
+            .replace(RouteDemand::Additional(BTreeSet::from([
+                test_route("8.8.8.8/32").destination
+            ])))
+            .is_none());
+        assert!(reg.get().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -836,8 +906,9 @@ mod tests {
         let mut backend = MockRouteBackend::new();
         backend.panic_on_add.insert(route.clone());
         let (manager, handle, _cancel) = test_manager(backend);
-        let lease = handle.register().unwrap();
-        lease.set(BTreeSet::from([route.destination]));
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
 
         let task = tokio::spawn(manager.run());
         let join = task.await;
@@ -846,9 +917,15 @@ mod tests {
             "the backend panic must reach the join handle"
         );
 
-        assert!(handle.register().is_none());
-        lease.set(BTreeSet::from([test_route("8.8.8.8/32").destination]));
-        assert!(lease.list().is_empty());
+        assert!(handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(reg
+            .replace(RouteDemand::Additional(BTreeSet::from([
+                test_route("8.8.8.8/32").destination
+            ])))
+            .is_none());
+        assert!(reg.get().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -856,11 +933,12 @@ mod tests {
         let release = Arc::new(tokio::sync::Notify::new());
         let (backend, mut entered) = MockRouteBackend::paused(release.clone());
         let (manager, handle, cancel) = test_manager(backend);
-        let lease = handle.register().unwrap();
 
         let first = test_route("7.7.7.7/32");
         let second = test_route("8.8.8.8/32");
-        lease.set(BTreeSet::from([first.destination]));
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([first.destination])))
+            .unwrap();
 
         let task = tokio::spawn(manager.run());
         let adding = tokio::time::timeout(Duration::from_secs(5), entered.recv())
@@ -870,7 +948,11 @@ mod tests {
         assert_eq!(adding, first);
 
         // Update the source while reconcile is parked inside the backend.
-        lease.set(BTreeSet::from([first.destination, second.destination]));
+        reg.replace(RouteDemand::Additional(BTreeSet::from([
+            first.destination,
+            second.destination,
+        ])))
+        .unwrap();
         release.notify_one();
 
         // The pending notification drives the next pass immediately; the device
@@ -885,6 +967,87 @@ mod tests {
         cancel.cancel();
         let cleanup = task.await.unwrap();
         assert!(cleanup.is_ok());
-        assert!(handle.register().is_none());
+        assert!(handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_manual_proxy_override_and_conflict_handling() {
+        let cancel_token = CancellationToken::new();
+
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.set_tun_device_index_for_test(Some(100));
+        let backend = MockRouteBackend::new();
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+
+        let mut manager = RouteMgr::new(global_ctx, backend, routes, cancel_token);
+
+        let auto_cidr = Ipv4Cidr::from_str("10.0.0.0/24").unwrap();
+        let manual_cidr = Ipv4Cidr::from_str("192.168.1.0/24").unwrap();
+        let additional_cidr = IpCidr::from_str("172.16.0.0/24").unwrap();
+
+        let auto_reg = handle
+            .register(RouteDemand::AutoProxy(BTreeSet::from([auto_cidr])))
+            .unwrap();
+        let manual_reg = handle
+            .register(RouteDemand::ManualProxy(None))
+            .unwrap();
+        let add_reg = handle
+            .register(RouteDemand::Additional(BTreeSet::from([additional_cidr])))
+            .unwrap();
+
+        // 1. manual is None: auto + additional
+        manager.reconcile().await;
+        assert_eq!(manager.installed.len(), 2);
+        assert!(manager.installed.iter().any(|r| r.destination == IpCidr::V4(auto_cidr)));
+        assert!(manager.installed.iter().any(|r| r.destination == additional_cidr));
+
+        // 2. manual is Some([manual_cidr]): manual replaces auto; additional retained
+        manual_reg
+            .replace(RouteDemand::ManualProxy(Some(BTreeSet::from([manual_cidr]))))
+            .unwrap();
+        manager.reconcile().await;
+        assert_eq!(manager.installed.len(), 2);
+        assert!(manager.installed.iter().any(|r| r.destination == IpCidr::V4(manual_cidr)));
+        assert!(manager.installed.iter().any(|r| r.destination == additional_cidr));
+        assert!(!manager.installed.iter().any(|r| r.destination == IpCidr::V4(auto_cidr)));
+
+        // 3. manual is Some(empty): all auto routes suppressed; additional retained
+        manual_reg
+            .replace(RouteDemand::ManualProxy(Some(BTreeSet::new())))
+            .unwrap();
+        manager.reconcile().await;
+        assert_eq!(manager.installed.len(), 1);
+        assert!(manager.installed.iter().any(|r| r.destination == additional_cidr));
+
+        // 4. Auto updates while manual is active, then manual reverts to None: uses latest auto
+        let auto_cidr2 = Ipv4Cidr::from_str("10.1.0.0/24").unwrap();
+        auto_reg
+            .replace(RouteDemand::AutoProxy(BTreeSet::from([auto_cidr2])))
+            .unwrap();
+        manual_reg
+            .replace(RouteDemand::ManualProxy(None))
+            .unwrap();
+        manager.reconcile().await;
+        assert_eq!(manager.installed.len(), 2);
+        assert!(manager.installed.iter().any(|r| r.destination == IpCidr::V4(auto_cidr2)));
+        assert!(manager.installed.iter().any(|r| r.destination == additional_cidr));
+
+        // 5. Duplicate ManualProxy: resolve error leaves previous installed untouched
+        let duplicate_manual = handle
+            .register(RouteDemand::ManualProxy(None))
+            .unwrap();
+        manager.reconcile().await;
+        // Previous routes remain installed
+        assert_eq!(manager.installed.len(), 2);
+
+        // Dropping duplicate manual restores normal resolution
+        drop(duplicate_manual);
+        drop(add_reg);
+        manager.reconcile().await;
+        assert_eq!(manager.installed.len(), 1);
+        assert!(manager.installed.iter().any(|r| r.destination == IpCidr::V4(auto_cidr2)));
     }
 }

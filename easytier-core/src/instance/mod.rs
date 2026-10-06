@@ -296,6 +296,7 @@ where
     dns: Arc<dyn StunDnsRuntime>,
     process_runtime: Arc<CoreProcessRuntime>,
     pub packet_egress: Arc<dyn PacketEgressHost>,
+    pub routes: Option<crate::host::route::RouteHandle>,
     pub instance_runtime: Arc<dyn InstanceRuntimeHost>,
     pub events: Arc<dyn CoreEventSink>,
     pub credential_storage: Option<Arc<dyn CredentialStorage>>,
@@ -357,6 +358,7 @@ where
             dns,
             process_runtime,
             packet_egress,
+            routes: None,
             instance_runtime: Arc::new(()),
             events: Arc::new(()),
             credential_storage: None,
@@ -504,9 +506,30 @@ where
         #[cfg(feature = "vpn-portal")]
         let vpn_portal_config = config.vpn_portal.clone();
         let (packet_tx, packet_rx) = host_packet_channel();
+        let manual_registration = adapters
+            .routes
+            .as_ref()
+            .map(|h| {
+                h.register(crate::host::route::RouteDemand::ManualProxy(
+                    config.connectivity.runtime.manual_routes.clone(),
+                ))
+                .ok_or_else(|| anyhow::anyhow!("route registry is closed"))
+            })
+            .transpose()?;
+        let proxy_registration = adapters
+            .routes
+            .as_ref()
+            .map(|h| {
+                h.register(crate::host::route::RouteDemand::AutoProxy(
+                    std::collections::BTreeSet::new(),
+                ))
+                .ok_or_else(|| anyhow::anyhow!("route registry is closed"))
+            })
+            .transpose()?;
         let runtime_config = CoreRuntimeConfigStore::new(
             config.connectivity.runtime.clone(),
             Arc::new(config.peer.snapshot.clone()),
+            manual_registration,
         );
         let events = adapters.events.clone();
         #[cfg(feature = "public-ipv6-provider")]
@@ -550,6 +573,7 @@ where
             events.clone(),
             adapters.credential_storage.take(),
             foreign_rpc_registrar,
+            proxy_registration,
         )?);
         let config = config.connectivity;
         let configured_listeners = (connectivity_mode != CoreConnectivityMode::OutboundOnly)
@@ -569,6 +593,7 @@ where
             dns,
             process_runtime,
             packet_egress,
+            routes: _,
             instance_runtime,
             events,
             credential_storage: _,

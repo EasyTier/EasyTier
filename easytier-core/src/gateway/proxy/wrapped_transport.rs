@@ -782,7 +782,7 @@ mod tests {
         peer.flags.disable_kcp_input = !kcp.destination;
         peer.flags.enable_quic_proxy = quic.source;
         peer.flags.disable_quic_input = !quic.destination;
-        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(peer))
+        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(peer), None)
     }
 
     #[tokio::test]

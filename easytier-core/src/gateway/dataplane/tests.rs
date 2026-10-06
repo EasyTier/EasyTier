@@ -19,6 +19,7 @@ fn test_gateway() -> Arc<DataPlaneRuntime<TestHost>> {
     let runtime_config = CoreRuntimeConfigStore::new(
         crate::config::runtime::CoreRuntimeConfig::default(),
         Arc::new(PeerRuntimeSnapshot::default()),
+        None,
     );
     let host = Arc::new(TestHost::default());
     let (packet_sender, packet_recv) = mpsc::channel(16);
@@ -68,6 +69,7 @@ fn data_plane_endpoint(host: Arc<TestHost>, ip: cidr::Ipv4Inet) -> DataPlaneEndp
     let runtime_config = CoreRuntimeConfigStore::new(
         crate::config::runtime::CoreRuntimeConfig::default(),
         Arc::new(peer_config.snapshot.clone()),
+        None,
     );
     let (packet_sender, packet_receiver) = host_packet_channel();
     let peer_manager = Arc::new(

@@ -126,7 +126,7 @@ fn build_foreign_peer_context(
     snapshot.hmac_secret_digest = parent_context_dyn.hmac_secret_digest();
 
     Arc::new(CorePeerContext::new_foreign(
-        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot)),
+        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot), None),
         CorePeerContextAdapters {
             stun_info_source: Some(Arc::new(ParentStunInfoSource(parent_context_dyn))),
             events: Arc::new(()),
@@ -520,6 +520,7 @@ impl ForeignNetworkEntry {
             self.peer_context.clone(),
             public_ipv6_runtime,
             self.peer_rpc.clone(),
+            None,
         );
         route
             .open(Box::new(ForeignNetworkRouteInterface {
@@ -1624,6 +1625,7 @@ mod tests {
             CoreRuntimeConfigStore::new(
                 CoreRuntimeConfig::default(),
                 Arc::new(PeerRuntimeSnapshot::default()),
+                None,
             ),
             Arc::new(()),
             CorePeerContextAdapters {
@@ -1928,6 +1930,7 @@ mod tests {
         let parent_config = CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
             Arc::new(parent_snapshot.clone()),
+            None,
         );
         let parent = Arc::new(CorePeerContext::new(
             parent_config.clone(),

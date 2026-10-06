@@ -65,6 +65,7 @@ pub(crate) fn compose_native_core_instance(
         runtime_host.clone(),
         host_config,
     );
+    adapters.routes = runtime_host.route_handle();
     adapters.instance_runtime = runtime_host;
     NativeCoreInstance::from_toml(toml_config, adapters)
 }

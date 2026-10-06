@@ -438,6 +438,7 @@ mod tests {
         let runtime_config = CoreRuntimeConfigStore::new(
             crate::config::runtime::CoreRuntimeConfig::default(),
             Arc::new(crate::config::peers::PeerRuntimeSnapshot::default()),
+            None,
         );
         *host.runtime_config.lock().unwrap() = Some(runtime_config.clone());
         let service = DhcpIpv4Service::new(

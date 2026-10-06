@@ -46,7 +46,7 @@ impl NativeInstanceRuntimeHost {
         let cancel = CancellationToken::new();
         let tun = NativeTunRuntime::new(global_ctx.clone(), cancel.clone());
         let event_journal = EventJournal::new(&global_ctx);
-        let route = NativeRouteRuntime::new(global_ctx.clone());
+        let route = NativeRouteRuntime::new(global_ctx.clone(), cancel.clone());
         Arc::new(Self {
             global_ctx,
             event_journal,
@@ -57,13 +57,17 @@ impl NativeInstanceRuntimeHost {
         })
     }
 
+    pub(crate) fn route_handle(&self) -> Option<easytier_core::host::route::RouteHandle> {
+        self.route.route_handle()
+    }
+
     async fn prepare_runtime(
         &self,
         packet_plane: Arc<CorePacketPlane>,
     ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
         self.event_journal.start(self.cancel.clone()).await;
         self.tun.prepare(packet_plane.clone()).await?;
-        self.route.prepare(packet_plane.clone()).await?;
+        self.route.prepare().await?;
 
         Ok(Some(
             self.tun.dhcp_host(self.operation.clone(), packet_plane),
@@ -72,6 +76,7 @@ impl NativeInstanceRuntimeHost {
 
     async fn shutdown_runtime(&self) {
         self.cancel.cancel();
+        self.route.request_shutdown();
         let _operation = self.operation.lock().await;
 
         self.route.shutdown().await;
@@ -81,6 +86,7 @@ impl NativeInstanceRuntimeHost {
 
     fn request_runtime_shutdown(&self) {
         self.cancel.cancel();
+        self.route.request_shutdown();
     }
 
     fn management_events_snapshot(&self) -> Vec<String> {
@@ -232,5 +238,91 @@ mod tests {
         );
 
         assert_eq!(global_ctx.get_ipv4(), Some(lease));
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    #[test]
+    fn route_handle_lifecycle_without_prepare_closes_registry() {
+        use easytier_core::host::route::RouteDemand;
+        use std::collections::BTreeSet;
+
+        let global_ctx = Arc::new(GlobalCtx::new(TomlConfig::default()));
+        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+
+        let handle = runtime_host.route_handle().expect("handle must exist");
+        let reg = handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .expect("must register");
+        assert!(global_ctx.get_route_handle().is_some());
+
+        // Calling request_runtime_shutdown without ever calling prepare_runtime
+        runtime_host.request_runtime_shutdown();
+
+        // Registry is closed synchronously
+        assert!(handle
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(reg
+            .replace(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(global_ctx.get_route_handle().is_none());
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    #[test]
+    fn two_instances_have_independent_route_registries() {
+        use easytier_core::host::route::RouteDemand;
+        use std::collections::BTreeSet;
+
+        let global_ctx_a = Arc::new(GlobalCtx::new(TomlConfig::default()));
+        let runtime_host_a = NativeInstanceRuntimeHost::new(global_ctx_a.clone());
+
+        let global_ctx_b = Arc::new(GlobalCtx::new(TomlConfig::default()));
+        let runtime_host_b = NativeInstanceRuntimeHost::new(global_ctx_b.clone());
+
+        let handle_a = runtime_host_a.route_handle().unwrap();
+        let handle_b = runtime_host_b.route_handle().unwrap();
+
+        let reg_a = handle_a
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .unwrap();
+        let reg_b = handle_b
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .unwrap();
+
+        // Shut down A
+        runtime_host_a.request_runtime_shutdown();
+        assert!(handle_a
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(reg_a
+            .replace(RouteDemand::Additional(BTreeSet::new()))
+            .is_none());
+        assert!(global_ctx_a.get_route_handle().is_none());
+
+        // B remains fully functional
+        assert!(handle_b
+            .register(RouteDemand::Additional(BTreeSet::new()))
+            .is_some());
+        assert!(reg_b
+            .replace(RouteDemand::Additional(BTreeSet::new()))
+            .is_some());
+        assert!(global_ctx_b.get_route_handle().is_some());
+    }
+
+    #[test]
+    fn no_tun_provides_no_route_handle() {
+        use easytier_core::config::toml::ConfigLoader as _;
+
+        let config = TomlConfig::default();
+        let mut flags = config.get_flags();
+        flags.no_tun = true;
+        config.set_flags(flags);
+
+        let global_ctx = Arc::new(GlobalCtx::new(config));
+        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+
+        assert!(runtime_host.route_handle().is_none());
+        assert!(global_ctx.get_route_handle().is_none());
     }
 }

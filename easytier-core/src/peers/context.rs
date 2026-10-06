@@ -621,11 +621,6 @@ pub(crate) trait PeerContext: Send + Sync {
         None
     }
 
-    /// The instance's proxy CIDR registry, when this context has one.
-    fn proxy_routes(&self) -> Option<crate::gateway::proxy::proxy_cidrs::ProxyRouteRegistry> {
-        None
-    }
-
     fn easytier_version(&self) -> String {
         env!("CARGO_PKG_VERSION").to_string()
     }
@@ -853,10 +848,6 @@ impl PeerContext for CorePeerContext {
 
     fn subscribe_runtime_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         Some(self.config.subscribe_peer_runtime_changes())
-    }
-
-    fn proxy_routes(&self) -> Option<crate::gateway::proxy::proxy_cidrs::ProxyRouteRegistry> {
-        Some(self.config.proxy_routes())
     }
 
     fn easytier_version(&self) -> String {
@@ -1251,6 +1242,7 @@ pub(crate) mod tests {
             CoreRuntimeConfigStore::new(
                 CoreRuntimeConfig::default(),
                 Arc::new(PeerRuntimeSnapshot::default()),
+                None,
             ),
             Arc::new(()),
             test_core_context_adapters(Arc::new(())),
@@ -1330,7 +1322,7 @@ pub(crate) mod tests {
     }
 
     fn submitted_config(snapshot: PeerRuntimeSnapshot) -> CoreRuntimeConfigStore {
-        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot))
+        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot), None)
     }
 
     #[test]
@@ -1659,7 +1651,7 @@ pub(crate) mod tests {
     ) -> CorePeerContext {
         let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
         snapshot.set_acl_groups(acl);
-        let config = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot));
+        let config = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot), None);
         CorePeerContext::new(
             config,
             Arc::new(()),

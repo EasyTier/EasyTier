@@ -436,7 +436,7 @@ mod tests {
             public_ipv6_provider: config,
             ..Default::default()
         };
-        CoreRuntimeConfigStore::new(services, Arc::new(PeerRuntimeSnapshot::default()))
+        CoreRuntimeConfigStore::new(services, Arc::new(PeerRuntimeSnapshot::default()), None)
     }
 
     fn runtime(

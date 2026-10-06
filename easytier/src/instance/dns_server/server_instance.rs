@@ -39,7 +39,9 @@ use easytier_core::gateway::magic_dns::{
     MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsResolverRegistration,
     MagicDnsRoute,
 };
+use easytier_core::host::route::RouteDemand;
 use easytier_core::instance::CorePacketPlane;
+use registry::Registration;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
@@ -334,7 +336,7 @@ pub struct MagicDnsServerInstance {
     packet_filter: MagicDnsResolverRegistration,
     #[allow(dead_code)]
     tun_inet: Ipv4Inet,
-    _route_lease: Option<crate::instance::route::RouteLease>,
+    _route_registration: Option<Registration<RouteDemand>>,
 }
 
 fn get_system_config(
@@ -376,14 +378,25 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        let route_lease = if !tun_inet.contains(&fake_ip) {
-            if let Some(lease) = global_ctx.register_route_lease() {
-                if let Ok(cidr) = cidr::Ipv4Cidr::new(fake_ip, 32) {
-                    lease.set(std::collections::BTreeSet::from([cidr::IpCidr::V4(cidr)]));
-                }
-                Some(lease)
+        let route_registration = if !tun_inet.contains(&fake_ip) {
+            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            if !global_ctx.get_flags().no_tun {
+                let handle = global_ctx
+                    .get_route_handle()
+                    .context("route handle missing for native route runtime")?;
+                let cidr = cidr::Ipv4Cidr::new(fake_ip, 32)?;
+                let reg = handle
+                    .register(RouteDemand::Additional(std::collections::BTreeSet::from([
+                        cidr::IpCidr::V4(cidr),
+                    ])))
+                    .context("failed to register fake ip route demand")?;
+                Some(reg)
             } else {
-                #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+                None
+            }
+
+            #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+            {
                 if let Some(tun_dev_name) = &tun_dev {
                     let cost = if cfg!(target_os = "windows") {
                         Some(4)
@@ -440,7 +453,7 @@ impl MagicDnsServerInstance {
             data,
             packet_filter,
             tun_inet,
-            _route_lease: route_lease,
+            _route_registration: route_registration,
         })
     }
 
@@ -451,7 +464,7 @@ impl MagicDnsServerInstance {
                 tracing::error!("Failed to close system config: {:?}", e);
             }
         }
-        if self._route_lease.is_none() {
+        if self._route_registration.is_none() {
             #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
             if !self.tun_inet.contains(&self.data.fake_ip)
                 && let Some(tun_dev_name) = &self.data.tun_dev

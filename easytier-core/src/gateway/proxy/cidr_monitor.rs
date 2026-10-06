@@ -74,12 +74,12 @@ pub struct ProxyCidrDiff {
 }
 
 /// Legacy entry point for the resolution rule; the rule itself lives in
-/// [`crate::gateway::proxy::proxy_cidrs`].
+/// [`crate::host::route`].
 pub(crate) fn resolve_proxy_cidrs(
     peer_routes: BTreeSet<Ipv4Cidr>,
     config: ProxyCidrConfigSnapshot,
 ) -> BTreeSet<Ipv4Cidr> {
-    super::proxy_cidrs::resolve_proxy_cidrs(peer_routes, config.manual_routes)
+    crate::host::route::resolve_proxy_cidrs(peer_routes, config.manual_routes)
 }
 
 pub(crate) fn diff_proxy_cidrs(
@@ -240,6 +240,7 @@ mod tests {
                 ..Default::default()
             },
             Arc::new(initial_peer),
+            None,
         );
         let initial = store.snapshot();
 

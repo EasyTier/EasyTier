@@ -1364,6 +1364,7 @@ mod tests {
                 ..Default::default()
             },
             Arc::new(easytier_core::config::peers::PeerRuntimeSnapshot::default()),
+            None,
         );
         let runtime = easytier_core::peers::public_ipv6::CorePublicIpv6Runtime::new(
             runtime_config.clone(),

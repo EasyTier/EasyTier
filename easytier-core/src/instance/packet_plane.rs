@@ -6,7 +6,6 @@ use crate::{
     config::runtime::CoreRuntimeConfigStore,
     gateway::magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
-    gateway::proxy::proxy_cidrs::ProxyRouteRegistry,
     host::packet::HostPacket,
     peers::peer_manager::PeerManagerCore,
 };
@@ -75,14 +74,6 @@ impl CorePacketPlane {
         )
     }
 
-    /// The instance's proxy CIDR registry: the route table and the runtime
-    /// config declare a layer each, and readers get the resolved set.
-    ///
-    /// Unlike [`Self::proxy_cidr_diff`] this does not depend on the legacy
-    /// `ProxyCidrMonitor` task being enabled.
-    pub fn proxy_routes(&self) -> ProxyRouteRegistry {
-        self.runtime_config.proxy_routes()
-    }
 
     pub async fn public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
         self.peer_manager.list_public_ipv6_routes().await

@@ -1,5 +1,4 @@
 pub mod backend;
-pub mod handle;
 pub mod manager;
 pub mod model;
 
@@ -7,6 +6,8 @@ pub mod model;
 pub use backend::PlatformRouteBackend;
 pub use backend::RouteBackend;
 
-pub use handle::{RouteHandle, RouteLease, RouteSet};
+pub use easytier_core::host::route::{
+    resolve_proxy_cidrs, resolve_route_demands, RouteDemand, RouteHandle, RouteSet,
+};
 pub use manager::RouteMgr;
 pub use model::{CleanupIncomplete, DeviceId, Route, RouteError};
