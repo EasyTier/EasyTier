@@ -122,4 +122,35 @@ mod tests {
         assert_eq!(&bytes[..], b"hello world");
         assert_eq!(list.remaining(), 0);
     }
+
+    #[test]
+    fn test_chunks_vectored_partial_inner_buf() {
+        #[derive(Debug)]
+        struct PartialBuf(&'static [u8]);
+
+        impl Buf for PartialBuf {
+            fn remaining(&self) -> usize {
+                self.0.len()
+            }
+
+            fn chunk(&self) -> &[u8] {
+                &self.0[..self.0.len().min(1)]
+            }
+
+            fn advance(&mut self, cnt: usize) {
+                self.0 = &self.0[cnt..];
+            }
+        }
+
+        let mut list = BufList::new();
+        list.push(PartialBuf(b"ab"));
+        list.push(PartialBuf(b"c"));
+
+        let mut dst = [IoSlice::new(&[]); 3];
+
+        let n = list.chunks_vectored(&mut dst);
+
+        assert_eq!(n, 1);
+        assert_eq!(&*dst[0], b"a");
+    }
 }
