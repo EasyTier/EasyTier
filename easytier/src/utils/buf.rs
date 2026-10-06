@@ -14,7 +14,7 @@ pub struct BufMargins {
 impl BufMargins {
     #[inline(always)]
     pub fn size(&self) -> usize {
-        self.header + self.trailer
+        self.header.checked_add(self.trailer).unwrap()
     }
 }
 
@@ -58,7 +58,7 @@ impl BufPool {
 
     #[inline]
     pub fn write(&mut self, chunk: &[u8], margins: BufMargins) {
-        let len = margins.size() + chunk.len();
+        let len = margins.size().checked_add(chunk.len()).unwrap();
         self.reserve(len);
         // Header and trailer are intentionally left uninitialized. Users of this
         // buffer must initialize both regions before reading or consuming it.
@@ -142,7 +142,7 @@ impl<'t> BufPoolWriter<'t> {
 
     #[inline(always)]
     pub fn commit(&mut self, written: usize) {
-        let len = self.margins.size() + written;
+        let len = self.margins.size().checked_add(written).unwrap();
         assert!(self.capacity >= len);
         self.capacity -= len;
         // `commit` marks the margins as part of the buffer without initializing them.
