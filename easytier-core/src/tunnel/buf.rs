@@ -59,13 +59,16 @@ impl<T: Buf> Buf for BufList<T> {
     #[inline]
     fn chunks_vectored<'t>(&'t self, dst: &mut [IoSlice<'t>]) -> usize {
         let mut vecs = 0;
+
         for buf in &self.bufs {
-            if vecs == dst.len() {
+            let n = buf.chunks_vectored(&mut dst[vecs..]);
+            vecs += n;
+
+            if dst[vecs - n..vecs].iter().map(|s| s.len()).sum::<usize>() < buf.remaining() {
                 break;
             }
-
-            vecs += buf.chunks_vectored(&mut dst[vecs..]);
         }
+
         vecs
     }
 
