@@ -4,6 +4,7 @@ members = [
     "easytier-core",
     "easytier-proto",
     "easytier",
+    "registry",
     "easytier-web",
     "easytier-gui/src-tauri",
     "easytier-contrib/easytier-mini",
@@ -63,6 +64,7 @@ prost-types = "0.14.4"
 quanta = "0.12"
 # rand 0.10 / x25519-dalek 3 require a coordinated RNG trait migration.
 rand = "0.8.8"
+registry = { path = "registry" }
 reqwest = { version = "0.13.5", default-features = false }
 rust-i18n = "4"
 rustls = { version = "0.23.45", default-features = false }

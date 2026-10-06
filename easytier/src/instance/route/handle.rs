@@ -1,76 +1,55 @@
 use std::collections::BTreeSet;
-use std::sync::{Arc, Weak};
 
 use cidr::IpCidr;
-use parking_lot::{Mutex, RwLock};
+use registry::{Registration, Registry};
 
-use crate::utils::dirty::DirtyFlag;
-
-pub type RouteSlot = RwLock<BTreeSet<IpCidr>>;
+/// One publisher's set of route destinations.
+pub type RouteSet = BTreeSet<IpCidr>;
 
 /// Lightweight, cloneable handle for registering route publishers.
 ///
-/// Different publishers do NOT share routing state with each other.
-/// Each registered publisher acquires an independent `RouteLease` backed by its own private `RouteSlot`.
+/// Different publishers do NOT share routing state with each other. Each
+/// registered publisher acquires an independent `RouteLease` backed by its own
+/// private entry in the manager's registry.
 #[derive(Clone, Debug)]
-pub struct RouteHandle {
-    slots: Arc<Mutex<Vec<Weak<RouteSlot>>>>,
-    dirty: Arc<DirtyFlag>,
-}
+pub struct RouteHandle(Registry<RouteSet>);
 
 impl RouteHandle {
-    pub fn new(slots: Arc<Mutex<Vec<Weak<RouteSlot>>>>, dirty: Arc<DirtyFlag>) -> Self {
-        Self { slots, dirty }
+    pub(super) fn new(routes: Registry<RouteSet>) -> Self {
+        Self(routes)
     }
 
-    pub fn register(&self) -> RouteLease {
-        let slot = Arc::new(RwLock::new(BTreeSet::new()));
-        self.slots.lock().push(Arc::downgrade(&slot));
-        self.dirty.mark();
-        RouteLease {
-            slot: Some(slot),
-            dirty: self.dirty.clone(),
-        }
+    /// Registers a new publisher source.
+    ///
+    /// Returns `None` once the manager has closed its registry: the manager is
+    /// stopping, so the publisher must not be started.
+    pub fn register(&self) -> Option<RouteLease> {
+        self.0.register(RouteSet::new()).map(RouteLease)
     }
 }
 
 /// RAII route lease held by a publisher.
 ///
-/// When the lease is dropped, its private slot strong reference is dropped
-/// and the Manager is notified immediately to withdraw the routes from the kernel.
+/// When the lease is dropped, its entry is withdrawn from the manager's
+/// registry and the manager is notified immediately.
 #[derive(Debug)]
-pub struct RouteLease {
-    slot: Option<Arc<RouteSlot>>,
-    dirty: Arc<DirtyFlag>,
-}
+pub struct RouteLease(Registration<RouteSet>);
 
 impl RouteLease {
-    pub fn update(&self, f: impl FnOnce(&mut BTreeSet<IpCidr>)) {
-        if let Some(slot) = &self.slot {
-            f(&mut slot.write());
-            self.dirty.mark();
-        }
+    /// Replaces this publisher's complete route set.
+    ///
+    /// Late declarations are discarded after the manager closed the registry.
+    pub fn set(&self, cidrs: RouteSet) {
+        let _ = self.0.replace(cidrs);
     }
 
-    pub fn set(&self, cidrs: BTreeSet<IpCidr>) {
-        self.update(|s| *s = cidrs);
-    }
-
+    /// Withdraws this publisher's routes while keeping the lease alive.
     pub fn clear(&self) {
-        self.update(|s| s.clear());
+        self.set(RouteSet::new());
     }
 
-    pub fn list(&self) -> BTreeSet<IpCidr> {
-        self.slot
-            .as_ref()
-            .map(|s| s.read().clone())
-            .unwrap_or_default()
-    }
-}
-
-impl Drop for RouteLease {
-    fn drop(&mut self) {
-        drop(self.slot.take());
-        self.dirty.mark();
+    /// Returns this publisher's current declaration.
+    pub fn list(&self) -> RouteSet {
+        self.0.get().map(|set| (*set).clone()).unwrap_or_default()
     }
 }

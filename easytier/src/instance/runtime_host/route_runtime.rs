@@ -2,6 +2,8 @@ use std::sync::Arc;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 use std::time::Duration;
 
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+use anyhow::Context;
 use easytier_core::instance::CorePacketPlane;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 use tokio::{sync::Mutex, task::JoinHandle};
@@ -10,9 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::ArcGlobalCtx;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use crate::instance::route::{
-    CleanupIncomplete, PlatformRouteBackend, RouteLease, RouteMgr,
-};
+use crate::instance::route::{CleanupIncomplete, PlatformRouteBackend, RouteLease, RouteMgr};
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(super) struct NativeRouteRuntime {
@@ -41,18 +41,20 @@ impl NativeRouteRuntime {
 
         let cancel = CancellationToken::new();
         let backend = PlatformRouteBackend::new()?;
-        let default_metric = 65535;
         let manager = RouteMgr::new(
             self.global_ctx.clone(),
             backend,
             cancel.clone(),
-            default_metric,
         );
 
         let handle = manager.handle();
+        // Register before publishing the handle or starting tasks: no lease
+        // means the manager is already stopping.
+        let proxy_lease = handle
+            .register()
+            .context("route manager registry is already closed")?;
         self.global_ctx.set_route_handle(Some(handle.clone()));
 
-        let proxy_lease = handle.register();
         let p_global_ctx = self.global_ctx.clone();
         let p_packet_plane = packet_plane.clone();
         let p_cancel = cancel.clone();

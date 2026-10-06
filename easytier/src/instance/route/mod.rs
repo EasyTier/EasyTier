@@ -7,6 +7,6 @@ pub mod model;
 pub use backend::PlatformRouteBackend;
 pub use backend::RouteBackend;
 
-pub use handle::{RouteHandle, RouteLease, RouteSlot};
+pub use handle::{RouteHandle, RouteLease, RouteSet};
 pub use manager::RouteMgr;
 pub use model::{CleanupIncomplete, DeviceId, Route, RouteError};

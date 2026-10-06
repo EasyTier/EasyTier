@@ -395,7 +395,8 @@ impl GlobalCtx {
     }
 
     pub fn register_route_lease(&self) -> Option<crate::instance::route::RouteLease> {
-        self.route_handle.read().as_ref().map(|h| h.register())
+        // Missing handle and closed registry both mean "no route authority".
+        self.route_handle.read().as_ref().and_then(|h| h.register())
     }
 }
 
