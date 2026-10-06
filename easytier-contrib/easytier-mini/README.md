@@ -6,6 +6,11 @@ dynamic IPv4 allocation, the smoltcp userspace path and STUN/UDP hole-punching
 core with the full binary. It includes AES-GCM so its default encryption
 setting interoperates with the full binary's default configuration.
 
+Download [pre-built binaries](https://github.com/EasyTier/easytier-mini/releases)
+from the separate [easytier-mini repository](https://github.com/EasyTier/easytier-mini),
+which handles builds and releases. The source code is maintained here in the
+main EasyTier repository.
+
 Build it with:
 
 ```sh
