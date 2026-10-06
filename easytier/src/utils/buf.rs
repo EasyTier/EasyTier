@@ -175,8 +175,8 @@ impl<const SIZE: usize> FixedBufPool<SIZE> {
 #[derive(Debug, Deref, DerefMut, AsRef, AsMut)]
 pub struct FixedBufGuard<'p, const SIZE: usize> {
     pool: &'p FixedBufPool<SIZE>,
-    #[deref]
-    #[deref_mut]
+    #[deref(forward)]
+    #[deref_mut(forward)]
     #[as_ref([u8])]
     #[as_mut([u8])]
     buf: Vec<u8>,
