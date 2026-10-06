@@ -40,6 +40,7 @@ use easytier_core::{
     socket::SocketListener, tunnel::Tunnel,
 };
 use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard};
 use uuid::Uuid;
@@ -92,21 +93,65 @@ fn easytier_version() -> Result<String, String> {
     Ok(easytier::VERSION.to_string())
 }
 
-#[tauri::command]
-fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+/// Whether the user prefers to hide the Dock icon (macOS menu-bar-only mode).
+/// Persisted in the app data dir so it survives relaunches.
+static DOCK_HIDDEN_PREFERENCE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+fn dock_preference_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("hide_dock_icon"))
+}
+
+#[cfg(target_os = "macos")]
+fn load_dock_hidden_preference(app: &tauri::AppHandle) -> bool {
+    dock_preference_path(app)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|content| content.trim() == "true")
+}
+
+#[cfg(target_os = "macos")]
+fn save_dock_hidden_preference(app: &tauri::AppHandle, hidden: bool) -> Result<(), String> {
+    let path = dock_preference_path(app)
+        .ok_or_else(|| "Failed to resolve app data dir".to_string())?;
+    std::fs::write(path, if hidden { "true" } else { "false" })
+        .map_err(|e| format!("Failed to save dock visibility preference: {e}"))
+}
+
+/// Applies the effective dock visibility: the dock icon is shown only when the
+/// main window is visible and the user has not opted for hiding it.
+#[cfg_attr(target_os = "android", allow(dead_code))]
+fn update_dock_visibility(app: &tauri::AppHandle, window_visible: bool) {
+    let visible = window_visible && !DOCK_HIDDEN_PREFERENCE.load(Ordering::Relaxed);
     #[cfg(target_os = "macos")]
     {
         use tauri::ActivationPolicy;
-        app.set_activation_policy(if visible {
+        let _ = app.set_activation_policy(if visible {
             ActivationPolicy::Regular
         } else {
             ActivationPolicy::Accessory
-        })
-        .map_err(|e| e.to_string())?;
+        });
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (app, visible);
-    Ok(())
+}
+
+#[tauri::command]
+fn get_dock_hidden_preference() -> bool {
+    DOCK_HIDDEN_PREFERENCE.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn set_dock_hidden_preference(app: tauri::AppHandle, hidden: bool) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    save_dock_hidden_preference(&app, hidden)?;
+    DOCK_HIDDEN_PREFERENCE.store(hidden, Ordering::Relaxed);
+    let window_visible = app
+        .get_webview_window("main")
+        .is_some_and(|window| window.is_visible().unwrap_or_default());
+    update_dock_visibility(&app, window_visible);
+    Ok(hidden)
 }
 
 #[tauri::command]
@@ -669,10 +714,10 @@ fn toggle_window_visibility(app: &tauri::AppHandle) {
             if !focused {
                 let _ = window.set_focus();
             }
-            let _ = set_dock_visibility(app.clone(), true);
+            update_dock_visibility(app, true);
         } else {
             let _ = window.hide();
-            let _ = set_dock_visibility(app.clone(), false);
+            update_dock_visibility(app, false);
         }
     }
 }
@@ -1485,6 +1530,18 @@ pub fn run_gui() -> std::process::ExitCode {
                 return Ok(());
             };
 
+            // apply the persisted dock visibility preference before the app
+            // activates, so a hidden dock icon never flashes at startup
+            #[cfg(target_os = "macos")]
+            {
+                DOCK_HIDDEN_PREFERENCE
+                    .store(load_dock_hidden_preference(app.app_handle()), Ordering::Relaxed);
+                let window_visible = app
+                    .get_webview_window("main")
+                    .is_some_and(|window| window.is_visible().unwrap_or_default());
+                update_dock_visibility(app.app_handle(), window_visible);
+            }
+
             // for tray icon, menu need to be built in js
             #[cfg(not(target_os = "android"))]
             let _tray_menu = TrayIconBuilder::with_id("main")
@@ -1518,7 +1575,8 @@ pub fn run_gui() -> std::process::ExitCode {
             set_logging_level,
             set_tun_fd,
             easytier_version,
-            set_dock_visibility,
+            get_dock_hidden_preference,
+            set_dock_hidden_preference,
             list_network_instance_ids,
             remove_network_instance,
             update_network_config_state,
@@ -1540,7 +1598,7 @@ pub fn run_gui() -> std::process::ExitCode {
             #[cfg(not(target_os = "android"))]
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 let _ = _win.hide();
-                let _ = set_dock_visibility(_win.app_handle().clone(), false);
+                update_dock_visibility(_win.app_handle(), false);
                 api.prevent_close();
             }
             _ => {}
