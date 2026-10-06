@@ -260,8 +260,11 @@ impl GlobalCtx {
     pub(crate) fn set_tun_device_ready(&self, name: String) {
         #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
         {
-            let ifindex =
-                crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&name).ok();
+            // Interface indices are namespace-local: resolve the index in the
+            // namespace the device was just created in, not in the caller's.
+            let ifindex = self.net_ns.run(|| {
+                crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&name).ok()
+            });
             *self.tun_device_index.lock().unwrap() = ifindex;
         }
         self.set_tun_device_name(Some(name.clone()));
@@ -286,7 +289,9 @@ impl GlobalCtx {
         #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
         {
             let name = self.get_tun_device_name()?;
-            crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&name).ok()
+            self.net_ns.run(|| {
+                crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&name).ok()
+            })
         }
         #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
         None

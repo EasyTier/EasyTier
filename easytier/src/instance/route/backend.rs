@@ -18,13 +18,18 @@ pub trait RouteBackend: Send + 'static {
 }
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-#[derive(Default, Clone)]
-pub struct PlatformRouteBackend;
+#[derive(Clone)]
+pub struct PlatformRouteBackend {
+    net_ns: crate::common::netns::NetNS,
+}
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 impl PlatformRouteBackend {
-    pub fn new() -> Result<Self, anyhow::Error> {
-        Ok(Self)
+    /// `net_ns` is the namespace the managed TUN device lives in; every route
+    /// operation is performed inside it. Device indices are namespace-local,
+    /// so using them outside this namespace would target the wrong device.
+    pub fn new(net_ns: crate::common::netns::NetNS) -> Result<Self, anyhow::Error> {
+        Ok(Self { net_ns })
     }
 }
 
@@ -108,12 +113,19 @@ impl RouteBackend for PlatformRouteBackend {
         let ifindex = route.interface.ifindex;
         let metric = route.metric;
         let route_clone = route.clone();
+        let net_ns = self.net_ns.clone();
 
-        tokio::task::spawn_blocking(move || add_ipv4_route(ifindex, v4, metric))
-            .await
-            .map_err(|e| RouteError::Unknown(e.into()))?
-            .map(|res| res.map(|_| route_clone))
-            .map_err(|e| RouteError::Failed(e.into()))
+        tokio::task::spawn_blocking(move || {
+            // `setns` is per-thread, so the guard has to be taken on the
+            // blocking thread itself: the async task may be polled on a
+            // different one.
+            let _guard = net_ns.guard();
+            add_ipv4_route(ifindex, v4, metric)
+        })
+        .await
+        .map_err(|e| RouteError::Unknown(e.into()))?
+        .map(|res| res.map(|_| route_clone))
+        .map_err(|e| RouteError::Failed(e.into()))
     }
 
     async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
@@ -122,10 +134,14 @@ impl RouteBackend for PlatformRouteBackend {
             cidr::IpCidr::V6(_) => unimplemented!("ipv6 route is not supported yet"),
         };
         let ifindex = route.interface.ifindex;
+        let net_ns = self.net_ns.clone();
 
-        tokio::task::spawn_blocking(move || remove_ipv4_route(ifindex, v4))
-            .await
-            .map_err(|e| RouteError::Unknown(e.into()))?
-            .map_err(|e| RouteError::Failed(e.into()))
+        tokio::task::spawn_blocking(move || {
+            let _guard = net_ns.guard();
+            remove_ipv4_route(ifindex, v4)
+        })
+        .await
+        .map_err(|e| RouteError::Unknown(e.into()))?
+        .map_err(|e| RouteError::Failed(e.into()))
     }
 }
