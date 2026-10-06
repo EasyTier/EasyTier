@@ -43,6 +43,11 @@ impl RouteLease {
         let _ = self.0.replace(cidrs);
     }
 
+    /// Gives up the lease wrapper and hands the raw claim to another owner.
+    pub fn into_registration(self) -> Registration<RouteSet> {
+        self.0
+    }
+
     /// Withdraws this publisher's routes while keeping the lease alive.
     pub fn clear(&self) {
         self.set(RouteSet::new());

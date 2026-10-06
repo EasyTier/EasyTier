@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
     gateway::magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
-    gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff, collect_proxy_cidrs},
+    gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
+    gateway::proxy::proxy_cidrs::ProxyRouteRegistry,
     host::packet::HostPacket,
     peers::peer_manager::PeerManagerCore,
 };
@@ -74,15 +75,13 @@ impl CorePacketPlane {
         )
     }
 
-    /// Authoritative proxy CIDR set, resolved from peer routes and the runtime
-    /// config.
+    /// The instance's proxy CIDR registry: the route table and the runtime
+    /// config declare a layer each, and readers get the resolved set.
     ///
-    /// Unlike [`Self::proxy_cidr_diff`] this is a plain snapshot read: it does
-    /// not depend on the legacy `ProxyCidrMonitor` task being enabled, so
-    /// hosts that install routes themselves can read it directly.
-    pub async fn proxy_cidrs(&self) -> BTreeSet<cidr::Ipv4Cidr> {
-        let config = self.runtime_config.snapshot();
-        collect_proxy_cidrs(self.peer_manager.as_ref(), config.as_ref()).await
+    /// Unlike [`Self::proxy_cidr_diff`] this does not depend on the legacy
+    /// `ProxyCidrMonitor` task being enabled.
+    pub fn proxy_routes(&self) -> ProxyRouteRegistry {
+        self.runtime_config.proxy_routes()
     }
 
     pub async fn public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {

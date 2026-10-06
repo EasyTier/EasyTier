@@ -34,6 +34,7 @@ use tokio::{
 use crate::{
     config::PeerId,
     config::peers::PeerGroupIdentity,
+    gateway::proxy::proxy_cidrs::{ProxyCidrLayer, ProxyCidrSlot},
     peers::{
         PeerPacketFilter,
         context::{
@@ -2380,6 +2381,9 @@ struct PeerRouteServiceImpl {
     last_update_my_foreign_network: AtomicCell<Option<Instant>>,
 
     peer_info_last_update: AtomicCell<Instant>,
+
+    /// This route table's layer in the instance's proxy CIDR registry.
+    proxy_peer_layer: Option<ProxyCidrSlot>,
 }
 
 impl Debug for PeerRouteServiceImpl {
@@ -2408,6 +2412,12 @@ impl Debug for PeerRouteServiceImpl {
 #[allow(dead_code)]
 impl PeerRouteServiceImpl {
     fn new(my_peer_id: PeerId, context: ArcPeerContext) -> Self {
+        // Declare this table's (initially empty) proxy CIDR layer before the
+        // first rebuild; the registration keeps it live for this service's
+        // lifetime.
+        let proxy_peer_layer = context
+            .proxy_routes()
+            .and_then(|registry| registry.register(ProxyCidrLayer::Peer(BTreeSet::new())));
         PeerRouteServiceImpl {
             my_peer_id,
             my_peer_route_id: rand::random(),
@@ -2454,7 +2464,19 @@ impl PeerRouteServiceImpl {
             last_update_my_foreign_network: AtomicCell::new(None),
 
             peer_info_last_update: AtomicCell::new(Instant::now()),
+
+            proxy_peer_layer,
         }
+    }
+
+    /// Republishes this table's proxy CIDR layer. Called wherever the table
+    /// content changes, so readers of the registry see the current set.
+    fn publish_proxy_cidrs(&self) {
+        let Some(layer) = &self.proxy_peer_layer else {
+            return;
+        };
+        let cidrs = self.route_table.list_proxy_cidrs_excluding(self.my_peer_id);
+        layer.publish(ProxyCidrLayer::Peer(cidrs));
     }
 
     fn is_credential_node(&self) -> bool {
@@ -2847,6 +2869,8 @@ impl PeerRouteServiceImpl {
             .as_mut()
             .unwrap()
             .end_update();
+
+        self.publish_proxy_cidrs();
     }
 
     fn update_foreign_network_owner_map(&self) {
@@ -3439,6 +3463,7 @@ impl PeerRouteServiceImpl {
         self.refresh_credential_trusts_and_disconnect().await;
         self.route_table.clean_expired_route_info();
         self.route_table_with_cost.clean_expired_route_info();
+        self.publish_proxy_cidrs();
     }
 
     fn build_sync_route_raw_req(

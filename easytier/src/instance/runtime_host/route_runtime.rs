@@ -2,9 +2,9 @@ use std::sync::Arc;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 use std::time::Duration;
 
+use easytier_core::instance::CorePacketPlane;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 use anyhow::Context;
-use easytier_core::instance::CorePacketPlane;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 use tokio::{sync::Mutex, task::JoinHandle};
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
@@ -12,9 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::ArcGlobalCtx;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use crate::instance::route::{
-    CleanupIncomplete, PlatformRouteBackend, RouteLease, RouteMgr, RouteSet,
-};
+use crate::instance::route::{CleanupIncomplete, PlatformRouteBackend, RouteMgr};
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(super) struct NativeRouteRuntime {
@@ -43,25 +41,17 @@ impl NativeRouteRuntime {
 
         let cancel = CancellationToken::new();
         let backend = PlatformRouteBackend::new(self.global_ctx.net_ns.clone())?;
-        let manager = RouteMgr::new(
-            self.global_ctx.clone(),
-            backend,
-            cancel.clone(),
-        );
 
+        let manager = RouteMgr::new(self.global_ctx.clone(), backend, cancel.clone());
+
+        // The proxy demand resolves itself in the core's own registry and
+        // claims its routes here, so no task relays proxy CIDR updates.
         let handle = manager.handle();
-        // Register before publishing the handle or starting tasks: no lease
-        // means the manager is already stopping.
-        let proxy_lease = handle
+        let proxy_demand = handle
             .register()
             .context("route manager registry is already closed")?;
-        self.global_ctx.set_route_handle(Some(handle.clone()));
-
-        let p_packet_plane = packet_plane.clone();
-        let p_cancel = cancel.clone();
-        tokio::spawn(async move {
-            Self::run_proxy_routes_publisher(p_packet_plane, proxy_lease, p_cancel).await;
-        });
+        packet_plane.proxy_routes().attach_demand(proxy_demand.into_registration());
+        self.global_ctx.set_route_handle(Some(handle));
 
         let mgr_handle = tokio::spawn(manager.run());
 
@@ -92,38 +82,6 @@ impl NativeRouteRuntime {
         }
     }
 
-    /// How often the authoritative proxy CIDR snapshot is re-read.
-    ///
-    /// The legacy `ProxyCidrMonitor` is disabled on this platform (see
-    /// `configure_runtime_core_host_adapters`), so there is no
-    /// `ProxyCidrsUpdated` event to wait on; the snapshot is polled instead.
-    const PROXY_CIDR_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-    async fn run_proxy_routes_publisher(
-        packet_plane: Arc<CorePacketPlane>,
-        lease: RouteLease,
-        cancel: CancellationToken,
-    ) {
-        let mut cur_proxy_cidrs = std::collections::BTreeSet::<cidr::Ipv4Cidr>::new();
-
-        loop {
-            let latest = packet_plane.proxy_cidrs().await;
-            if latest != cur_proxy_cidrs {
-                cur_proxy_cidrs = latest;
-                lease.set(Self::route_set(&cur_proxy_cidrs));
-            }
-
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(Self::PROXY_CIDR_POLL_INTERVAL) => {}
-            }
-        }
-    }
-
-    fn route_set(cidrs: &std::collections::BTreeSet<cidr::Ipv4Cidr>) -> RouteSet {
-        cidrs.iter().copied().map(cidr::IpCidr::V4).collect()
-    }
 }
 
 #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]

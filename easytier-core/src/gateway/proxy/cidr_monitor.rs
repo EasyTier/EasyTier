@@ -73,14 +73,13 @@ pub struct ProxyCidrDiff {
     pub removed: Vec<Ipv4Cidr>,
 }
 
+/// Legacy entry point for the resolution rule; the rule itself lives in
+/// [`crate::gateway::proxy::proxy_cidrs`].
 pub(crate) fn resolve_proxy_cidrs(
     peer_routes: BTreeSet<Ipv4Cidr>,
     config: ProxyCidrConfigSnapshot,
 ) -> BTreeSet<Ipv4Cidr> {
-    if let Some(manual_routes) = config.manual_routes {
-        return manual_routes;
-    }
-    peer_routes
+    super::proxy_cidrs::resolve_proxy_cidrs(peer_routes, config.manual_routes)
 }
 
 pub(crate) fn diff_proxy_cidrs(

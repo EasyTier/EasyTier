@@ -1,4 +1,5 @@
 pub mod cidr_monitor;
+pub mod proxy_cidrs;
 pub(crate) mod cidr_table;
 pub mod icmp_host;
 #[cfg(feature = "proxy-packet")]

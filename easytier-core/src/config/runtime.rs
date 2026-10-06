@@ -7,6 +7,8 @@ use cidr::Ipv4Cidr;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::gateway::proxy::proxy_cidrs::{ProxyCidrLayer, ProxyCidrSlot, ProxyRouteRegistry};
+
 use super::{
     gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
     peers::{AclRuleConfig, PeerRuntimeSnapshot, PublicIpv6ProviderConfig},
@@ -54,6 +56,10 @@ struct CoreRuntimeConfigStoreInner {
     update: Mutex<()>,
     peer_changes: tokio::sync::watch::Sender<u64>,
     service_changes: tokio::sync::watch::Sender<u64>,
+    proxy_routes: ProxyRouteRegistry,
+    /// This store's layer in `proxy_routes`; kept in step with
+    /// `snapshot.services.manual_routes` on every submitting path.
+    proxy_manual_layer: ProxyCidrSlot,
 }
 
 /// Atomic configuration authority shared by one core instance and its peer
@@ -67,14 +73,32 @@ impl CoreRuntimeConfigStore {
     pub fn new(services: CoreRuntimeConfig, peer: Arc<PeerRuntimeSnapshot>) -> Self {
         let (peer_changes, _) = tokio::sync::watch::channel(0);
         let (service_changes, _) = tokio::sync::watch::channel(0);
+        let proxy_routes = ProxyRouteRegistry::new();
+        let proxy_manual_layer = proxy_routes
+            .register(ProxyCidrLayer::Manual(services.manual_routes.clone()))
+            .expect("a fresh registry accepts registrations");
         Self {
             inner: Arc::new(CoreRuntimeConfigStoreInner {
                 snapshot: ArcSwap::from_pointee(CoreInstanceRuntimeConfig { services, peer }),
                 update: Mutex::new(()),
                 peer_changes,
                 service_changes,
+                proxy_routes,
+                proxy_manual_layer,
             }),
         }
+    }
+
+    /// The instance's proxy CIDR registry. The store owns the manual layer;
+    /// the route table adds the peer layer.
+    pub fn proxy_routes(&self) -> ProxyRouteRegistry {
+        self.inner.proxy_routes.clone()
+    }
+
+    fn publish_manual_proxy_routes(&self, config: &CoreInstanceRuntimeConfig) {
+        self.inner
+            .proxy_manual_layer
+            .publish(ProxyCidrLayer::Manual(config.services.manual_routes.clone()));
     }
 
     pub fn snapshot(&self) -> Arc<CoreInstanceRuntimeConfig> {
@@ -88,7 +112,9 @@ impl CoreRuntimeConfigStore {
 
     pub fn replace(&self, config: CoreInstanceRuntimeConfig) {
         let _update = self.inner.update.lock();
-        self.inner.snapshot.store(Arc::new(config));
+        let config = Arc::new(config);
+        self.publish_manual_proxy_routes(&config);
+        self.inner.snapshot.store(config);
         self.inner.peer_changes.send_modify(|version| *version += 1);
         self.inner
             .service_changes
@@ -104,6 +130,7 @@ impl CoreRuntimeConfigStore {
         let current = self.inner.snapshot.load_full();
         merge(&current, &mut config);
         let config = Arc::new(config);
+        self.publish_manual_proxy_routes(&config);
         self.inner.snapshot.store(config.clone());
         self.inner.peer_changes.send_modify(|version| *version += 1);
         self.inner
@@ -116,7 +143,9 @@ impl CoreRuntimeConfigStore {
         let _update = self.inner.update.lock();
         let mut config = self.inner.snapshot.load_full().as_ref().clone();
         update(&mut config.services);
-        self.inner.snapshot.store(Arc::new(config));
+        let config = Arc::new(config);
+        self.publish_manual_proxy_routes(&config);
+        self.inner.snapshot.store(config);
         self.inner
             .service_changes
             .send_modify(|version| *version += 1);

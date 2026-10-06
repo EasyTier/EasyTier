@@ -38,7 +38,7 @@ impl<B: RouteBackend> RouteMgr<B> {
     pub fn new(
         global_ctx: ArcGlobalCtx,
         backend: B,
-        cancel_token: CancellationToken,
+        cancel: CancellationToken,
     ) -> Self {
         let routes = Registry::default();
         let changed = routes.subscribe();
@@ -53,7 +53,7 @@ impl<B: RouteBackend> RouteMgr<B> {
             retries: BTreeMap::new(),
             current_tun_device: None,
             desired: None,
-            cancel: cancel_token,
+            cancel,
         }
     }
 
@@ -114,7 +114,7 @@ impl<B: RouteBackend> RouteMgr<B> {
     }
 
     pub async fn reconcile(&mut self) {
-        // 1. Collect the declared CIDRs. The snapshot only clones `Arc`s; the
+        // 1. Collect the demanded CIDRs. The snapshot only clones `Arc`s; the
         //    per-source sets are aggregated here, outside the registry lock.
         let cidrs: BTreeSet<IpCidr> = self
             .routes
