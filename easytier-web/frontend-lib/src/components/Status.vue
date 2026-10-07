@@ -5,7 +5,7 @@ import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { latencyMs, lossRate, numericValue, peerConns } from '../modules/statusDisplay';
+import { latencyMs, lossRate, numericValue, peerConns, udpNatTypeName } from '../modules/statusDisplay';
 import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 import VpnPortalDialog from './VpnPortalDialog.vue';
@@ -144,34 +144,6 @@ interface Chip {
   icon: string
 }
 
-// udp nat type
-enum NatType {
-  // has NAT; but own a single public IP, port is not changed
-  Unknown = 0,
-  OpenInternet = 1,
-  NoPAT = 2,
-  FullCone = 3,
-  Restricted = 4,
-  PortRestricted = 5,
-  Symmetric = 6,
-  SymUdpFirewall = 7,
-  SymmetricEasyInc = 8,
-  SymmetricEasyDec = 9,
-};
-
-const udpNatTypeStrMap = {
-  [NatType.Unknown]: 'Unknown',
-  [NatType.OpenInternet]: 'Open Internet',
-  [NatType.NoPAT]: 'No PAT',
-  [NatType.FullCone]: 'Full Cone',
-  [NatType.Restricted]: 'Restricted',
-  [NatType.PortRestricted]: 'Port Restricted',
-  [NatType.Symmetric]: 'Symmetric',
-  [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
-  [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
-  [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
-}
-
 const myNodeInfoChips = computed(() => {
   if (!props.curNetworkInst)
     return []
@@ -246,10 +218,10 @@ const myNodeInfoChips = computed(() => {
     } as Chip)
   }
 
-  const udpNatType: NatType = my_node_info.stun_info?.udp_nat_type
-  if (udpNatType !== undefined) {
+  const udpNatType = udpNatTypeName(my_node_info.stun_info)
+  if (udpNatType) {
     chips.push({
-      label: `UDP NAT Type: ${udpNatTypeStrMap[udpNatType]}`,
+      label: `UDP NAT Type: ${udpNatType}`,
       icon: '',
     } as Chip)
   }
@@ -279,11 +251,7 @@ function rxGlobalSum() {
 }
 
 function natType(info: PeerRoutePair): string {
-  const udpNatType = info.route?.stun_info?.udp_nat_type;
-  if (udpNatType !== undefined)
-    return udpNatTypeStrMap[udpNatType as NatType]
-
-  return ''
+  return udpNatTypeName(info.route?.stun_info)
 }
 
 function isPublicServerRoute(info: PeerRoutePair): boolean {

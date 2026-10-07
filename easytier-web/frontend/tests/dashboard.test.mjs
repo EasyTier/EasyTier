@@ -562,14 +562,17 @@ test('node detail groups populated peers, routes, connections and ACL stats', as
     const { page } = await open(t, `/h/networks/${id(100)}`, { viewport: { width: 390, height: 844 }, colorScheme: 'dark' }, state => {
         state.networks[0].network_id = id(100);
         state.nodeRoutes = [{ peer_id: 2, hostname: 'Build server', ipv4_addr: { address: { addr: 175005442 }, network_length: 24 }, cost: 1, path_latency: 8, proxy_cidrs: [], version: '2.4.5', next_hop_peer_id: 2 }];
-        state.nodePeers = [{ peer_id: 2, conns: [{ conn_id: 'conn-1', tunnel: { tunnel_type: 'tcp', remote_addr: { url: 'tcp://192.0.2.11:11010' } }, stats: { latency_us: 8000, rx_bytes: 1024, tx_bytes: 2048 }, loss_rate: 0 }] }];
+        state.nodePeers = [{ peer_id: 2, conns: [
+            { conn_id: 'conn-1', tunnel: { tunnel_type: 'tcp', remote_addr: { url: 'tcp://192.0.2.11:11010' } }, stats: { latency_us: 8000, rx_bytes: 1024, tx_bytes: 2048 } },
+            { conn_id: 'conn-2', tunnel: { tunnel_type: 'udp', remote_addr: { url: 'udp://192.0.2.11:11010' } }, stats: { latency_us: 9000 }, loss_rate: 0.125 },
+        ] }];
         state.nodeAclStats = [{ rule: { name: 'Allow build server' }, stat: { packet_count: 42, byte_count: 4096 } }];
     });
     await page.locator('.mobile-list').getByRole('button', { name: 'Node Detail' }).click();
     const drawer = page.locator('.console-node-drawer');
     await drawer.locator('.node-drawer-mobile-peer').getByText('Build server').waitFor();
     await page.waitForFunction(() => Math.abs(document.querySelector('.console-node-drawer').getBoundingClientRect().right - innerWidth) < 1);
-    assert.deepEqual(await drawer.locator('.node-drawer-metric strong').allTextContents().then(values => values.map(s => s.trim())), ['Running', '1', '1', '1']);
+    assert.deepEqual(await drawer.locator('.node-drawer-metric strong').allTextContents().then(values => values.map(s => s.trim())), ['Running', '1', '1', '2']);
     assert.equal(await drawer.getByRole('tab').count(), 2);
     const drawerWidth = await drawer.evaluate(el => ({ drawer: el.getBoundingClientRect().width, viewport: innerWidth }));
     assert.ok(drawerWidth.drawer <= drawerWidth.viewport + 1, JSON.stringify(drawerWidth));
@@ -580,6 +583,8 @@ test('node detail groups populated peers, routes, connections and ACL stats', as
     await drawer.locator('details').filter({ hasText: 'Routes' }).locator('summary').click();
     await drawer.getByText('10.110.95.2/24').first().waitFor();
     await drawer.locator('details').filter({ hasText: 'Connections' }).locator('summary').click();
+    await drawer.getByRole('cell', { name: '0.0%', exact: true }).waitFor();
+    await drawer.getByRole('cell', { name: '12.5%', exact: true }).waitFor();
     await drawer.locator('details').filter({ hasText: 'ACL Stats' }).locator('summary').click();
     await drawer.getByRole('cell', { name: 'Allow build server' }).waitFor();
 });
