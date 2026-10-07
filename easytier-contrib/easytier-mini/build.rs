@@ -19,14 +19,14 @@ fn main() {
     // The release-derived mini profile already aborts panics. Keep the compact
     // binary's linker policy local so full EasyTier musl builds retain their
     // normal PIE/unwind settings.
-    println!("cargo:rustc-link-arg-bin=easytier-mini=-Wl,--build-id=none");
+    println!("cargo:rustc-link-arg-bin=easytier-nano=-Wl,--build-id=none");
     if target == "x86_64-unknown-linux-musl" {
-        println!("cargo:rustc-link-arg-bin=easytier-mini=-Wl,--pack-dyn-relocs=relr");
-        println!("cargo:rustc-link-arg-bin=easytier-mini=-Wl,--icf=all");
+        println!("cargo:rustc-link-arg-bin=easytier-nano=-Wl,--pack-dyn-relocs=relr");
+        println!("cargo:rustc-link-arg-bin=easytier-nano=-Wl,--icf=all");
     }
-    println!("cargo:rustc-link-arg-bin=easytier-mini=-Wl,--no-eh-frame-hdr");
+    println!("cargo:rustc-link-arg-bin=easytier-nano=-Wl,--no-eh-frame-hdr");
     println!(
-        "cargo:rustc-link-arg-bin=easytier-mini=-Wl,-T,{}",
+        "cargo:rustc-link-arg-bin=easytier-nano=-Wl,-T,{}",
         script.display()
     );
 }

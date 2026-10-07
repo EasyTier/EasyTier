@@ -99,7 +99,7 @@ impl Server {
         metrics: ArcRpcMetrics,
     ) -> Self {
         let mut server = Self::new_with_registry(registry);
-        server.metrics = Some(metrics);
+        server.metrics = metrics.into_rpc_metrics();
         server
     }
 
@@ -241,17 +241,21 @@ impl Server {
             tracing::warn!("received RPC request without a descriptor");
             return;
         };
-        let method_name = reg.get_method_name(&desc).unwrap_or("<Nil>".to_owned());
-        let labels = RpcMetricLabels {
-            network_name: desc.domain_name.clone(),
-            src_peer_id: from_peer,
-            dst_peer_id: to_peer,
-            service_name: desc.service_name.clone(),
-            method_name,
-        };
+        let metrics = metrics.as_ref().map(|metrics| {
+            (
+                metrics,
+                RpcMetricLabels {
+                    network_name: desc.domain_name.clone(),
+                    src_peer_id: from_peer,
+                    dst_peer_id: to_peer,
+                    service_name: desc.service_name.clone(),
+                    method_name: reg.get_method_name(&desc).unwrap_or("<Nil>".to_owned()),
+                },
+            )
+        });
 
-        if let Some(metrics) = &metrics {
-            metrics.server_rx(&labels);
+        if let Some((metrics, labels)) = &metrics {
+            metrics.server_rx(labels);
         }
 
         let mut resp_msg = RpcResponse::default();
@@ -263,15 +267,15 @@ impl Server {
         match &resp_bytes {
             Ok(r) => {
                 resp_msg.response = r.clone().into();
-                if let Some(metrics) = &metrics {
-                    metrics.server_tx(&labels, now.elapsed().as_millis() as u64);
+                if let Some((metrics, labels)) = &metrics {
+                    metrics.server_tx(labels, now.elapsed().as_millis() as u64);
                 }
             }
             Err(err) => {
                 resp_msg.error = Some(err.into());
-                if let Some(metrics) = &metrics {
+                if let Some((metrics, labels)) = &metrics {
                     metrics.server_error(
-                        &labels,
+                        labels,
                         Some(format!("{:?}", err)),
                         now.elapsed().as_millis() as u64,
                     );
@@ -338,5 +342,27 @@ mod test_utils {
         pub fn inflight_count(&self) -> usize {
             self.packet_mergers.len()
         }
+    }
+}
+
+#[cfg(all(test, not(feature = "statistics")))]
+mod metric_tests {
+    use super::*;
+    use crate::foundation::stats::StatsManager;
+
+    #[tokio::test]
+    async fn disabled_statistics_server_does_not_request_metric_labels() {
+        let stats = Arc::new(StatsManager::new());
+        let server = Server::new_with_registry_and_stats_manager(
+            Arc::new(ServiceRegistry::new()),
+            stats.clone(),
+        );
+        assert!(server.metrics.is_none());
+        let erased: ArcRpcMetrics = stats;
+        let explicit =
+            Server::new_with_registry_and_metrics(Arc::new(ServiceRegistry::new()), erased);
+        assert!(explicit.metrics.is_none());
+        server.stop().await;
+        explicit.stop().await;
     }
 }

@@ -68,6 +68,7 @@ pub(crate) async fn recv_from_with_dst_ip(
         .await
 }
 
+#[cfg(not(feature = "low-memory"))]
 pub(crate) async fn recv_datagram_with_dst_ip(
     socket: &UdpSocket,
     capacity: usize,
@@ -94,6 +95,47 @@ pub(crate) async fn recv_datagram_with_dst_ip(
         .await?;
     unsafe {
         payload.set_len(len);
+    }
+    Ok((payload, remote_addr, dst_ip))
+}
+
+#[cfg(any(feature = "low-memory", test))]
+fn should_compact_datagram(len: usize, capacity: usize) -> bool {
+    len <= 2 * 1024 && capacity >= len.saturating_mul(4)
+}
+
+#[cfg(feature = "low-memory")]
+pub(crate) async fn recv_datagram_with_dst_ip(
+    socket: &UdpSocket,
+    capacity: usize,
+) -> io::Result<(BytesMut, SocketAddr, Option<IpAddr>)> {
+    let (mut payload, len, remote_addr, dst_ip) = socket
+        .async_io(tokio::io::Interest::READABLE, || {
+            // Idle receivers and WouldBlock retries retain no owned packet allocation.
+            let mut payload = BytesMut::with_capacity(capacity);
+            loop {
+                let ret = unsafe {
+                    recv_from_with_dst_ip_raw(socket, payload.as_mut_ptr(), payload.capacity())
+                };
+                match ret {
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                    Ok((_len, _remote_addr, _dst_ip, true)) => {
+                        tracing::debug!(capacity, "dropping oversized udp session datagram");
+                    }
+                    Ok((len, remote_addr, dst_ip, false)) => {
+                        break Ok((payload, len, remote_addr, dst_ip));
+                    }
+                    Err(err) => break Err(err),
+                }
+            }
+        })
+        .await?;
+    unsafe {
+        payload.set_len(len);
+    }
+    if should_compact_datagram(payload.len(), payload.capacity()) {
+        // One small copy avoids retaining an 8 KiB allocation in packet queues.
+        payload = BytesMut::from(payload.as_ref());
     }
     Ok((payload, remote_addr, dst_ip))
 }
@@ -608,4 +650,128 @@ pub(crate) fn send_to_with_src_ipv6(
         io::ErrorKind::Unsupported,
         "sending UDP with a selected IPv6 source is not supported on this platform",
     ))
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    const SESSION_CAPACITY: usize = 8 * 1024;
+
+    #[test]
+    fn compact_decision_preserves_large_or_already_tight_allocations() {
+        assert!(should_compact_datagram(0, SESSION_CAPACITY));
+        assert!(should_compact_datagram(1, SESSION_CAPACITY));
+        assert!(should_compact_datagram(2048, SESSION_CAPACITY));
+        assert!(!should_compact_datagram(2049, SESSION_CAPACITY));
+        assert!(!should_compact_datagram(2048, SESSION_CAPACITY - 1));
+        assert!(!should_compact_datagram(1024, 1024));
+        assert!(!should_compact_datagram(usize::MAX, usize::MAX));
+    }
+
+    async fn receive(socket: &UdpSocket) -> (BytesMut, SocketAddr, Option<IpAddr>) {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            recv_datagram_with_dst_ip(socket, SESSION_CAPACITY),
+        )
+        .await
+        .expect("owned UDP receive exceeded its deadline")
+        .unwrap()
+    }
+
+    fn assert_small_capacity(payload: &BytesMut) {
+        if cfg!(feature = "low-memory") {
+            assert!(payload.capacity() < SESSION_CAPACITY);
+        } else {
+            assert_eq!(payload.capacity(), SESSION_CAPACITY);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn small_owned_datagram_preserves_bytes_and_ipv4_metadata() {
+        let server = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        enable_recv_pktinfo(&server).unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = SocketAddr::from((Ipv4Addr::LOCALHOST, server.local_addr().unwrap().port()));
+        let expected: Vec<u8> = (0..=255).collect();
+        client.send_to(&expected, target).await.unwrap();
+
+        let (payload, remote, dst_ip) = receive(&server).await;
+
+        assert_eq!(payload.as_ref(), expected.as_slice());
+        assert_eq!(remote, client.local_addr().unwrap());
+        assert_eq!(dst_ip, Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert_small_capacity(&payload);
+    }
+
+    #[tokio::test]
+    async fn maximum_owned_datagram_remains_complete_without_compaction() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let expected = vec![0xA5; SESSION_CAPACITY];
+        client
+            .send_to(&expected, server.local_addr().unwrap())
+            .await
+            .unwrap();
+
+        let (payload, remote, _) = receive(&server).await;
+
+        assert_eq!(payload.as_ref(), expected.as_slice());
+        assert_eq!(payload.capacity(), SESSION_CAPACITY);
+        assert_eq!(remote, client.local_addr().unwrap());
+    }
+
+    #[tokio::test]
+    async fn oversized_owned_datagram_is_dropped_before_following_packet() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = server.local_addr().unwrap();
+        client
+            .send_to(&vec![0xAA; SESSION_CAPACITY + 1], target)
+            .await
+            .unwrap();
+        client.send_to(b"after-oversized", target).await.unwrap();
+
+        let (payload, remote, _) = receive(&server).await;
+
+        assert_eq!(payload.as_ref(), b"after-oversized");
+        assert_eq!(remote, client.local_addr().unwrap());
+        assert_small_capacity(&payload);
+    }
+
+    #[cfg(not(target_env = "ohos"))]
+    #[tokio::test]
+    async fn small_owned_datagram_preserves_ipv6_metadata() {
+        let server = UdpSocket::bind("[::]:0").await.unwrap();
+        enable_recv_pktinfo(&server).unwrap();
+        let client = UdpSocket::bind("[::1]:0").await.unwrap();
+        let target = SocketAddr::from((Ipv6Addr::LOCALHOST, server.local_addr().unwrap().port()));
+        client.send_to(b"ipv6-pktinfo", target).await.unwrap();
+
+        let (payload, remote, dst_ip) = receive(&server).await;
+
+        assert_eq!(payload.as_ref(), b"ipv6-pktinfo");
+        assert_eq!(remote, client.local_addr().unwrap());
+        assert_eq!(dst_ip, Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert_small_capacity(&payload);
+    }
+
+    #[tokio::test]
+    async fn empty_owned_datagram_keeps_its_remote_address() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client
+            .send_to(b"", server.local_addr().unwrap())
+            .await
+            .unwrap();
+
+        let (payload, remote, _) = receive(&server).await;
+
+        assert!(payload.is_empty());
+        assert_eq!(remote, client.local_addr().unwrap());
+        assert_small_capacity(&payload);
+    }
 }

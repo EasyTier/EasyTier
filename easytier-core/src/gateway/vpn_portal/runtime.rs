@@ -1184,6 +1184,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "statistics")]
     async fn portal_client_traffic_accumulates_across_sessions() {
         let stats = StatsManager::new();
         let first = PortalClientTrafficMetrics::new(&stats, "portal-test", "client-a");
@@ -1456,21 +1457,24 @@ mod tests {
         .await
         .expect("mesh packet was not delivered before the first client packet");
         assert_eq!(&outbound[16..20], virtual_ip.octets().as_slice());
-        let labels = LabelSet::new()
-            .with_label_type(LabelType::NetworkName("portal-test".to_owned()))
-            .with_label_type(LabelType::VpnPortalClient("alice".to_owned()));
-        assert!(
-            peer_manager
-                .stats_manager()
-                .get_metric(MetricName::VpnPortalClientBytesRx, &labels)
-                .is_some_and(|metric| metric.value >= mesh_packet.len() as u64)
-        );
-        assert!(
-            peer_manager
-                .stats_manager()
-                .get_metric(MetricName::VpnPortalClientPacketsRx, &labels)
-                .is_some_and(|metric| metric.value >= 1)
-        );
+        #[cfg(feature = "statistics")]
+        {
+            let labels = LabelSet::new()
+                .with_label_type(LabelType::NetworkName("portal-test".to_owned()))
+                .with_label_type(LabelType::VpnPortalClient("alice".to_owned()));
+            assert!(
+                peer_manager
+                    .stats_manager()
+                    .get_metric(MetricName::VpnPortalClientBytesRx, &labels)
+                    .is_some_and(|metric| metric.value >= mesh_packet.len() as u64)
+            );
+            assert!(
+                peer_manager
+                    .stats_manager()
+                    .get_metric(MetricName::VpnPortalClientPacketsRx, &labels)
+                    .is_some_and(|metric| metric.value >= 1)
+            );
+        }
 
         endpoint_sender.send("portal://roamed".to_owned()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1688,25 +1692,28 @@ mod tests {
         }
         task.await.unwrap();
 
-        let labels = LabelSet::new()
-            .with_label_type(LabelType::NetworkName("portal-test".to_owned()))
-            .with_label_type(LabelType::VpnPortalClient("alice".to_owned()));
-        assert_eq!(
-            peer_manager
-                .stats_manager()
-                .get_metric(MetricName::VpnPortalClientBytesTx, &labels)
-                .unwrap()
-                .value,
-            client_packet.len() as u64
-        );
-        assert_eq!(
-            peer_manager
-                .stats_manager()
-                .get_metric(MetricName::VpnPortalClientPacketsTx, &labels)
-                .unwrap()
-                .value,
-            1
-        );
+        #[cfg(feature = "statistics")]
+        {
+            let labels = LabelSet::new()
+                .with_label_type(LabelType::NetworkName("portal-test".to_owned()))
+                .with_label_type(LabelType::VpnPortalClient("alice".to_owned()));
+            assert_eq!(
+                peer_manager
+                    .stats_manager()
+                    .get_metric(MetricName::VpnPortalClientBytesTx, &labels)
+                    .unwrap()
+                    .value,
+                client_packet.len() as u64
+            );
+            assert_eq!(
+                peer_manager
+                    .stats_manager()
+                    .get_metric(MetricName::VpnPortalClientPacketsTx, &labels)
+                    .unwrap()
+                    .value,
+                1
+            );
+        }
 
         let status = statuses.read().await.get("alice").cloned().unwrap();
         assert_eq!(status.state, PortalClientState::Offline);

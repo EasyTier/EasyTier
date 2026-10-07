@@ -91,10 +91,15 @@ uuid = { workspace = true, features = ["js"] }
 wasm-bindgen = "0.2"
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
-snow = "0.10.0"
+snow = { version = "0.10.0", default-features = false, features = [
+    "use-chacha20poly1305",
+    "use-sha2",
+    "use-curve25519",
+    "use-getrandom",
+] }
 
 [features]
-default = ["aes-gcm", "endpoint-discovery", "extended-services", "management", "tcp-hole-punch"]
+default = ["aes-gcm", "endpoint-discovery", "extended-services", "management", "noise-full", "statistics", "tcp-hole-punch"]
 aes-gcm = ["dep:aes-gcm"]
 browser-config = ["config-write", "easytier-proto/api", "easytier-proto/json-rpc"]
 chacha20 = ["dep:chacha20poly1305"]
@@ -111,6 +116,9 @@ endpoint-discovery = [
     "dep:webpki-roots",
 ]
 dhcp-ipv4 = []
+low-memory = []
+noise-full = ["snow/default-resolver-crypto"]
+statistics = []
 public-ipv6-provider = []
 vpn-portal = []
 wrapped-transport = []
@@ -123,7 +131,7 @@ extended-services = [
 ]
 web-client = ["management-rpc", "config-write"]
 management = ["web-client", "extended-services", "rich-config-errors", "easytier-proto/json-rpc"]
-management-rpc = ["easytier-proto/api"]
+management-rpc = ["easytier-proto/api", "statistics"]
 proxy-cidr-monitor = []
 rich-config-errors = ["dep:ariadne"]
 tcp-hole-punch = []

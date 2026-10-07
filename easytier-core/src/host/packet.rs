@@ -7,6 +7,12 @@ use crate::packet::{ZCPacket, ZCPacketType};
 
 use super::socket::{HostOperationId, HostSocketRuntime};
 
+const HOST_PACKET_QUEUE_CAPACITY: usize = if cfg!(feature = "low-memory") {
+    32
+} else {
+    128
+};
+
 /// An owned raw IP packet crossing the Host packet seam.
 ///
 /// The backing allocation and any core-private headroom stay opaque. Native
@@ -42,7 +48,7 @@ impl HostPacketReceiver {
 }
 
 pub(crate) fn host_packet_channel() -> (HostPacketSender, HostPacketReceiver) {
-    let (sender, receiver) = mpsc::channel(128);
+    let (sender, receiver) = mpsc::channel(HOST_PACKET_QUEUE_CAPACITY);
     (sender, HostPacketReceiver::new(receiver))
 }
 
@@ -234,6 +240,36 @@ mod tests {
     use std::{collections::HashMap, sync::Mutex};
 
     use super::*;
+
+    #[tokio::test]
+    async fn host_packet_queue_waits_for_capacity_without_losing_packets() {
+        let (sender, mut receiver) = host_packet_channel();
+        assert_eq!(
+            sender.max_capacity(),
+            if cfg!(feature = "low-memory") {
+                32
+            } else {
+                128
+            }
+        );
+        for _ in 0..HOST_PACKET_QUEUE_CAPACITY {
+            sender
+                .send(HostPacket::copy_from_payload(b"queued"))
+                .await
+                .unwrap();
+        }
+        let sink = HostPacketChannelSink::new(sender);
+        let mut pending =
+            Box::pin(sink.write_packet(HostPacket::copy_from_payload(b"after-capacity")));
+        assert!(futures::poll!(&mut pending).is_pending());
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"queued");
+        pending.await.unwrap();
+
+        for _ in 1..HOST_PACKET_QUEUE_CAPACITY {
+            assert_eq!(receiver.recv().await.unwrap().payload(), b"queued");
+        }
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"after-capacity");
+    }
 
     #[derive(Default)]
     struct TestPacketState {

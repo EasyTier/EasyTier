@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-#[cfg(any(feature = "management-rpc", test))]
 use easytier_core::instance::manager::InstanceManager;
 #[cfg(feature = "management-rpc")]
 use easytier_core::management::ProcessRuntimeProvider;
@@ -18,7 +17,6 @@ use super::{
 };
 
 pub type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
-#[cfg(feature = "management-rpc")]
 pub type NativeInstanceManager = InstanceManager<NativeInstanceFactory>;
 #[cfg(feature = "management")]
 pub type NativeProcessManagement =
@@ -58,7 +56,6 @@ pub fn native_instance_manager_with_runtime(
     native_instance_manager_with_optional_runtime(Some(runtime_handle))
 }
 
-#[cfg(feature = "management-rpc")]
 pub fn native_compact_instance_manager_with_runtime(
     runtime_handle: tokio::runtime::Handle,
 ) -> NativeInstanceManager {
@@ -120,7 +117,6 @@ impl NativeInstanceFactory {
         self
     }
 
-    #[cfg(feature = "management-rpc")]
     fn with_runtime_handle(mut self, runtime_handle: Option<tokio::runtime::Handle>) -> Self {
         self.runtime_handle = runtime_handle;
         self

@@ -12,7 +12,10 @@ if [ "${EASYTIER_MINI_MIPS_RUSTC_WRAPPER:-}" = "1" ]; then
             mips-unknown-linux-musl|mipsel-unknown-linux-musl)
                 exec "$mini_rustc" "$@" \
                     -Zunstable-options \
-                    -Cpanic=immediate-abort
+                    -Cpanic=immediate-abort \
+                    -Cforce-unwind-tables=no \
+                    -Zlocation-detail=none \
+                    -Zfmt-debug=none
                 ;;
         esac
     done
@@ -27,17 +30,42 @@ cd "$mini_repo_dir"
 build_mips_target() {
     mini_target=$1
     mini_toolchain=$2
+    if ! command -v readelf >/dev/null 2>&1; then
+        echo "Missing readelf; install binutils for static-link verification." >&2
+        exit 1
+    fi
     PATH="$mini_repo_dir/musl_gcc/$mini_toolchain/bin:$PATH" \
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" \
         EASYTIER_MINI_MIPS_RUSTC_WRAPPER=1 \
         RUSTC_BOOTSTRAP=1 \
         RUSTC_WRAPPER="$mini_script_dir/build-mips.sh" \
         cargo build \
+            --locked \
             --manifest-path "$mini_repo_dir/Cargo.toml" \
             --profile mini \
             --target "$mini_target" \
             -Z build-std=std \
             -Z build-std-features=optimize_for_size \
-            -p easytier-mini
+            -p easytier-mini \
+            --no-default-features \
+            --features tun,low-memory,strip-logs
+
+    mini_binary="${CARGO_TARGET_DIR:-target}/$mini_target/mini/easytier-nano"
+    mini_headers=$(LC_ALL=C readelf --program-headers --wide "$mini_binary")
+    mini_dynamic=$(LC_ALL=C readelf --dynamic --wide "$mini_binary")
+    case "$mini_headers" in
+        *INTERP*)
+            echo "Refusing non-static binary: ELF interpreter present." >&2
+            exit 1
+            ;;
+    esac
+    case "$mini_dynamic" in
+        *"(NEEDED)"*)
+            echo "Refusing non-static binary: external shared libraries required." >&2
+            exit 1
+            ;;
+    esac
+    printf 'Verified static binary: %s (%s bytes)\n' "$mini_binary" "$(wc -c < "$mini_binary")"
 }
 
 case "$mini_requested_target" in

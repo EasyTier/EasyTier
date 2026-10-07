@@ -1,0 +1,10 @@
+instance_name = "nano"
+ipv4 = "10.147.0.2/24"
+listeners = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"]
+
+[network_identity]
+network_name = "my-network"
+network_secret = "change-me"
+
+[[peer]]
+uri = "udp://example.net:11010"

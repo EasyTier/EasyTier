@@ -1,7 +1,7 @@
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -52,7 +52,7 @@ where
     sym_punch_lock: UdpSymPunchLock,
     common: Arc<UdpHolePunchServerCommon<R, T>>,
     both_easy_sym_server: UdpBothEasySymPunchServer<R, T>,
-    shuffled_port_vec: Arc<Vec<u16>>,
+    shuffled_port_vec: OnceLock<Vec<u16>>,
     admission: RwLock<()>,
     stopping: AtomicBool,
 }
@@ -76,14 +76,11 @@ where
         let both_easy_sym_common =
             Arc::new(UdpHolePunchServerCommon::new(runtime, stun, transport_sink));
         let both_easy_sym_server = UdpBothEasySymPunchServer::new(both_easy_sym_common);
-        let mut shuffled_port_vec: Vec<u16> = (1..=65535).collect();
-        shuffled_port_vec.shuffle(&mut rand::thread_rng());
-
         Self {
             sym_punch_lock,
             common,
             both_easy_sym_server,
-            shuffled_port_vec: Arc::new(shuffled_port_vec),
+            shuffled_port_vec: OnceLock::new(),
             admission: RwLock::new(()),
             stopping: AtomicBool::new(true),
         }
@@ -138,6 +135,14 @@ where
 
     fn anyhow_to_signal_error(error: anyhow::Error) -> UdpHolePunchSignalError {
         UdpHolePunchSignalError::RemoteRejected(error.to_string())
+    }
+
+    fn shuffled_ports(&self) -> &[u16] {
+        self.shuffled_port_vec.get_or_init(|| {
+            let mut ports: Vec<u16> = (1..=u16::MAX).collect();
+            ports.shuffle(&mut rand::thread_rng());
+            ports
+        })
     }
 
     async fn send_punch_packet_easy_sym_inner(
@@ -230,7 +235,7 @@ where
         let mut next_port_index = 0;
         for _ in 0..2 {
             next_port_index = send_symmetric_hole_punch_packet(
-                &self.shuffled_port_vec,
+                self.shuffled_ports(),
                 listener.clone(),
                 request.transaction_id,
                 &request.public_ips,
@@ -1163,8 +1168,58 @@ mod tests {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
 
-        let _server =
+        let server =
             UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default());
+
+        assert!(server.shuffled_port_vec.get().is_none());
+    }
+
+    #[test]
+    fn hard_symmetric_port_permutation_is_complete_and_reused() {
+        let runtime = Arc::new(MockRuntime::new(Vec::new()));
+        let sink = Arc::new(MockSink::default());
+        let server =
+            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default());
+
+        let ports = server.shuffled_ports();
+        assert_eq!(ports.len(), u16::MAX as usize);
+        let mut present = vec![false; u16::MAX as usize + 1];
+        for &port in ports {
+            assert_ne!(port, 0);
+            assert!(!std::mem::replace(&mut present[port as usize], true));
+        }
+        assert!(present[1..].iter().all(|&seen| seen));
+        assert!(std::ptr::eq(ports, server.shuffled_ports()));
+    }
+
+    #[tokio::test]
+    async fn cone_punching_does_not_allocate_hard_symmetric_port_permutation() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener(10002, Vec::new())]));
+        let sink = Arc::new(MockSink::default());
+        let server =
+            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default());
+        server.start().await;
+        let selected = server
+            .select_punch_listener(SelectPunchListener {
+                force_new: false,
+                prefer_port_mapping: false,
+            })
+            .await
+            .unwrap();
+        server
+            .send_punch_packet_cone(SendPunchPacketCone {
+                listener_mapped_addr: selected.listener_mapped_addr,
+                dest_addr: SocketAddr::from(([198, 51, 100, 1], 20000)),
+                transaction_id: 9,
+                packet_count_per_batch: 1,
+                packet_batch_count: 1,
+                packet_interval_ms: 0,
+            })
+            .await
+            .unwrap();
+
+        assert!(server.shuffled_port_vec.get().is_none());
+        server.stop().await;
     }
 
     #[tokio::test]

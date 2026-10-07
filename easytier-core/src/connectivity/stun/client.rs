@@ -32,6 +32,13 @@ use crate::{
 use crate::packet::stun::{Attribute, ChangeRequest, tid_to_u32, u32_to_tid};
 use stun_codec::rfc5389::methods::BINDING;
 
+// NAT probes need only a small response burst; low-memory nodes retain fewer old replies.
+const STUN_PACKET_QUEUE_CAPACITY: usize = if cfg!(feature = "low-memory") {
+    32
+} else {
+    1024
+};
+
 pub trait StunSocketRuntime: VirtualUdpSocketFactory + VirtualTcpSocketFactory {}
 
 impl<T> StunSocketRuntime for T where T: VirtualUdpSocketFactory + VirtualTcpSocketFactory {}
@@ -223,9 +230,15 @@ where
 
         while now < deadline {
             let mut receiver = self.stun_packet_receiver.lock().await;
-            let packet =
-                crate::foundation::time::timeout(deadline - now, receiver.recv()).await??;
+            let received =
+                crate::foundation::time::timeout(deadline - now, receiver.recv()).await?;
             now = crate::foundation::time::Instant::now();
+            let packet = match received {
+                Ok(packet) => packet,
+                // Old replies may be overwritten during concurrent NAT probes.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(error) => return Err(error.into()),
+            };
 
             if packet.data.len() < 20 {
                 continue;
@@ -337,7 +350,7 @@ where
     S: VirtualUdpSocket,
 {
     fn new(socket: Arc<S>) -> Self {
-        let (stun_packet_sender, _) = broadcast::channel(1024);
+        let (stun_packet_sender, _) = broadcast::channel(STUN_PACKET_QUEUE_CAPACITY);
         let mut tasks = JoinSet::new();
         let listener_socket = socket.clone();
         let sender = stun_packet_sender.clone();
@@ -954,6 +967,128 @@ mod tests {
     use crate::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
 
     use super::*;
+
+    #[tokio::test]
+    async fn stun_response_queue_retains_only_its_configured_burst() {
+        assert_eq!(
+            STUN_PACKET_QUEUE_CAPACITY,
+            if cfg!(feature = "low-memory") {
+                32
+            } else {
+                1024
+            }
+        );
+        let (sender, mut receiver) = broadcast::channel(STUN_PACKET_QUEUE_CAPACITY);
+        let addr = "127.0.0.1:3478".parse().unwrap();
+        for index in 0..=STUN_PACKET_QUEUE_CAPACITY {
+            sender
+                .send(StunPacket {
+                    data: index.to_le_bytes().to_vec(),
+                    addr,
+                })
+                .unwrap();
+        }
+        assert!(matches!(
+            receiver.recv().await,
+            Err(broadcast::error::RecvError::Lagged(1))
+        ));
+        for index in 1..=STUN_PACKET_QUEUE_CAPACITY {
+            let packet = receiver.recv().await.unwrap();
+            assert_eq!(packet.data, index.to_le_bytes());
+            assert_eq!(packet.addr, addr);
+        }
+    }
+
+    struct UnusedUdpSocket;
+
+    #[async_trait]
+    impl VirtualUdpSocket for UnusedUdpSocket {
+        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            panic!("response-only tests do not query the socket")
+        }
+
+        async fn send_to(&self, _data: &[u8], _addr: SocketAddr) -> std::io::Result<usize> {
+            panic!("response-only tests do not send datagrams")
+        }
+
+        async fn recv_from(&self, _buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            panic!("response-only tests receive through the broadcast queue")
+        }
+    }
+
+    fn enqueue_irrelevant_response_burst(sender: &broadcast::Sender<StunPacket>, addr: SocketAddr) {
+        for _ in 0..=STUN_PACKET_QUEUE_CAPACITY {
+            sender
+                .send(StunPacket {
+                    data: Vec::new(),
+                    addr,
+                })
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn stun_response_wait_skips_lagged_packets_before_matching_reply() {
+        let (sender, receiver) = broadcast::channel(STUN_PACKET_QUEUE_CAPACITY);
+        let addr = "127.0.0.1:3478".parse().unwrap();
+        let client = StunClient::new(addr, Arc::new(UnusedUdpSocket), receiver);
+        let tid = 42;
+        enqueue_irrelevant_response_burst(&sender, addr);
+        let message =
+            Message::<Attribute>::new(MessageClass::SuccessResponse, BINDING, u32_to_tid(tid));
+        sender
+            .send(StunPacket {
+                data: MessageEncoder::new().encode_into_bytes(message).unwrap(),
+                addr,
+            })
+            .unwrap();
+
+        let (message, received_addr) = client.wait_stun_response(&[tid], &addr).await.unwrap();
+
+        assert_eq!(tid_to_u32(&message.transaction_id()), tid);
+        assert_eq!(received_addr, addr);
+    }
+
+    #[tokio::test]
+    async fn stun_response_wait_reports_closed_channel_after_lag() {
+        let (sender, receiver) = broadcast::channel(STUN_PACKET_QUEUE_CAPACITY);
+        let addr = "127.0.0.1:3478".parse().unwrap();
+        let client = StunClient::new(addr, Arc::new(UnusedUdpSocket), receiver);
+        enqueue_irrelevant_response_burst(&sender, addr);
+        drop(sender);
+
+        let error = client.wait_stun_response(&[42], &addr).await.unwrap_err();
+
+        assert!(matches!(
+            error.downcast_ref::<broadcast::error::RecvError>(),
+            Some(broadcast::error::RecvError::Closed)
+        ));
+    }
+
+    #[cfg(not(target_os = "wasi"))]
+    #[tokio::test(start_paused = true)]
+    async fn stun_response_wait_keeps_absolute_deadline_after_lag() {
+        let (sender, receiver) = broadcast::channel(4);
+        let addr = "127.0.0.1:3478".parse().unwrap();
+        let mut client = StunClient::new(addr, Arc::new(UnusedUdpSocket), receiver);
+        client.resp_timeout = Duration::from_millis(100);
+        let started = crate::foundation::time::Instant::now();
+        let tids = [42];
+        let mut pending = Box::pin(client.wait_stun_response(&tids, &addr));
+        assert!(futures::poll!(&mut pending).is_pending());
+        tokio::time::advance(Duration::from_millis(60)).await;
+        enqueue_irrelevant_response_burst(&sender, addr);
+        assert!(futures::poll!(&mut pending).is_pending());
+        tokio::time::advance(Duration::from_millis(40)).await;
+
+        let error = pending.await.unwrap_err();
+
+        assert!(error.is::<crate::foundation::time::error::Elapsed>());
+        assert_eq!(
+            crate::foundation::time::Instant::now() - started,
+            Duration::from_millis(100)
+        );
+    }
 
     struct EmptyDns;
 

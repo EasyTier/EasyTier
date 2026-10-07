@@ -1,14 +1,20 @@
 use std::{future::Future, sync::Arc};
 
+#[cfg(feature = "statistics")]
 use dashmap::DashMap;
+#[cfg(feature = "statistics")]
 use futures::future::BoxFuture;
 
 use crate::config::PeerId;
-use crate::foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
+#[cfg(feature = "statistics")]
+use crate::foundation::stats::{CounterHandle, LabelSet, LabelType};
+use crate::foundation::stats::{MetricName, StatsManager};
 use crate::packet::{PacketType, ZCPacket};
+#[cfg(feature = "statistics")]
 use crate::peers::util::shrink_dashmap;
 use crate::proto::peer_rpc::RoutePeerInfo;
 
+#[cfg_attr(not(feature = "statistics"), allow(dead_code))]
 pub const UNKNOWN_INSTANCE_ID: &str = "unknown";
 
 #[derive(Clone, Copy)]
@@ -18,11 +24,13 @@ pub enum InstanceLabelKind {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "statistics")]
 struct TrafficCounters {
     bytes: CounterHandle,
     packets: CounterHandle,
 }
 
+#[cfg(feature = "statistics")]
 impl TrafficCounters {
     fn add_sample(&self, bytes: u64) {
         self.bytes.add(bytes);
@@ -31,11 +39,13 @@ impl TrafficCounters {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "statistics")]
 enum CachedPeerTrafficCounters {
     Unknown(TrafficCounters),
     Resolved(TrafficCounters),
 }
 
+#[cfg(feature = "statistics")]
 impl CachedPeerTrafficCounters {
     fn add_sample(&self, bytes: u64) {
         match self {
@@ -57,12 +67,19 @@ impl CachedPeerTrafficCounters {
 }
 
 pub struct LogicalTrafficMetrics {
+    #[cfg(feature = "statistics")]
     stats_mgr: Arc<StatsManager>,
+    #[cfg(feature = "statistics")]
     network_name: String,
+    #[cfg(feature = "statistics")]
     instance_bytes_metric: MetricName,
+    #[cfg(feature = "statistics")]
     instance_packets_metric: MetricName,
+    #[cfg(feature = "statistics")]
     label_kind: InstanceLabelKind,
+    #[cfg(feature = "statistics")]
     total: TrafficCounters,
+    #[cfg(feature = "statistics")]
     per_peer: DashMap<PeerId, CachedPeerTrafficCounters>,
 }
 
@@ -76,19 +93,35 @@ impl LogicalTrafficMetrics {
         instance_packets_metric: MetricName,
         label_kind: InstanceLabelKind,
     ) -> Self {
-        let label_set =
-            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
-        Self {
-            total: TrafficCounters {
-                bytes: stats_mgr.get_counter(total_bytes_metric, label_set.clone()),
-                packets: stats_mgr.get_counter(total_packets_metric, label_set),
-            },
-            stats_mgr,
-            network_name,
-            instance_bytes_metric,
-            instance_packets_metric,
-            label_kind,
-            per_peer: DashMap::new(),
+        #[cfg(not(feature = "statistics"))]
+        {
+            let _ = (
+                stats_mgr,
+                network_name,
+                total_bytes_metric,
+                total_packets_metric,
+                instance_bytes_metric,
+                instance_packets_metric,
+                label_kind,
+            );
+            Self {}
+        }
+        #[cfg(feature = "statistics")]
+        {
+            let label_set =
+                LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
+            Self {
+                total: TrafficCounters {
+                    bytes: stats_mgr.get_counter(total_bytes_metric, label_set.clone()),
+                    packets: stats_mgr.get_counter(total_packets_metric, label_set),
+                },
+                stats_mgr,
+                network_name,
+                instance_bytes_metric,
+                instance_packets_metric,
+                label_kind,
+                per_peer: DashMap::new(),
+            }
         }
     }
 
@@ -97,20 +130,27 @@ impl LogicalTrafficMetrics {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Option<String>>,
     {
-        self.total.add_sample(bytes);
-
-        if let Some(entry) = self.per_peer.get(&peer_id)
-            && entry.value().is_resolved()
+        #[cfg(not(feature = "statistics"))]
+        let _ = (peer_id, bytes, resolver);
+        #[cfg(feature = "statistics")]
         {
-            entry.value().add_sample(bytes);
-            return;
-        }
+            self.total.add_sample(bytes);
 
-        let resolved_instance_id = resolver().await;
-        let counters = self.get_or_update_peer_counters(peer_id, resolved_instance_id.as_deref());
-        counters.add_sample(bytes);
+            if let Some(entry) = self.per_peer.get(&peer_id)
+                && entry.value().is_resolved()
+            {
+                entry.value().add_sample(bytes);
+                return;
+            }
+
+            let resolved_instance_id = resolver().await;
+            let counters =
+                self.get_or_update_peer_counters(peer_id, resolved_instance_id.as_deref());
+            counters.add_sample(bytes);
+        }
     }
 
+    #[cfg(feature = "statistics")]
     fn get_or_update_peer_counters(
         &self,
         peer_id: PeerId,
@@ -140,19 +180,35 @@ impl LogicalTrafficMetrics {
     }
 
     pub fn remove_peer(&self, peer_id: PeerId) {
-        self.per_peer.remove(&peer_id);
-        shrink_dashmap(&self.per_peer, None);
+        #[cfg(not(feature = "statistics"))]
+        let _ = peer_id;
+        #[cfg(feature = "statistics")]
+        {
+            self.per_peer.remove(&peer_id);
+            shrink_dashmap(&self.per_peer, None);
+        }
     }
 
     pub fn clear_peer_cache(&self) {
-        self.per_peer.clear();
-        shrink_dashmap(&self.per_peer, None);
+        #[cfg(feature = "statistics")]
+        {
+            self.per_peer.clear();
+            shrink_dashmap(&self.per_peer, None);
+        }
     }
 
+    #[cfg(any(feature = "statistics", test))]
     fn contains_peer_cache(&self, peer_id: PeerId) -> bool {
+        #[cfg(not(feature = "statistics"))]
+        {
+            let _ = peer_id;
+            false
+        }
+        #[cfg(feature = "statistics")]
         self.per_peer.contains_key(&peer_id)
     }
 
+    #[cfg(feature = "statistics")]
     fn build_peer_counters(&self, instance_id: &str) -> TrafficCounters {
         let instance_label = match self.label_kind {
             InstanceLabelKind::To => LabelType::ToInstanceId(instance_id.to_string()),
@@ -221,11 +277,13 @@ pub(crate) fn data_packet_payload_len(packet: &ZCPacket) -> Option<u64> {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "statistics")]
 struct TrafficMetricGroup {
     data: Arc<LogicalTrafficMetrics>,
     control: Arc<LogicalTrafficMetrics>,
 }
 
+#[cfg(feature = "statistics")]
 impl TrafficMetricGroup {
     fn select(&self, kind: TrafficKind) -> &Arc<LogicalTrafficMetrics> {
         match kind {
@@ -235,12 +293,17 @@ impl TrafficMetricGroup {
     }
 }
 
+#[cfg(feature = "statistics")]
 type InstanceIdResolver = dyn Fn(PeerId) -> BoxFuture<'static, Option<String>> + Send + Sync;
 
 pub struct TrafficMetricRecorder {
+    #[cfg(feature = "statistics")]
     my_peer_id: PeerId,
+    #[cfg(feature = "statistics")]
     tx_metrics: TrafficMetricGroup,
+    #[cfg(feature = "statistics")]
     rx_metrics: TrafficMetricGroup,
+    #[cfg(feature = "statistics")]
     resolve_instance_id: Arc<InstanceIdResolver>,
 }
 
@@ -257,61 +320,105 @@ impl TrafficMetricRecorder {
         F: Fn(PeerId) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Option<String>> + Send + 'static,
     {
-        Self {
-            my_peer_id,
-            tx_metrics: TrafficMetricGroup {
-                data: tx_data,
-                control: tx_control,
-            },
-            rx_metrics: TrafficMetricGroup {
-                data: rx_data,
-                control: rx_control,
-            },
-            resolve_instance_id: Arc::new(move |peer_id| Box::pin(resolve_instance_id(peer_id))),
+        #[cfg(not(feature = "statistics"))]
+        {
+            let _ = (
+                my_peer_id,
+                tx_data,
+                tx_control,
+                rx_data,
+                rx_control,
+                resolve_instance_id,
+            );
+            Self {}
+        }
+        #[cfg(feature = "statistics")]
+        {
+            Self {
+                my_peer_id,
+                tx_metrics: TrafficMetricGroup {
+                    data: tx_data,
+                    control: tx_control,
+                },
+                rx_metrics: TrafficMetricGroup {
+                    data: rx_data,
+                    control: rx_control,
+                },
+                resolve_instance_id: Arc::new(move |peer_id| {
+                    Box::pin(resolve_instance_id(peer_id))
+                }),
+            }
         }
     }
 
     pub async fn record_tx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {
-        if peer_id == self.my_peer_id {
-            return;
+        #[cfg(not(feature = "statistics"))]
+        let _ = (peer_id, packet_type, bytes);
+        #[cfg(feature = "statistics")]
+        {
+            if peer_id == self.my_peer_id {
+                return;
+            }
+            self.tx_metrics
+                .select(traffic_kind(packet_type))
+                .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
+                .await;
         }
-        self.tx_metrics
-            .select(traffic_kind(packet_type))
-            .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
-            .await;
     }
 
     pub async fn record_rx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {
-        if peer_id == self.my_peer_id {
-            return;
+        #[cfg(not(feature = "statistics"))]
+        let _ = (peer_id, packet_type, bytes);
+        #[cfg(feature = "statistics")]
+        {
+            if peer_id == self.my_peer_id {
+                return;
+            }
+            self.rx_metrics
+                .select(traffic_kind(packet_type))
+                .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
+                .await;
         }
-        self.rx_metrics
-            .select(traffic_kind(packet_type))
-            .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
-            .await;
     }
 
     pub fn remove_peer(&self, peer_id: PeerId) {
-        self.tx_metrics.data.remove_peer(peer_id);
-        self.tx_metrics.control.remove_peer(peer_id);
-        self.rx_metrics.data.remove_peer(peer_id);
-        self.rx_metrics.control.remove_peer(peer_id);
+        #[cfg(not(feature = "statistics"))]
+        let _ = peer_id;
+        #[cfg(feature = "statistics")]
+        {
+            self.tx_metrics.data.remove_peer(peer_id);
+            self.tx_metrics.control.remove_peer(peer_id);
+            self.rx_metrics.data.remove_peer(peer_id);
+            self.rx_metrics.control.remove_peer(peer_id);
+        }
     }
 
     pub fn clear_peer_cache(&self) {
-        self.tx_metrics.data.clear_peer_cache();
-        self.tx_metrics.control.clear_peer_cache();
-        self.rx_metrics.data.clear_peer_cache();
-        self.rx_metrics.control.clear_peer_cache();
+        #[cfg(feature = "statistics")]
+        {
+            self.tx_metrics.data.clear_peer_cache();
+            self.tx_metrics.control.clear_peer_cache();
+            self.rx_metrics.data.clear_peer_cache();
+            self.rx_metrics.control.clear_peer_cache();
+        }
     }
 
     pub fn contains_peer_cache(&self, peer_id: PeerId) -> bool {
-        self.tx_metrics.data.contains_peer_cache(peer_id)
-            || self.tx_metrics.control.contains_peer_cache(peer_id)
-            || self.rx_metrics.data.contains_peer_cache(peer_id)
-            || self.rx_metrics.control.contains_peer_cache(peer_id)
+        #[cfg(not(feature = "statistics"))]
+        {
+            let _ = peer_id;
+            false
+        }
+        #[cfg(feature = "statistics")]
+        {
+            self.tx_metrics.data.contains_peer_cache(peer_id)
+                || self.tx_metrics.control.contains_peer_cache(peer_id)
+                || self.rx_metrics.data.contains_peer_cache(peer_id)
+                || self.rx_metrics.control.contains_peer_cache(peer_id)
+        }
     }
 
+    #[cfg(feature = "statistics")]
     fn resolve_instance_id(&self, peer_id: PeerId) -> BoxFuture<'static, Option<String>> {
         (self.resolve_instance_id)(peer_id)
     }
@@ -331,16 +438,19 @@ pub fn route_peer_info_instance_id(route_peer_info: &RoutePeerInfo) -> Option<St
 mod tests {
     use super::*;
 
+    #[cfg(feature = "statistics")]
     impl LogicalTrafficMetrics {
         fn peer_cache_size(&self) -> usize {
             self.per_peer.len()
         }
     }
 
+    #[cfg(feature = "statistics")]
     fn network_labels(network_name: &str) -> LabelSet {
         LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_string()))
     }
 
+    #[cfg(feature = "statistics")]
     fn to_instance_labels(network_name: &str, instance_id: &str) -> LabelSet {
         LabelSet::new()
             .with_label_type(LabelType::NetworkName(network_name.to_string()))
@@ -428,6 +538,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "statistics")]
     async fn logical_traffic_metrics_upgrade_unknown_instance_label() {
         let stats_mgr = Arc::new(StatsManager::new());
         let metrics = LogicalTrafficMetrics::new(
@@ -517,6 +628,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "statistics")]
     async fn logical_traffic_metrics_remove_peer_clears_cached_counters() {
         let stats_mgr = Arc::new(StatsManager::new());
         let metrics = LogicalTrafficMetrics::new(
@@ -571,6 +683,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "statistics")]
     async fn logical_traffic_metrics_clear_peer_cache_resets_all_cached_peers() {
         let stats_mgr = Arc::new(StatsManager::new());
         let metrics = LogicalTrafficMetrics::new(
@@ -597,5 +710,74 @@ mod tests {
         metrics.clear_peer_cache();
 
         assert_eq!(metrics.peer_cache_size(), 0);
+    }
+
+    #[cfg(not(feature = "statistics"))]
+    #[tokio::test]
+    async fn disabled_statistics_do_not_resolve_logical_traffic_labels() {
+        let stats = Arc::new(StatsManager::new());
+        let metrics = LogicalTrafficMetrics::new(
+            stats.clone(),
+            "unused".to_owned(),
+            MetricName::TrafficBytesTx,
+            MetricName::TrafficPacketsTx,
+            MetricName::TrafficBytesTxByInstance,
+            MetricName::TrafficPacketsTxByInstance,
+            InstanceLabelKind::To,
+        );
+        assert_eq!(std::mem::size_of::<LogicalTrafficMetrics>(), 0);
+        let called = std::cell::Cell::new(false);
+        for peer_id in 1..256 {
+            metrics
+                .record_with_resolver(peer_id, 128, || {
+                    called.set(true);
+                    async { Some("unneeded-instance".to_owned()) }
+                })
+                .await;
+        }
+        assert!(!called.get());
+        assert!(!metrics.contains_peer_cache(1));
+        assert!(stats.get_all_metrics().is_empty());
+        metrics.remove_peer(1);
+        metrics.clear_peer_cache();
+    }
+
+    #[cfg(not(feature = "statistics"))]
+    #[tokio::test]
+    async fn disabled_statistics_do_not_retain_recorder_resolver() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let stats = Arc::new(StatsManager::new());
+        let metrics = Arc::new(LogicalTrafficMetrics::new(
+            stats.clone(),
+            "unused".to_owned(),
+            MetricName::TrafficBytesTx,
+            MetricName::TrafficPacketsTx,
+            MetricName::TrafficBytesTxByInstance,
+            MetricName::TrafficPacketsTxByInstance,
+            InstanceLabelKind::To,
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_resolver = calls.clone();
+        let recorder = TrafficMetricRecorder::new(
+            0,
+            metrics.clone(),
+            metrics.clone(),
+            metrics.clone(),
+            metrics,
+            move |_peer_id| {
+                calls_for_resolver.fetch_add(1, Ordering::Relaxed);
+                async { Some("unneeded-instance".to_owned()) }
+            },
+        );
+        assert_eq!(std::mem::size_of::<TrafficMetricRecorder>(), 0);
+        assert_eq!(Arc::strong_count(&calls), 1);
+        recorder.record_tx(1, PacketType::Data as u8, 128).await;
+        recorder.record_rx(2, PacketType::Data as u8, 128).await;
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert!(!recorder.contains_peer_cache(1));
+        assert!(stats.get_all_metrics().is_empty());
+        recorder.remove_peer(1);
+        recorder.clear_peer_cache();
     }
 }

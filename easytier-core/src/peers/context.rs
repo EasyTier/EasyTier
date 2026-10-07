@@ -20,6 +20,8 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 pub use crate::config::{NetworkIdentity, NetworkSecretDigest};
+#[cfg(feature = "statistics")]
+use crate::foundation::stats::{LabelSet, LabelType};
 use crate::{
     config::peers::{HostRoutingPolicy, PeerGroupIdentity, PeerRuntimeConfig, PeerRuntimeSnapshot},
     config::runtime::CoreRuntimeConfigStore,
@@ -28,7 +30,7 @@ use crate::{
         RouteConfig, TrafficConfig,
     },
     events::{CoreEvent, CoreEventSink},
-    foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
+    foundation::stats::{MetricName, StatsManager},
     foundation::token_bucket::{ArcByteLimiter, BucketConfig, TokenBucketManager},
     peers::{
         credential_manager::{CredentialManager, CredentialStorage},
@@ -347,12 +349,17 @@ impl CorePeerContext {
         bytes_metric: MetricName,
         packets_metric: MetricName,
     ) {
-        let labels =
-            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_owned()));
-        self.stats_manager
-            .get_counter(bytes_metric, labels.clone())
-            .add(bytes);
-        self.stats_manager.get_counter(packets_metric, labels).inc();
+        #[cfg(not(feature = "statistics"))]
+        let _ = (network_name, bytes, bytes_metric, packets_metric);
+        #[cfg(feature = "statistics")]
+        {
+            let labels =
+                LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_owned()));
+            self.stats_manager
+                .get_counter(bytes_metric, labels.clone())
+                .add(bytes);
+            self.stats_manager.get_counter(packets_metric, labels).inc();
+        }
     }
 
     fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
@@ -1237,6 +1244,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(feature = "statistics")]
     fn records_control_traffic_in_core_owned_metrics() {
         let context = CorePeerContext::new(
             CoreRuntimeConfigStore::new(

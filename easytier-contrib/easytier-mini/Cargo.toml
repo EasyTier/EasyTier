@@ -6,16 +6,37 @@ edition.workspace = true
 rust-version.workspace = true
 license-file = "../../LICENSE"
 build = "build.rs"
+autobins = false
+
+[[bin]]
+name = "easytier-nano"
+path = "src/main.rs"
+
+[features]
+default = ["tun", "low-memory", "strip-logs"]
+tun = ["easytier/tun"]
+dhcp = ["easytier/dhcp-ipv4"]
+low-memory = ["easytier/low-memory"]
+statistics = ["easytier/statistics"]
+logging = ["easytier/logging"]
+strip-logs = ["dep:log", "dep:tracing"]
+smoltcp = ["easytier/smoltcp"]
+proxy-cidr-monitor = ["easytier/proxy-cidr-monitor"]
+rpc = ["easytier/management-rpc"]
+web-client = ["rpc", "easytier/web-client", "dep:async-trait"]
+official = ["tun", "dhcp", "logging", "smoltcp", "proxy-cidr-monitor", "web-client", "easytier/noise-full"]
 
 [dependencies]
 anyhow.workspace = true
-easytier = { workspace = true, features = [
-    "aes-gcm",
-    "dhcp-ipv4",
-    "logging",
-    "proxy-cidr-monitor",
-    "smoltcp",
-    "tun",
-    "web-client",
-] }
+async-trait = { workspace = true, optional = true }
+easytier = { workspace = true, features = ["aes-gcm"] }
+log = { workspace = true, features = ["release_max_level_off"], optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "signal"] }
+tracing = { workspace = true, features = ["release_max_level_off"], optional = true }
+
+[dev-dependencies]
+bytes.workspace = true
+nix = "0.31.3"
+socket2 = { version = "0.6.5", features = ["all"] }
+tokio = { workspace = true, features = ["net", "time"] }
+tracing.workspace = true

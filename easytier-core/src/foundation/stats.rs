@@ -1,17 +1,26 @@
+#[cfg(feature = "statistics")]
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "statistics")]
 use std::cell::UnsafeCell;
 use std::fmt;
+use std::sync::Arc;
+#[cfg(feature = "statistics")]
 use std::sync::{
-    Arc, Mutex,
+    Mutex,
     atomic::{AtomicU32, Ordering},
 };
+#[cfg(feature = "statistics")]
 use std::time::Duration;
+#[cfg(feature = "statistics")]
 use tokio_util::task::AbortOnDropHandle;
 
+#[cfg(feature = "statistics")]
 use crate::foundation::time::interval;
 
+#[cfg(feature = "statistics")]
 const METRIC_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+#[cfg(feature = "statistics")]
 const METRIC_RETENTION_EPOCHS: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +48,10 @@ impl RpcMetricStatus {
 }
 
 pub trait RpcMetrics: Send + Sync + 'static {
+    fn is_enabled(&self) -> bool {
+        true
+    }
+
     fn client_tx(&self, _labels: &RpcMetricLabels) {}
 
     fn client_rx(&self, _labels: &RpcMetricLabels, _duration_ms: u64) {}
@@ -78,7 +91,7 @@ impl RpcMetricsProvider for () {
 
 impl RpcMetricsProvider for ArcRpcMetrics {
     fn into_rpc_metrics(self) -> Option<ArcRpcMetrics> {
-        Some(self)
+        self.is_enabled().then_some(self)
     }
 }
 
@@ -87,7 +100,7 @@ where
     T: RpcMetrics,
 {
     fn into_rpc_metrics(self) -> Option<ArcRpcMetrics> {
-        Some(self)
+        if self.is_enabled() { Some(self) } else { None }
     }
 }
 
@@ -481,209 +494,161 @@ impl Default for LabelSet {
     }
 }
 
-/// UnsafeCounter provides a high-performance counter using UnsafeCell
-#[derive(Debug)]
-pub struct UnsafeCounter {
-    value: UnsafeCell<u64>,
-}
+#[cfg(not(feature = "statistics"))]
+pub use disabled::{CounterHandle, StatsManager, StatsRpcMetrics, UnsafeCounter};
+#[cfg(feature = "statistics")]
+pub use enabled::{CounterHandle, StatsManager, StatsRpcMetrics, UnsafeCounter};
 
-impl Default for UnsafeCounter {
-    fn default() -> Self {
-        Self::new()
+#[cfg(not(feature = "statistics"))]
+mod disabled {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct UnsafeCounter;
+
+    impl UnsafeCounter {
+        pub fn new() -> Self {
+            Self
+        }
+
+        pub fn new_with_value(_initial: u64) -> Self {
+            Self
+        }
+
+        pub unsafe fn add(&self, _delta: u64) {}
+        pub unsafe fn inc(&self) {}
+        pub unsafe fn get(&self) -> u64 {
+            0
+        }
+        pub unsafe fn reset(&self) {}
+        pub unsafe fn set(&self, _value: u64) {}
     }
-}
 
-impl UnsafeCounter {
-    pub fn new() -> Self {
-        Self {
-            value: UnsafeCell::new(0),
+    #[derive(Clone, Copy, Default)]
+    pub struct CounterHandle;
+
+    impl CounterHandle {
+        pub fn add(&self, _delta: u64) {}
+        pub fn inc(&self) {}
+        pub fn get(&self) -> u64 {
+            0
+        }
+        pub fn reset(&self) {}
+        pub fn set(&self, _value: u64) {}
+    }
+
+    #[derive(Default)]
+    pub struct StatsManager;
+
+    impl StatsManager {
+        pub fn new() -> Self {
+            Self
+        }
+
+        pub(crate) fn start_cleanup_task(&self) {}
+        pub(crate) async fn stop_cleanup_task(&self) {}
+
+        pub fn get_counter(&self, _name: MetricName, _labels: LabelSet) -> CounterHandle {
+            CounterHandle
+        }
+
+        pub fn get_all_metrics(&self) -> Vec<MetricSnapshot> {
+            Vec::new()
+        }
+
+        pub fn clear(&self) {}
+
+        pub fn export_prometheus(&self) -> String {
+            String::new()
+        }
+
+        #[cfg(test)]
+        pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
+            true
+        }
+
+        #[cfg(test)]
+        pub(crate) fn get_metric(
+            &self,
+            _name: MetricName,
+            _labels: &LabelSet,
+        ) -> Option<MetricSnapshot> {
+            None
         }
     }
 
-    pub fn new_with_value(initial: u64) -> Self {
-        Self {
-            value: UnsafeCell::new(initial),
+    impl RpcMetrics for StatsManager {
+        fn is_enabled(&self) -> bool {
+            false
         }
     }
 
-    /// Increment the counter by the given amount
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this counter simultaneously.
-    pub unsafe fn add(&self, delta: u64) {
-        let ptr = self.value.get();
-        unsafe {
-            *ptr = (*ptr).saturating_add(delta);
+    pub struct StatsRpcMetrics;
+
+    impl StatsRpcMetrics {
+        pub fn new(_stats_manager: Arc<StatsManager>) -> Self {
+            Self
         }
     }
 
-    /// Increment the counter by 1
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this counter simultaneously.
-    pub unsafe fn inc(&self) {
-        unsafe {
-            self.add(1);
+    impl RpcMetrics for StatsRpcMetrics {
+        fn is_enabled(&self) -> bool {
+            false
         }
     }
 
-    /// Get the current value of the counter
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is modifying this counter simultaneously.
-    pub unsafe fn get(&self) -> u64 {
-        let ptr = self.value.get();
-        unsafe { *ptr }
-    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
 
-    /// Reset the counter to zero
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this counter simultaneously.
-    pub unsafe fn reset(&self) {
-        let ptr = self.value.get();
-        unsafe {
-            *ptr = 0;
+        #[tokio::test]
+        async fn disabled_statistics_keep_no_registry_or_cleanup_task() {
+            assert_eq!(std::mem::size_of::<StatsManager>(), 0);
+            assert_eq!(std::mem::size_of::<CounterHandle>(), 0);
+            let stats = StatsManager::new();
+            stats.start_cleanup_task();
+            for index in 0..256 {
+                let counter = stats.get_counter(
+                    MetricName::TrafficBytesTx,
+                    LabelSet::new().with_label("peer", index.to_string()),
+                );
+                counter.add(128);
+                counter.inc();
+                counter.set(99);
+                assert_eq!(counter.get(), 0);
+                counter.reset();
+            }
+            assert!(stats.get_all_metrics().is_empty());
+            assert!(
+                stats
+                    .get_metric(MetricName::TrafficBytesTx, &LabelSet::new())
+                    .is_none()
+            );
+            assert!(stats.export_prometheus().is_empty());
+            assert!(stats.cleanup_task_is_stopped());
+            stats.clear();
+            stats.stop_cleanup_task().await;
         }
-    }
 
-    /// Set the counter to a specific value
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this counter simultaneously.
-    pub unsafe fn set(&self, value: u64) {
-        let ptr = self.value.get();
-        unsafe {
-            *ptr = value;
+        #[test]
+        fn disabled_statistics_do_not_enable_rpc_metric_labels() {
+            let stats = Arc::new(StatsManager::new());
+            assert!(stats.clone().into_rpc_metrics().is_none());
+            let erased: ArcRpcMetrics = stats.clone();
+            assert!(erased.into_rpc_metrics().is_none());
+            let adapter = Arc::new(StatsRpcMetrics::new(stats));
+            assert!(adapter.into_rpc_metrics().is_none());
         }
-    }
-}
 
-// UnsafeCounter is Send + Sync because the safety is guaranteed by the caller
-unsafe impl Send for UnsafeCounter {}
-unsafe impl Sync for UnsafeCounter {}
-
-/// MetricData contains both the counter and its last active cleanup epoch.
-#[derive(Debug)]
-struct MetricData {
-    counter: UnsafeCounter,
-    activity_epoch: Arc<AtomicU32>,
-    last_updated_epoch: AtomicU32,
-}
-
-impl MetricData {
-    fn new(activity_epoch: Arc<AtomicU32>) -> Self {
-        let last_updated_epoch = activity_epoch.load(Ordering::Relaxed);
-        Self {
-            counter: UnsafeCounter::new(),
-            activity_epoch,
-            last_updated_epoch: AtomicU32::new(last_updated_epoch),
+        #[test]
+        fn custom_rpc_metrics_remain_available_without_statistics() {
+            struct CustomMetrics;
+            impl RpcMetrics for CustomMetrics {}
+            assert!(Arc::new(CustomMetrics).into_rpc_metrics().is_some());
         }
-    }
-
-    fn touch(&self) {
-        let current_epoch = self.activity_epoch.load(Ordering::Relaxed);
-        self.last_updated_epoch
-            .store(current_epoch, Ordering::Relaxed);
-    }
-
-    fn last_updated_epoch(&self) -> u32 {
-        self.last_updated_epoch.load(Ordering::Relaxed)
-    }
-}
-
-fn cleanup_metrics(counters: &DashMap<MetricKey, Arc<MetricData>>, current_epoch: u32) {
-    counters.retain(|_, metric_data| {
-        Arc::strong_count(metric_data) > 1
-            || current_epoch.saturating_sub(metric_data.last_updated_epoch())
-                <= METRIC_RETENTION_EPOCHS
-    });
-    counters.shrink_to_fit();
-}
-
-// MetricData is Send + Sync because the safety is guaranteed by the caller
-unsafe impl Send for MetricData {}
-unsafe impl Sync for MetricData {}
-
-/// MetricKey uniquely identifies a metric with its name and labels
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct MetricKey {
-    name: MetricName,
-    labels: LabelSet,
-}
-
-impl MetricKey {
-    fn new(name: MetricName, labels: LabelSet) -> Self {
-        Self { name, labels }
-    }
-}
-
-impl fmt::Display for MetricKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label_str = self.labels.to_key();
-        if label_str.is_empty() {
-            f.write_str(self.name.to_string().as_str())
-        } else {
-            f.write_str(format!("{}[{}]", self.name, label_str).as_str())
-        }
-    }
-}
-
-/// CounterHandle provides a safe interface to a MetricData
-/// It ensures thread-local access patterns for performance
-#[derive(Clone)]
-pub struct CounterHandle {
-    metric_data: Arc<MetricData>,
-    _key: MetricKey, // Keep key for debugging purposes
-}
-
-impl CounterHandle {
-    fn new(metric_data: Arc<MetricData>, key: MetricKey) -> Self {
-        Self {
-            metric_data,
-            _key: key,
-        }
-    }
-
-    /// Increment the counter by the given amount
-    pub fn add(&self, delta: u64) {
-        unsafe {
-            self.metric_data.counter.add(delta);
-        }
-        self.metric_data.touch();
-    }
-
-    /// Increment the counter by 1
-    pub fn inc(&self) {
-        unsafe {
-            self.metric_data.counter.inc();
-        }
-        self.metric_data.touch();
-    }
-
-    /// Get the current value of the counter
-    pub fn get(&self) -> u64 {
-        unsafe { self.metric_data.counter.get() }
-    }
-
-    /// Reset the counter to zero
-    pub fn reset(&self) {
-        unsafe {
-            self.metric_data.counter.reset();
-        }
-        self.metric_data.touch();
-    }
-
-    /// Set the counter to a specific value
-    pub fn set(&self, value: u64) {
-        unsafe {
-            self.metric_data.counter.set(value);
-        }
-        self.metric_data.touch();
     }
 }
 
-/// MetricSnapshot represents a point-in-time view of a metric
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricSnapshot {
     pub name: MetricName,
@@ -697,636 +662,861 @@ impl MetricSnapshot {
     }
 }
 
-/// StatsManager manages global statistics with high performance counters
-pub struct StatsManager {
-    counters: Arc<DashMap<MetricKey, Arc<MetricData>>>,
-    activity_epoch: Arc<AtomicU32>,
-    cleanup_task: Mutex<Option<AbortOnDropHandle<()>>>,
-}
-
-impl StatsManager {
-    /// Create a new StatsManager
-    pub fn new() -> Self {
-        let manager = Self {
-            counters: Arc::new(DashMap::new()),
-            activity_epoch: Arc::new(AtomicU32::new(0)),
-            cleanup_task: Mutex::new(None),
-        };
-        manager.start_cleanup_task();
-        manager
-    }
-
-    pub(crate) fn start_cleanup_task(&self) {
-        let mut cleanup_task = self.cleanup_task.lock().unwrap();
-        if cleanup_task
-            .as_ref()
-            .is_some_and(|task| !task.is_finished())
-        {
-            return;
-        }
-        cleanup_task.take();
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let counters = Arc::downgrade(&self.counters);
-        let activity_epoch = Arc::clone(&self.activity_epoch);
-        *cleanup_task = Some(AbortOnDropHandle::new(runtime.spawn(async move {
-            let mut interval = interval(METRIC_CLEANUP_INTERVAL);
-            loop {
-                interval.tick().await;
-
-                let current_epoch = activity_epoch.fetch_add(1, Ordering::Relaxed) + 1;
-
-                let Some(counters) = counters.upgrade() else {
-                    break;
-                };
-
-                cleanup_metrics(&counters, current_epoch);
-            }
-        })));
-    }
-
-    pub(crate) async fn stop_cleanup_task(&self) {
-        let task = self.cleanup_task.lock().unwrap().take();
-        if let Some(task) = task {
-            task.abort();
-            let _ = task.await;
-        }
-    }
-
-    /// Get or create a counter with the given name and labels
-    pub fn get_counter(&self, name: MetricName, labels: LabelSet) -> CounterHandle {
-        let key = MetricKey::new(name, labels);
-
-        let metric_data = self
-            .counters
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(MetricData::new(Arc::clone(&self.activity_epoch))))
-            .clone();
-
-        CounterHandle::new(metric_data, key)
-    }
-
-    /// Get all metric snapshots
-    pub fn get_all_metrics(&self) -> Vec<MetricSnapshot> {
-        let mut metrics = Vec::new();
-
-        for entry in self.counters.iter() {
-            let key = entry.key();
-            let metric_data = entry.value();
-
-            let value = unsafe { metric_data.counter.get() };
-
-            metrics.push(MetricSnapshot {
-                name: key.name,
-                labels: key.labels.clone(),
-                value,
-            });
-        }
-
-        // Sort by metric name and then by labels for consistent output
-        metrics.sort_by(|a, b| {
-            a.name
-                .to_string()
-                .cmp(&b.name.to_string())
-                .then_with(|| a.labels.to_key().cmp(&b.labels.to_key()))
-        });
-
-        metrics
-    }
-
-    /// Clear all metrics
-    pub fn clear(&self) {
-        self.counters.clear();
-    }
-
-    /// Export metrics in Prometheus format
-    pub fn export_prometheus(&self) -> String {
-        let metrics = self.get_all_metrics();
-        let mut output = String::new();
-
-        let mut current_metric = String::new();
-
-        for metric in metrics {
-            let metric_name_str = metric.name.to_string();
-            if metric_name_str != current_metric {
-                if !current_metric.is_empty() {
-                    output.push('\n');
-                }
-                output.push_str(&format!("# TYPE {} counter\n", metric_name_str));
-                current_metric = metric_name_str.clone();
-            }
-
-            if metric.labels.labels().is_empty() {
-                output.push_str(&format!("{} {}\n", metric_name_str, metric.value));
-            } else {
-                let label_str = metric
-                    .labels
-                    .labels()
-                    .iter()
-                    .map(|l| format!("{}=\"{}\"", l.key, l.value))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                output.push_str(&format!(
-                    "{}{{{}}} {}\n",
-                    metric_name_str, label_str, metric.value
-                ));
-            }
-        }
-
-        output
-    }
-}
-
-impl Default for StatsManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct StatsRpcMetrics {
-    stats_manager: Arc<StatsManager>,
-}
-
-impl StatsRpcMetrics {
-    pub fn new(stats_manager: Arc<StatsManager>) -> Self {
-        Self { stats_manager }
-    }
-}
-
-fn rpc_base_labels(labels: &RpcMetricLabels) -> LabelSet {
-    LabelSet::new()
-        .with_label_type(LabelType::NetworkName(labels.network_name.clone()))
-        .with_label_type(LabelType::SrcPeerId(labels.src_peer_id))
-        .with_label_type(LabelType::DstPeerId(labels.dst_peer_id))
-        .with_label_type(LabelType::ServiceName(labels.service_name.clone()))
-        .with_label_type(LabelType::MethodName(labels.method_name.clone()))
-}
-
-fn rpc_labels_with_status(labels: &RpcMetricLabels, status: RpcMetricStatus) -> LabelSet {
-    rpc_base_labels(labels).with_label_type(LabelType::Status(status.as_str().to_string()))
-}
-
-fn record_rpc_client_tx(stats_manager: &StatsManager, labels: &RpcMetricLabels) {
-    stats_manager
-        .get_counter(MetricName::PeerRpcClientTx, rpc_base_labels(labels))
-        .inc();
-}
-
-fn record_rpc_client_rx(stats_manager: &StatsManager, labels: &RpcMetricLabels, duration_ms: u64) {
-    let labels = rpc_labels_with_status(labels, RpcMetricStatus::Success);
-    stats_manager
-        .get_counter(MetricName::PeerRpcClientRx, labels.clone())
-        .inc();
-    stats_manager
-        .get_counter(MetricName::PeerRpcDuration, labels)
-        .add(duration_ms);
-}
-
-fn record_rpc_client_error(
-    stats_manager: &StatsManager,
-    labels: &RpcMetricLabels,
-    error_type: Option<String>,
-    duration_ms: u64,
-) {
-    let mut labels = rpc_labels_with_status(labels, RpcMetricStatus::Error);
-    if let Some(error_type) = error_type {
-        labels = labels.with_label_type(LabelType::ErrorType(error_type));
-    }
-    stats_manager
-        .get_counter(MetricName::PeerRpcErrors, labels.clone())
-        .inc();
-    stats_manager
-        .get_counter(MetricName::PeerRpcDuration, labels)
-        .add(duration_ms);
-}
-
-fn record_rpc_server_rx(stats_manager: &StatsManager, labels: &RpcMetricLabels) {
-    stats_manager
-        .get_counter(MetricName::PeerRpcServerRx, rpc_base_labels(labels))
-        .inc();
-}
-
-fn record_rpc_server_tx(stats_manager: &StatsManager, labels: &RpcMetricLabels, duration_ms: u64) {
-    let labels = rpc_labels_with_status(labels, RpcMetricStatus::Success);
-    stats_manager
-        .get_counter(MetricName::PeerRpcServerTx, labels.clone())
-        .inc();
-    stats_manager
-        .get_counter(MetricName::PeerRpcDuration, labels)
-        .add(duration_ms);
-}
-
-fn record_rpc_server_error(
-    stats_manager: &StatsManager,
-    labels: &RpcMetricLabels,
-    duration_ms: u64,
-) {
-    let labels = rpc_labels_with_status(labels, RpcMetricStatus::Error);
-    stats_manager
-        .get_counter(MetricName::PeerRpcErrors, labels.clone())
-        .inc();
-    stats_manager
-        .get_counter(MetricName::PeerRpcDuration, labels)
-        .add(duration_ms);
-}
-
-impl RpcMetrics for StatsRpcMetrics {
-    fn client_tx(&self, labels: &RpcMetricLabels) {
-        record_rpc_client_tx(&self.stats_manager, labels);
-    }
-
-    fn client_rx(&self, labels: &RpcMetricLabels, duration_ms: u64) {
-        record_rpc_client_rx(&self.stats_manager, labels, duration_ms);
-    }
-
-    fn client_error(&self, labels: &RpcMetricLabels, error_type: Option<String>, duration_ms: u64) {
-        record_rpc_client_error(&self.stats_manager, labels, error_type, duration_ms);
-    }
-
-    fn server_rx(&self, labels: &RpcMetricLabels) {
-        record_rpc_server_rx(&self.stats_manager, labels);
-    }
-
-    fn server_tx(&self, labels: &RpcMetricLabels, duration_ms: u64) {
-        record_rpc_server_tx(&self.stats_manager, labels, duration_ms);
-    }
-
-    fn server_error(
-        &self,
-        labels: &RpcMetricLabels,
-        _error_type: Option<String>,
-        duration_ms: u64,
-    ) {
-        record_rpc_server_error(&self.stats_manager, labels, duration_ms);
-    }
-}
-
-impl RpcMetrics for StatsManager {
-    fn client_tx(&self, labels: &RpcMetricLabels) {
-        record_rpc_client_tx(self, labels);
-    }
-
-    fn client_rx(&self, labels: &RpcMetricLabels, duration_ms: u64) {
-        record_rpc_client_rx(self, labels, duration_ms);
-    }
-
-    fn client_error(&self, labels: &RpcMetricLabels, error_type: Option<String>, duration_ms: u64) {
-        record_rpc_client_error(self, labels, error_type, duration_ms);
-    }
-
-    fn server_rx(&self, labels: &RpcMetricLabels) {
-        record_rpc_server_rx(self, labels);
-    }
-
-    fn server_tx(&self, labels: &RpcMetricLabels, duration_ms: u64) {
-        record_rpc_server_tx(self, labels, duration_ms);
-    }
-
-    fn server_error(
-        &self,
-        labels: &RpcMetricLabels,
-        _error_type: Option<String>,
-        duration_ms: u64,
-    ) {
-        record_rpc_server_error(self, labels, duration_ms);
-    }
-}
-
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "statistics")]
+mod enabled {
     use super::*;
 
-    impl StatsManager {
-        pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
-            self.cleanup_task.lock().unwrap().is_none()
+    /// UnsafeCounter provides a high-performance counter using UnsafeCell
+    #[derive(Debug)]
+    pub struct UnsafeCounter {
+        value: UnsafeCell<u64>,
+    }
+
+    impl Default for UnsafeCounter {
+        fn default() -> Self {
+            Self::new()
         }
+    }
 
-        fn get_simple_counter(&self, name: MetricName) -> CounterHandle {
-            self.get_counter(name, LabelSet::new())
-        }
-
-        fn get_metrics_by_prefix(&self, prefix: &str) -> Vec<MetricSnapshot> {
-            self.get_all_metrics()
-                .into_iter()
-                .filter(|m| m.name.to_string().starts_with(prefix))
-                .collect()
-        }
-
-        pub(crate) fn get_metric(
-            &self,
-            name: MetricName,
-            labels: &LabelSet,
-        ) -> Option<MetricSnapshot> {
-            let key = MetricKey::new(name, labels.clone());
-
-            if let Some(metric_data) = self.counters.get(&key) {
-                let value = unsafe { metric_data.counter.get() };
-                Some(MetricSnapshot {
-                    name,
-                    labels: labels.clone(),
-                    value,
-                })
-            } else {
-                None
+    impl UnsafeCounter {
+        pub fn new() -> Self {
+            Self {
+                value: UnsafeCell::new(0),
             }
         }
 
-        fn metric_count(&self) -> usize {
-            self.counters.len()
+        pub fn new_with_value(initial: u64) -> Self {
+            Self {
+                value: UnsafeCell::new(initial),
+            }
+        }
+
+        /// Increment the counter by the given amount
+        /// # Safety
+        /// This method is unsafe because it uses UnsafeCell. The caller must ensure
+        /// that no other thread is accessing this counter simultaneously.
+        pub unsafe fn add(&self, delta: u64) {
+            let ptr = self.value.get();
+            unsafe {
+                *ptr = (*ptr).saturating_add(delta);
+            }
+        }
+
+        /// Increment the counter by 1
+        /// # Safety
+        /// This method is unsafe because it uses UnsafeCell. The caller must ensure
+        /// that no other thread is accessing this counter simultaneously.
+        pub unsafe fn inc(&self) {
+            unsafe {
+                self.add(1);
+            }
+        }
+
+        /// Get the current value of the counter
+        /// # Safety
+        /// This method is unsafe because it uses UnsafeCell. The caller must ensure
+        /// that no other thread is modifying this counter simultaneously.
+        pub unsafe fn get(&self) -> u64 {
+            let ptr = self.value.get();
+            unsafe { *ptr }
+        }
+
+        /// Reset the counter to zero
+        /// # Safety
+        /// This method is unsafe because it uses UnsafeCell. The caller must ensure
+        /// that no other thread is accessing this counter simultaneously.
+        pub unsafe fn reset(&self) {
+            let ptr = self.value.get();
+            unsafe {
+                *ptr = 0;
+            }
+        }
+
+        /// Set the counter to a specific value
+        /// # Safety
+        /// This method is unsafe because it uses UnsafeCell. The caller must ensure
+        /// that no other thread is accessing this counter simultaneously.
+        pub unsafe fn set(&self, value: u64) {
+            let ptr = self.value.get();
+            unsafe {
+                *ptr = value;
+            }
         }
     }
 
-    #[test]
-    fn cleanup_task_can_start_after_sync_construction() {
-        let stats = StatsManager::new();
-        assert!(stats.cleanup_task_is_stopped());
+    // UnsafeCounter is Send + Sync because the safety is guaranteed by the caller
+    unsafe impl Send for UnsafeCounter {}
+    unsafe impl Sync for UnsafeCounter {}
 
-        tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap()
-            .block_on(async {
-                stats.start_cleanup_task();
-                assert!(!stats.cleanup_task_is_stopped());
-                stats.stop_cleanup_task().await;
-            });
-
-        assert!(stats.cleanup_task_is_stopped());
+    /// MetricData contains both the counter and its last active cleanup epoch.
+    #[derive(Debug)]
+    struct MetricData {
+        counter: UnsafeCounter,
+        activity_epoch: Arc<AtomicU32>,
+        last_updated_epoch: AtomicU32,
     }
 
-    #[test]
-    fn cleanup_task_restarts_after_its_runtime_stops() {
-        let first_runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap();
-        let stats = first_runtime.block_on(async {
-            let stats = StatsManager::new();
-            assert!(!stats.cleanup_task_is_stopped());
-            stats
+    impl MetricData {
+        fn new(activity_epoch: Arc<AtomicU32>) -> Self {
+            let last_updated_epoch = activity_epoch.load(Ordering::Relaxed);
+            Self {
+                counter: UnsafeCounter::new(),
+                activity_epoch,
+                last_updated_epoch: AtomicU32::new(last_updated_epoch),
+            }
+        }
+
+        fn touch(&self) {
+            let current_epoch = self.activity_epoch.load(Ordering::Relaxed);
+            self.last_updated_epoch
+                .store(current_epoch, Ordering::Relaxed);
+        }
+
+        fn last_updated_epoch(&self) -> u32 {
+            self.last_updated_epoch.load(Ordering::Relaxed)
+        }
+    }
+
+    fn cleanup_metrics(counters: &DashMap<MetricKey, Arc<MetricData>>, current_epoch: u32) {
+        counters.retain(|_, metric_data| {
+            Arc::strong_count(metric_data) > 1
+                || current_epoch.saturating_sub(metric_data.last_updated_epoch())
+                    <= METRIC_RETENTION_EPOCHS
         });
-        drop(first_runtime);
-        assert!(
-            stats
-                .cleanup_task
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .is_finished()
-        );
-
-        tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap()
-            .block_on(async {
-                stats.start_cleanup_task();
-                assert!(
-                    !stats
-                        .cleanup_task
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .is_finished()
-                );
-                stats.stop_cleanup_task().await;
-            });
+        counters.shrink_to_fit();
     }
 
-    #[tokio::test]
-    async fn test_label_set() {
-        let labels = LabelSet::new()
-            .with_label("peer_id", "peer1")
-            .with_label("method", "ping");
+    // MetricData is Send + Sync because the safety is guaranteed by the caller
+    unsafe impl Send for MetricData {}
+    unsafe impl Sync for MetricData {}
 
-        assert_eq!(labels.to_key(), "method=ping,peer_id=peer1");
-
-        let instance_labels = LabelSet::new()
-            .with_label_type(LabelType::NetworkName("default".to_string()))
-            .with_label_type(LabelType::ToInstanceId(
-                "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
-            ))
-            .with_label_type(LabelType::FromInstanceId(
-                "9b7d4368-b688-4897-a1f4-b6caaed9e8a6".to_string(),
-            ));
-
-        assert_eq!(
-            instance_labels.to_key(),
-            "from_instance_id=9b7d4368-b688-4897-a1f4-b6caaed9e8a6,network_name=default,to_instance_id=87ede5a2-9c3d-492d-9bbe-989b9d07e742"
-        );
+    /// MetricKey uniquely identifies a metric with its name and labels
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct MetricKey {
+        name: MetricName,
+        labels: LabelSet,
     }
 
-    #[tokio::test]
-    async fn test_unsafe_counter() {
-        let counter = UnsafeCounter::new();
-
-        unsafe {
-            assert_eq!(counter.get(), 0);
-            counter.inc();
-            assert_eq!(counter.get(), 1);
-            counter.add(5);
-            assert_eq!(counter.get(), 6);
-            counter.set(10);
-            assert_eq!(counter.get(), 10);
-            counter.reset();
-            assert_eq!(counter.get(), 0);
+    impl MetricKey {
+        fn new(name: MetricName, labels: LabelSet) -> Self {
+            Self { name, labels }
         }
     }
 
-    #[tokio::test]
-    async fn test_stats_manager() {
-        let stats = StatsManager::new();
-
-        // Test simple counter
-        let counter1 = stats.get_simple_counter(MetricName::PeerRpcClientTx);
-        counter1.inc();
-        counter1.add(5);
-
-        // Test counter with labels
-        let labels = LabelSet::new()
-            .with_label("peer_id", "peer1")
-            .with_label("method", "ping");
-        let counter2 = stats.get_counter(MetricName::PeerRpcClientTx, labels.clone());
-        counter2.add(3);
-
-        // Check metrics
-        let metrics = stats.get_all_metrics();
-        assert_eq!(metrics.len(), 2);
-
-        // Find the simple counter
-        let simple_metric = metrics
-            .iter()
-            .find(|m| m.labels.labels().is_empty())
-            .unwrap();
-        assert_eq!(simple_metric.name, MetricName::PeerRpcClientTx);
-        assert_eq!(simple_metric.value, 6);
-
-        // Find the labeled counter
-        let labeled_metric = metrics
-            .iter()
-            .find(|m| !m.labels.labels().is_empty())
-            .unwrap();
-        assert_eq!(labeled_metric.name, MetricName::PeerRpcClientTx);
-        assert_eq!(labeled_metric.value, 3);
-        assert_eq!(labeled_metric.labels, labels);
+    impl fmt::Display for MetricKey {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let label_str = self.labels.to_key();
+            if label_str.is_empty() {
+                f.write_str(self.name.to_string().as_str())
+            } else {
+                f.write_str(format!("{}[{}]", self.name, label_str).as_str())
+            }
+        }
     }
 
-    #[tokio::test]
-    async fn test_prometheus_export() {
-        let stats = StatsManager::new();
+    /// CounterHandle provides a safe interface to a MetricData
+    /// It ensures thread-local access patterns for performance
+    #[derive(Clone)]
+    pub struct CounterHandle {
+        metric_data: Arc<MetricData>,
+        _key: MetricKey, // Keep key for debugging purposes
+    }
 
-        let counter1 = stats.get_simple_counter(MetricName::TrafficBytesTx);
-        counter1.set(100);
+    impl CounterHandle {
+        fn new(metric_data: Arc<MetricData>, key: MetricKey) -> Self {
+            Self {
+                metric_data,
+                _key: key,
+            }
+        }
 
-        let labels = LabelSet::new().with_label("status", "success");
-        let counter2 = stats.get_counter(MetricName::PeerRpcClientTx, labels);
-        counter2.set(50);
+        /// Increment the counter by the given amount
+        pub fn add(&self, delta: u64) {
+            unsafe {
+                self.metric_data.counter.add(delta);
+            }
+            self.metric_data.touch();
+        }
 
-        let traffic_labels = LabelSet::new()
-            .with_label_type(LabelType::NetworkName("default".to_string()))
-            .with_label_type(LabelType::ToInstanceId(
-                "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
-            ));
-        let counter3 = stats.get_counter(MetricName::TrafficBytesTxByInstance, traffic_labels);
-        counter3.set(25);
+        /// Increment the counter by 1
+        pub fn inc(&self) {
+            unsafe {
+                self.metric_data.counter.inc();
+            }
+            self.metric_data.touch();
+        }
 
-        let prometheus_output = stats.export_prometheus();
+        /// Get the current value of the counter
+        pub fn get(&self) -> u64 {
+            unsafe { self.metric_data.counter.get() }
+        }
 
-        assert!(prometheus_output.contains("# TYPE peer_rpc_client_tx counter"));
-        assert!(prometheus_output.contains("peer_rpc_client_tx{status=\"success\"} 50"));
-        assert!(prometheus_output.contains("# TYPE traffic_bytes_tx counter"));
-        assert!(prometheus_output.contains("traffic_bytes_tx 100"));
-        assert!(prometheus_output.contains("# TYPE traffic_bytes_tx_by_instance counter"));
-        assert!(prometheus_output.contains(
+        /// Reset the counter to zero
+        pub fn reset(&self) {
+            unsafe {
+                self.metric_data.counter.reset();
+            }
+            self.metric_data.touch();
+        }
+
+        /// Set the counter to a specific value
+        pub fn set(&self, value: u64) {
+            unsafe {
+                self.metric_data.counter.set(value);
+            }
+            self.metric_data.touch();
+        }
+    }
+
+    /// StatsManager manages global statistics with high performance counters
+    pub struct StatsManager {
+        counters: Arc<DashMap<MetricKey, Arc<MetricData>>>,
+        activity_epoch: Arc<AtomicU32>,
+        cleanup_task: Mutex<Option<AbortOnDropHandle<()>>>,
+    }
+
+    impl StatsManager {
+        /// Create a new StatsManager
+        pub fn new() -> Self {
+            let manager = Self {
+                counters: Arc::new(DashMap::new()),
+                activity_epoch: Arc::new(AtomicU32::new(0)),
+                cleanup_task: Mutex::new(None),
+            };
+            manager.start_cleanup_task();
+            manager
+        }
+
+        pub(crate) fn start_cleanup_task(&self) {
+            let mut cleanup_task = self.cleanup_task.lock().unwrap();
+            if cleanup_task
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
+            {
+                return;
+            }
+            cleanup_task.take();
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
+            let counters = Arc::downgrade(&self.counters);
+            let activity_epoch = Arc::clone(&self.activity_epoch);
+            *cleanup_task = Some(AbortOnDropHandle::new(runtime.spawn(async move {
+                let mut interval = interval(METRIC_CLEANUP_INTERVAL);
+                loop {
+                    interval.tick().await;
+
+                    let current_epoch = activity_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+
+                    let Some(counters) = counters.upgrade() else {
+                        break;
+                    };
+
+                    cleanup_metrics(&counters, current_epoch);
+                }
+            })));
+        }
+
+        pub(crate) async fn stop_cleanup_task(&self) {
+            let task = self.cleanup_task.lock().unwrap().take();
+            if let Some(task) = task {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+
+        /// Get or create a counter with the given name and labels
+        pub fn get_counter(&self, name: MetricName, labels: LabelSet) -> CounterHandle {
+            let key = MetricKey::new(name, labels);
+
+            let metric_data = self
+                .counters
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(MetricData::new(Arc::clone(&self.activity_epoch))))
+                .clone();
+
+            CounterHandle::new(metric_data, key)
+        }
+
+        /// Get all metric snapshots
+        pub fn get_all_metrics(&self) -> Vec<MetricSnapshot> {
+            let mut metrics = Vec::new();
+
+            for entry in self.counters.iter() {
+                let key = entry.key();
+                let metric_data = entry.value();
+
+                let value = unsafe { metric_data.counter.get() };
+
+                metrics.push(MetricSnapshot {
+                    name: key.name,
+                    labels: key.labels.clone(),
+                    value,
+                });
+            }
+
+            // Sort by metric name and then by labels for consistent output
+            metrics.sort_by(|a, b| {
+                a.name
+                    .to_string()
+                    .cmp(&b.name.to_string())
+                    .then_with(|| a.labels.to_key().cmp(&b.labels.to_key()))
+            });
+
+            metrics
+        }
+
+        /// Clear all metrics
+        pub fn clear(&self) {
+            self.counters.clear();
+        }
+
+        /// Export metrics in Prometheus format
+        pub fn export_prometheus(&self) -> String {
+            let metrics = self.get_all_metrics();
+            let mut output = String::new();
+
+            let mut current_metric = String::new();
+
+            for metric in metrics {
+                let metric_name_str = metric.name.to_string();
+                if metric_name_str != current_metric {
+                    if !current_metric.is_empty() {
+                        output.push('\n');
+                    }
+                    output.push_str(&format!("# TYPE {} counter\n", metric_name_str));
+                    current_metric = metric_name_str.clone();
+                }
+
+                if metric.labels.labels().is_empty() {
+                    output.push_str(&format!("{} {}\n", metric_name_str, metric.value));
+                } else {
+                    let label_str = metric
+                        .labels
+                        .labels()
+                        .iter()
+                        .map(|l| format!("{}=\"{}\"", l.key, l.value))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    output.push_str(&format!(
+                        "{}{{{}}} {}\n",
+                        metric_name_str, label_str, metric.value
+                    ));
+                }
+            }
+
+            output
+        }
+    }
+
+    impl Default for StatsManager {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    pub struct StatsRpcMetrics {
+        stats_manager: Arc<StatsManager>,
+    }
+
+    impl StatsRpcMetrics {
+        pub fn new(stats_manager: Arc<StatsManager>) -> Self {
+            Self { stats_manager }
+        }
+    }
+
+    fn rpc_base_labels(labels: &RpcMetricLabels) -> LabelSet {
+        LabelSet::new()
+            .with_label_type(LabelType::NetworkName(labels.network_name.clone()))
+            .with_label_type(LabelType::SrcPeerId(labels.src_peer_id))
+            .with_label_type(LabelType::DstPeerId(labels.dst_peer_id))
+            .with_label_type(LabelType::ServiceName(labels.service_name.clone()))
+            .with_label_type(LabelType::MethodName(labels.method_name.clone()))
+    }
+
+    fn rpc_labels_with_status(labels: &RpcMetricLabels, status: RpcMetricStatus) -> LabelSet {
+        rpc_base_labels(labels).with_label_type(LabelType::Status(status.as_str().to_string()))
+    }
+
+    fn record_rpc_client_tx(stats_manager: &StatsManager, labels: &RpcMetricLabels) {
+        stats_manager
+            .get_counter(MetricName::PeerRpcClientTx, rpc_base_labels(labels))
+            .inc();
+    }
+
+    fn record_rpc_client_rx(
+        stats_manager: &StatsManager,
+        labels: &RpcMetricLabels,
+        duration_ms: u64,
+    ) {
+        let labels = rpc_labels_with_status(labels, RpcMetricStatus::Success);
+        stats_manager
+            .get_counter(MetricName::PeerRpcClientRx, labels.clone())
+            .inc();
+        stats_manager
+            .get_counter(MetricName::PeerRpcDuration, labels)
+            .add(duration_ms);
+    }
+
+    fn record_rpc_client_error(
+        stats_manager: &StatsManager,
+        labels: &RpcMetricLabels,
+        error_type: Option<String>,
+        duration_ms: u64,
+    ) {
+        let mut labels = rpc_labels_with_status(labels, RpcMetricStatus::Error);
+        if let Some(error_type) = error_type {
+            labels = labels.with_label_type(LabelType::ErrorType(error_type));
+        }
+        stats_manager
+            .get_counter(MetricName::PeerRpcErrors, labels.clone())
+            .inc();
+        stats_manager
+            .get_counter(MetricName::PeerRpcDuration, labels)
+            .add(duration_ms);
+    }
+
+    fn record_rpc_server_rx(stats_manager: &StatsManager, labels: &RpcMetricLabels) {
+        stats_manager
+            .get_counter(MetricName::PeerRpcServerRx, rpc_base_labels(labels))
+            .inc();
+    }
+
+    fn record_rpc_server_tx(
+        stats_manager: &StatsManager,
+        labels: &RpcMetricLabels,
+        duration_ms: u64,
+    ) {
+        let labels = rpc_labels_with_status(labels, RpcMetricStatus::Success);
+        stats_manager
+            .get_counter(MetricName::PeerRpcServerTx, labels.clone())
+            .inc();
+        stats_manager
+            .get_counter(MetricName::PeerRpcDuration, labels)
+            .add(duration_ms);
+    }
+
+    fn record_rpc_server_error(
+        stats_manager: &StatsManager,
+        labels: &RpcMetricLabels,
+        duration_ms: u64,
+    ) {
+        let labels = rpc_labels_with_status(labels, RpcMetricStatus::Error);
+        stats_manager
+            .get_counter(MetricName::PeerRpcErrors, labels.clone())
+            .inc();
+        stats_manager
+            .get_counter(MetricName::PeerRpcDuration, labels)
+            .add(duration_ms);
+    }
+
+    impl RpcMetrics for StatsRpcMetrics {
+        fn client_tx(&self, labels: &RpcMetricLabels) {
+            record_rpc_client_tx(&self.stats_manager, labels);
+        }
+
+        fn client_rx(&self, labels: &RpcMetricLabels, duration_ms: u64) {
+            record_rpc_client_rx(&self.stats_manager, labels, duration_ms);
+        }
+
+        fn client_error(
+            &self,
+            labels: &RpcMetricLabels,
+            error_type: Option<String>,
+            duration_ms: u64,
+        ) {
+            record_rpc_client_error(&self.stats_manager, labels, error_type, duration_ms);
+        }
+
+        fn server_rx(&self, labels: &RpcMetricLabels) {
+            record_rpc_server_rx(&self.stats_manager, labels);
+        }
+
+        fn server_tx(&self, labels: &RpcMetricLabels, duration_ms: u64) {
+            record_rpc_server_tx(&self.stats_manager, labels, duration_ms);
+        }
+
+        fn server_error(
+            &self,
+            labels: &RpcMetricLabels,
+            _error_type: Option<String>,
+            duration_ms: u64,
+        ) {
+            record_rpc_server_error(&self.stats_manager, labels, duration_ms);
+        }
+    }
+
+    impl RpcMetrics for StatsManager {
+        fn client_tx(&self, labels: &RpcMetricLabels) {
+            record_rpc_client_tx(self, labels);
+        }
+
+        fn client_rx(&self, labels: &RpcMetricLabels, duration_ms: u64) {
+            record_rpc_client_rx(self, labels, duration_ms);
+        }
+
+        fn client_error(
+            &self,
+            labels: &RpcMetricLabels,
+            error_type: Option<String>,
+            duration_ms: u64,
+        ) {
+            record_rpc_client_error(self, labels, error_type, duration_ms);
+        }
+
+        fn server_rx(&self, labels: &RpcMetricLabels) {
+            record_rpc_server_rx(self, labels);
+        }
+
+        fn server_tx(&self, labels: &RpcMetricLabels, duration_ms: u64) {
+            record_rpc_server_tx(self, labels, duration_ms);
+        }
+
+        fn server_error(
+            &self,
+            labels: &RpcMetricLabels,
+            _error_type: Option<String>,
+            duration_ms: u64,
+        ) {
+            record_rpc_server_error(self, labels, duration_ms);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        impl StatsManager {
+            pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
+                self.cleanup_task.lock().unwrap().is_none()
+            }
+
+            fn get_simple_counter(&self, name: MetricName) -> CounterHandle {
+                self.get_counter(name, LabelSet::new())
+            }
+
+            fn get_metrics_by_prefix(&self, prefix: &str) -> Vec<MetricSnapshot> {
+                self.get_all_metrics()
+                    .into_iter()
+                    .filter(|m| m.name.to_string().starts_with(prefix))
+                    .collect()
+            }
+
+            pub(crate) fn get_metric(
+                &self,
+                name: MetricName,
+                labels: &LabelSet,
+            ) -> Option<MetricSnapshot> {
+                let key = MetricKey::new(name, labels.clone());
+
+                if let Some(metric_data) = self.counters.get(&key) {
+                    let value = unsafe { metric_data.counter.get() };
+                    Some(MetricSnapshot {
+                        name,
+                        labels: labels.clone(),
+                        value,
+                    })
+                } else {
+                    None
+                }
+            }
+
+            fn metric_count(&self) -> usize {
+                self.counters.len()
+            }
+        }
+
+        #[test]
+        fn cleanup_task_can_start_after_sync_construction() {
+            let stats = StatsManager::new();
+            assert!(stats.cleanup_task_is_stopped());
+
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    stats.start_cleanup_task();
+                    assert!(!stats.cleanup_task_is_stopped());
+                    stats.stop_cleanup_task().await;
+                });
+
+            assert!(stats.cleanup_task_is_stopped());
+        }
+
+        #[test]
+        fn cleanup_task_restarts_after_its_runtime_stops() {
+            let first_runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            let stats = first_runtime.block_on(async {
+                let stats = StatsManager::new();
+                assert!(!stats.cleanup_task_is_stopped());
+                stats
+            });
+            drop(first_runtime);
+            assert!(
+                stats
+                    .cleanup_task
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .is_finished()
+            );
+
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    stats.start_cleanup_task();
+                    assert!(
+                        !stats
+                            .cleanup_task
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .unwrap()
+                            .is_finished()
+                    );
+                    stats.stop_cleanup_task().await;
+                });
+        }
+
+        #[tokio::test]
+        async fn test_label_set() {
+            let labels = LabelSet::new()
+                .with_label("peer_id", "peer1")
+                .with_label("method", "ping");
+
+            assert_eq!(labels.to_key(), "method=ping,peer_id=peer1");
+
+            let instance_labels = LabelSet::new()
+                .with_label_type(LabelType::NetworkName("default".to_string()))
+                .with_label_type(LabelType::ToInstanceId(
+                    "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
+                ))
+                .with_label_type(LabelType::FromInstanceId(
+                    "9b7d4368-b688-4897-a1f4-b6caaed9e8a6".to_string(),
+                ));
+
+            assert_eq!(
+                instance_labels.to_key(),
+                "from_instance_id=9b7d4368-b688-4897-a1f4-b6caaed9e8a6,network_name=default,to_instance_id=87ede5a2-9c3d-492d-9bbe-989b9d07e742"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_unsafe_counter() {
+            let counter = UnsafeCounter::new();
+
+            unsafe {
+                assert_eq!(counter.get(), 0);
+                counter.inc();
+                assert_eq!(counter.get(), 1);
+                counter.add(5);
+                assert_eq!(counter.get(), 6);
+                counter.set(10);
+                assert_eq!(counter.get(), 10);
+                counter.reset();
+                assert_eq!(counter.get(), 0);
+            }
+        }
+
+        #[tokio::test]
+        async fn test_stats_manager() {
+            let stats = StatsManager::new();
+
+            // Test simple counter
+            let counter1 = stats.get_simple_counter(MetricName::PeerRpcClientTx);
+            counter1.inc();
+            counter1.add(5);
+
+            // Test counter with labels
+            let labels = LabelSet::new()
+                .with_label("peer_id", "peer1")
+                .with_label("method", "ping");
+            let counter2 = stats.get_counter(MetricName::PeerRpcClientTx, labels.clone());
+            counter2.add(3);
+
+            // Check metrics
+            let metrics = stats.get_all_metrics();
+            assert_eq!(metrics.len(), 2);
+
+            // Find the simple counter
+            let simple_metric = metrics
+                .iter()
+                .find(|m| m.labels.labels().is_empty())
+                .unwrap();
+            assert_eq!(simple_metric.name, MetricName::PeerRpcClientTx);
+            assert_eq!(simple_metric.value, 6);
+
+            // Find the labeled counter
+            let labeled_metric = metrics
+                .iter()
+                .find(|m| !m.labels.labels().is_empty())
+                .unwrap();
+            assert_eq!(labeled_metric.name, MetricName::PeerRpcClientTx);
+            assert_eq!(labeled_metric.value, 3);
+            assert_eq!(labeled_metric.labels, labels);
+        }
+
+        #[tokio::test]
+        async fn test_prometheus_export() {
+            let stats = StatsManager::new();
+
+            let counter1 = stats.get_simple_counter(MetricName::TrafficBytesTx);
+            counter1.set(100);
+
+            let labels = LabelSet::new().with_label("status", "success");
+            let counter2 = stats.get_counter(MetricName::PeerRpcClientTx, labels);
+            counter2.set(50);
+
+            let traffic_labels = LabelSet::new()
+                .with_label_type(LabelType::NetworkName("default".to_string()))
+                .with_label_type(LabelType::ToInstanceId(
+                    "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
+                ));
+            let counter3 = stats.get_counter(MetricName::TrafficBytesTxByInstance, traffic_labels);
+            counter3.set(25);
+
+            let prometheus_output = stats.export_prometheus();
+
+            assert!(prometheus_output.contains("# TYPE peer_rpc_client_tx counter"));
+            assert!(prometheus_output.contains("peer_rpc_client_tx{status=\"success\"} 50"));
+            assert!(prometheus_output.contains("# TYPE traffic_bytes_tx counter"));
+            assert!(prometheus_output.contains("traffic_bytes_tx 100"));
+            assert!(prometheus_output.contains("# TYPE traffic_bytes_tx_by_instance counter"));
+            assert!(prometheus_output.contains(
             "traffic_bytes_tx_by_instance{network_name=\"default\",to_instance_id=\"87ede5a2-9c3d-492d-9bbe-989b9d07e742\"} 25"
         ));
-    }
+        }
 
-    #[tokio::test]
-    async fn test_get_metric() {
-        let stats = StatsManager::new();
+        #[tokio::test]
+        async fn test_get_metric() {
+            let stats = StatsManager::new();
 
-        let labels = LabelSet::new().with_label("peer", "test");
-        let counter = stats.get_counter(MetricName::PeerRpcClientTx, labels.clone());
-        counter.set(42);
+            let labels = LabelSet::new().with_label("peer", "test");
+            let counter = stats.get_counter(MetricName::PeerRpcClientTx, labels.clone());
+            counter.set(42);
 
-        let metric = stats
-            .get_metric(MetricName::PeerRpcClientTx, &labels)
-            .unwrap();
-        assert_eq!(metric.value, 42);
+            let metric = stats
+                .get_metric(MetricName::PeerRpcClientTx, &labels)
+                .unwrap();
+            assert_eq!(metric.value, 42);
 
-        let non_existent = stats.get_metric(MetricName::PeerRpcErrors, &LabelSet::new());
-        assert!(non_existent.is_none());
-    }
+            let non_existent = stats.get_metric(MetricName::PeerRpcErrors, &LabelSet::new());
+            assert!(non_existent.is_none());
+        }
 
-    #[tokio::test]
-    async fn test_metrics_by_prefix() {
-        let stats = StatsManager::new();
+        #[tokio::test]
+        async fn test_metrics_by_prefix() {
+            let stats = StatsManager::new();
 
-        stats
-            .get_simple_counter(MetricName::PeerRpcClientTx)
-            .set(10);
-        stats.get_simple_counter(MetricName::PeerRpcErrors).set(2);
-        stats
-            .get_simple_counter(MetricName::TrafficBytesTx)
-            .set(100);
+            stats
+                .get_simple_counter(MetricName::PeerRpcClientTx)
+                .set(10);
+            stats.get_simple_counter(MetricName::PeerRpcErrors).set(2);
+            stats
+                .get_simple_counter(MetricName::TrafficBytesTx)
+                .set(100);
 
-        let rpc_metrics = stats.get_metrics_by_prefix("peer_rpc");
-        assert_eq!(rpc_metrics.len(), 2);
+            let rpc_metrics = stats.get_metrics_by_prefix("peer_rpc");
+            assert_eq!(rpc_metrics.len(), 2);
 
-        let traffic_metrics = stats.get_metrics_by_prefix("traffic_");
-        assert_eq!(traffic_metrics.len(), 1);
-    }
+            let traffic_metrics = stats.get_metrics_by_prefix("traffic_");
+            assert_eq!(traffic_metrics.len(), 1);
+        }
 
-    #[tokio::test]
-    async fn test_cleanup_mechanism() {
-        let stats = StatsManager::new();
+        #[tokio::test]
+        async fn test_cleanup_mechanism() {
+            let stats = StatsManager::new();
 
-        // 创建一些计数器
-        let counter1 = stats.get_simple_counter(MetricName::PeerRpcClientTx);
-        counter1.set(10);
+            // 创建一些计数器
+            let counter1 = stats.get_simple_counter(MetricName::PeerRpcClientTx);
+            counter1.set(10);
 
-        let labels = LabelSet::new().with_label("test", "value");
-        let counter2 = stats.get_counter(MetricName::TrafficBytesTx, labels);
-        counter2.set(20);
+            let labels = LabelSet::new().with_label("test", "value");
+            let counter2 = stats.get_counter(MetricName::TrafficBytesTx, labels);
+            counter2.set(20);
 
-        // 验证计数器存在
-        assert_eq!(stats.metric_count(), 2);
+            // 验证计数器存在
+            assert_eq!(stats.metric_count(), 2);
 
-        // 注意：实际的清理测试需要等待3分钟，这在单元测试中不现实
-        // 这里我们只验证清理机制的基本结构是否正确
-        // 清理逻辑在后台线程中运行，会自动删除超过3分钟未更新的条目
+            // 注意：实际的清理测试需要等待3分钟，这在单元测试中不现实
+            // 这里我们只验证清理机制的基本结构是否正确
+            // 清理逻辑在后台线程中运行，会自动删除超过3分钟未更新的条目
 
-        // 验证计数器仍然可以正常工作
-        counter1.inc();
-        assert_eq!(counter1.get(), 11);
+            // 验证计数器仍然可以正常工作
+            counter1.inc();
+            assert_eq!(counter1.get(), 11);
 
-        counter2.add(5);
-        assert_eq!(counter2.get(), 25);
-    }
+            counter2.add(5);
+            assert_eq!(counter2.get(), 25);
+        }
 
-    #[tokio::test]
-    async fn test_cleanup_keeps_metrics_with_live_handles() {
-        let stats = StatsManager::new();
-        stats.stop_cleanup_task().await;
-        stats.activity_epoch.store(0, Ordering::Relaxed);
+        #[tokio::test]
+        async fn test_cleanup_keeps_metrics_with_live_handles() {
+            let stats = StatsManager::new();
+            stats.stop_cleanup_task().await;
+            stats.activity_epoch.store(0, Ordering::Relaxed);
 
-        let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
-        counter.set(1);
+            let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
+            counter.set(1);
 
-        let expired_epoch = METRIC_RETENTION_EPOCHS + 1;
-        cleanup_metrics(&stats.counters, expired_epoch);
+            let expired_epoch = METRIC_RETENTION_EPOCHS + 1;
+            cleanup_metrics(&stats.counters, expired_epoch);
 
-        assert_eq!(stats.metric_count(), 1);
-        assert_eq!(stats.get_all_metrics().len(), 1);
+            assert_eq!(stats.metric_count(), 1);
+            assert_eq!(stats.get_all_metrics().len(), 1);
 
-        drop(counter);
-        cleanup_metrics(&stats.counters, expired_epoch);
-        assert_eq!(stats.metric_count(), 0);
-    }
+            drop(counter);
+            cleanup_metrics(&stats.counters, expired_epoch);
+            assert_eq!(stats.metric_count(), 0);
+        }
 
-    #[tokio::test]
-    async fn test_cleanup_retains_recently_updated_metrics_for_three_epochs() {
-        let stats = StatsManager::new();
-        stats.stop_cleanup_task().await;
-        stats.activity_epoch.store(0, Ordering::Relaxed);
+        #[tokio::test]
+        async fn test_cleanup_retains_recently_updated_metrics_for_three_epochs() {
+            let stats = StatsManager::new();
+            stats.stop_cleanup_task().await;
+            stats.activity_epoch.store(0, Ordering::Relaxed);
 
-        let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
-        counter.set(1);
-        drop(counter);
+            let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
+            counter.set(1);
+            drop(counter);
 
-        cleanup_metrics(&stats.counters, METRIC_RETENTION_EPOCHS);
-        assert_eq!(stats.metric_count(), 1);
+            cleanup_metrics(&stats.counters, METRIC_RETENTION_EPOCHS);
+            assert_eq!(stats.metric_count(), 1);
 
-        cleanup_metrics(&stats.counters, METRIC_RETENTION_EPOCHS + 1);
-        assert_eq!(stats.metric_count(), 0);
-    }
+            cleanup_metrics(&stats.counters, METRIC_RETENTION_EPOCHS + 1);
+            assert_eq!(stats.metric_count(), 0);
+        }
 
-    #[tokio::test]
-    async fn test_prometheus_export_format() {
-        let stats_manager = StatsManager::new();
+        #[tokio::test]
+        async fn test_prometheus_export_format() {
+            let stats_manager = StatsManager::new();
 
-        // Create test metrics
-        let counter = stats_manager.get_counter(
-            MetricName::PeerRpcClientTx,
-            LabelSet::new()
-                .with_label_type(LabelType::SrcPeerId(123))
-                .with_label_type(LabelType::ServiceName("test".to_string())),
-        );
-        counter.add(42);
+            // Create test metrics
+            let counter = stats_manager.get_counter(
+                MetricName::PeerRpcClientTx,
+                LabelSet::new()
+                    .with_label_type(LabelType::SrcPeerId(123))
+                    .with_label_type(LabelType::ServiceName("test".to_string())),
+            );
+            counter.add(42);
 
-        // Export to Prometheus format
-        let prometheus_text = stats_manager.export_prometheus();
+            // Export to Prometheus format
+            let prometheus_text = stats_manager.export_prometheus();
 
-        println!("{}", prometheus_text);
+            println!("{}", prometheus_text);
 
-        // Verify the format
-        assert!(prometheus_text.contains("peer_rpc_client_tx"));
-        assert!(prometheus_text.contains("42"));
-        assert!(prometheus_text.contains("src_peer_id=\"123\""));
-        assert!(prometheus_text.contains("service_name=\"test\""));
+            // Verify the format
+            assert!(prometheus_text.contains("peer_rpc_client_tx"));
+            assert!(prometheus_text.contains("42"));
+            assert!(prometheus_text.contains("src_peer_id=\"123\""));
+            assert!(prometheus_text.contains("service_name=\"test\""));
+        }
     }
 }

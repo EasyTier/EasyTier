@@ -127,7 +127,7 @@ impl Client {
 
     pub fn new_with_metrics(metrics: ArcRpcMetrics) -> Self {
         let mut client = Self::new();
-        client.metrics = Some(metrics);
+        client.metrics = metrics.into_rpc_metrics();
         client
     }
 
@@ -273,13 +273,18 @@ impl Client {
                     transaction_id,
                 };
                 let desc = self.service_descriptor();
-                let labels = RpcMetricLabels {
-                    network_name: self.domain_name.clone(),
-                    src_peer_id: self.from_peer_id,
-                    dst_peer_id: self.to_peer_id,
-                    service_name: desc.name().to_string(),
-                    method_name: method.name().to_string(),
-                };
+                let metrics = self.metrics.as_ref().map(|metrics| {
+                    (
+                        metrics,
+                        RpcMetricLabels {
+                            network_name: self.domain_name.clone(),
+                            src_peer_id: self.from_peer_id,
+                            dst_peer_id: self.to_peer_id,
+                            service_name: desc.name().to_string(),
+                            method_name: method.name().to_string(),
+                        },
+                    )
+                });
 
                 self.inflight_requests.insert(
                     key.clone(),
@@ -294,8 +299,8 @@ impl Client {
                     key: key.clone(),
                 };
 
-                if let Some(metrics) = &self.metrics {
-                    metrics.client_tx(&labels);
+                if let Some((metrics, labels)) = &metrics {
+                    metrics.client_tx(labels);
                 }
 
                 let rpc_desc = RpcDescriptor {
@@ -345,9 +350,9 @@ impl Client {
                 let mut rpc_packet = match rpc_ret {
                     Ok(Ok(packet)) => packet,
                     Ok(Err(err)) => {
-                        if let Some(metrics) = &self.metrics {
+                        if let Some((metrics, labels)) = &metrics {
                             metrics.client_error(
-                                &labels,
+                                labels,
                                 Some(format!("{:?}", err)),
                                 start_time.elapsed().as_millis() as u64,
                             );
@@ -356,9 +361,9 @@ impl Client {
                     }
                     Err(err) => {
                         let err = Error::from(err);
-                        if let Some(metrics) = &self.metrics {
+                        if let Some((metrics, labels)) = &metrics {
                             metrics.client_error(
-                                &labels,
+                                labels,
                                 Some(format!("{:?}", err)),
                                 start_time.elapsed().as_millis() as u64,
                             );
@@ -386,9 +391,9 @@ impl Client {
                 let rpc_resp = RpcResponse::decode(Bytes::from(rpc_packet.body))?;
 
                 if let Some(err) = &rpc_resp.error {
-                    if let Some(metrics) = &self.metrics {
+                    if let Some((metrics, labels)) = &metrics {
                         metrics.client_error(
-                            &labels,
+                            labels,
                             Some(format!("{:?}", err.error_kind)),
                             start_time.elapsed().as_millis() as u64,
                         );
@@ -399,8 +404,8 @@ impl Client {
                 let raw_output = Bytes::from(rpc_resp.response);
                 ctrl.set_raw_output(raw_output.clone());
 
-                if let Some(metrics) = &self.metrics {
-                    metrics.client_rx(&labels, start_time.elapsed().as_millis() as u64);
+                if let Some((metrics, labels)) = &metrics {
+                    metrics.client_rx(labels, start_time.elapsed().as_millis() as u64);
                 }
 
                 Ok(raw_output)
@@ -444,5 +449,23 @@ mod test_utils {
         pub fn peer_info_table(&self) -> PeerInfoTable {
             self.peer_info.clone()
         }
+    }
+}
+
+#[cfg(all(test, not(feature = "statistics")))]
+mod metric_tests {
+    use super::*;
+    use crate::foundation::stats::StatsManager;
+
+    #[tokio::test]
+    async fn disabled_statistics_client_does_not_request_metric_labels() {
+        let stats = Arc::new(StatsManager::new());
+        let client = Client::new_with_stats_manager(stats.clone());
+        assert!(client.metrics.is_none());
+        let erased: ArcRpcMetrics = stats;
+        let explicit = Client::new_with_metrics(erased);
+        assert!(explicit.metrics.is_none());
+        client.stop().await;
+        explicit.stop().await;
     }
 }

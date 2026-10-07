@@ -168,9 +168,9 @@ clap = { workspace = true, features = [
     "derive",
     "wrap_help",
     "env",
-] }
-clap_complete = { version = "4.6.10" }
-clap_complete_nushell = { version = "4.6.2" }
+], optional = true }
+clap_complete = { version = "4.6.10", optional = true }
+clap_complete_nushell = { version = "4.6.2", optional = true }
 
 async-recursion = "1.1.1"
 
@@ -197,11 +197,11 @@ atomic-shim.workspace = true
 parking_lot.workspace = true
 
 
-rust-i18n.workspace = true
-sys-locale.workspace = true
+rust-i18n = { workspace = true, optional = true }
+sys-locale = { workspace = true, optional = true }
 
 
-service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main" }
+service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main", optional = true }
 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "268533568d734ae89dc89603078da3ca522effe1", optional = true }
 
@@ -314,6 +314,8 @@ tokio-socks = "0.5.3"
 
 [features]
 default = [
+    "statistics",
+    "noise-full",
     "cli",
     "wireguard",
     "websocket",
@@ -334,6 +336,8 @@ default = [
     "tcp-hole-punch",
 ]
 full = [
+    "statistics",
+    "noise-full",
     "cli",
     "websocket",
     "wireguard",
@@ -360,6 +364,7 @@ quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:qui
 kcp = ["wrapped-transport", "easytier-core/proxy-packet", "dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["easytier-core/aes-gcm"]
+noise-full = ["easytier-core/noise-full"]
 openssl-crypto = ["easytier-core/openssl-crypto"]
 ring-crypto = ["easytier-core/ring-crypto"]
 tun = ["dep:tun", "linux-netlink"]
@@ -389,6 +394,8 @@ jemalloc-prof = [
 tracing = ["tokio/tracing", "dep:console-subscriber", "dep:tracing-subscriber"]
 tracing-log = ["tracing/log", "easytier-core/tracing-log"]
 logging = []
+low-memory = ["easytier-core/low-memory"]
+statistics = ["easytier-core/statistics"]
 dns-resolver = ["dep:hickory-proto", "dep:hickory-resolver"]
 magic-dns = [
     "dep:derive_builder",
@@ -429,6 +436,12 @@ extended-services = [
     "proxy-cidr-monitor",
 ]
 management = [
+    "dep:clap",
+    "dep:clap_complete",
+    "dep:clap_complete_nushell",
+    "dep:rust-i18n",
+    "dep:sys-locale",
+    "dep:service-manager",
     "dep:atomic-write-file",
     "web-client",
     "logging",
@@ -437,7 +450,7 @@ management = [
     "easytier-proto/utils",
     "tokio/full",
 ]
-management-rpc = ["easytier-core/management-rpc"]
+management-rpc = ["easytier-core/management-rpc", "statistics"]
 web-client = ["management-rpc", "easytier-core/web-client"]
 tcp-hole-punch = ["easytier-core/tcp-hole-punch"]
 # Deprecated: hotpath profiling has been removed. These feature aliases are

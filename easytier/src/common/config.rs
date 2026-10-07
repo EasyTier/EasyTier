@@ -40,8 +40,7 @@ pub fn load_toml_config_from_path(path: &PathBuf) -> Result<TomlConfigLoader, an
     TomlConfigLoader::new_from_str_with_source(&path.display().to_string(), &config)
 }
 
-#[cfg(feature = "management-rpc")]
-pub use easytier_core::management::{ConfigFileControl, ConfigFilePermission};
+pub use easytier_core::instance::manager::{ConfigFileControl, ConfigFilePermission};
 
 #[cfg(feature = "management")]
 pub async fn config_file_control_from_path(path: PathBuf) -> ConfigFileControl {

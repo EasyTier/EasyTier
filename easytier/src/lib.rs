@@ -1,6 +1,9 @@
+#[cfg(feature = "management")]
 use std::io;
 
+#[cfg(feature = "management")]
 use clap::Command;
+#[cfg(feature = "management")]
 use clap_complete::{Generator, Shell};
 
 mod arch;
@@ -30,8 +33,10 @@ pub mod web_client;
 mod tests;
 
 pub const VERSION: &str = common::constants::EASYTIER_VERSION;
+#[cfg(feature = "management")]
 rust_i18n::i18n!("locales", fallback = "en");
 
+#[cfg(feature = "management")]
 #[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
 pub enum ShellType {
     Bash,
@@ -42,6 +47,7 @@ pub enum ShellType {
     Nu,
 }
 
+#[cfg(feature = "management")]
 impl ShellType {
     pub fn to_shell(&self) -> Option<Shell> {
         match self {
@@ -55,10 +61,12 @@ impl ShellType {
     }
 }
 
+#[cfg(feature = "management")]
 pub fn print_completions<G: Generator>(generator: G, cmd: &mut Command, bin_name: &str) {
     clap_complete::generate(generator, cmd, bin_name, &mut io::stdout());
 }
 
+#[cfg(feature = "management")]
 pub fn print_nushell_completions(cmd: &mut Command, bin_name: &str) {
     clap_complete::generate(
         clap_complete_nushell::Nushell,

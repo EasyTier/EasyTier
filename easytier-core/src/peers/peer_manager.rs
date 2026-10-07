@@ -3270,14 +3270,22 @@ pub(crate) async fn try_handle_foreign_network_packet(
     let foreign_network_my_peer_id =
         foreign_network_manager.get_network_peer_id(&foreign_network_name);
 
-    let buf_len = packet.buf_len();
-    let label_set =
-        LabelSet::new().with_label_type(LabelType::NetworkName(foreign_network_name.clone()));
-    let add_counter = move |bytes_metric, packets_metric| {
-        stats_manager
-            .get_counter(bytes_metric, label_set.clone())
-            .add(buf_len as u64);
-        stats_manager.get_counter(packets_metric, label_set).inc();
+    #[cfg(feature = "statistics")]
+    let add_counter = {
+        let buf_len = packet.buf_len();
+        let label_set =
+            LabelSet::new().with_label_type(LabelType::NetworkName(foreign_network_name.clone()));
+        move |bytes_metric, packets_metric| {
+            stats_manager
+                .get_counter(bytes_metric, label_set.clone())
+                .add(buf_len as u64);
+            stats_manager.get_counter(packets_metric, label_set).inc();
+        }
+    };
+    #[cfg(not(feature = "statistics"))]
+    let add_counter = {
+        let _ = stats_manager;
+        |_bytes_metric: MetricName, _packets_metric: MetricName| {}
     };
 
     // NOTICE: the to peer id is modified by the src from foreign network my peer id to the origin my peer id
@@ -3699,7 +3707,10 @@ mod tests {
         core.run().await.unwrap();
         let route = core.route_algo_inst.ospf_route().unwrap();
         assert!(route.task_count() > 0);
-        assert!(!core.stats_manager().cleanup_task_is_stopped());
+        assert_eq!(
+            core.stats_manager().cleanup_task_is_stopped(),
+            !cfg!(feature = "statistics")
+        );
         assert!(!core.acl_filter.cleanup_task_is_stopped());
         core.clear_resources().await;
         assert_eq!(route.task_count(), 0);

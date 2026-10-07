@@ -27,6 +27,12 @@ use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
 use self::conn::peer_conn::PeerConnId;
 use crate::config::PeerId;
 
+const PEER_PACKET_QUEUE_CAPACITY: usize = if cfg!(feature = "low-memory") {
+    32
+} else {
+    128
+};
+
 /// The local entry point that created a peer connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PeerConnectionOrigin {
@@ -116,7 +122,7 @@ impl PacketRecvChanReceiver {
 }
 
 pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
-    let (sender, receiver) = tokio::sync::mpsc::channel(128);
+    let (sender, receiver) = tokio::sync::mpsc::channel(PEER_PACKET_QUEUE_CAPACITY);
     (PacketRecvChan(sender), PacketRecvChanReceiver(receiver))
 }
 
@@ -179,3 +185,36 @@ pub trait NicPacketFilter {
 
 pub type BoxPeerPacketFilter = Box<dyn PeerPacketFilter + Send + Sync>;
 pub type BoxNicPacketFilter = Box<dyn NicPacketFilter + Send + Sync>;
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn peer_packet_queue_waits_for_capacity_without_losing_packets() {
+        let (sender, mut receiver) = create_packet_recv_chan();
+        assert_eq!(
+            sender.0.max_capacity(),
+            if cfg!(feature = "low-memory") {
+                32
+            } else {
+                128
+            }
+        );
+        for _ in 0..PEER_PACKET_QUEUE_CAPACITY {
+            sender
+                .send(ZCPacket::new_with_payload(b"queued"))
+                .await
+                .unwrap();
+        }
+        let mut pending = Box::pin(sender.send(ZCPacket::new_with_payload(b"after-capacity")));
+        assert!(futures::poll!(&mut pending).is_pending());
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"queued");
+        pending.await.unwrap();
+
+        for _ in 1..PEER_PACKET_QUEUE_CAPACITY {
+            assert_eq!(receiver.recv().await.unwrap().payload(), b"queued");
+        }
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"after-capacity");
+    }
+}

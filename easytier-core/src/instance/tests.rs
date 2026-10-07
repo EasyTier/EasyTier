@@ -450,8 +450,15 @@ mod portable_runtime {
         >,
     ) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-        let mut adapters = adapters(external_listener_factory, Arc::new(packet_sink));
-        adapters.wrapped_transports = engines;
+        let adapters = adapters(external_listener_factory, Arc::new(packet_sink));
+        #[cfg(feature = "wrapped-transport")]
+        let adapters = {
+            let mut adapters = adapters;
+            adapters.wrapped_transports = engines;
+            adapters
+        };
+        #[cfg(not(feature = "wrapped-transport"))]
+        let _ = engines;
         CoreInstance::new(config, adapters)
     }
 

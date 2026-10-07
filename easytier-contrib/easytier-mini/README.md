@@ -1,31 +1,76 @@
-# easytier-mini
+# easytier-nano
 
-`easytier-mini` is a native EasyTier POC binary. It shares EasyTier's TOML
-configuration model, peer protocol, TCP/UDP tunnel implementations, TUN,
-dynamic IPv4 allocation, the smoltcp userspace path and STUN/UDP hole-punching
-core with the full binary. It includes AES-GCM so its default encryption
-setting interoperates with the full binary's default configuration.
+This fork further reduces the official mini. The default retains encrypted
+TCP/UDP mesh connections, transit relay, OS TUN, static IPv4/IPv6, STUN and
+UDP hole punching. It shares EasyTier's TOML model and peer protocol.
+AES-GCM stays enabled and interoperates with the full binary's defaults.
 
-Download [pre-built binaries](https://github.com/EasyTier/easytier-mini/releases)
-from the separate [easytier-mini repository](https://github.com/EasyTier/easytier-mini),
-which handles builds and releases. The source code is maintained here in the
-main EasyTier repository.
+DHCP, Web management, local RPC, smoltcp, statistics collection and the
+console event logger are **not included by default**. Release tracing/log
+events and the startup banner are also omitted. Optional features can restore
+the capabilities needed by a deployment.
 
-Build it with:
+The executable is named `easytier-nano`. The Cargo package and source directory
+remain `easytier-mini`, so build commands still use `-p easytier-mini`.
+
+The official, unmodified [pre-built binaries](https://github.com/EasyTier/easytier-mini/releases)
+are released from the separate [mini repository](https://github.com/EasyTier/easytier-mini).
+The modified binaries described here must be built from this checkout.
+
+## Build
+
+Stable Rust static x86-64 Linux build, with LLVM `ld.lld` installed:
 
 ```sh
-cargo build --release -p easytier-mini
+rustup target add x86_64-unknown-linux-musl
+cargo rustc --locked --profile mini --target x86_64-unknown-linux-musl -p easytier-mini -- -C link-arg=-fuse-ld=lld
 ```
 
-For the static size target used by this POC:
+For the smallest static x86-64 Linux build:
 
 ```sh
-cargo build --profile mini --target x86_64-unknown-linux-musl -p easytier-mini
+rustup component add rust-src
+./easytier-contrib/easytier-mini/build-small.sh
 ```
 
-MIPS targets use the repository's existing musl-cross toolchains. The helper
-builds the standard library for size, applies immediate-abort only to the mini
-MIPS target graph, and can build either or both byte orders:
+This helper requires `protoc`, a C compiler, LLVM `ld.lld` and `readelf`
+from binutils. It rebuilds the standard library for size, removes
+panic-location metadata and `Debug` formatting, uses immediate abort,
+disables unwind tables and compiles release logging out.
+The output is `target/x86_64-unknown-linux-musl/mini/easytier-nano`.
+It is static PIE with packed relative relocations and identical-code
+folding, without UPX or another executable compressor.
+The helper verifies the ELF with `readelf` and rejects an interpreter
+(`INTERP`) or external shared-library dependency (`NEEDED`).
+
+The standard-library and immediate-abort options require unstable Rust
+flags. The helper enables `RUSTC_BOOTSTRAP` only for its invocation on the
+pinned toolchain. `-Zfmt-debug=none` applies only to the target crate graph
+built by this helper: debug-rendered values in panic or internal error
+details can disappear. Explicit startup/configuration errors still use
+`Display` formatting and go to stderr. Other workspace builds keep their
+usual panic and formatting policy. Use the ordinary Cargo command when
+these diagnostic tradeoffs or unstable options are undesirable.
+
+Additional Cargo options can follow the target:
+
+```sh
+./easytier-contrib/easytier-mini/build-small.sh x86_64-unknown-linux-musl --features web-client
+./easytier-contrib/easytier-mini/build-small.sh x86_64-unknown-linux-musl --features dhcp
+```
+
+The default requires a static virtual IP for TUN use; the second command
+restores dynamic IPv4 allocation. A relay-only node, with no virtual IP,
+can omit `tun` with an ordinary Cargo build:
+
+```sh
+cargo rustc --locked --profile mini --target x86_64-unknown-linux-musl -p easytier-mini --no-default-features --features low-memory,strip-logs -- -C link-arg=-fuse-ld=lld
+```
+
+MIPS builds retain the existing musl-cross helper, with the same release-log
+and panic-location/Debug stripping. Their executable is also
+`easytier-nano`. The MIPS helper requires `readelf` and performs the same
+`INTERP`/`NEEDED` static-link checks:
 
 ```sh
 ./easytier-contrib/easytier-mini/build-mips.sh all
@@ -33,86 +78,147 @@ MIPS target graph, and can build either or both byte orders:
 ./easytier-contrib/easytier-mini/build-mips.sh mipsel
 ```
 
-The `mini` profile derives from `release` and applies `opt-level=z` to the
-entire compact binary dependency graph. Full EasyTier release builds retain
-their normal `opt-level=3` profile. The musl builds use a mini-only static
-linker policy to stay below 5,000,000 bytes on x86-64 and 5,500,000 bytes on
-MIPS without UPX or another executable compressor. The compact x86-64 linker
-policy retains static PIE, packs relative relocations and folds identical code.
-MIPS builds omit standard-library backtrace support and use immediate abort;
-normal workspace MIPS builds are not affected. Compact linker policies omit
-unwind tables.
+The `mini` profile uses `opt-level=z`, LTO, one codegen unit and stripped
+symbols. Full EasyTier release builds keep their normal `opt-level=3`.
 
-Start it with a normal EasyTier TOML file:
+## Optional Features
 
-```sh
-easytier-mini --config mini.toml
-```
+| Feature | Capability |
+| --- | --- |
+| `tun` | Native virtual interface; default |
+| `dhcp` | Dynamic IPv4 allocation |
+| `low-memory` | Smaller bounded queues; default |
+| `statistics` | Runtime observability counters and traffic recorders |
+| `logging` | Console runtime events and warnings |
+| `smoltcp` | Userspace stack for `no_tun` and `use_smoltcp` |
+| `proxy-cidr-monitor` | Proxy CIDR monitoring and manual routes |
+| `rpc` | Read-only native management RPC and statistics |
+| `web-client` | Web heartbeats, managed instance lifecycle and patches; includes RPC |
+| `strip-logs` | Compile release tracing/log events out and omit startup banner; default |
+| `official` | Original mini capabilities and Noise resolver algorithm set |
 
-`-c` is accepted as the short form of `--config`.
-
-Start it as an EasyTier Web managed node with a complete config-server URL:
-
-```sh
-easytier-mini --config-server udp://config-server.easytier.cn:22020/TOKEN
-```
-
-`--machine-id`, `--hostname`, and `--secure-mode` match the full client's Web
-identity and transport options. `--config` and `--config-server` may be used
-together: the local instance remains static while Web-owned instances are
-created, updated, retained, and deleted independently.
-
-The node also exposes the native EasyTier management RPC protocol on
-`127.0.0.1:15888`, so the full `easytier-cli` can inspect it:
+Restore the original capabilities and queue sizes:
 
 ```sh
-easytier-cli node info
-easytier-cli peer
-easytier-cli route
-easytier-cli connector list
+cargo rustc --locked --profile mini --target x86_64-unknown-linux-musl -p easytier-mini --no-default-features --features official -- -C link-arg=-fuse-ld=lld
 ```
 
-For example:
+Restore only DHCP on the stripped default:
+
+```sh
+cargo rustc --locked --profile mini --target x86_64-unknown-linux-musl -p easytier-mini --features dhcp -- -C link-arg=-fuse-ld=lld
+```
+
+Enable console events while retaining TUN and smaller queues:
+
+```sh
+cargo rustc --locked --profile mini --target x86_64-unknown-linux-musl -p easytier-mini --no-default-features --features tun,low-memory,logging -- -C link-arg=-fuse-ld=lld
+```
+
+`strip-logs` is additive: combining it with `logging` still strips release
+events. Merely adding `--features logging` to the default does not restore
+them; omit `strip-logs` as in the recipe above. Both size helpers explicitly
+enable `strip-logs`, so use ordinary Cargo for logging-enabled builds.
+Startup/configuration errors continue to go to stderr. Build just
+`-p easytier-mini`: workspace-wide Cargo feature unification can otherwise
+pull full features into nano or apply nano's memory/log policy to other
+binaries built together.
+
+## Run
+
+```sh
+easytier-nano --config nano.toml
+```
+
+`-c` is also accepted. A basic configuration:
 
 ```toml
-instance_name = "mini"
+instance_name = "nano"
 ipv4 = "10.147.0.2"
 listeners = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"]
 
 [network_identity]
-network_name = "mini-poc"
+network_name = "my-network"
 network_secret = "change-me"
 
 [[peer]]
 uri = "tcp://example.net:11010"
 ```
 
-Local TOML and Web configuration both retain the complete authoritative model.
-The compact runtime silently omits unsupported capabilities while normalizing
-that model into live runtime state. EasyTier Web therefore sees every accepted
-configuration value unchanged and its consistency checks converge. This also
-applies to hot patches: for example, a port-forward patch remains visible to
-the controller while no port-forward service starts in mini. ChaCha20 falls
-back to AES-GCM rather than plaintext.
+With the `dhcp` feature enabled, set `dhcp = true` instead of `ipv4` for
+dynamic allocation. The default reports this setting as an error because
+DHCP is omitted. An OS TUN needs the usual administrator privileges.
+A relay-only node needs no virtual IP. The default opens no management
+port, creates no Web heartbeat tasks and omits management statistics.
 
-The compact runtime supports `tcp://` and `udp://` listener, mapped-listener
-and peer URLs. `no_tun = true` runs through smoltcp without an OS TUN device,
-and `dhcp = true` allocates the virtual IPv4 address dynamically.
+With `web-client` enabled:
 
-The mini feature set keeps STUN collection, UDP hole punching, Web heartbeats,
-Web instance lifecycle management and the config hot-patch RPC. It omits TCP
-hole punching, endpoint discovery (`http://`, `https://`, `txt://` and
-`srv://` peers), protobuf reflection, logger control and the rest of the full
-management surface. Unsupported connector URLs are accepted as no-ops. Its
-local RPC surface remains read-only for node, peer, route and connector
-queries. OSPF route messages keep their original protobuf wire data, so fields
-added by future EasyTier versions are forwarded without requiring
-`prost-reflect`.
+```sh
+easytier-nano --config-server udp://config-server.easytier.cn:22020/TOKEN
+```
 
-For size, this POC reads one file directly and does not support configuration
-from stdin or `${VAR}` expansion. It omits the process-management event journal,
-while the console logger still reports runtime events such as peer, connection,
-listener, TUN and DHCP changes. The RPC address is currently fixed, so only one
-mini process can use the default portal on a host. The x86-64 musl POC cannot
-provide reliable stack backtraces because its release binary has no unwind
-tables.
+`--machine-id`, `--hostname` and `--secure-mode` retain the full client's
+Web identity/transport meanings. Local and Web configurations can be used
+together. Web-owned instances remain independently created, updated and
+deleted. Accepted authoritative configurations remain unchanged.
+
+With `rpc` enabled, the full `easytier-cli` can inspect node, peer, route
+and connector status at `127.0.0.1:15888`. Override it with
+`--rpc-portal 127.0.0.1:15889` to run another node on the same host.
+
+## Resource Policy
+
+`low-memory` reduces peer ingress, host egress and UDP session queues from
+128 to 32 entries. UDP's four reserved control slots and backpressure
+remain intact. STUN response retention shrinks from 1,024 to 32 entries.
+This trades burst absorption for memory savings: UDP ingress can drop
+excess datagrams sooner. Packet sizes and MTU are not reduced. Select
+`--no-default-features --features tun,dhcp` to retain larger queues.
+
+Statistics recording is omitted from the default; enabling `rpc` or
+`official` restores the counters needed by management views.
+
+The 65,535-port random permutation for hard symmetric NAT is created only
+on the first such request, saving 131,070 payload bytes per instance
+beforehand. Once initialized it persists to preserve request index
+continuity. The same complete shuffle and punching algorithm are retained.
+
+The compact native Noise resolver includes only the 25519/ChaChaPoly/SHA256
+algorithms used by the protocol. It does not remove secure-mode handshakes
+or AES-GCM data encryption. Full-node and `official` builds retain the
+complete Noise resolver algorithm set.
+
+## Limits
+
+Unsupported full-node capabilities are normalized out of runtime state,
+as in official mini. ChaCha20 falls back to AES-GCM, not plaintext.
+However, missing features needed for a virtual interface or DHCP are
+reported as errors; `no_tun` with a virtual IP needs `smoltcp`.
+Manual routes need `proxy-cidr-monitor`. Use the original feature set for
+the official mini userspace/subnet-proxy path.
+
+TCP hole punching, endpoint discovery (`http`, `https`, `txt`, `srv`),
+protobuf reflection and full management services remain excluded.
+Unsupported peer/listener URL schemes retain the official no-op behavior.
+Local config reads one file, without stdin or `${VAR}` expansion.
+OSPF messages retain original wire data for unknown-field forwarding.
+The smallest binary cannot provide useful panic backtraces.
+
+## Verification
+
+Run isolated Linux network tests as root:
+
+```sh
+ET_MINI_TEST_SKIP_DHCP=1 ./easytier-contrib/easytier-mini/test-network.sh /absolute/path/to/easytier-nano
+ET_MINI_TEST_SKIP_DHCP=1 ./easytier-contrib/easytier-mini/test-network.sh /absolute/path/to/easytier-nano /absolute/path/to/upstream-mini
+```
+
+The script checks encrypted TCP/UDP TUN traffic, exact TCP/UDP payload
+round trips and forced three-node relay. With a `dhcp`-enabled build,
+omit `ET_MINI_TEST_SKIP_DHCP=1` to also check distinct DHCP addresses.
+It reports RSS/thread samples and removes only its own namespaces.
+`ET_MINI_TEST_KEEP_LOGS=1` retains configs and logs.
+`ET_MINI_TEST_IPV6=1` adds static IPv6 ping and payload checks.
+`ET_MINI_TEST_SKIP_DHCP=1` tests a static-address-only binary without DHCP.
+
+See [SIZE_REPORT.md](SIZE_REPORT.md) for the measured comparison and its scope.

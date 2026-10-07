@@ -1603,10 +1603,11 @@ mod tests {
 
     use crate::peers::whitelist::check_network_in_relay_whitelist;
 
+    #[cfg(feature = "statistics")]
+    use crate::foundation::stats::{LabelSet, LabelType, MetricName};
     use crate::{
         config::peers::PeerRuntimeSnapshot,
         config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
-        foundation::stats::{LabelSet, LabelType, MetricName},
         peers::{
             conn::{peer_map::PeerMap, peer_session::PeerSessionStore},
             context::{
@@ -1987,14 +1988,18 @@ mod tests {
         assert_eq!(foreign.stun_info().public_ip, vec!["203.0.113.2"]);
 
         foreign.record_control_tx("foreign", 64);
-        let labels = LabelSet::new().with_label_type(LabelType::NetworkName("foreign".to_owned()));
-        assert_eq!(
-            parent
-                .stats_manager()
-                .get_metric(MetricName::TrafficControlBytesTx, &labels)
-                .unwrap()
-                .value,
-            64
-        );
+        #[cfg(feature = "statistics")]
+        {
+            let labels =
+                LabelSet::new().with_label_type(LabelType::NetworkName("foreign".to_owned()));
+            assert_eq!(
+                parent
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficControlBytesTx, &labels)
+                    .unwrap()
+                    .value,
+                64
+            );
+        }
     }
 }
