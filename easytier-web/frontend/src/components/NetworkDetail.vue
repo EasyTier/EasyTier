@@ -1499,7 +1499,7 @@ const switchTab = async (tab: string) => {
                                 {{ data.conn.stats ? latencyLabel(data.conn.stats.latency_us ? data.conn.stats.latency_us / 1000 : undefined) : '—' }}
                             </template></Column>
                             <Column :header="t('web.network_detail.loss_rate')"><template #body="{ data }">
-                                {{ data.conn.loss_rate != null ? (data.conn.loss_rate * 100).toFixed(1) + '%' : '—' }}
+                                {{ ((data.conn.loss_rate ?? 0) * 100).toFixed(1) + '%' }}
                             </template></Column>
                             <Column :header="t('web.network_detail.traffic')"><template #body="{ data }">
                                 <span class="font-mono text-xs">↓{{ ((data.conn.stats?.rx_bytes ?? 0) / 1024).toFixed(0) }}K ↑{{ ((data.conn.stats?.tx_bytes ?? 0) / 1024).toFixed(0) }}K</span>
