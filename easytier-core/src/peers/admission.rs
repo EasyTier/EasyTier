@@ -63,7 +63,7 @@ impl AcceptedTunnelHandler for PeerAcceptedTunnelHandler {
             tracing::error!(error = %error, "handle conn error");
             return Err(anyhow::anyhow!(error));
         };
-        if let Err(error) = peer_manager.add_tunnel_as_server(tunnel, true).await {
+        if let Err(error) = peer_manager.add_tunnel_as_server(tunnel).await {
             self.events.emit(CoreEvent::TunnelAdmissionFailed {
                 local_url,
                 remote_url,

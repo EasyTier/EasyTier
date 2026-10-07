@@ -285,7 +285,6 @@ async fn peer_channel_uses_admission_origin_instead_of_packet_header() {
     );
     client_ret.unwrap();
     server_ret.unwrap();
-    server_conn.set_is_hole_punched(false);
     let server_conn_id = server_conn.get_conn_id();
 
     let (client_tx, _client_rx) = create_packet_recv_chan();

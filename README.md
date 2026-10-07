@@ -71,6 +71,8 @@ cargo install --git https://github.com/EasyTier/EasyTier.git easytier
 
 [Install pre-built binary](https://github.com/EasyTier/EasyTier/releases) (Recommended, All platforms supported)
 
+For a smaller executable, try [easytier-mini](https://github.com/EasyTier/easytier-mini), which supports basic TCP/UDP networking. See its documentation for supported features and usage.
+
 [Install via Docker](https://easytier.cn/en/guide/installation.html#installation-methods)
 
 [Install OpenWrt ipk package](https://github.com/EasyTier/luci-app-easytier)

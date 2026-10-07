@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod listener_tests;
 mod managed_config;
 mod runtime_reconcile;
 pub mod session;
@@ -42,6 +44,7 @@ const MAX_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const MIN_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(120);
 const HEARTBEAT_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+const MAX_PENDING_HANDSHAKES: usize = 4096;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HeartbeatPolicy {
@@ -203,40 +206,57 @@ impl ClientManager {
         let feature_flags = self.feature_flags.clone();
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
-            while let Ok(tunnel) = listener.accept().await {
-                let (tunnel, secure) = match web_security::accept_or_upgrade_server_tunnel(
-                    tunnel,
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(error) => {
-                        tracing::warn!(%error, "failed to accept secure tunnel, dropping connection");
-                        continue;
-                    }
-                };
-                let info = tunnel.info().unwrap();
-                let client_url: url::Url = info.remote_addr.unwrap().into();
-                let location = Self::lookup_location(&client_url, geoip_db.clone());
-                tracing::info!(
-                    "New session from {:?}, secure: {}, location: {:?}",
-                    client_url,
-                    secure,
-                    location
-                );
-                let mut session = Session::new(
-                    storage.clone(),
-                    client_url.clone(),
-                    location,
-                    heartbeat_policy,
-                    feature_flags.clone(),
-                    webhook_config.clone(),
-                    next_session_epoch.fetch_add(1, Ordering::Relaxed) + 1,
-                );
-                session.serve(tunnel).await;
-                let session = Arc::new(session);
-                sessions.insert(client_url, session.clone());
-                session.mark_route_ready();
+            let mut handshakes = JoinSet::new();
+            'accept: loop {
+                // Some listeners include a WebSocket upgrade in accept(). Keep
+                // that future alive while processing completed handshakes.
+                let accepting = listener.accept();
+                tokio::pin!(accepting);
+                loop {
+                    let result = tokio::select! {
+                        accepted = &mut accepting, if handshakes.len() < MAX_PENDING_HANDSHAKES => {
+                            let Ok(tunnel) = accepted else { break 'accept };
+                            handshakes.spawn(web_security::accept_or_upgrade_server_tunnel(tunnel));
+                            break;
+                        }
+                        result = handshakes.join_next(), if !handshakes.is_empty() => {
+                            result.unwrap()
+                        }
+                    };
+                    let (tunnel, secure) = match result {
+                        Ok(Ok(value)) => value,
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "failed to accept secure tunnel, dropping connection");
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "secure tunnel handshake task failed");
+                            continue;
+                        }
+                    };
+                    let info = tunnel.info().unwrap();
+                    let client_url: url::Url = info.remote_addr.unwrap().into();
+                    let location = Self::lookup_location(&client_url, geoip_db.clone());
+                    tracing::info!(
+                        "New session from {:?}, secure: {}, location: {:?}",
+                        client_url,
+                        secure,
+                        location
+                    );
+                    let mut session = Session::new(
+                        storage.clone(),
+                        client_url.clone(),
+                        location,
+                        heartbeat_policy,
+                        feature_flags.clone(),
+                        webhook_config.clone(),
+                        next_session_epoch.fetch_add(1, Ordering::Relaxed) + 1,
+                    );
+                    session.serve(tunnel).await;
+                    let session = Arc::new(session);
+                    sessions.insert(client_url, session.clone());
+                    session.mark_route_ready();
+                }
             }
             listeners_cnt.fetch_sub(1, Ordering::Relaxed);
         });

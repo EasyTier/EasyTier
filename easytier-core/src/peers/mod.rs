@@ -27,9 +27,14 @@ use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
 use self::conn::peer_conn::PeerConnId;
 use crate::config::PeerId;
 
+/// The local entry point that created a peer connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PeerConnectionOrigin {
-    Network,
+    Manual,
+    Direct,
+    Listener,
+    TcpHolePunch,
+    UdpHolePunch,
     Attached,
 }
 

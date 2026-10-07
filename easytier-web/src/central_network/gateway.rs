@@ -379,7 +379,7 @@ impl NetworkInstanceManager {
         tokio::select! {
             biased;
             _ = retiring.cancelled() => None,
-            result = peer_manager.add_tunnel_as_server(tunnel, true) => Some(result),
+            result = peer_manager.add_tunnel_as_server(tunnel) => Some(result),
         }
     }
 

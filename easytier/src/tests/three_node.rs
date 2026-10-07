@@ -3048,7 +3048,7 @@ async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
             url,
         )
         .await?;
-        core.admit_client_tunnel_for_test(tunnel, true)
+        core.admit_client_tunnel_for_test(tunnel)
             .await
             .map(|_| ())
             .map_err(anyhow::Error::from)

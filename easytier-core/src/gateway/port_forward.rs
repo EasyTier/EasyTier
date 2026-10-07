@@ -892,21 +892,17 @@ mod tests {
         response_tasks.insert(replacement.clone(), pending_response_task(replacement_slot));
         drop(admission_guard);
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while clients.contains_key(&replacement) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(!response_tasks.contains_key(&replacement));
-
+        // Release the test's permit reference and wait for the full eviction;
+        // the client and response-task entries are removed separately.
         drop(replacement_client);
         let second_slot = tokio::time::timeout(Duration::from_secs(1), second)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
+
+        assert!(!clients.contains_key(&replacement));
+        assert!(!response_tasks.contains_key(&replacement));
 
         drop(second_slot);
         tokio::task::yield_now().await;
