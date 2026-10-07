@@ -15,23 +15,24 @@ impl<T: Buf> BufList<T> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn push(&mut self, buf: T) {
-        debug_assert!(buf.has_remaining());
-        self.bufs.push_back(buf);
+        if buf.has_remaining() {
+            self.bufs.push_back(buf);
+        }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn pop(&mut self) -> Option<T> {
         self.bufs.pop_front()
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.bufs.len()
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.bufs.is_empty()
     }
@@ -39,17 +40,15 @@ impl<T: Buf> BufList<T> {
 
 impl<T: Buf> Extend<T> for BufList<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        self.bufs.extend(
-            iter.into_iter()
-                .inspect(|buf| debug_assert!(buf.has_remaining())),
-        );
+        self.bufs
+            .extend(iter.into_iter().filter(Buf::has_remaining));
     }
 }
 
 impl<T: Buf> Buf for BufList<T> {
     #[inline]
     fn remaining(&self) -> usize {
-        self.bufs.iter().map(|buf| buf.remaining()).sum()
+        self.bufs.iter().map(Buf::remaining).sum()
     }
 
     #[inline]
@@ -59,33 +58,30 @@ impl<T: Buf> Buf for BufList<T> {
 
     #[inline]
     fn chunks_vectored<'t>(&'t self, dst: &mut [IoSlice<'t>]) -> usize {
-        if dst.is_empty() {
-            return 0;
-        }
         let mut vecs = 0;
+
         for buf in &self.bufs {
-            vecs += buf.chunks_vectored(&mut dst[vecs..]);
-            if vecs == dst.len() {
+            let n = buf.chunks_vectored(&mut dst[vecs..]);
+            vecs += n;
+
+            if dst[vecs - n..vecs].iter().map(|s| s.len()).sum::<usize>() < buf.remaining() {
                 break;
             }
         }
+
         vecs
     }
 
     #[inline]
     fn advance(&mut self, mut cnt: usize) {
         while cnt > 0 {
-            {
-                let front = &mut self.bufs[0];
-                let rem = front.remaining();
-                if rem > cnt {
-                    front.advance(cnt);
-                    return;
-                } else {
-                    front.advance(rem);
-                    cnt -= rem;
-                }
+            let front = &mut self.bufs[0];
+            let rem = front.remaining();
+            front.advance(cnt.min(rem));
+            if rem > cnt {
+                return;
             }
+            cnt -= rem;
             self.bufs.pop_front();
         }
     }
@@ -94,20 +90,21 @@ impl<T: Buf> Buf for BufList<T> {
     fn copy_to_bytes(&mut self, len: usize) -> Bytes {
         // Our inner buffer may have an optimized version of copy_to_bytes, and if the whole
         // request can be fulfilled by the front buffer, we can take advantage.
-        match self.bufs.front_mut() {
-            Some(front) if front.remaining() == len => {
-                let b = front.copy_to_bytes(len);
+        if let Some(front) = self.bufs.front_mut()
+            && let rem = front.remaining()
+            && len <= rem
+        {
+            let bytes = front.copy_to_bytes(len);
+            if len == rem {
                 self.bufs.pop_front();
-                b
             }
-            Some(front) if front.remaining() > len => front.copy_to_bytes(len),
-            _ => {
-                assert!(len <= self.remaining(), "`len` greater than remaining");
-                let mut bm = BytesMut::with_capacity(len);
-                bm.put(self.take(len));
-                bm.freeze()
-            }
+            return bytes;
         }
+
+        assert!(len <= self.remaining());
+        let mut bytes = BytesMut::with_capacity(len);
+        bytes.put(self.take(len));
+        bytes.freeze()
     }
 }
 
@@ -124,5 +121,36 @@ mod tests {
         let bytes = list.copy_to_bytes(11);
         assert_eq!(&bytes[..], b"hello world");
         assert_eq!(list.remaining(), 0);
+    }
+
+    #[test]
+    fn test_chunks_vectored_partial_inner_buf() {
+        #[derive(Debug)]
+        struct PartialBuf(&'static [u8]);
+
+        impl Buf for PartialBuf {
+            fn remaining(&self) -> usize {
+                self.0.len()
+            }
+
+            fn chunk(&self) -> &[u8] {
+                &self.0[..self.0.len().min(1)]
+            }
+
+            fn advance(&mut self, cnt: usize) {
+                self.0 = &self.0[cnt..];
+            }
+        }
+
+        let mut list = BufList::new();
+        list.push(PartialBuf(b"ab"));
+        list.push(PartialBuf(b"c"));
+
+        let mut dst = [IoSlice::new(&[]); 3];
+
+        let n = list.chunks_vectored(&mut dst);
+
+        assert_eq!(n, 1);
+        assert_eq!(&*dst[0], b"a");
     }
 }

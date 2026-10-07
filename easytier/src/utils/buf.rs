@@ -14,10 +14,17 @@ pub struct BufMargins {
 impl BufMargins {
     #[inline(always)]
     pub fn size(&self) -> usize {
-        self.header + self.trailer
+        self.header.checked_add(self.trailer).unwrap()
     }
 }
 
+/// A reusable packet buffer pool.
+///
+/// # Initialization contract
+///
+/// Buffers may contain uninitialized bytes in their [`BufMargins::header`] and
+/// [`BufMargins::trailer`] regions. These regions must be fully initialized
+/// before they are read or otherwise consumed.
 #[derive(Debug)]
 pub struct BufPool {
     pool: BytesMut,
@@ -40,6 +47,10 @@ impl BufPool {
         }
     }
 
+    /// Returns the accumulated buffer.
+    ///
+    /// The caller must ensure all reserved header and trailer regions have been
+    /// initialized before reading or consuming the returned buffer.
     #[inline(always)]
     pub fn split(&mut self) -> BytesMut {
         self.pool.split()
@@ -47,8 +58,10 @@ impl BufPool {
 
     #[inline]
     pub fn write(&mut self, chunk: &[u8], margins: BufMargins) {
-        let len = margins.size() + chunk.len();
+        let len = margins.size().checked_add(chunk.len()).unwrap();
         self.reserve(len);
+        // Header and trailer are intentionally left uninitialized. Users of this
+        // buffer must initialize both regions before reading or consuming it.
         unsafe {
             copy_nonoverlapping(
                 chunk.as_ptr(),
@@ -59,6 +72,10 @@ impl BufPool {
         }
     }
 
+    /// Writes `chunk` with the requested margins and returns the resulting buffer.
+    ///
+    /// The header and trailer regions are left uninitialized and must be filled
+    /// before the returned buffer is read or consumed.
     #[inline(always)]
     pub fn buf(&mut self, chunk: &[u8], margins: BufMargins) -> BytesMut {
         self.write(chunk, margins);
@@ -77,6 +94,12 @@ impl BufPool {
     }
 }
 
+/// A writer into a [`BufPool`].
+///
+/// # Initialization contract
+///
+/// Committing data does not initialize the reserved header or trailer regions.
+/// They must be fully initialized before the resulting buffer is read or consumed.
 #[derive(Debug)]
 pub struct BufPoolWriter<'t> {
     pool: &'t mut BufPool,
@@ -87,32 +110,43 @@ pub struct BufPoolWriter<'t> {
 impl<'t> BufPoolWriter<'t> {
     #[inline(always)]
     pub fn reserve(&mut self, additional: usize) {
-        if self.capacity < additional {
-            self.pool.reserve(additional);
-            self.capacity += additional;
-        }
+        let capacity = self.capacity.checked_add(additional).unwrap();
+        self.pool.reserve(capacity);
+        self.capacity = capacity;
     }
 
+    /// Returns the accumulated buffer.
+    ///
+    /// Reserved header and trailer regions must be initialized before the returned
+    /// buffer is read or consumed.
     #[inline(always)]
     pub fn split(&mut self) -> BytesMut {
         self.pool.split()
     }
 
     #[inline(always)]
+    pub fn remaining(&self) -> usize {
+        self.capacity.saturating_sub(self.margins.size())
+    }
+
+    #[inline(always)]
     pub fn as_slice(&mut self) -> &mut [MaybeUninit<u8>] {
-        unsafe {
-            self.pool
-                .pool
-                .spare_capacity_mut()
-                .get_unchecked_mut(self.margins.header..self.capacity - self.margins.trailer)
+        let remaining = self.remaining();
+        if remaining == 0 {
+            &mut []
+        } else {
+            &mut self.pool.pool.spare_capacity_mut()
+                [self.margins.header..self.margins.header + remaining]
         }
     }
 
     #[inline(always)]
     pub fn commit(&mut self, written: usize) {
-        let len = self.margins.size() + written;
+        let len = self.margins.size().checked_add(written).unwrap();
         assert!(self.capacity >= len);
         self.capacity -= len;
+        // `commit` marks the margins as part of the buffer without initializing them.
+        // They must be initialized before the resulting buffer is consumed.
         unsafe {
             self.pool.pool.advance_mut(len);
         }
@@ -141,8 +175,8 @@ impl<const SIZE: usize> FixedBufPool<SIZE> {
 #[derive(Debug, Deref, DerefMut, AsRef, AsMut)]
 pub struct FixedBufGuard<'p, const SIZE: usize> {
     pool: &'p FixedBufPool<SIZE>,
-    #[deref]
-    #[deref_mut]
+    #[deref(forward)]
+    #[deref_mut(forward)]
     #[as_ref([u8])]
     #[as_mut([u8])]
     buf: Vec<u8>,
