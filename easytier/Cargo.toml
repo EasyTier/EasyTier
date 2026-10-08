@@ -416,6 +416,7 @@ upnp = [
 ]
 endpoint-discovery = [
     "dns-resolver",
+    "dep:rustls",
     "easytier-core/endpoint-discovery",
 ]
 dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]
