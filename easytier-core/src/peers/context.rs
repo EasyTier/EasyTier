@@ -1651,7 +1651,8 @@ pub(crate) mod tests {
     ) -> CorePeerContext {
         let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
         snapshot.set_acl_groups(acl);
-        let config = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot), None);
+        let config =
+            CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot), None);
         CorePeerContext::new(
             config,
             Arc::new(()),

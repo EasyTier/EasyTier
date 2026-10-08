@@ -339,10 +339,7 @@ mod tests {
         );
 
         let initial_demand = registry.snapshot();
-        assert_eq!(
-            initial_demand[0].as_ref(),
-            &RouteDemand::ManualProxy(None)
-        );
+        assert_eq!(initial_demand[0].as_ref(), &RouteDemand::ManualProxy(None));
 
         // Update unrelated service: registration remains untouched
         store.update_services(|s| s.dhcp_ipv4 = true);

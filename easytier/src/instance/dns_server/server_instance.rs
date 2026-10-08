@@ -41,11 +41,11 @@ use easytier_core::gateway::magic_dns::{
 };
 use easytier_core::host::route::RouteDemand;
 use easytier_core::instance::CorePacketPlane;
-use registry::Registration;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use registry::Registration;
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 

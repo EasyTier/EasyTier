@@ -2482,12 +2482,11 @@ impl PeerRouteServiceImpl {
             return;
         };
         let cidrs = self.route_table.list_proxy_cidrs_excluding(self.my_peer_id);
-        if let Some(prev) = registration.get() {
-            if let RouteDemand::AutoProxy(prev_cidrs) = prev.as_ref() {
-                if prev_cidrs == &cidrs {
-                    return;
-                }
-            }
+        if let Some(prev) = registration.get()
+            && let RouteDemand::AutoProxy(prev_cidrs) = prev.as_ref()
+            && prev_cidrs == &cidrs
+        {
+            return;
         }
         let _ = registration.replace(RouteDemand::AutoProxy(cidrs));
     }

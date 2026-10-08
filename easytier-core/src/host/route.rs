@@ -184,7 +184,10 @@ mod tests {
         ];
 
         let err = resolve_route_demands(&demands).unwrap_err();
-        assert!(err.to_string().contains("multiple manual proxy route demands"));
+        assert!(
+            err.to_string()
+                .contains("multiple manual proxy route demands")
+        );
     }
 
     #[test]

@@ -74,7 +74,6 @@ impl CorePacketPlane {
         )
     }
 
-
     pub async fn public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
         self.peer_manager.list_public_ipv6_routes().await
     }

@@ -7,7 +7,7 @@ pub use backend::PlatformRouteBackend;
 pub use backend::RouteBackend;
 
 pub use easytier_core::host::route::{
-    resolve_proxy_cidrs, resolve_route_demands, RouteDemand, RouteHandle, RouteSet,
+    RouteDemand, RouteHandle, RouteSet, resolve_proxy_cidrs, resolve_route_demands,
 };
 pub use manager::RouteMgr;
 pub use model::{CleanupIncomplete, DeviceId, Route, RouteError};

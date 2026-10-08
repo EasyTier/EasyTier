@@ -259,12 +259,15 @@ mod tests {
         runtime_host.request_runtime_shutdown();
 
         // Registry is closed synchronously
-        assert!(handle
-            .register(RouteDemand::Additional(BTreeSet::new()))
-            .is_none());
-        assert!(reg
-            .replace(RouteDemand::Additional(BTreeSet::new()))
-            .is_none());
+        assert!(
+            handle
+                .register(RouteDemand::Additional(BTreeSet::new()))
+                .is_none()
+        );
+        assert!(
+            reg.replace(RouteDemand::Additional(BTreeSet::new()))
+                .is_none()
+        );
         assert!(global_ctx.get_route_handle().is_none());
     }
 
@@ -292,21 +295,29 @@ mod tests {
 
         // Shut down A
         runtime_host_a.request_runtime_shutdown();
-        assert!(handle_a
-            .register(RouteDemand::Additional(BTreeSet::new()))
-            .is_none());
-        assert!(reg_a
-            .replace(RouteDemand::Additional(BTreeSet::new()))
-            .is_none());
+        assert!(
+            handle_a
+                .register(RouteDemand::Additional(BTreeSet::new()))
+                .is_none()
+        );
+        assert!(
+            reg_a
+                .replace(RouteDemand::Additional(BTreeSet::new()))
+                .is_none()
+        );
         assert!(global_ctx_a.get_route_handle().is_none());
 
         // B remains fully functional
-        assert!(handle_b
-            .register(RouteDemand::Additional(BTreeSet::new()))
-            .is_some());
-        assert!(reg_b
-            .replace(RouteDemand::Additional(BTreeSet::new()))
-            .is_some());
+        assert!(
+            handle_b
+                .register(RouteDemand::Additional(BTreeSet::new()))
+                .is_some()
+        );
+        assert!(
+            reg_b
+                .replace(RouteDemand::Additional(BTreeSet::new()))
+                .is_some()
+        );
         assert!(global_ctx_b.get_route_handle().is_some());
     }
 
