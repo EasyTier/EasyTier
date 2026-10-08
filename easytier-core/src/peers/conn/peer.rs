@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
 use parking_lot::{Mutex, RwLock};
 

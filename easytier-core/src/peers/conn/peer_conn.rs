@@ -1,5 +1,5 @@
 use arc_swap::ArcSwapOption;
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use futures::{StreamExt, TryFutureExt};
 use std::{
     any::Any,

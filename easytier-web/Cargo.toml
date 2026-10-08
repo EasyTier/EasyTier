@@ -16,7 +16,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 dashmap.workspace = true
 url.workspace = true
 async-trait.workspace = true
-futures.workspace = true
+futures = { workspace = true, features = ["default"] }
 prost.workspace = true
 
 maxminddb = "0.32"

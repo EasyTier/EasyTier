@@ -8,7 +8,7 @@ use std::{
 };
 
 use cidr::Ipv4Inet;
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use dashmap::{DashMap, mapref::entry::Entry};
 use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket};
 

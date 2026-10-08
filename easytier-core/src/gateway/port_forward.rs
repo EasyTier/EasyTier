@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use dashmap::DashMap;
 use quanta::Instant;
 use tokio::{

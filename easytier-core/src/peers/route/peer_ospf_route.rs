@@ -12,7 +12,7 @@ use std::{
 use arc_swap::ArcSwap;
 use atomic_shim::AtomicU64;
 use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr, Ipv6Inet};
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use dashmap::DashMap;
 use ordered_hash_map::OrderedHashMap;
 use parking_lot::{RwLock, lock_api::RwLockUpgradableReadGuard};
