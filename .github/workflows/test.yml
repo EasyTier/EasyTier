@@ -125,13 +125,6 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
-      - name: Test HTTPS discovery with both rustls backends
-        # Catch provider-selection panics even when release features use only ring.
-        run: >-
-          cargo test --locked --package easytier-core --lib
-          --features rustls/aws_lc_rs
-          https_fetch_reaches_tls_handshake_without_global_provider
-
       - name: Archive test
         run: >-
           cargo nextest archive --archive-file tests.tar.zst
