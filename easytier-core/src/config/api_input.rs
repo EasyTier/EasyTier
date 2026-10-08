@@ -873,6 +873,46 @@ mod tests {
 
     #[cfg(feature = "browser-config")]
     #[test]
+    fn browser_merge_reconciles_renamed_flags() {
+        let original = r#"
+[flags]
+default_protocol = "udp"
+enable_encryption = false
+enable_ipv6 = false
+accept_dns = false
+private_mode = false
+"#;
+
+        for value in [Some(false), Some(true), None] {
+            let network_config = NetworkConfig {
+                disable_encryption: value,
+                disable_ipv6: value,
+                enable_magic_dns: value,
+                enable_private_mode: value,
+                ..standalone_config()
+            };
+            let merged = merge_network_config_toml(original, &network_config).unwrap();
+            let merged: toml::Table = toml::from_str(&merged).unwrap();
+            let flags = merged["flags"].as_table().unwrap();
+
+            assert_eq!(flags["default_protocol"].as_str(), Some("udp"));
+            for (field, expected) in [
+                ("enable_encryption", value.map(|disabled| !disabled)),
+                ("enable_ipv6", value.map(|disabled| !disabled)),
+                ("accept_dns", value),
+                ("private_mode", value),
+            ] {
+                assert_eq!(
+                    flags.get(field).and_then(toml::Value::as_bool),
+                    expected,
+                    "merging {field} from API value {value:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
     fn browser_merge_preserves_fields_outside_the_shared_form() {
         let original = r#"
 instance_name = "module-instance"

@@ -69,10 +69,10 @@ impl Flags {
         flags
     }
 
-    /// The flags a config form manages, named as the management API names them.
+    /// The schema field names of flags managed by the config form.
     ///
-    /// Read and written by the management API, so only what it carries can be
-    /// here: a merge drops a key the form produces nothing for.
+    /// These are TOML keys. Only flags the management API carries are included:
+    /// a merge drops a key the form produces nothing for.
     pub fn form() -> &'static [&'static str] {
         flags::FORM
     }

@@ -86,7 +86,7 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
              but the field says the contrary"
         );
 
-        // The keys a config form owns, named as the management API names them.
+        // The schema field names a config form owns, used as TOML keys.
         //
         // Only what the API carries can be a key here: the merge drops a key
         // the form produces nothing for, so a flag the API cannot express
@@ -103,7 +103,7 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
             && api_carries(api_name)
             && (matches!(field.kind(), Kind::Bool) || is_set(&meta, "form"))
         {
-            writeln!(form, "    {api_name:?},")?;
+            writeln!(form, "    {name:?},")?;
         }
     }
 
@@ -118,7 +118,7 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
 pub const DEFAULTS: &str = r##\"{{
 {defaults}}}\"##;
 
-/// The flags a config form manages, named as the management API names them.
+/// The schema field names of flags managed by the config form.
 pub const FORM: &[&str] = &[
 {form}];
 "
