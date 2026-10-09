@@ -168,6 +168,19 @@ pub(crate) fn merge_network_config_toml(
         .remove("flags")
         .and_then(|value| value.try_into().ok())
         .unwrap_or_default();
+
+    // Normalize any camelCase aliases in original [flags] to their canonical field names
+    // so each field appears at most once in the merged table.
+    for field in Flags::flags() {
+        if let (Some(name), Some(json_name)) = (field.name.as_deref(), field.json_name.as_deref()) {
+            if name != json_name
+                && let Some(val) = merged_flags.remove(json_name)
+            {
+                merged_flags.entry(name.to_owned()).or_insert(val);
+            }
+        }
+    }
+
     // The keys a config form owns are the flags it offers a control for, which
     // the schema declares with `(easytier.flag)`.
     for key in Flags::form() {
@@ -949,5 +962,73 @@ disable_p2p = true
         );
         assert_eq!(merged["flags"]["default_protocol"].as_str(), Some("udp"));
         assert_eq!(merged["flags"]["disable_p2p"].as_bool(), Some(false));
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn browser_merge_normalizes_camel_case_flag_aliases() {
+        let original = r#"
+[flags]
+disableP2p = true
+enableEncryption = false
+foreignRelayBpsLimit = 1234
+"#;
+        let parsed_orig = TomlConfigLoader::new_from_str(original).unwrap();
+        let mut network_config = NetworkConfig::new_from_config(&parsed_orig).unwrap();
+        network_config.disable_p2p = Some(false);
+
+        let merged = merge_network_config_toml(original, &network_config).unwrap();
+        let parsed = TomlConfigLoader::new_from_str(&merged)
+            .expect("merged config should be parseable without duplicate-field error");
+        assert!(!parsed.get_flags().disable_p2p);
+        assert!(!parsed.get_flags().enable_encryption);
+        assert_eq!(parsed.get_flags().foreign_relay_bps_limit, 1234);
+
+        let merged_table: toml::Table = toml::from_str(&merged).unwrap();
+        let flags = merged_table["flags"].as_table().unwrap();
+        assert_eq!(
+            flags.get("disable_p2p").and_then(toml::Value::as_bool),
+            Some(false)
+        );
+        assert!(flags.get("disableP2p").is_none());
+        assert_eq!(
+            flags
+                .get("enable_encryption")
+                .and_then(toml::Value::as_bool),
+            Some(false)
+        );
+        assert!(flags.get("enableEncryption").is_none());
+        assert_eq!(
+            flags
+                .get("foreign_relay_bps_limit")
+                .and_then(toml::Value::as_integer),
+            Some(1234)
+        );
+        assert!(flags.get("foreignRelayBpsLimit").is_none());
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn browser_merge_repro_camel_case_disable_p2p_collision() {
+        let original = r#"
+[flags]
+disableP2p = false
+"#;
+        let mut network_config = standalone_config();
+        network_config.hostname = Some("new-hostname".to_owned());
+        network_config.disable_p2p = Some(false);
+
+        let merged = merge_network_config_toml(original, &network_config).unwrap();
+        let parsed = TomlConfigLoader::new_from_str(&merged)
+            .expect("saving config with camelCase alias must not fail on reload");
+        assert!(!parsed.get_flags().disable_p2p);
+
+        let merged_table: toml::Table = toml::from_str(&merged).unwrap();
+        let flags = merged_table["flags"].as_table().unwrap();
+        assert_eq!(
+            flags.get("disable_p2p").and_then(toml::Value::as_bool),
+            Some(false)
+        );
+        assert!(flags.get("disableP2p").is_none());
     }
 }

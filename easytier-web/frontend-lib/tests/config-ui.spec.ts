@@ -12,26 +12,28 @@ import {
   type NetworkConfig,
 } from '../src/types/network'
 
+/** The flags the management API carries, so a form's value reaches the backend. */
+function apiCarries(field: string): boolean {
+  return NetworkConfigPb.fields.some((declared) => declared.name === field)
+}
+
 /**
  * The checkboxes the form is expected to offer, read off the schema the way a
- * config form reads it: every boolean flag it declares, less the deprecated
- * ones, plus the one network option the form adds itself.
+ * config form reads it: every boolean flag it declares that the management API
+ * carries, less the deprecated ones, plus the one network option the form adds itself.
  */
 const CONFIG_FLAG_FIELDS = [
   ...FlagsPb.fields.flatMap((flag) => {
     const meta = flag.options?.['easytier.flag'] as FlagMeta | undefined
     if (meta?.deprecated) return []
     if (flag.kind !== 'scalar' || flag.T !== ScalarType.BOOL) return []
+    const field = (meta.api?.field ?? flag.name) as keyof NetworkConfig
+    if (!apiCarries(field)) return []
 
-    return [(meta.api?.field ?? flag.name) as keyof NetworkConfig]
+    return [field]
   }),
   'ipv6_public_addr_auto',
 ] as const satisfies readonly (keyof NetworkConfig)[]
-
-/** The flags the management API carries, so a form's value reaches the backend. */
-function apiCarries(field: string): boolean {
-  return NetworkConfigPb.fields.some((declared) => declared.name === field)
-}
 
 const CONFIG_CHECKBOX_FIELDS = [
   ['dhcp', '#virtual_ip_auto'],

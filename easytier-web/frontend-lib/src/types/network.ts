@@ -123,14 +123,18 @@ export function defaultFlagValue(field: keyof NetworkConfig): boolean {
   return flag ? declaredValue(flag) : false
 }
 
+/** The flags the management API carries, so a form's value reaches the backend. */
+export function apiCarries(field: string): boolean {
+  return NetworkConfigPb.fields.some((declared) => declared.name === field)
+}
+
 /**
  * The flags a config form offers as checkboxes, in schema order: every boolean
- * flag the message declares, less the deprecated ones. The type says so; no
- * flag has to announce it.
+ * flag the message declares that the management API carries, less the deprecated ones.
  */
 export function formFlags(): { field: keyof NetworkConfig; help: string }[] {
   return annotatedFlags
-    .filter((flag) => flag.boolean && !flag.meta.deprecated)
+    .filter((flag) => flag.boolean && !flag.meta.deprecated && apiCarries(flag.field))
     .map((flag) => ({ field: flag.field as keyof NetworkConfig, help: `${flag.field}_help` }))
 }
 
