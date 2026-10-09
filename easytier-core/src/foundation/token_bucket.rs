@@ -10,17 +10,11 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::foundation::time;
 
-#[async_trait::async_trait]
 pub(crate) trait ByteLimiter: Send + Sync {
-    async fn consume(&self, bytes: u64);
-
     fn try_consume(&self, bytes: u64) -> bool;
 }
 
-#[async_trait::async_trait]
 impl ByteLimiter for () {
-    async fn consume(&self, _bytes: u64) {}
-
     fn try_consume(&self, _bytes: u64) -> bool {
         true
     }
@@ -123,16 +117,19 @@ impl TokenBucket {
 
     /// Attempt to consume tokens without blocking
     ///
+    /// Requests larger than the bucket capacity are charged one full
+    /// bucket instead of being rejected, so oversized packets can still
+    /// pass whenever the bucket holds a full burst; traffic consisting
+    /// only of oversized packets can therefore sustain up to
+    /// packet-size/capacity times the nominal rate.
+    ///
     /// # Returns
     /// `true` if tokens were consumed, `false` if insufficient tokens
     pub fn try_consume(&self, tokens: u64) -> bool {
         if self.stopped.load(Ordering::Acquire) {
             return true;
         }
-        // Fast path for oversized packets
-        if tokens > self.config.capacity {
-            return false;
-        }
+        let tokens = tokens.min(self.config.capacity);
 
         let mut state = self.state.lock();
         self.refill(&mut state, Instant::now());
@@ -194,12 +191,7 @@ impl TokenBucket {
     }
 }
 
-#[async_trait::async_trait]
 impl ByteLimiter for TokenBucket {
-    async fn consume(&self, bytes: u64) {
-        TokenBucket::consume(self, bytes).await;
-    }
-
     fn try_consume(&self, bytes: u64) -> bool {
         TokenBucket::try_consume(self, bytes)
     }
@@ -469,13 +461,19 @@ mod tests {
     /// Test behavior when packet size exceeds capacity
     #[tokio::test]
     async fn test_oversized_packet() {
-        let bucket = TokenBucket::new(1500, 1000);
+        // Fill rate of 1 token/s keeps the test independent of timing:
+        // even a long scheduling stall cannot refill a meaningful amount.
+        let bucket = TokenBucket::new(1500, 1);
 
-        // Packet larger than capacity should be rejected
-        assert!(!bucket.try_consume(1600));
+        // Oversized packets are charged one full bucket instead of
+        // being rejected, so a full bucket always admits them.
+        assert!(bucket.try_consume(1600));
+        assert_eq!(bucket.state.lock().available_tokens, 0);
 
-        // Regular packets should still work
+        // A partially drained bucket still rejects them.
+        let bucket = TokenBucket::new(1500, 1);
         assert!(bucket.try_consume(1000));
+        assert!(!bucket.try_consume(1600));
     }
 
     #[tokio::test]

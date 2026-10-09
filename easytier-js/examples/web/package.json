@@ -18,10 +18,10 @@
     "@easytier/cloudflare": "workspace:0.1.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260724.1",
+    "@cloudflare/workers-types": "5.20260917.1",
     "@types/node": "22.18.1",
     "typescript": "5.9.3",
     "vite": "5.4.21",
-    "wrangler": "4.114.0"
+    "wrangler": "4.134.0"
   }
 }

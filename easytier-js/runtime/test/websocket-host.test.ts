@@ -74,13 +74,14 @@ function encodeTcpPortLease(
   port: number,
   purpose = 6,
 ): number {
-  const options = new Uint8Array(memory.buffer, pointer, 48);
+  const options = new Uint8Array(memory.buffer, pointer, 49);
   options.fill(0);
-  options[0] = 2;
+  options[0] = 3;
   options[1] = 4;
   const view = new DataView(memory.buffer, pointer, options.byteLength);
   view.setUint16(18, port, false);
   options[42] = purpose;
+  // options[43] is need_protect, left at 0; the browser host is not a VPN.
   return options.byteLength;
 }
 

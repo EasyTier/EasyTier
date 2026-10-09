@@ -337,6 +337,7 @@ impl CoreInstanceConfig {
             vpn_portal: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
                 .then(|| config.get_vpn_portal_config())
                 .flatten()
+                .filter(|config| config.enabled != Some(false))
                 .map(|config| PortalRuntimeConfig {
                     clients: config
                         .clients

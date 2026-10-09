@@ -182,17 +182,15 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     }
 }
 
-fn init_crypto_provider() {
-    let _ =
-        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
-}
-
 fn get_insecure_tls_client_config() -> rustls::ClientConfig {
-    init_crypto_provider();
-    let provider = rustls::crypto::CryptoProvider::get_default().unwrap();
-    let mut config = rustls::ClientConfig::builder()
+    // Library callers may not have initialized a process-wide provider.
+    // Use the same explicit backend for TLS and signature verification.
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default TLS protocol versions")
         .dangerous()
-        .with_custom_certificate_verifier(SkipServerVerification::new(provider.clone()))
+        .with_custom_certificate_verifier(SkipServerVerification::new(provider))
         .with_no_client_auth();
     config.enable_sni = true;
     config.enable_early_data = false;
@@ -220,12 +218,16 @@ where
     let peer_addr = stream.peer_addr()?;
     let mut remote_url = socket_url(local_url.scheme(), peer_addr);
     let stream = if is_wss(&local_url)? {
-        init_crypto_provider();
         let (certificates, private_key) = get_insecure_tls_cert();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certificates, private_key)
-            .with_context(|| "Failed to create server config")?;
+        // Do not rely on another tunnel initializing the global provider.
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .with_context(|| "Failed to select TLS protocol versions")?
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .with_context(|| "Failed to create server config")?;
         Either::Left(TlsAcceptor::from(Arc::new(config)).accept(stream).await?)
     } else {
         Either::Right(stream)
@@ -390,7 +392,6 @@ where
     let client = ClientBuilder::from_uri(http::Uri::try_from(remote_url.to_string()).unwrap())
         .max_headers(128);
     let stream: MaybeTlsStream<S> = if is_wss {
-        init_crypto_provider();
         let tls = tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
         let sni = remote_url.domain().unwrap_or("localhost").to_owned();
         let server_name = rustls::pki_types::ServerName::try_from(sni)

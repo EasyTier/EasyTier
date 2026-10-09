@@ -30,11 +30,11 @@ bytecodec.workspace = true
 bytes.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 cidr = { workspace = true, features = ["serde"] }
-crossbeam.workspace = true
+crossbeam-utils.workspace = true
 dashmap.workspace = true
 bon.workspace = true
 easytier-proto = { workspace = true, features = ["core"] }
-futures.workspace = true
+futures = { workspace = true, features = ["std", "async-await"] }
 guarden.workspace = true
 hmac.workspace = true
 http-body-util = { workspace = true, optional = true }
@@ -58,6 +58,14 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 smoltcp = { workspace = true, optional = true }
+# All core Noise handshakes use 25519_ChaChaPoly_SHA256. Snow's std feature
+# also enables unused ring and BLAKE2 dependencies, so use its alloc support.
+snow = { version = "0.10.0", default-features = false, features = [
+    "use-chacha20poly1305",
+    "use-sha2",
+    "use-curve25519",
+    "use-getrandom",
+] }
 stun_codec.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -74,24 +82,24 @@ tokio-util = { workspace = true, features = ["io", "rt"] }
 tokio-rustls = { workspace = true, optional = true }
 url = { workspace = true, features = ["serde"] }
 wildmatch = "2.6.1"
-uuid = { workspace = true, features = ["v4", "fast-rng", "serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 webpki-roots = { version = "1.0", optional = true }
 x25519-dalek = { workspace = true, features = ["static_secrets"] }
 zerocopy = { workspace = true, features = ["derive", "simd"] }
 zstd = { version = "0.14", optional = true }
-aes-gcm = { version = "0.11.1", optional = true }
-chacha20poly1305 = { version = "0.11.0", optional = true }
+# Match snow 0.10's AEAD generation to share aead, cipher and crypto-common.
+# Upgrade together with snow rather than pulling in a second crypto stack.
+aes-gcm = { version = "0.10.3", optional = true }
+chacha20poly1305 = { version = "0.10.1", optional = true }
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom-02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
 getrandom-03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }
-snow = { version = "0.10.0", default-features = false, features = ["default-resolver", "default-resolver-crypto"] }
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"], optional = true }
+rustls-pki-types = { version = "1.15.1", features = ["web"], optional = true }
 uuid = { workspace = true, features = ["js"] }
 wasm-bindgen = "0.2"
-
-[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
-snow = "0.10.0"
 
 [features]
 default = ["aes-gcm", "endpoint-discovery", "extended-services", "management", "tcp-hole-punch"]
@@ -106,7 +114,9 @@ endpoint-discovery = [
     "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
+    "dep:ring",
     "dep:rustls",
+    "dep:rustls-pki-types",
     "dep:tokio-rustls",
     "dep:webpki-roots",
 ]
@@ -152,12 +162,17 @@ test-utils = []
 tracing-log = ["tracing/log"]
 zstd = ["dep:zstd"]
 
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+
 [target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [package.metadata.cargo-machete]
 ignored = [
-    # Enable browser entropy backends for transitive rand/snow dependencies.
+    # Enable browser entropy backends for transitive rand/snow/AEAD dependencies.
     "getrandom-02",
     "getrandom-03",
+    # Enable browser time for rustls certificate validation.
+    "rustls-pki-types",
 ]

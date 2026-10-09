@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use easytier_proto::{
+    api::config::{ConfigRpc, InstanceConfigPatch, PatchConfigRequest, VpnPortalClientPatch},
+    api::instance::{InstanceIdentifier, instance_identifier},
     api::manage::{
         CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
         GetNetworkInstanceConfigRequest, ListNetworkInstanceMetaRequest,
@@ -11,7 +13,7 @@ use easytier_proto::{
     rpc_types::controller::BaseController,
 };
 
-use crate::config::toml::ConfigSource;
+use crate::config::{api_input::NetworkConfigExt as _, toml::ConfigSource};
 
 use super::{config_source_from_rpc, config_source_to_rpc};
 
@@ -28,6 +30,100 @@ where
     ) -> Option<Box<dyn WebClientService<Controller = BaseController> + Send>>;
 
     fn get_storage(&self) -> &impl Storage<T, C, E>;
+
+    fn get_config_rpc_client(
+        &self,
+        identify: T,
+    ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>>;
+
+    async fn handle_patch_vpn_portal_clients(
+        &self,
+        identify: T,
+        inst_id: uuid::Uuid,
+        patches: Vec<VpnPortalClientPatch>,
+    ) -> Result<(), RemoteClientError<E>> {
+        // The caller serializes this operation with its other device changes
+        // and (for Web) desired-config updates and runtime reconciliation.
+        if patches.is_empty() {
+            return Ok(());
+        }
+        let stored = self
+            .get_storage()
+            .get_network_config(identify.clone(), &inst_id.to_string())
+            .await
+            .map_err(RemoteClientError::PersistentError)?;
+        let mut desired = None;
+        if let Some(stored) = stored {
+            let mut config = stored
+                .get_network_config()
+                .map_err(RemoteClientError::PersistentError)?;
+            let candidate = config
+                .gen_config()
+                .map_err(|e| RemoteClientError::Other(e.to_string()))?;
+            super::config_patch::apply_vpn_portal_client_patches(&candidate, patches.clone())
+                .map_err(|e| RemoteClientError::Other(e.to_string()))?;
+            let normalized = crate::instance::CoreInstanceConfig::from_toml(&candidate)
+                .map_err(|e| RemoteClientError::Other(e.to_string()))?;
+            // Pending saved clients, addresses and ACL declarations may differ
+            // from runtime. Validate the actual saved candidate as well.
+            crate::gateway::vpn_portal::validate_clients(
+                normalized.vpn_portal.as_ref().unwrap(),
+                &super::config_patch::runtime_config_from_normalized(&normalized),
+            )
+            .map_err(|e| RemoteClientError::Other(e.to_string()))?;
+            let updated = NetworkConfig::new_from_config(&candidate)
+                .map_err(|e| RemoteClientError::Other(e.to_string()))?;
+            // Keep pending saved changes, including the listener and key.
+            // Only the requested device changes belong to this operation.
+            config.vpn_portal_config.as_mut().unwrap().clients =
+                updated.vpn_portal_config.unwrap().clients;
+            desired = Some((config, stored.get_network_config_source()));
+        }
+        let client = self
+            .get_config_rpc_client(identify.clone())
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        client
+            .patch_config(
+                BaseController::default(),
+                PatchConfigRequest {
+                    instance: Some(InstanceIdentifier {
+                        selector: Some(instance_identifier::Selector::Id(inst_id.into())),
+                    }),
+                    patch: Some(InstanceConfigPatch {
+                        vpn_portal_clients: patches,
+                        ..Default::default()
+                    }),
+                },
+            )
+            .await?;
+
+        // PatchConfig persists the node's TOML file, when present. GUI and
+        // Web also own saved configurations that must retain this change.
+        let (config, source) = if let Some(desired) = desired {
+            desired
+        } else {
+            let rpc = self
+                .get_rpc_client(identify.clone())
+                .ok_or(RemoteClientError::ClientNotFound)?;
+            let response = rpc
+                .get_network_instance_config(
+                    BaseController::default(),
+                    GetNetworkInstanceConfigRequest {
+                        inst_id: Some(inst_id.into()),
+                    },
+                )
+                .await?;
+            let config = response.config.ok_or_else(|| {
+                RemoteClientError::NotFound(format!("No running network instance: {inst_id}"))
+            })?;
+            let source = config_source_from_rpc(response.source).unwrap_or(ConfigSource::User);
+            (config, source)
+        };
+        self.get_storage()
+            .insert_or_update_user_network_config(identify, inst_id, config, source)
+            .await
+            .map_err(RemoteClientError::PersistentError)
+    }
 
     async fn handle_validate_config(
         &self,
@@ -437,4 +533,217 @@ where
     -> Result<Vec<C>, E>;
 
     async fn get_network_config(&self, identify: T, network_inst_id: &str) -> Result<Option<C>, E>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use easytier_proto::api::{
+        config::{ConfigPatchAction, GetConfigRequest, GetConfigResponse, PatchConfigResponse},
+        manage::{NetworkingMethod, VpnPortalClientConfig, VpnPortalConfig},
+    };
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct SavedConfig(NetworkConfig, ConfigSource);
+
+    impl PersistentConfig<anyhow::Error> for SavedConfig {
+        fn get_network_inst_id(&self) -> &str {
+            self.0.instance_id.as_deref().unwrap()
+        }
+
+        fn get_network_config(&self) -> anyhow::Result<NetworkConfig> {
+            Ok(self.0.clone())
+        }
+
+        fn get_network_config_source(&self) -> ConfigSource {
+            self.1
+        }
+    }
+
+    #[async_trait]
+    impl Storage<(), SavedConfig, anyhow::Error> for Mutex<Option<SavedConfig>> {
+        async fn insert_or_update_user_network_config(
+            &self,
+            _: (),
+            _: Uuid,
+            config: NetworkConfig,
+            source: ConfigSource,
+        ) -> anyhow::Result<()> {
+            *self.lock().unwrap() = Some(SavedConfig(config, source));
+            Ok(())
+        }
+
+        async fn get_network_config(&self, _: (), _: &str) -> anyhow::Result<Option<SavedConfig>> {
+            Ok(self.lock().unwrap().clone())
+        }
+
+        async fn delete_network_configs(&self, _: (), _: &[Uuid]) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn update_network_config_state(&self, _: (), _: Uuid, _: bool) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn list_network_configs(
+            &self,
+            _: (),
+            _: ListNetworkProps,
+        ) -> anyhow::Result<Vec<SavedConfig>> {
+            unreachable!()
+        }
+    }
+
+    struct PatchRpc {
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl ConfigRpc for PatchRpc {
+        type Controller = BaseController;
+
+        async fn patch_config(
+            &self,
+            _: BaseController,
+            _: PatchConfigRequest,
+        ) -> easytier_proto::rpc_types::error::Result<PatchConfigResponse> {
+            if self.fail {
+                Err(easytier_proto::rpc_types::error::Error::Shutdown)
+            } else {
+                Ok(PatchConfigResponse::default())
+            }
+        }
+
+        async fn get_config(
+            &self,
+            _: BaseController,
+            _: GetConfigRequest,
+        ) -> easytier_proto::rpc_types::error::Result<GetConfigResponse> {
+            unreachable!()
+        }
+    }
+
+    struct ClientManager {
+        storage: Mutex<Option<SavedConfig>>,
+        patch_fails: bool,
+    }
+
+    #[async_trait]
+    impl RemoteClientManager<(), SavedConfig, anyhow::Error> for ClientManager {
+        fn get_rpc_client(
+            &self,
+            _: (),
+        ) -> Option<Box<dyn WebClientService<Controller = BaseController> + Send>> {
+            // The session is unavailable for any read after PatchConfig.
+            None
+        }
+
+        fn get_storage(&self) -> &impl Storage<(), SavedConfig, anyhow::Error> {
+            &self.storage
+        }
+
+        fn get_config_rpc_client(
+            &self,
+            _: (),
+        ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>> {
+            Some(Box::new(PatchRpc {
+                fail: self.patch_fails,
+            }))
+        }
+    }
+
+    fn saved_config() -> NetworkConfig {
+        NetworkConfig {
+            instance_id: Some(Uuid::new_v4().to_string()),
+            hostname: Some("pending-hostname".to_owned()),
+            network_secret: Some("network-secret".to_owned()),
+            networking_method: Some(NetworkingMethod::Standalone as i32),
+            vpn_portal_config: Some(VpnPortalConfig {
+                wireguard_listen: "0.0.0.0:51821".to_owned(),
+                wireguard_private_key: Some(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE=".to_owned(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn add_client() -> VpnPortalClientPatch {
+        VpnPortalClientPatch {
+            action: ConfigPatchAction::Add as i32,
+            client: Some(VpnPortalClientConfig {
+                name: "alice".to_owned(),
+                virtual_ip: "10.0.0.2/24".to_owned(),
+                groups: Vec::new(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn portal_patch_persists_saved_config_without_a_followup_rpc() {
+        for source in [ConfigSource::Web, ConfigSource::User] {
+            let mut expected = saved_config();
+            let manager = ClientManager {
+                storage: Mutex::new(Some(SavedConfig(expected.clone(), source))),
+                patch_fails: false,
+            };
+            manager
+                .handle_patch_vpn_portal_clients(
+                    (),
+                    expected.instance_id.as_ref().unwrap().parse().unwrap(),
+                    vec![add_client()],
+                )
+                .await
+                .unwrap();
+
+            expected.vpn_portal_config.as_mut().unwrap().clients =
+                vec![add_client().client.unwrap()];
+            let saved = manager.storage.lock().unwrap();
+            let saved = saved.as_ref().unwrap();
+            assert_eq!(saved.0, expected);
+            assert_eq!(saved.1, source);
+        }
+    }
+
+    #[tokio::test]
+    async fn portal_patch_failure_preserves_saved_config() {
+        for source in [ConfigSource::Web, ConfigSource::User] {
+            let config = saved_config();
+            let manager = ClientManager {
+                storage: Mutex::new(Some(SavedConfig(config.clone(), source))),
+                patch_fails: true,
+            };
+            let result = manager
+                .handle_patch_vpn_portal_clients(
+                    (),
+                    config.instance_id.as_ref().unwrap().parse().unwrap(),
+                    vec![add_client()],
+                )
+                .await;
+
+            assert!(matches!(result, Err(RemoteClientError::RpcError(_))));
+            let saved = manager.storage.lock().unwrap();
+            let saved = saved.as_ref().unwrap();
+            assert_eq!(saved.0, config);
+            assert_eq!(saved.1, source);
+        }
+    }
+
+    #[tokio::test]
+    async fn portal_patch_without_saved_config_requires_runtime_config() {
+        let manager = ClientManager {
+            storage: Mutex::new(None),
+            patch_fails: false,
+        };
+        let result = manager
+            .handle_patch_vpn_portal_clients((), Uuid::new_v4(), vec![add_client()])
+            .await;
+
+        assert!(matches!(result, Err(RemoteClientError::ClientNotFound)));
+        assert!(manager.storage.lock().unwrap().is_none());
+    }
 }

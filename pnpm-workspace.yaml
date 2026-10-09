@@ -1,3 +1,6 @@
+publicHoistPattern:
+  - '@primeuix/*'
+
 packages:
   - 'easytier-web/config-generator'
   - 'easytier-web/frontend'

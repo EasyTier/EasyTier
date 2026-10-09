@@ -30,6 +30,9 @@ use crate::webhook::SharedWebhookConfig;
 mod runtime_revision;
 mod webhook_validation;
 
+#[cfg(test)]
+mod lifecycle_tests;
+
 const WEBHOOK_VALIDATION_HEARTBEAT_INTERVAL: u32 = 10;
 const CONNECTED_WEBHOOK_RETRY_DELAYS: [Duration; 2] =
     [Duration::from_millis(100), Duration::from_millis(500)];
@@ -992,7 +995,22 @@ impl Session {
         self.rpc_mgr.is_running()
     }
 
+    pub(super) async fn is_superseded(&self) -> bool {
+        let data = self.data.read().await;
+        data.storage_token.as_ref().is_some_and(|token| {
+            data.storage
+                .upgrade()
+                .is_some_and(|storage| storage.is_session_superseded(token, data.session_epoch))
+        })
+    }
+
     pub async fn stop(&self) {
+        if let Some(task) = &self.webhook_validation_task {
+            task.abort();
+        }
+        if let Some(task) = &self.config_reconcile_task {
+            task.abort();
+        }
         self.rpc_mgr.stop().await;
     }
 
@@ -1076,8 +1094,7 @@ impl Session {
         self.data.read().await.req()
     }
 
-    #[cfg(test)]
-    pub(super) async fn applied_config_revision(&self) -> Option<String> {
+    pub(crate) async fn applied_config_revision(&self) -> Option<String> {
         let data = self.data.read().await;
         data.managed_runtime().applied_config_revision.clone()
     }

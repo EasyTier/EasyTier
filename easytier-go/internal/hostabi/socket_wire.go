@@ -28,8 +28,16 @@ func readOwnedOptions(module api.Module, pointer, length uint32) ([]byte, bool) 
 	return append([]byte(nil), options...), true
 }
 
+// optionsWireVersion matches OPTIONS_VERSION in
+// easytier-core/src/wasi/wire/options.rs. Version 3 appends a need_protect
+// byte after the purpose byte in every socket options document. The byte
+// requests VPN socket protection, which only Android-style VPN hosts can
+// honor; every other platform treats sockets as already protected, so the
+// decoders read and discard it.
+const optionsWireVersion = 3
+
 func decodeTCPConnectOptions(encoded []byte) (platform.TCPConnectOptions, error) {
-	if len(encoded) < 75 || encoded[0] != 2 {
+	if len(encoded) < 76 || encoded[0] != optionsWireVersion {
 		return platform.TCPConnectOptions{}, fmt.Errorf("invalid TCP connect options")
 	}
 	remote, err := decodeSocketAddress(encoded[1:28], false)
@@ -44,7 +52,7 @@ func decodeTCPConnectOptions(encoded []byte) (platform.TCPConnectOptions, error)
 	if err != nil {
 		return platform.TCPConnectOptions{}, fmt.Errorf("invalid TCP socket context: %w", err)
 	}
-	if len(remainder) < 9 {
+	if len(remainder) < 10 {
 		return platform.TCPConnectOptions{}, fmt.Errorf("truncated TCP bind policy")
 	}
 	bind, err := decodeTCPBindPolicy(
@@ -53,7 +61,7 @@ func decodeTCPConnectOptions(encoded []byte) (platform.TCPConnectOptions, error)
 		remainder[0],
 		remainder[1],
 		remainder[2],
-		remainder[4:],
+		remainder[5:],
 	)
 	if err != nil {
 		return platform.TCPConnectOptions{}, err
@@ -70,7 +78,7 @@ func decodeTCPConnectOptions(encoded []byte) (platform.TCPConnectOptions, error)
 }
 
 func decodeUDPBindOptions(encoded []byte) (platform.UDPBindOptions, error) {
-	if len(encoded) < 48 || encoded[0] != 2 {
+	if len(encoded) < 49 || encoded[0] != optionsWireVersion {
 		return platform.UDPBindOptions{}, fmt.Errorf("invalid UDP bind options")
 	}
 	local, err := decodeSocketAddress(encoded[1:28], true)
@@ -81,7 +89,7 @@ func decodeUDPBindOptions(encoded []byte) (platform.UDPBindOptions, error) {
 	if err != nil {
 		return platform.UDPBindOptions{}, fmt.Errorf("invalid UDP socket context: %w", err)
 	}
-	if len(remainder) < 9 {
+	if len(remainder) < 10 {
 		return platform.UDPBindOptions{}, fmt.Errorf("truncated UDP bind policy")
 	}
 	reuseAddr, err := decodeWireBool("UDP reuse_addr", remainder[0])
@@ -100,7 +108,7 @@ func decodeUDPBindOptions(encoded []byte) (platform.UDPBindOptions, error) {
 	if err != nil {
 		return platform.UDPBindOptions{}, err
 	}
-	device, err := decodeBindDevice(remainder[4:])
+	device, err := decodeBindDevice(remainder[5:])
 	if err != nil {
 		return platform.UDPBindOptions{}, err
 	}
@@ -116,7 +124,7 @@ func decodeUDPBindOptions(encoded []byte) (platform.UDPBindOptions, error) {
 }
 
 func decodeTCPListenOptions(encoded []byte) (platform.TCPListenOptions, error) {
-	if len(encoded) < 48 || encoded[0] != 2 {
+	if len(encoded) < 49 || encoded[0] != optionsWireVersion {
 		return platform.TCPListenOptions{}, fmt.Errorf("invalid TCP listen options")
 	}
 	local, err := decodeSocketAddress(encoded[1:28], false)
@@ -127,7 +135,7 @@ func decodeTCPListenOptions(encoded []byte) (platform.TCPListenOptions, error) {
 	if err != nil {
 		return platform.TCPListenOptions{}, fmt.Errorf("invalid TCP listen context: %w", err)
 	}
-	if len(remainder) < 9 {
+	if len(remainder) < 10 {
 		return platform.TCPListenOptions{}, fmt.Errorf("truncated TCP listen bind policy")
 	}
 	bind, err := decodeTCPBindPolicy(
@@ -136,7 +144,7 @@ func decodeTCPListenOptions(encoded []byte) (platform.TCPListenOptions, error) {
 		remainder[0],
 		remainder[1],
 		remainder[2],
-		remainder[4:],
+		remainder[5:],
 	)
 	if err != nil {
 		return platform.TCPListenOptions{}, err

@@ -800,7 +800,7 @@ export class WebSocketHost {
     } catch {
       return HOST_INVALID;
     }
-    if (options.byteLength < 48 || options[0] !== 2) {
+    if (options.byteLength < 49 || options[0] !== 3) {
       return HOST_INVALID;
     }
     const netnsLength = new DataView(

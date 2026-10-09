@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { NetworkInstance, VpnPortalClientState, type TunnelInfo, type NodeInfo, type PeerRoutePair, type VpnPortalClientInfo, type VpnPortalInfo } from '../types/network'
+import { NetworkInstance, type NetworkConfig, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { latencyMs, lossRate, numericValue, peerConns } from '../modules/statusDisplay';
-import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
+import { latencyMs, lossRate, numericValue, peerConns, udpNatTypeName } from '../modules/statusDisplay';
+import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
+import VpnPortalDialog from './VpnPortalDialog.vue';
 
 const props = defineProps<{
   curNetworkInst: NetworkInstance | null,
   api: RemoteClient,
+  readonly?: boolean,
 }>()
 
 const { t } = useI18n()
@@ -142,34 +144,6 @@ interface Chip {
   icon: string
 }
 
-// udp nat type
-enum NatType {
-  // has NAT; but own a single public IP, port is not changed
-  Unknown = 0,
-  OpenInternet = 1,
-  NoPAT = 2,
-  FullCone = 3,
-  Restricted = 4,
-  PortRestricted = 5,
-  Symmetric = 6,
-  SymUdpFirewall = 7,
-  SymmetricEasyInc = 8,
-  SymmetricEasyDec = 9,
-};
-
-const udpNatTypeStrMap = {
-  [NatType.Unknown]: 'Unknown',
-  [NatType.OpenInternet]: 'Open Internet',
-  [NatType.NoPAT]: 'No PAT',
-  [NatType.FullCone]: 'Full Cone',
-  [NatType.Restricted]: 'Restricted',
-  [NatType.PortRestricted]: 'Port Restricted',
-  [NatType.Symmetric]: 'Symmetric',
-  [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
-  [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
-  [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
-}
-
 const myNodeInfoChips = computed(() => {
   if (!props.curNetworkInst)
     return []
@@ -244,10 +218,10 @@ const myNodeInfoChips = computed(() => {
     } as Chip)
   }
 
-  const udpNatType: NatType = my_node_info.stun_info?.udp_nat_type
-  if (udpNatType !== undefined) {
+  const udpNatType = udpNatTypeName(my_node_info.stun_info)
+  if (udpNatType) {
     chips.push({
-      label: `UDP NAT Type: ${udpNatTypeStrMap[udpNatType]}`,
+      label: `UDP NAT Type: ${udpNatType}`,
       icon: '',
     } as Chip)
   }
@@ -277,11 +251,7 @@ function rxGlobalSum() {
 }
 
 function natType(info: PeerRoutePair): string {
-  const udpNatType = info.route?.stun_info?.udp_nat_type;
-  if (udpNatType !== undefined)
-    return udpNatTypeStrMap[udpNatType as NatType]
-
-  return ''
+  return udpNatTypeName(info.route?.stun_info)
 }
 
 function isPublicServerRoute(info: PeerRoutePair): boolean {
@@ -329,67 +299,34 @@ onUnmounted(() => {
 const dialogVisible = ref(false)
 const dialogContent = ref<any>('')
 const dialogHeader = ref('event_log')
-const vpnPortalInfo = ref<VpnPortalInfo>()
-const vpnPortalClients = computed(() => vpnPortalInfo.value?.clients ?? [])
-const vpnPortalLoading = ref(false)
-const vpnPortalError = ref('')
-const copiedVpnPortalClient = ref('')
+const vpnPortalVisible = ref(false)
+const networkConfig = ref<NetworkConfig>()
+const vpnPortalEnabled = computed(() => props.curNetworkInst?.running
+  && networkConfig.value?.vpn_portal_config !== undefined
+  && networkConfig.value.vpn_portal_config.enabled !== false)
 
-async function showVpnPortalConfig() {
-  const instanceId = props.curNetworkInst?.instance_id
-  if (!instanceId)
-    return
-
-  dialogHeader.value = 'vpn_portal_config'
-  dialogVisible.value = true
-  vpnPortalInfo.value = undefined
-  vpnPortalError.value = ''
-  copiedVpnPortalClient.value = ''
-  vpnPortalLoading.value = true
-  try {
-    vpnPortalInfo.value = await props.api.get_vpn_portal_info(instanceId)
-  } catch (error) {
-    console.error('Failed to load VPN Portal information', error)
-    vpnPortalError.value = t('vpn_portal_load_failed')
-  } finally {
-    vpnPortalLoading.value = false
-  }
-}
-
-function vpnPortalStateKey(state: VpnPortalClientState | string): string {
-  const normalized = typeof state === 'string'
-    ? state.toLowerCase().replace('vpn_portal_client_state_', '')
-    : VpnPortalClientState[state]?.toLowerCase()
-  return `vpn_portal_state_${normalized ?? 'unspecified'}`
-}
-
-function vpnPortalStateSeverity(state: VpnPortalClientState | string): 'success' | 'warn' | 'danger' | 'secondary' {
-  const key = vpnPortalStateKey(state)
-  if (key.endsWith('online')) return 'success'
-  if (key.endsWith('connecting')) return 'warn'
-  if (key.endsWith('error')) return 'danger'
-  return 'secondary'
-}
-
-async function copyVpnPortalClientConfig(client: VpnPortalClientInfo) {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(client.client_config)
-    } else {
-      const textarea = document.createElement('textarea')
-      textarea.value = client.client_config
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      textarea.remove()
+watch(() => props.curNetworkInst?.instance_id, async (instanceId, _, onCleanup) => {
+  let active = true
+  vpnPortalVisible.value = false
+  networkConfig.value = undefined
+  if (!instanceId) return
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => {
+    active = false
+    clearTimeout(refreshTimer)
+  })
+  const refresh = async () => {
+    try {
+      const config = await props.api.get_network_config(instanceId)
+      if (active) networkConfig.value = config
+    } catch (error) {
+      console.error('Failed to load WireGuard settings', error)
+    } finally {
+      if (active) refreshTimer = setTimeout(refresh, 10_000)
     }
-    copiedVpnPortalClient.value = client.name
-  } catch (error) {
-    console.error('Failed to copy VPN Portal client config', error)
   }
-}
+  await refresh()
+}, { immediate: true })
 
 function showEventLogs() {
   const detail = props.curNetworkInst?.detail
@@ -406,54 +343,7 @@ function showEventLogs() {
   <div class="frontend-lib">
     <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" class="w-full h-auto max-h-full"
       :baseZIndex="2000">
-      <ScrollPanel v-if="dialogHeader === 'vpn_portal_config'" class="max-h-[75vh] pr-3">
-        <div v-if="vpnPortalLoading" class="py-8 text-center text-surface-500">
-          {{ t('web.device_management.loading_network_status') }}
-        </div>
-        <div v-else-if="vpnPortalError" class="py-4 text-red-500">
-          {{ vpnPortalError }}
-        </div>
-        <div v-else-if="!vpnPortalInfo || ((!vpnPortalInfo.vpn_type || vpnPortalInfo.vpn_type === 'null') && vpnPortalClients.length === 0)"
-          class="py-4 text-surface-500">
-          {{ t('vpn_portal_not_configured') }}
-        </div>
-        <div v-else class="flex flex-col gap-4">
-          <div class="flex flex-wrap gap-x-6 gap-y-2 text-sm">
-            <span v-if="vpnPortalInfo.vpn_type"><strong>{{ t('vpn_portal_type') }}:</strong>
-              {{ vpnPortalInfo.vpn_type }}</span>
-            <span v-if="vpnPortalInfo.listener"><strong>{{ t('vpn_portal_listener') }}:</strong>
-              {{ vpnPortalInfo.listener }}</span>
-          </div>
-
-          <div v-for="client in vpnPortalClients" :key="client.name"
-            class="rounded border border-surface-200 dark:border-surface-700 p-4">
-            <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div class="font-semibold">{{ client.name }} · {{ client.virtual_ip }}</div>
-              <Tag :severity="vpnPortalStateSeverity(client.state)"
-                :value="t(vpnPortalStateKey(client.state))" />
-            </div>
-            <div class="mb-3 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
-              <span v-if="client.groups.length"><strong>{{ t('vpn_portal_client_groups') }}:</strong>
-                {{ client.groups.join(', ') }}</span>
-              <span v-if="client.peer_id !== undefined"><strong>{{ t('vpn_portal_peer_id') }}:</strong>
-                {{ client.peer_id }}</span>
-              <span v-if="client.endpoint"><strong>{{ t('vpn_portal_endpoint') }}:</strong>
-                {{ client.endpoint }}</span>
-              <span v-if="client.tunnel_ip"><strong>{{ t('vpn_portal_tunnel_ip') }}:</strong>
-                {{ client.tunnel_ip }}</span>
-              <span v-if="client.error" class="text-red-500 sm:col-span-2">{{ client.error }}</span>
-            </div>
-            <div class="mb-2 flex items-center justify-between gap-3">
-              <label class="font-medium">{{ t('vpn_portal_client_config') }}</label>
-              <Button size="small" severity="secondary" icon="pi pi-copy"
-                :label="copiedVpnPortalClient === client.name ? t('config_copied') : t('vpn_portal_copy_client_config')"
-                @click="copyVpnPortalClientConfig(client)" />
-            </div>
-            <pre class="max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded bg-surface-100 p-3 text-xs dark:bg-surface-800">{{ client.client_config }}</pre>
-          </div>
-        </div>
-      </ScrollPanel>
-      <Timeline v-else :value="dialogContent">
+      <Timeline :value="dialogContent">
         <template #opposite="slotProps">
           <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item.time))
           }}</small>
@@ -463,6 +353,9 @@ function showEventLogs() {
         </template>
       </Timeline>
     </Dialog>
+
+    <VpnPortalDialog v-if="vpnPortalVisible && curNetworkInst && vpnPortalEnabled" :key="curNetworkInst.instance_id"
+      :instance="curNetworkInst" :api="api" :readonly="readonly" @close="vpnPortalVisible = false" />
 
     <Card v-if="curNetworkInst?.error_msg">
       <template #title>
@@ -506,7 +399,7 @@ function showEventLogs() {
             </div>
 
             <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
-              <Button severity="info" :label="t('show_vpn_portal_config')" @click="showVpnPortalConfig" />
+              <Button v-if="vpnPortalEnabled" severity="info" :label="t('vpn_portal_devices')" @click="vpnPortalVisible = true" />
               <Button severity="info" :label="t('show_event_log')" @click="showEventLogs" />
             </div>
           </div>

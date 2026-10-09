@@ -32,14 +32,14 @@
     "prepack": "pnpm check"
   },
   "dependencies": {
-    "@cloudflare/workers-types": "5.20260724.1",
+    "@cloudflare/workers-types": "5.20260917.1",
     "@easytier/runtime": "workspace:0.1.0"
   },
   "devDependencies": {
     "@types/node": "22.18.1",
     "typescript": "5.9.3",
-    "vitest": "2.1.9",
-    "wrangler": "4.114.0"
+    "vitest": "3.2.7",
+    "wrangler": "4.134.0"
   },
   "publishConfig": {
     "access": "public"

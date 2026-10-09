@@ -5,7 +5,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use dashmap::DashMap;
 
 use crate::peers::util::shrink_dashmap;

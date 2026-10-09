@@ -1866,6 +1866,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
             }
             if config.get_inst_name() == "inst3" {
                 config.set_vpn_portal_config(VpnPortalConfig {
+                    enabled: None,
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
@@ -1971,6 +1972,7 @@ pub async fn wireguard_vpn_portal_multi_client() {
             ));
             if config.get_inst_name() == "inst3" {
                 config.set_vpn_portal_config(VpnPortalConfig {
+                    enabled: None,
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![
@@ -2111,6 +2113,7 @@ pub async fn wireguard_vpn_portal_client_roaming() {
             ));
             if config.get_inst_name() == "inst3" {
                 config.set_vpn_portal_config(VpnPortalConfig {
+                    enabled: None,
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
@@ -2261,6 +2264,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
             ));
             if config.get_inst_name() == "inst3" {
                 config.set_vpn_portal_config(VpnPortalConfig {
+                    enabled: None,
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
@@ -3044,7 +3048,7 @@ async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
             url,
         )
         .await?;
-        core.admit_client_tunnel_for_test(tunnel, true)
+        core.admit_client_tunnel_for_test(tunnel)
             .await
             .map(|_| ())
             .map_err(anyhow::Error::from)

@@ -308,7 +308,9 @@ where
     Ok(runtime_config_from_normalized(&normalized))
 }
 
-fn runtime_config_from_normalized(config: &CoreInstanceConfig) -> CoreInstanceRuntimeConfig {
+pub(super) fn runtime_config_from_normalized(
+    config: &CoreInstanceConfig,
+) -> CoreInstanceRuntimeConfig {
     CoreInstanceRuntimeConfig {
         services: config.connectivity.runtime.clone(),
         peer: Arc::new(config.peer.snapshot.clone()),
@@ -497,7 +499,7 @@ fn patch_mapped_listeners(config: &TomlConfig, patches: Vec<UrlPatch>) -> anyhow
 /// Applies VPN portal client patches to the candidate TOML model. The live
 /// portal is updated by the caller after the candidate commits, so deep
 /// validation runs against the final configuration state.
-fn apply_vpn_portal_client_patches(
+pub(super) fn apply_vpn_portal_client_patches(
     config: &TomlConfig,
     patches: Vec<VpnPortalClientPatch>,
 ) -> anyhow::Result<()> {
@@ -507,6 +509,10 @@ fn apply_vpn_portal_client_patches(
     let mut portal = config
         .get_vpn_portal_config()
         .ok_or_else(|| anyhow::anyhow!("VPN portal is not configured; cannot patch its clients"))?;
+    anyhow::ensure!(
+        portal.enabled != Some(false),
+        "VPN portal is disabled; cannot patch its clients"
+    );
     for patch in patches {
         match ConfigPatchAction::try_from(patch.action) {
             Ok(ConfigPatchAction::Add) => {
@@ -600,6 +606,7 @@ mod tests {
     fn portal_config() -> TomlConfig {
         let config = TomlConfig::default();
         config.set_vpn_portal_config(VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "0.0.0.0:51820".parse().unwrap(),
             wireguard_private_key: None,
             clients: vec![VpnPortalClientConfig {
@@ -662,6 +669,17 @@ mod tests {
         )
         .unwrap();
         assert!(configured_names(&config).is_empty());
+    }
+
+    #[test]
+    fn vpn_portal_client_patches_preserve_disabled_configuration() {
+        let config = portal_config();
+        let mut portal = config.get_vpn_portal_config().unwrap();
+        portal.enabled = Some(false);
+        config.set_vpn_portal_config(portal.clone());
+        let error = apply_vpn_portal_client_patches(&config, vec![remove("alice")]).unwrap_err();
+        assert!(error.to_string().contains("disabled"));
+        assert_eq!(config.get_vpn_portal_config(), Some(portal));
     }
 
     #[test]

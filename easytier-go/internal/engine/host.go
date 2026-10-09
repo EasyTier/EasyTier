@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -105,6 +106,12 @@ func NewHost(ctx context.Context, options Options) (_ *Host, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("instantiate embedded EasyTier core: %w", err)
 	}
+	// Compiling the core allocates ~100MB of throwaway compiler state on the
+	// Go heap. The Go runtime does not return it to the OS on its own after
+	// the initiating GC, so the process would retain the compilation peak as
+	// resident memory for its entire lifetime. NewHost runs once at startup,
+	// outside the packet path, so reclaim it explicitly here.
+	debug.FreeOSMemory()
 
 	host := &Host{
 		ctx:       lifetime,

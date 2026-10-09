@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	DataPlaneABIVersion = 3
+	DataPlaneABIVersion = 4
 
 	DataPlaneCapability    uint64 = 1 << 0
 	DataPlaneTCPCapability uint64 = 1 << 1

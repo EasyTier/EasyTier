@@ -1,4 +1,17 @@
-import type { PeerRoutePair } from '../types/network'
+import { NatType, type PeerRoutePair, type StunInfo } from '../types/network'
+
+const udpNatTypeStrMap: Record<NatType, string> = {
+  [NatType.Unknown]: 'Unknown',
+  [NatType.OpenInternet]: 'Open Internet',
+  [NatType.NoPAT]: 'No PAT',
+  [NatType.FullCone]: 'Full Cone',
+  [NatType.Restricted]: 'Restricted',
+  [NatType.PortRestricted]: 'Port Restricted',
+  [NatType.Symmetric]: 'Symmetric',
+  [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
+  [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
+  [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
+}
 
 export function numericValue(value: unknown): number | undefined {
   if (typeof value === 'number')
@@ -71,7 +84,7 @@ export function latencyMs(info: PeerRoutePair) {
 
 export function lossRate(info: PeerRoutePair) {
   for (const conn of defaultConnFirst(info)) {
-    const loss = numericValue(conn.loss_rate)
+    const loss = numericValue(conn.loss_rate ?? 0)
     if (loss === undefined)
       continue
 
@@ -79,4 +92,13 @@ export function lossRate(info: PeerRoutePair) {
   }
 
   return ''
+}
+
+export function udpNatTypeName(stunInfo: StunInfo | undefined) {
+  if (!stunInfo)
+    return ''
+
+  const value = stunInfo.udp_nat_type ?? NatType.Unknown
+  const natType = numericValue(value) ?? NatType[value as keyof typeof NatType]
+  return udpNatTypeStrMap[natType as NatType] ?? udpNatTypeStrMap[NatType.Unknown]
 }

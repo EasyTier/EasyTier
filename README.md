@@ -71,6 +71,8 @@ cargo install --git https://github.com/EasyTier/EasyTier.git easytier
 
 [Install pre-built binary](https://github.com/EasyTier/EasyTier/releases) (Recommended, All platforms supported)
 
+For a smaller executable, try [easytier-mini](https://github.com/EasyTier/easytier-mini), which supports basic TCP/UDP networking. See its documentation for supported features and usage.
+
 [Install via Docker](https://easytier.cn/en/guide/installation.html#installation-methods)
 
 [Install OpenWrt ipk package](https://github.com/EasyTier/luci-app-easytier)
@@ -317,6 +319,7 @@ CDN acceleration and security protection for this project are sponsored by Tence
 </p>
 
 Special thanks to [Langlang Cloud](https://langlangy.cn/?i26c5a5)  and [RainCloud](https://www.rainyun.com/NjM0NzQ1_) for sponsoring our public servers.
+We also thank [Linfeng Cloud (林枫云)](https://www.dkdun.cn/aff/RZGBFYSW) for supporting EasyTier.
 
 <p align="center">
 <a href="https://langlangy.cn/?i26c5a5" target="_blank">
@@ -324,6 +327,9 @@ Special thanks to [Langlang Cloud](https://langlangy.cn/?i26c5a5)  and [RainClou
 </a>
 <a href="https://langlangy.cn/?i26c5a5" target="_blank">
 <img src="assets/raincloud.png" width="200">
+</a>
+<a href="https://www.dkdun.cn/aff/RZGBFYSW" target="_blank">
+<img src="assets/linfengyun.png" width="200" alt="林枫云">
 </a>
 </p>
 
