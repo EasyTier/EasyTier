@@ -16,7 +16,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 dashmap.workspace = true
 url.workspace = true
 async-trait.workspace = true
-futures.workspace = true
+futures = { workspace = true, features = ["default"] }
 prost.workspace = true
 
 maxminddb = "0.32"
@@ -74,8 +74,14 @@ uuid = { workspace = true, features = [
 ] }
 
 chrono = { workspace = true, features = ["serde"] }
-openidconnect = { version = "4.0", default-features = false, features = ["accept-rfc3339-timestamps", "reqwest"] }
-reqwest = { workspace = true, features = ["json", "rustls"] }
+# Keep the bundled reqwest 0.12 client disabled; use the official 0.13 adapter.
+openidconnect = { version = "4.0", default-features = false, features = ["accept-rfc3339-timestamps"] }
+# Pin the adapter until its API stabilizes.
+oauth2-reqwest = "=0.1.0-alpha.3"
+# Reuse EasyTier's ring provider. reqwest 0.13's rustls feature adds aws-lc,
+# making rustls backend selection ambiguous when core/web are built together.
+# Initialize the process provider before constructing a reqwest client.
+reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
 subtle = "2.6"
 
 mimalloc.workspace = true

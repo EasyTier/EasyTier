@@ -281,6 +281,10 @@ impl WebhookConfig {
         web_instance_id: Option<String>,
         web_instance_api_base_url: Option<String>,
     ) -> Self {
+        // This constructor is also used without main (for example in tests).
+        // reqwest's rustls-no-provider needs a process default even if ring
+        // is the only compiled backend.
+        easytier::utils::init_crypto_provider();
         WebhookConfig {
             webhook_url,
             webhook_secret,

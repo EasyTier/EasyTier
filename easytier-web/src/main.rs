@@ -303,6 +303,7 @@ async fn main() {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
     setup_panic_handler();
+    easytier::utils::init_crypto_provider();
 
     let cli = Cli::parse();
     log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();

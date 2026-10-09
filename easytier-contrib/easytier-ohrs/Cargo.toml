@@ -20,7 +20,7 @@ easytier-proto = { workspace = true, features = [
     "core",
     "json-rpc",
 ] }
-futures.workspace = true
+futures = { workspace = true, features = ["default"] }
 napi-derive-ohos = "1.1"
 napi-ohos = { version = "1.1", default-features = false, features = [
     "serde-json",

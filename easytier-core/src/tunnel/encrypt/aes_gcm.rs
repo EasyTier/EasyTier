@@ -1,4 +1,4 @@
-use aes_gcm::{AeadInOut, Aes128Gcm, Aes256Gcm, Key, KeyInit};
+use aes_gcm::{AeadInPlace, Aes128Gcm, Aes256Gcm, Key, KeyInit};
 use rand::{RngCore, rngs::OsRng};
 use zerocopy::{AsBytes, FromBytes};
 
@@ -54,16 +54,16 @@ impl Encryptor for AesGcmCipher {
         let tag = aes_tail.tag.into();
 
         let rs = match &self.cipher {
-            AesGcmEnum::AES128GCM(aes_gcm) => aes_gcm.decrypt_inout_detached(
+            AesGcmEnum::AES128GCM(aes_gcm) => aes_gcm.decrypt_in_place_detached(
                 &nonce,
                 &[],
-                (&mut zc_packet.mut_payload()[..text_len]).into(),
+                &mut zc_packet.mut_payload()[..text_len],
                 &tag,
             ),
-            AesGcmEnum::AES256GCM(aes_gcm) => aes_gcm.decrypt_inout_detached(
+            AesGcmEnum::AES256GCM(aes_gcm) => aes_gcm.decrypt_in_place_detached(
                 &nonce,
                 &[],
-                (&mut zc_packet.mut_payload()[..text_len]).into(),
+                &mut zc_packet.mut_payload()[..text_len],
                 &tag,
             ),
         };
@@ -113,7 +113,7 @@ impl Encryptor for AesGcmCipher {
                     nonce.into()
                 });
                 (
-                    aes_gcm.encrypt_inout_detached(&nonce, &[], zc_packet.mut_payload().into()),
+                    aes_gcm.encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload()),
                     nonce,
                 )
             }
@@ -124,7 +124,7 @@ impl Encryptor for AesGcmCipher {
                     nonce.into()
                 });
                 (
-                    aes_gcm.encrypt_inout_detached(&nonce, &[], zc_packet.mut_payload().into()),
+                    aes_gcm.encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload()),
                     nonce,
                 )
             }

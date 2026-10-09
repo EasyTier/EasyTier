@@ -1733,6 +1733,7 @@ pub async fn main() -> ExitCode {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
     setup_panic_handler();
+    crate::utils::init_crypto_provider();
 
     #[cfg(target_os = "windows")]
     match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {

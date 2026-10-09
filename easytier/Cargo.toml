@@ -61,7 +61,7 @@ strum = { workspace = true, features = ["derive"] }
 
 gethostname.workspace = true
 
-futures = { workspace = true, features = ["bilock", "unstable"] }
+futures = { workspace = true, features = ["default", "bilock", "unstable"] }
 
 tokio = { workspace = true, features = [
     "fs",
@@ -178,7 +178,8 @@ network-interface = "2.0.5"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
-hkdf = { version = "0.13", optional = true }
+# Share the workspace HMAC/SHA2 digest generation for WireGuard key derivation.
+hkdf = { version = "0.12.4", optional = true }
 sha2 = { workspace = true, optional = true }
 
 # for cli
@@ -415,6 +416,7 @@ upnp = [
 ]
 endpoint-discovery = [
     "dns-resolver",
+    "dep:rustls",
     "easytier-core/endpoint-discovery",
 ]
 dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]

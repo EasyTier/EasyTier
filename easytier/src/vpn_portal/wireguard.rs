@@ -395,6 +395,15 @@ mod tests {
     fn named_wireguard_keys_are_stable_and_client_scoped() {
         let master = [7; 32];
         let client = derive_named_key(&master, b"wireguard-client", "laptop").unwrap();
+        // Pin the derived key across crypto dependency upgrades/downgrades.
+        // Independently calculated with RFC 5869 HKDF-SHA256.
+        assert_eq!(
+            client,
+            [
+                5, 98, 244, 32, 245, 111, 41, 24, 163, 149, 201, 218, 22, 228, 8, 224, 134, 16,
+                173, 29, 62, 138, 202, 41, 172, 230, 189, 237, 207, 100, 51, 236,
+            ]
+        );
         assert_eq!(
             client,
             derive_named_key(&master, b"wireguard-client", "laptop").unwrap()
