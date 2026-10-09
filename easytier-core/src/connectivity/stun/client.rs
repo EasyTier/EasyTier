@@ -20,6 +20,7 @@ use tokio::{
 use tracing::{Instrument as _, Level};
 
 use crate::{
+    connectivity::configured_bind_addr,
     host::dns::{DnsQuery, DnsRecordResolver, DnsResolver},
     proto::common::NatType,
     socket::{
@@ -579,6 +580,7 @@ pub struct UdpNatTypeDetector<R, D: ?Sized> {
     runtime: Arc<R>,
     dns: Arc<D>,
     socket_context: SocketContext,
+    bind_address: Option<IpAddr>,
     stun_server_hosts: Vec<String>,
     max_ip_per_domain: u32,
 }
@@ -595,10 +597,29 @@ where
         stun_server_hosts: Vec<String>,
         max_ip_per_domain: u32,
     ) -> Self {
+        Self::new_with_bind_address(
+            runtime,
+            dns,
+            socket_context,
+            None,
+            stun_server_hosts,
+            max_ip_per_domain,
+        )
+    }
+
+    pub fn new_with_bind_address(
+        runtime: Arc<R>,
+        dns: Arc<D>,
+        socket_context: SocketContext,
+        bind_address: Option<IpAddr>,
+        stun_server_hosts: Vec<String>,
+        max_ip_per_domain: u32,
+    ) -> Self {
         Self {
             runtime,
             dns,
             socket_context,
+            bind_address,
             stun_server_hosts,
             max_ip_per_domain,
         }
@@ -614,7 +635,8 @@ where
             .bind_udp(stun_udp_bind_options(
                 self.socket_context.clone(),
                 IpVersion::V4,
-                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), source_port),
+                configured_bind_addr(self.bind_address, IpVersion::V4, source_port)
+                    .unwrap_or_else(|| SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), source_port)),
             ))
             .await?;
         udp_bind_request(socket, stun_server).await
@@ -629,7 +651,8 @@ where
             .bind_udp(stun_udp_bind_options(
                 self.socket_context.clone(),
                 IpVersion::V4,
-                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), source_port),
+                configured_bind_addr(self.bind_address, IpVersion::V4, source_port)
+                    .unwrap_or_else(|| SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), source_port)),
             ))
             .await?;
         self.detect_nat_type_with_socket(socket).await
@@ -715,6 +738,7 @@ pub(super) fn stun_udp_bind_options(
 struct TcpStunClient<R> {
     runtime: Arc<R>,
     socket_context: SocketContext,
+    bind_address: Option<IpAddr>,
     stun_server: SocketAddr,
     conn_timeout: Duration,
     io_timeout: Duration,
@@ -725,15 +749,17 @@ impl<R> TcpStunClient<R>
 where
     R: StunSocketRuntime,
 {
-    fn new(
+    fn new_with_bind_address(
         runtime: Arc<R>,
         socket_context: SocketContext,
+        bind_address: Option<IpAddr>,
         stun_server: SocketAddr,
         source_port: u16,
     ) -> Self {
         Self {
             runtime,
             socket_context,
+            bind_address,
             stun_server,
             conn_timeout: Duration::from_millis(1500),
             io_timeout: Duration::from_millis(3000),
@@ -793,16 +819,16 @@ where
     }
 
     async fn connect(&self) -> anyhow::Result<<R as VirtualTcpSocketFactory>::Socket> {
-        let (bind_addr, ip_version) = match self.stun_server {
-            SocketAddr::V4(_) => (
-                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), self.source_port),
-                IpVersion::V4,
-            ),
-            SocketAddr::V6(_) => (
-                SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), self.source_port),
-                IpVersion::V6,
-            ),
+        let ip_version = match self.stun_server {
+            SocketAddr::V4(_) => IpVersion::V4,
+            SocketAddr::V6(_) => IpVersion::V6,
         };
+        let bind_addr = configured_bind_addr(self.bind_address, ip_version, self.source_port)
+            .unwrap_or_else(|| match ip_version {
+                IpVersion::V4 => SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), self.source_port),
+                IpVersion::V6 => SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), self.source_port),
+                IpVersion::Both => unreachable!("STUN server has one address family"),
+            });
         let bind = TcpBindOptions::default()
             .with_context(self.socket_context.clone().with_ip_version(ip_version))
             .with_local_addr(Some(bind_addr))
@@ -854,24 +880,32 @@ where
     }
 }
 
-pub(super) async fn tcp_bind_request<R>(
+pub(super) async fn tcp_bind_request_with_bind_address<R>(
     runtime: Arc<R>,
     socket_context: SocketContext,
     stun_server: SocketAddr,
     source_port: u16,
+    bind_address: Option<IpAddr>,
 ) -> anyhow::Result<BindRequestResponse>
 where
     R: StunSocketRuntime,
 {
-    TcpStunClient::new(runtime, socket_context, stun_server, source_port)
-        .bind_request()
-        .await
+    TcpStunClient::new_with_bind_address(
+        runtime,
+        socket_context,
+        bind_address,
+        stun_server,
+        source_port,
+    )
+    .bind_request()
+    .await
 }
 
 pub struct TcpNatTypeDetector<R, D: ?Sized> {
     runtime: Arc<R>,
     dns: Arc<D>,
     socket_context: SocketContext,
+    bind_address: Option<IpAddr>,
     stun_server_hosts: Vec<String>,
     max_ip_per_domain: u32,
 }
@@ -888,10 +922,29 @@ where
         stun_server_hosts: Vec<String>,
         max_ip_per_domain: u32,
     ) -> Self {
+        Self::new_with_bind_address(
+            runtime,
+            dns,
+            socket_context,
+            None,
+            stun_server_hosts,
+            max_ip_per_domain,
+        )
+    }
+
+    pub fn new_with_bind_address(
+        runtime: Arc<R>,
+        dns: Arc<D>,
+        socket_context: SocketContext,
+        bind_address: Option<IpAddr>,
+        stun_server_hosts: Vec<String>,
+        max_ip_per_domain: u32,
+    ) -> Self {
         Self {
             runtime,
             dns,
             socket_context,
+            bind_address,
             stun_server_hosts,
             max_ip_per_domain,
         }
@@ -918,9 +971,10 @@ where
         let mut source_addr = None;
         let mut selected_source_port = (source_port != 0).then_some(source_port);
         for server in stun_servers {
-            let response = TcpStunClient::new(
+            let response = TcpStunClient::new_with_bind_address(
                 self.runtime.clone(),
                 self.socket_context.clone(),
+                self.bind_address,
                 server,
                 selected_source_port.unwrap_or(0),
             )

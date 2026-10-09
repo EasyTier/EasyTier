@@ -20,6 +20,7 @@ use crate::{
         DEFAULT_TCP_STUN_SERVERS, DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS,
         default_stun_servers,
     },
+    connectivity::configured_bind_addr,
     proto::common::{NatType, StunInfo},
     socket::{
         IpVersion, SocketContext,
@@ -29,8 +30,8 @@ use crate::{
 
 use super::client::{
     HostResolverIter, StunDnsRuntime, StunNatTypeDetectResult, StunSocketRuntime,
-    TcpNatTypeDetector, UdpNatTypeDetector, stun_udp_bind_options, tcp_bind_request,
-    udp_bind_request,
+    TcpNatTypeDetector, UdpNatTypeDetector, stun_udp_bind_options,
+    tcp_bind_request_with_bind_address, udp_bind_request,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +81,7 @@ where
     dns: Arc<D>,
     udp_socket_context: SocketContext,
     tcp_socket_context: SocketContext,
+    bind_address: Option<IpAddr>,
     stun_servers: Arc<RwLock<Vec<String>>>,
     tcp_stun_servers: Arc<RwLock<Vec<String>>>,
     stun_servers_v6: Arc<RwLock<Vec<String>>>,
@@ -125,11 +127,34 @@ where
         tcp_stun_servers: Vec<String>,
         stun_servers_v6: Vec<String>,
     ) -> Self {
+        Self::new_with_socket_contexts_and_bind_address(
+            runtime,
+            dns,
+            udp_socket_context,
+            tcp_socket_context,
+            udp_stun_servers,
+            tcp_stun_servers,
+            stun_servers_v6,
+            None,
+        )
+    }
+
+    pub fn new_with_socket_contexts_and_bind_address(
+        runtime: Arc<R>,
+        dns: Arc<D>,
+        udp_socket_context: SocketContext,
+        tcp_socket_context: SocketContext,
+        udp_stun_servers: Vec<String>,
+        tcp_stun_servers: Vec<String>,
+        stun_servers_v6: Vec<String>,
+        bind_address: Option<IpAddr>,
+    ) -> Self {
         Self {
             runtime,
             dns,
             udp_socket_context,
             tcp_socket_context,
+            bind_address,
             stun_servers: Arc::new(RwLock::new(udp_stun_servers)),
             tcp_stun_servers: Arc::new(RwLock::new(tcp_stun_servers)),
             stun_servers_v6: Arc::new(RwLock::new(stun_servers_v6)),
@@ -204,6 +229,7 @@ where
         dns: Arc<D>,
         socket_context: SocketContext,
         servers: &[String],
+        bind_address: Option<IpAddr>,
     ) -> Option<Ipv6Addr> {
         let mut resolver = HostResolverIter::new(
             dns,
@@ -217,7 +243,8 @@ where
                 .bind_udp(stun_udp_bind_options(
                     socket_context.clone(),
                     IpVersion::V6,
-                    SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
+                    configured_bind_addr(bind_address, IpVersion::V6, 0)
+                        .unwrap_or_else(|| SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0)),
                 ))
                 .await
                 .ok()?;
@@ -241,16 +268,18 @@ where
         let dns = self.dns.clone();
         let socket_context = self.udp_socket_context.clone();
         let stun_servers = self.stun_servers.clone();
+        let bind_address = self.bind_address;
         let udp_nat_test_result = self.udp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let servers = sampled_servers(&stun_servers.read().unwrap());
-                let detector = UdpNatTypeDetector::new(
+                let detector = UdpNatTypeDetector::new_with_bind_address(
                     runtime.clone(),
                     dns.clone(),
                     socket_context.clone(),
+                    bind_address,
                     servers,
                     1,
                 );
@@ -297,16 +326,18 @@ where
         let dns = self.dns.clone();
         let socket_context = self.tcp_socket_context.clone();
         let tcp_stun_servers = self.tcp_stun_servers.clone();
+        let bind_address = self.bind_address;
         let tcp_nat_test_result = self.tcp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let servers = sampled_servers(&tcp_stun_servers.read().unwrap());
-                let detector = TcpNatTypeDetector::new(
+                let detector = TcpNatTypeDetector::new_with_bind_address(
                     runtime.clone(),
                     dns.clone(),
                     socket_context.clone(),
+                    bind_address,
                     servers,
                     1,
                 );
@@ -334,6 +365,7 @@ where
         let dns = self.dns.clone();
         let socket_context = self.udp_socket_context.clone();
         let stun_servers_v6 = self.stun_servers_v6.clone();
+        let bind_address = self.bind_address;
         let public_ipv6 = self.public_ipv6.clone();
         let redetect_notify = self.redetect_notify.clone();
         self.tasks.lock().unwrap().spawn(async move {
@@ -344,6 +376,7 @@ where
                     dns.clone(),
                     socket_context.clone(),
                     &servers,
+                    bind_address,
                 )
                 .await
                 {
@@ -419,7 +452,8 @@ where
             .bind_udp(stun_udp_bind_options(
                 self.udp_socket_context.clone(),
                 IpVersion::V4,
-                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), local_port),
+                configured_bind_addr(self.bind_address, IpVersion::V4, local_port)
+                    .unwrap_or_else(|| SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), local_port)),
             ))
             .await?;
         StunSocketMapper::get_udp_port_mapping_with_socket(self, socket).await
@@ -453,11 +487,12 @@ where
         }
 
         for server in servers {
-            match tcp_bind_request(
+            match tcp_bind_request_with_bind_address(
                 self.runtime.clone(),
                 self.tcp_socket_context.clone(),
                 server,
                 local_port,
+                self.bind_address,
             )
             .await
             {
@@ -764,5 +799,25 @@ mod tests {
             binds[0].context.netns.as_ref().map(|netns| netns.token()),
             Some("instance-a")
         );
+    }
+
+    #[tokio::test]
+    async fn udp_mapping_uses_explicit_underlay_bind_address() {
+        let runtime = Arc::new(MockRuntime::default());
+        let collector = StunInfoCollector::new_with_socket_contexts_and_bind_address(
+            runtime.clone(),
+            Arc::new(MockDns),
+            SocketContext::default(),
+            SocketContext::default(),
+            vec!["stun.example".to_owned()],
+            Vec::new(),
+            Vec::new(),
+            Some("192.0.2.10".parse().unwrap()),
+        );
+
+        collector.get_udp_port_mapping(0).await.unwrap();
+
+        let binds = runtime.udp_binds.lock().unwrap();
+        assert_eq!(binds[0].local_addr, Some("192.0.2.10:0".parse().unwrap()));
     }
 }
