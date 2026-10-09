@@ -48,6 +48,7 @@ easytier-ohos-features = { version = "0.1.0", path = "easytier-contrib/easytier-
 easytier-proto = { version = "2.7.0", path = "easytier-proto", default-features = false }
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1"
+getset = "0.1.7"
 guarden = "0.3"
 # Keep HMAC/SHA2 on digest 0.10, shared by stun_codec 0.4 and snow 0.10.
 # Upgrade this crypto family together when those upstream constraints move.
