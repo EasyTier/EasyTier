@@ -2601,6 +2601,7 @@ dependencies = [
  "rand 0.8.8",
  "rcgen",
  "regex",
+ "registry",
  "rstest",
  "rust-i18n",
  "rustls",
@@ -2702,6 +2703,7 @@ dependencies = [
  "prost-types 0.14.4",
  "quanta",
  "rand 0.8.8",
+ "registry",
  "ring",
  "rustls",
  "serde",
@@ -3005,6 +3007,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "educe"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ebdb1f8f8d2815bbe7b369a7da10343c82026a4503b68bd1279ba557611e96d"
+dependencies = [
+ "enum-ordinalize",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3175,6 +3189,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "enum-ordinalize"
+version = "4.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89dd01549b09589510cf0647475075d12071456586d70f5c75c98ae2a5537677"
+dependencies = [
+ "enum-ordinalize-derive",
+]
+
+[[package]]
+name = "enum-ordinalize-derive"
+version = "4.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a65863d15a4ce2888bd2f0f543cc963d3879c3a022c8ee43f6141d479a3ac815"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4040,10 +4074,11 @@ dependencies = [
 
 [[package]]
 name = "guarden"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11e5aa725802d305ed9726003d1d2c0329cea9802314d482b7d1206b10e92461"
+checksum = "6ff18f32fb55f69f2dfc31266f760f6e9bd9d450c9ee8d6cd8891a4ebf558c23"
 dependencies = [
+ "derive_more",
  "futures-core",
  "guarden-macros",
  "tokio",
@@ -4051,9 +4086,9 @@ dependencies = [
 
 [[package]]
 name = "guarden-macros"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58fae24d0e2228af3151faf0153dc6c9ef1f7fa7965ffb7e3022052fcb78f297"
+checksum = "e9e8489ba07ce36023240486aa77adbf18b49a61c384be6eb0d128c18388efc6"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
@@ -7736,6 +7771,15 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "registry"
+version = "0.1.0"
+dependencies = [
+ "educe",
+ "parking_lot",
+ "tokio",
+]
 
 [[package]]
 name = "relative-path"

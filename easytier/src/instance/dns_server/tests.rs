@@ -39,11 +39,28 @@ pub async fn prepare_env(
 
 async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPacketReceiver) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
-    let adapters = runtime_core_host_adapters(
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    let route_handle = {
+        let routes = registry::Registry::default();
+        let handle = easytier_core::host::route::RouteHandle::new(routes.clone());
+        ctx.set_route_handle(Some(handle.clone()));
+        let backend =
+            crate::instance::route::PlatformRouteBackend::new(ctx.net_ns.clone()).unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let manager = crate::instance::route::RouteMgr::new(ctx.clone(), backend, routes, cancel);
+        tokio::spawn(manager.run());
+        Some(handle)
+    };
+    #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+    let route_handle = None;
+
+    let mut adapters = runtime_core_host_adapters(
         ctx.clone(),
         CoreProcessRuntime::new(),
         Arc::new(HostPacketChannelSink::new(packet_sink)),
     );
+    adapters.routes = route_handle;
     let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
     core_instance.start().await.unwrap();
     (core_instance, HostPacketReceiver::new(packet_receiver))

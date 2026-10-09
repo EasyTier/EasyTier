@@ -1,0 +1,15 @@
+[package]
+name = "registry"
+description = "Lifetime-bound, observable registry of live state claims."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../LICENSE"
+
+[dependencies]
+educe = "0.8.1"
+parking_lot.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "rt-multi-thread", "macros", "time"] }

@@ -132,6 +132,7 @@ impl NativeTunRuntime {
 
     pub(super) async fn prepare(&self, packet_plane: Arc<CorePacketPlane>) -> anyhow::Result<()> {
         self.nic.drain().await;
+
         if !self.global_ctx.get_flags().no_tun {
             self.start_static_ip(packet_plane).await?;
         }
@@ -209,6 +210,7 @@ impl NativeDhcpIpv4Host {
             _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
             result = nic.run(Some(ip), self.global_ctx.get_ipv6()) => result?,
         }
+
         let magic_dns = MagicDnsRuntime::start(
             self.global_ctx.clone(),
             self.packet_plane.clone(),

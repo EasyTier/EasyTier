@@ -31,9 +31,12 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+use registry::Registration;
+
 use crate::{
     config::PeerId,
     config::peers::PeerGroupIdentity,
+    host::route::RouteDemand,
     peers::{
         PeerPacketFilter,
         context::{
@@ -2380,6 +2383,9 @@ struct PeerRouteServiceImpl {
     last_update_my_foreign_network: AtomicCell<Option<Instant>>,
 
     peer_info_last_update: AtomicCell<Instant>,
+
+    /// This route table's registration in the instance's route registry.
+    proxy_registration: parking_lot::Mutex<Option<Registration<RouteDemand>>>,
 }
 
 impl Debug for PeerRouteServiceImpl {
@@ -2407,7 +2413,11 @@ impl Debug for PeerRouteServiceImpl {
 
 #[allow(dead_code)]
 impl PeerRouteServiceImpl {
-    fn new(my_peer_id: PeerId, context: ArcPeerContext) -> Self {
+    fn new(
+        my_peer_id: PeerId,
+        context: ArcPeerContext,
+        proxy_registration: Option<Registration<RouteDemand>>,
+    ) -> Self {
         PeerRouteServiceImpl {
             my_peer_id,
             my_peer_route_id: rand::random(),
@@ -2454,7 +2464,31 @@ impl PeerRouteServiceImpl {
             last_update_my_foreign_network: AtomicCell::new(None),
 
             peer_info_last_update: AtomicCell::new(Instant::now()),
+
+            proxy_registration: parking_lot::Mutex::new(proxy_registration),
         }
+    }
+
+    pub(crate) fn withdraw_proxy_registration(&self) {
+        let registration = self.proxy_registration.lock().take();
+        drop(registration);
+    }
+
+    /// Republishes this table's proxy CIDR layer. Called wherever the table
+    /// content changes, so readers of the registry see the current set.
+    fn publish_proxy_cidrs(&self) {
+        let guard = self.proxy_registration.lock();
+        let Some(registration) = guard.as_ref() else {
+            return;
+        };
+        let cidrs = self.route_table.list_proxy_cidrs_excluding(self.my_peer_id);
+        if let Some(prev) = registration.get()
+            && let RouteDemand::AutoProxy(prev_cidrs) = prev.as_ref()
+            && prev_cidrs == &cidrs
+        {
+            return;
+        }
+        let _ = registration.replace(RouteDemand::AutoProxy(cidrs));
     }
 
     fn is_credential_node(&self) -> bool {
@@ -2847,6 +2881,8 @@ impl PeerRouteServiceImpl {
             .as_mut()
             .unwrap()
             .end_update();
+
+        self.publish_proxy_cidrs();
     }
 
     fn update_foreign_network_owner_map(&self) {
@@ -3439,6 +3475,7 @@ impl PeerRouteServiceImpl {
         self.refresh_credential_trusts_and_disconnect().await;
         self.route_table.clean_expired_route_info();
         self.route_table_with_cost.clean_expired_route_info();
+        self.publish_proxy_cidrs();
     }
 
     fn build_sync_route_raw_req(
@@ -4397,8 +4434,13 @@ impl PeerRoute {
         context: ArcPeerContext,
         public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
         peer_rpc: Arc<PeerRpcManager>,
+        proxy_registration: Option<Registration<RouteDemand>>,
     ) -> Arc<Self> {
-        let service_impl = Arc::new(PeerRouteServiceImpl::new(my_peer_id, context.clone()));
+        let service_impl = Arc::new(PeerRouteServiceImpl::new(
+            my_peer_id,
+            context.clone(),
+            proxy_registration,
+        ));
         let session_mgr = RouteSessionManager::new(service_impl.clone(), peer_rpc.clone());
         let public_ipv6_service = Arc::new(PublicIpv6Service::new(
             public_ipv6_runtime,
@@ -4565,6 +4607,7 @@ impl PeerRoute {
     }
 
     async fn stop(&self) {
+        self.service_impl.withdraw_proxy_registration();
         self.service_impl.stopped.store(true, Ordering::Release);
         self.unregister_rpc_services();
 
@@ -4594,6 +4637,7 @@ impl PeerRoute {
 
 impl Drop for PeerRoute {
     fn drop(&mut self) {
+        self.service_impl.withdraw_proxy_registration();
         tracing::debug!(
             self.my_peer_id,
             network = ?self.context.network_identity(),
@@ -5008,7 +5052,7 @@ mod tests {
     }
 
     fn test_service_impl(my_peer_id: PeerId) -> PeerRouteServiceImpl {
-        PeerRouteServiceImpl::new(my_peer_id, Arc::new(NoopPeerContext::default()))
+        PeerRouteServiceImpl::new(my_peer_id, Arc::new(NoopPeerContext::default()), None)
     }
 
     fn test_peer_relay_service_impl(my_peer_id: PeerId) -> PeerRouteServiceImpl {
@@ -5019,6 +5063,7 @@ mod tests {
         PeerRouteServiceImpl::new(
             my_peer_id,
             Arc::new(NoopPeerContext::default().with_flags(flags)),
+            None,
         )
     }
 
@@ -5104,6 +5149,7 @@ mod tests {
             context,
             Arc::new(TestPublicIpv6Runtime),
             peer_rpc.clone(),
+            None,
         );
         *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
             my_peer_id: 1,
@@ -5646,7 +5692,7 @@ mod tests {
     #[tokio::test]
     async fn enabling_peer_relay_refreshes_authenticated_interface_metadata() {
         let context = Arc::new(TogglePeerRelayContext::default());
-        let service_impl = PeerRouteServiceImpl::new(1, context.clone());
+        let service_impl = PeerRouteServiceImpl::new(1, context.clone(), None);
         let peer_identity_types = Arc::new(Mutex::new(HashMap::from([
             (2, Some(PeerIdentityType::Credential)),
             (3, Some(PeerIdentityType::Credential)),
@@ -6191,6 +6237,7 @@ mod tests {
             Arc::new(NoopPeerContext::default()),
             Arc::new(TestPublicIpv6Runtime),
             peer_rpc,
+            None,
         );
         let peers = Arc::new(Mutex::new(vec![2]));
         *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
@@ -6233,6 +6280,7 @@ mod tests {
             Arc::new(NoopPeerContext::default()),
             Arc::new(TestPublicIpv6Runtime),
             peer_rpc,
+            None,
         );
         let peers = Arc::new(Mutex::new(vec![2]));
         *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
@@ -6437,6 +6485,7 @@ mod tests {
             Arc::new(NoopPeerContext::default()),
             Arc::new(TestPublicIpv6Runtime),
             peer_rpc,
+            None,
         );
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
@@ -6519,5 +6568,36 @@ mod tests {
             table.get_peer_id_for_proxy(&"10.10.1.1".parse::<IpAddr>().unwrap()),
             Some(3)
         );
+    }
+
+    #[tokio::test]
+    async fn proxy_registration_withdrawn_on_stop_and_cannot_be_resurrected() {
+        let registry = registry::Registry::default();
+        let reg = registry
+            .register(RouteDemand::AutoProxy(BTreeSet::new()))
+            .unwrap();
+        assert_eq!(registry.len(), 1);
+
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+            Some(reg),
+        );
+
+        // Before stop, the registration exists in registry
+        assert_eq!(registry.len(), 1);
+
+        // Stop the route
+        route.stop().await;
+
+        // Registration is dropped synchronously during stop
+        assert_eq!(registry.len(), 0);
+
+        // Calling publish_proxy_cidrs after stop does not resurrect or panic
+        route.service_impl.publish_proxy_cidrs();
+        assert_eq!(registry.len(), 0);
     }
 }

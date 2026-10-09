@@ -194,7 +194,8 @@ impl AttachedPeerRuntime {
             None => None,
         };
         let services = build_attached_services(&network.services, credential_public_key.is_some());
-        let runtime_config = CoreRuntimeConfigStore::new(services, Arc::new(peer_snapshot.clone()));
+        let runtime_config =
+            CoreRuntimeConfigStore::new(services, Arc::new(peer_snapshot.clone()), None);
         let (packet_sender, packet_receiver) = host_packet_channel();
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
@@ -214,6 +215,7 @@ impl AttachedPeerRuntime {
             Arc::new(()),
             None,
             Arc::new(()),
+            None,
         )?);
         if let Err(error) = peer_manager
             .follow_network_policy(network_runtime_config, config.groups)
@@ -596,7 +598,8 @@ mod tests {
             },
             ..Default::default()
         };
-        let store = CoreRuntimeConfigStore::new(services, Arc::new(portable.snapshot.clone()));
+        let store =
+            CoreRuntimeConfigStore::new(services, Arc::new(portable.snapshot.clone()), None);
         let (packet_sender, _packet_receiver) = host_packet_channel();
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(store.clone(), Arc::new(()), Arc::new(()));
@@ -611,6 +614,7 @@ mod tests {
                 Arc::new(()),
                 None,
                 Arc::new(()),
+                None,
             )
             .unwrap(),
         );

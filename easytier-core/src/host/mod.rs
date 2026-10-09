@@ -12,6 +12,7 @@ pub mod environment;
 #[cfg(feature = "management")]
 pub mod management;
 pub mod packet;
+pub mod route;
 pub mod socket;
 #[cfg(test)]
 pub(crate) mod testkit;

@@ -445,6 +445,7 @@ mod tests {
                 ..Default::default()
             },
             Arc::new(peer),
+            None,
         );
         let host = Arc::new(RecordingPublicIpv6Host::default());
         let events = Arc::new(RecordingPublicIpv6Events::default());

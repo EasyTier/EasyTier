@@ -7,6 +7,9 @@ use cidr::Ipv4Cidr;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::host::route::RouteDemand;
+use registry::Registration;
+
 use super::{
     gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
     peers::{AclRuleConfig, PeerRuntimeSnapshot, PublicIpv6ProviderConfig},
@@ -54,6 +57,7 @@ struct CoreRuntimeConfigStoreInner {
     update: Mutex<()>,
     peer_changes: tokio::sync::watch::Sender<u64>,
     service_changes: tokio::sync::watch::Sender<u64>,
+    manual_registration: Mutex<Option<Registration<RouteDemand>>>,
 }
 
 /// Atomic configuration authority shared by one core instance and its peer
@@ -64,7 +68,11 @@ pub struct CoreRuntimeConfigStore {
 }
 
 impl CoreRuntimeConfigStore {
-    pub fn new(services: CoreRuntimeConfig, peer: Arc<PeerRuntimeSnapshot>) -> Self {
+    pub fn new(
+        services: CoreRuntimeConfig,
+        peer: Arc<PeerRuntimeSnapshot>,
+        manual_registration: Option<Registration<RouteDemand>>,
+    ) -> Self {
         let (peer_changes, _) = tokio::sync::watch::channel(0);
         let (service_changes, _) = tokio::sync::watch::channel(0);
         Self {
@@ -73,6 +81,7 @@ impl CoreRuntimeConfigStore {
                 update: Mutex::new(()),
                 peer_changes,
                 service_changes,
+                manual_registration: Mutex::new(manual_registration),
             }),
         }
     }
@@ -88,7 +97,21 @@ impl CoreRuntimeConfigStore {
 
     pub fn replace(&self, config: CoreInstanceRuntimeConfig) {
         let _update = self.inner.update.lock();
-        self.inner.snapshot.store(Arc::new(config));
+        let current = self.inner.snapshot.load_full();
+        let manual_changed = current.services.manual_routes != config.services.manual_routes;
+        let new_manual = if manual_changed {
+            Some(config.services.manual_routes.clone())
+        } else {
+            None
+        };
+        let config = Arc::new(config);
+        self.inner.snapshot.store(config);
+        if let Some(new_manual) = new_manual {
+            let registration = self.inner.manual_registration.lock();
+            if let Some(reg) = registration.as_ref() {
+                let _ = reg.replace(RouteDemand::ManualProxy(new_manual));
+            }
+        }
         self.inner.peer_changes.send_modify(|version| *version += 1);
         self.inner
             .service_changes
@@ -103,8 +126,20 @@ impl CoreRuntimeConfigStore {
         let _update = self.inner.update.lock();
         let current = self.inner.snapshot.load_full();
         merge(&current, &mut config);
+        let manual_changed = current.services.manual_routes != config.services.manual_routes;
+        let new_manual = if manual_changed {
+            Some(config.services.manual_routes.clone())
+        } else {
+            None
+        };
         let config = Arc::new(config);
         self.inner.snapshot.store(config.clone());
+        if let Some(new_manual) = new_manual {
+            let registration = self.inner.manual_registration.lock();
+            if let Some(reg) = registration.as_ref() {
+                let _ = reg.replace(RouteDemand::ManualProxy(new_manual));
+            }
+        }
         self.inner.peer_changes.send_modify(|version| *version += 1);
         self.inner
             .service_changes
@@ -114,9 +149,23 @@ impl CoreRuntimeConfigStore {
 
     pub fn update_services(&self, update: impl FnOnce(&mut CoreRuntimeConfig)) {
         let _update = self.inner.update.lock();
-        let mut config = self.inner.snapshot.load_full().as_ref().clone();
+        let current = self.inner.snapshot.load_full();
+        let mut config = current.as_ref().clone();
         update(&mut config.services);
-        self.inner.snapshot.store(Arc::new(config));
+        let manual_changed = current.services.manual_routes != config.services.manual_routes;
+        let new_manual = if manual_changed {
+            Some(config.services.manual_routes.clone())
+        } else {
+            None
+        };
+        let config = Arc::new(config);
+        self.inner.snapshot.store(config);
+        if let Some(new_manual) = new_manual {
+            let registration = self.inner.manual_registration.lock();
+            if let Some(reg) = registration.as_ref() {
+                let _ = reg.replace(RouteDemand::ManualProxy(new_manual));
+            }
+        }
         self.inner
             .service_changes
             .send_modify(|version| *version += 1);
@@ -165,7 +214,7 @@ mod tests {
         let mut before_peer = PeerRuntimeSnapshot::default();
         before_peer.runtime.core.node.hostname = Some("before".to_owned());
         let store =
-            CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(before_peer));
+            CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(before_peer), None);
         let before = store.snapshot();
 
         let after_services = CoreRuntimeConfig {
@@ -197,6 +246,7 @@ mod tests {
         let store = CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
             Arc::new(PeerRuntimeSnapshot::default()),
+            None,
         );
         let mut changes = store.subscribe_peer_runtime_changes();
         let mut peer = PeerRuntimeSnapshot::default();
@@ -212,6 +262,7 @@ mod tests {
         let store = CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
             Arc::new(PeerRuntimeSnapshot::default()),
+            None,
         );
         let mut changes = store.subscribe_service_runtime_changes();
 
@@ -226,6 +277,7 @@ mod tests {
         let store = CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
             Arc::new(PeerRuntimeSnapshot::default()),
+            None,
         );
         let changes = store.subscribe_service_runtime_changes();
         let mut peer = PeerRuntimeSnapshot::default();
@@ -244,7 +296,7 @@ mod tests {
         };
         let mut peer = PeerRuntimeSnapshot::default();
         peer.runtime.core.node.hostname = Some("preserved".to_owned());
-        let store = CoreRuntimeConfigStore::new(services, Arc::new(peer));
+        let store = CoreRuntimeConfigStore::new(services, Arc::new(peer), None);
 
         store.update_peer_with(|peer| {
             peer.runtime.core.routes.ipv4 = Some(crate::config::IpPrefix {
@@ -270,6 +322,45 @@ mod tests {
                 .unwrap()
                 .address,
             "10.20.30.7".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn manual_routes_update_replaces_registration_only_on_change() {
+        let registry = registry::Registry::default();
+        let registration = registry
+            .register(RouteDemand::ManualProxy(None))
+            .expect("register succeeds");
+
+        let store = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::default()),
+            Some(registration),
+        );
+
+        let initial_demand = registry.snapshot();
+        assert_eq!(initial_demand[0].as_ref(), &RouteDemand::ManualProxy(None));
+
+        // Update unrelated service: registration remains untouched
+        store.update_services(|s| s.dhcp_ipv4 = true);
+        assert_eq!(
+            registry.snapshot()[0].as_ref(),
+            &RouteDemand::ManualProxy(None)
+        );
+
+        // Update manual routes: registration updated
+        let cidrs: BTreeSet<Ipv4Cidr> = BTreeSet::from(["10.0.0.0/8".parse().unwrap()]);
+        store.update_services(|s| s.manual_routes = Some(cidrs.clone()));
+        assert_eq!(
+            registry.snapshot()[0].as_ref(),
+            &RouteDemand::ManualProxy(Some(cidrs.clone()))
+        );
+
+        // Update peer: registration unchanged
+        store.update_peer(Arc::new(PeerRuntimeSnapshot::default()));
+        assert_eq!(
+            registry.snapshot()[0].as_ref(),
+            &RouteDemand::ManualProxy(Some(cidrs))
         );
     }
 
