@@ -101,6 +101,13 @@ struct Cli {
     machine_id: Option<String>,
 
     #[arg(
+        long,
+        env = "ET_STATE_DIR",
+        help = t!("core_clap.state_dir").to_string()
+    )]
+    state_dir: Option<PathBuf>,
+
+    #[arg(
         short,
         long,
         env = "ET_CONFIG_FILE",
@@ -1536,7 +1543,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             config_server_url_s,
             crate::common::MachineIdOptions {
                 explicit_machine_id: cli.machine_id.clone(),
-                state_dir: None,
+                state_dir: cli.state_dir.clone(),
             },
             cli.network_options.hostname.clone(),
             cli.network_options.secure_mode.unwrap_or(false),
