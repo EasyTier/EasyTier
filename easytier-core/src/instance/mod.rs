@@ -229,6 +229,12 @@ fn proxy_cidr_snapshot(config: &CoreInstanceRuntimeConfig) -> ProxyCidrSnapshot 
 /// lifetime, such as a native packet interface.
 #[async_trait::async_trait]
 pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
+    /// Optional Host-owned executor used for construction, lifecycle, and data-plane tasks.
+    /// Hosts without a dedicated executor continue to use the caller's runtime.
+    fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        None
+    }
+
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,

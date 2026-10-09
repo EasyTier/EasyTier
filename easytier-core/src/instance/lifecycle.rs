@@ -216,8 +216,25 @@ where
         self.packet_egress.stop().await;
     }
 
+    /// Returns the optional Host-owned executor for this instance.
+    pub fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.instance_runtime.runtime_handle()
+    }
+
     /// Starts the complete instance through one serial composition path.
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            return tokio_util::task::AbortOnDropHandle::new(
+                runtime.spawn(async move { instance.start_on_runtime().await }),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("instance start task failed: {error}"))?;
+        }
+        self.start_on_runtime().await
+    }
+
+    async fn start_on_runtime(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Created {
@@ -260,6 +277,20 @@ where
     }
 
     pub async fn stop(self: &Arc<Self>) {
+        self.cancel.cancel();
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            tokio_util::task::AbortOnDropHandle::new(
+                runtime.spawn(async move { instance.stop_on_runtime().await }),
+            )
+            .await
+            .expect("instance stop task failed");
+        } else {
+            self.stop_on_runtime().await;
+        }
+    }
+
+    async fn stop_on_runtime(self: &Arc<Self>) {
         self.cancel.cancel();
         let mut recovery = self.recovery_guard();
         let _operation = self.operation.lock().await;

@@ -31,7 +31,10 @@ use crate::{
     instance::runtime_host::NativeInstanceRuntimeHost,
 };
 
-use super::host::{NativeInstanceHost, native_instance_host};
+use super::{
+    host::{NativeInstanceHost, native_instance_host},
+    runtime_executor::NativeInstanceExecutor,
+};
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
@@ -42,10 +45,11 @@ use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngine;
 
 pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
-pub(crate) fn compose_native_core_instance(
+pub(super) fn compose_native_core_instance(
     toml_config: TomlConfig,
     process_runtime: Arc<CoreProcessRuntime>,
     compact_runtime: bool,
+    executor: Option<NativeInstanceExecutor>,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
     let host_config = if compact_runtime {
         compact_runtime_core_host_config()
@@ -58,7 +62,7 @@ pub(crate) fn compose_native_core_instance(
         &normalized,
         &host_config,
     ));
-    let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+    let runtime_host = NativeInstanceRuntimeHost::new_with_executor(global_ctx.clone(), executor);
     let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
         global_ctx.clone(),
         process_runtime,
