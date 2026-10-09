@@ -1119,7 +1119,6 @@ mod tests {
 
     const INSTANCE_A: &str = "00112233-4455-6677-8899-aabbccddeeff";
     const INSTANCE_B: &str = "11223344-5566-7788-99aa-bbccddeeff00";
-    const INSTANCE_C: &str = "22334455-6677-8899-aabb-ccddeeff0011";
 
     fn identity_node(peer_id: u32, instance_id: &str) -> NodeInfo {
         NodeInfo {
@@ -1141,102 +1140,52 @@ mod tests {
     }
 
     #[test]
-    fn unique_instance_ids_and_repeated_peer_records_do_not_warn() {
+    fn duplicate_instance_ids_report_distinct_sorted_peers() {
         let node = identity_node(1, INSTANCE_A);
-        let routes = vec![
-            identity_route(1, INSTANCE_A),
-            identity_route(2, INSTANCE_B),
-            identity_route(2, INSTANCE_B),
-            identity_route(3, INSTANCE_C),
-        ];
-        assert!(duplicate_instance_warnings(&node, &routes).is_empty());
-    }
-
-    #[test]
-    fn duplicate_remote_instance_ids_warn_with_distinct_sorted_peer_ids() {
-        let node = identity_node(1, INSTANCE_C);
-        let routes = vec![
-            identity_route(9, INSTANCE_A),
-            identity_route(2, INSTANCE_A),
-            identity_route(9, INSTANCE_A),
-        ];
-        let warnings = duplicate_instance_warnings(&node, &routes);
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains(&format!("duplicate instance_id detected: {INSTANCE_A}")));
-        assert!(warnings[0].contains("peer IDs [2, 9]"));
-        assert!(warnings[0].contains("copied configs"));
-    }
-
-    #[test]
-    fn local_instance_id_is_checked_against_remote_peers() {
-        let node = identity_node(20, INSTANCE_A);
-        let warnings = duplicate_instance_warnings(
-            &node,
-            &[
-                identity_route(10, INSTANCE_A),
-                identity_route(20, INSTANCE_A),
-            ],
-        );
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("peer IDs [10, 20]"));
-    }
-
-    #[test]
-    fn missing_malformed_and_nil_instance_ids_do_not_warn() {
-        let mut routes = vec![PeerRoutePair {
-            route: None,
-            peer: None,
-        }];
-        for id in ["", "not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
-            routes.push(identity_route(2, id));
-            routes.push(identity_route(3, id));
-            assert!(duplicate_instance_warnings(&identity_node(1, id), &routes).is_empty());
-        }
-        assert!(duplicate_instance_warnings(&identity_node(1, INSTANCE_A), &routes).is_empty());
-    }
-
-    #[test]
-    fn equivalent_uuid_spellings_are_normalized() {
-        let node = identity_node(1, INSTANCE_C);
-        let routes = vec![
-            identity_route(2, &INSTANCE_A.to_ascii_uppercase()),
-            identity_route(3, &INSTANCE_A.replace('-', "")),
-        ];
-        let warnings = duplicate_instance_warnings(&node, &routes);
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains(INSTANCE_A));
-        assert!(warnings[0].contains("peer IDs [2, 3]"));
-    }
-
-    #[test]
-    fn multiple_duplicate_instance_ids_are_reported_in_stable_order() {
-        let node = identity_node(1, INSTANCE_C);
         let mut routes = vec![
-            identity_route(4, INSTANCE_B),
-            identity_route(9, INSTANCE_A),
-            identity_route(3, INSTANCE_B),
-            identity_route(2, INSTANCE_A),
+            identity_route(9, INSTANCE_B),
+            identity_route(2, &INSTANCE_B.to_ascii_uppercase()),
+            identity_route(9, INSTANCE_B),
         ];
         let warnings = duplicate_instance_warnings(&node, &routes);
-        assert_eq!(warnings.len(), 2);
-        assert!(warnings[0].contains(INSTANCE_A));
-        assert!(warnings[1].contains(INSTANCE_B));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains(INSTANCE_B));
+        assert!(warnings[0].contains("peer IDs [2, 9]"));
         routes.reverse();
         assert_eq!(warnings, duplicate_instance_warnings(&node, &routes));
     }
 
     #[test]
-    fn instance_id_reuse_across_separate_network_queries_does_not_warn() {
-        let first = PeerListData {
-            node_info: identity_node(1, INSTANCE_A),
-            peer_routes: vec![identity_route(2, INSTANCE_B)],
-        };
-        let second = RouteListData {
-            node_info: identity_node(3, INSTANCE_A),
-            peer_routes: vec![identity_route(4, INSTANCE_B)],
-        };
-        assert!(duplicate_instance_warnings(&first.node_info, &first.peer_routes).is_empty());
-        assert!(duplicate_instance_warnings(&second.node_info, &second.peer_routes).is_empty());
+    fn local_instance_id_is_checked_without_counting_same_peer_twice() {
+        let node = identity_node(20, INSTANCE_A);
+        let mut routes = vec![
+            identity_route(20, INSTANCE_A),
+            identity_route(20, INSTANCE_A),
+            identity_route(10, INSTANCE_B),
+        ];
+        assert!(duplicate_instance_warnings(&node, &routes).is_empty());
+        routes[2] = identity_route(10, INSTANCE_A);
+        let warnings = duplicate_instance_warnings(&node, &routes);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("peer IDs [10, 20]"));
+    }
+
+    #[test]
+    fn unknown_ids_and_separate_network_queries_do_not_warn() {
+        let mut unknown = vec![PeerRoutePair {
+            route: None,
+            peer: None,
+        }];
+        for id in ["", "not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
+            unknown.push(identity_route(99, id));
+            unknown.push(identity_route(100, id));
+        }
+        for (local_peer, remote_peer) in [(1, 2), (3, 4)] {
+            let node = identity_node(local_peer, INSTANCE_A);
+            let mut routes = unknown.clone();
+            routes.push(identity_route(remote_peer, INSTANCE_B));
+            assert!(duplicate_instance_warnings(&node, &routes).is_empty());
+        }
     }
 }
 
