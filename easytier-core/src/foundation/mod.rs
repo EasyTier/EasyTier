@@ -4,6 +4,8 @@
 //! depend on a domain Module. See `CONTEXT.md` "Module layers".
 
 pub mod expiring_set;
+#[cfg(any(target_os = "wasi", test))]
+pub(crate) mod logger;
 #[cfg(any(
     feature = "proxy-smoltcp-stack",
     test,
