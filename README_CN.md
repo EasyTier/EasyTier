@@ -69,6 +69,13 @@ irm "https://github.com/EasyTier/EasyTier/blob/main/script/install.ps1?raw=true"
 cargo install --git https://github.com/EasyTier/EasyTier.git easytier
 ```
 
+通过 [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) 安装预编译命令行工具（请指定已有 release 的版本）：
+```bash
+cargo binstall --git https://github.com/EasyTier/EasyTier.git --version 2.6.4 easytier
+```
+
+此方式使用仓库中的 metadata 安装 `easytier-core` 和 `easytier-cli`，不依赖 crates.io 发布。在 Windows 上，还需将对应 release ZIP 中的 DLL 和驱动文件复制到安装后的程序旁；binstall 只安装可执行文件。
+
 [下载预编译文件](https://github.com/EasyTier/EasyTier/releases)（推荐，支持所有平台）
 
 需要更小的可执行文件，可使用 [easytier-mini](https://github.com/EasyTier/easytier-mini)：支持基础 TCP/UDP 组网，功能范围与使用方式见其文档。

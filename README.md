@@ -69,6 +69,13 @@ Install via cargo (Latest development version):
 cargo install --git https://github.com/EasyTier/EasyTier.git easytier
 ```
 
+Install prebuilt CLI tools with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) (specify an existing release version):
+```bash
+cargo binstall --git https://github.com/EasyTier/EasyTier.git --version 2.6.4 easytier
+```
+
+This installs `easytier-core` and `easytier-cli` using the repository's metadata, independently of crates.io publication. On Windows, also copy the DLL and driver files from the matching release ZIP beside the installed binaries; binstall only installs executables.
+
 [Install pre-built binary](https://github.com/EasyTier/EasyTier/releases) (Recommended, All platforms supported)
 
 For a smaller executable, try [easytier-mini](https://github.com/EasyTier/easytier-mini), which supports basic TCP/UDP networking. See its documentation for supported features and usage.
