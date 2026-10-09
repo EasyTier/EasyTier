@@ -109,6 +109,22 @@ download_wasm_opt() {
     fi
 }
 
+check_wasi_imports() {
+    # Binaryen's normalized WAT puts every import kind on an import line.
+    awk '
+        $1 == "(import" && $2 != "\"easytier_host\"" && $2 != "\"wasi_snapshot_preview1\"" {
+            print "unsupported WASI import: " $0
+            invalid = 1
+        }
+        END {
+            if (invalid) {
+                print "WASI core imports must come from easytier_host or wasi_snapshot_preview1."
+                exit 1
+            }
+        }
+    ' >&2
+}
+
 wasm_opt=${WASM_OPT:-}
 if [[ -z "$wasm_opt" ]]; then
     download_wasm_opt
@@ -129,6 +145,7 @@ trap 'rm -f "${temporary:-}" "${optimized:-}"' EXIT
     --enable-bulk-memory-opt \
     --enable-nontrapping-float-to-int \
     "$raw_artifact" \
-    -o "$optimized"
+    -o "$optimized" \
+    --print | check_wasi_imports
 mv "$optimized" "$artifact"
 echo "built ${artifact} with ${version}"
