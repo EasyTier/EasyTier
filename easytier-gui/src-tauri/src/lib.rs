@@ -40,8 +40,8 @@ use easytier_core::{
     socket::SocketListener, tunnel::Tunnel,
 };
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard};
 use uuid::Uuid;
 
@@ -113,8 +113,8 @@ fn load_dock_hidden_preference(app: &tauri::AppHandle) -> bool {
 
 #[cfg(target_os = "macos")]
 fn save_dock_hidden_preference(app: &tauri::AppHandle, hidden: bool) -> Result<(), String> {
-    let path = dock_preference_path(app)
-        .ok_or_else(|| "Failed to resolve app data dir".to_string())?;
+    let path =
+        dock_preference_path(app).ok_or_else(|| "Failed to resolve app data dir".to_string())?;
     std::fs::write(path, if hidden { "true" } else { "false" })
         .map_err(|e| format!("Failed to save dock visibility preference: {e}"))
 }
@@ -1534,8 +1534,10 @@ pub fn run_gui() -> std::process::ExitCode {
             // activates, so a hidden dock icon never flashes at startup
             #[cfg(target_os = "macos")]
             {
-                DOCK_HIDDEN_PREFERENCE
-                    .store(load_dock_hidden_preference(app.app_handle()), Ordering::Relaxed);
+                DOCK_HIDDEN_PREFERENCE.store(
+                    load_dock_hidden_preference(app.app_handle()),
+                    Ordering::Relaxed,
+                );
                 let window_visible = app
                     .get_webview_window("main")
                     .is_some_and(|window| window.is_visible().unwrap_or_default());
