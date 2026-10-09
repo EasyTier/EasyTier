@@ -45,7 +45,8 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
         let routes = registry::Registry::default();
         let handle = easytier_core::host::route::RouteHandle::new(routes.clone());
         ctx.set_route_handle(Some(handle.clone()));
-        let backend = crate::instance::route::PlatformRouteBackend::new(ctx.net_ns.clone()).unwrap();
+        let backend =
+            crate::instance::route::PlatformRouteBackend::new(ctx.net_ns.clone()).unwrap();
         let cancel = tokio_util::sync::CancellationToken::new();
         let manager = crate::instance::route::RouteMgr::new(ctx.clone(), backend, routes, cancel);
         tokio::spawn(manager.run());
