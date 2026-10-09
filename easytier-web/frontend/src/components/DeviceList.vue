@@ -27,6 +27,7 @@ const deviceList = ref<Array<Utils.DeviceInfo> | undefined>(undefined);
 const search = ref('');
 const loadError = ref(false);
 const refreshing = ref(false);
+let requestInFlight = false;
 const expandedRows = ref({});
 
 // 桌面端可在表格与卡片视图之间切换，选择持久化；移动端始终使用紧凑列表
@@ -57,9 +58,11 @@ const copyEnrollCommand = async () => {
     }
 };
 
-const loadDevices = async () => {
-    if (refreshing.value) return;
-    refreshing.value = true;
+const loadDevices = async (manual = false) => {
+    // A manual refresh can show progress for an already running background request.
+    if (manual) refreshing.value = true;
+    if (requestInFlight) return;
+    requestInFlight = true;
     try {
         const resp = await api?.list_machines();
         deviceList.value = (resp || []).map(Utils.buildDeviceInfo);
@@ -68,6 +71,7 @@ const loadDevices = async () => {
         loadError.value = true;
         console.error(e);
     } finally {
+        requestInFlight = false;
         refreshing.value = false;
     }
 };
@@ -214,7 +218,7 @@ const locationText = (device: Utils.DeviceInfo) => {
                         </template>
                     </SelectButton>
                     <Button icon="pi pi-refresh" text severity="secondary" :aria-label="t('web.console.refresh')"
-                        :loading="refreshing" @click="loadDevices" />
+                        :loading="refreshing" @click="loadDevices(true)" />
                 </div>
             </div>
             <div v-if="deviceList === undefined && !loadError" class="loading-rows">
@@ -223,7 +227,7 @@ const locationText = (device: Utils.DeviceInfo) => {
             <div v-else-if="loadError" class="console-empty-state">
                 <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
                 <h2>{{ t('web.console.load_failed') }}</h2>
-                <Button :label="t('web.console.retry')" icon="pi pi-refresh" @click="loadDevices" />
+                <Button :label="t('web.console.retry')" icon="pi pi-refresh" @click="loadDevices(true)" />
             </div>
             <div v-else-if="sortedDeviceList.length === 0" class="console-empty-state">
                 <i class="pi pi-server" aria-hidden="true"></i>
