@@ -1,7 +1,7 @@
 #![cfg(feature = "cli")]
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::OsString,
     future::Future,
     net::{IpAddr, SocketAddr},
@@ -1116,6 +1116,128 @@ mod tests {
             vec!["--daemon"]
         );
     }
+
+    const INSTANCE_A: &str = "00112233-4455-6677-8899-aabbccddeeff";
+    const INSTANCE_B: &str = "11223344-5566-7788-99aa-bbccddeeff00";
+    const INSTANCE_C: &str = "22334455-6677-8899-aabb-ccddeeff0011";
+
+    fn identity_node(peer_id: u32, instance_id: &str) -> NodeInfo {
+        NodeInfo {
+            peer_id,
+            inst_id: instance_id.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn identity_route(peer_id: u32, instance_id: &str) -> PeerRoutePair {
+        PeerRoutePair {
+            route: Some(ApiRoute {
+                peer_id,
+                inst_id: instance_id.to_owned(),
+                ..Default::default()
+            }),
+            peer: None,
+        }
+    }
+
+    #[test]
+    fn unique_instance_ids_and_repeated_peer_records_do_not_warn() {
+        let node = identity_node(1, INSTANCE_A);
+        let routes = vec![
+            identity_route(1, INSTANCE_A),
+            identity_route(2, INSTANCE_B),
+            identity_route(2, INSTANCE_B),
+            identity_route(3, INSTANCE_C),
+        ];
+        assert!(duplicate_instance_warnings(&node, &routes).is_empty());
+    }
+
+    #[test]
+    fn duplicate_remote_instance_ids_warn_with_distinct_sorted_peer_ids() {
+        let node = identity_node(1, INSTANCE_C);
+        let routes = vec![
+            identity_route(9, INSTANCE_A),
+            identity_route(2, INSTANCE_A),
+            identity_route(9, INSTANCE_A),
+        ];
+        let warnings = duplicate_instance_warnings(&node, &routes);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains(&format!("duplicate instance_id detected: {INSTANCE_A}")));
+        assert!(warnings[0].contains("peer IDs [2, 9]"));
+        assert!(warnings[0].contains("copied configs"));
+    }
+
+    #[test]
+    fn local_instance_id_is_checked_against_remote_peers() {
+        let node = identity_node(20, INSTANCE_A);
+        let warnings = duplicate_instance_warnings(
+            &node,
+            &[
+                identity_route(10, INSTANCE_A),
+                identity_route(20, INSTANCE_A),
+            ],
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("peer IDs [10, 20]"));
+    }
+
+    #[test]
+    fn missing_malformed_and_nil_instance_ids_do_not_warn() {
+        let mut routes = vec![PeerRoutePair {
+            route: None,
+            peer: None,
+        }];
+        for id in ["", "not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
+            routes.push(identity_route(2, id));
+            routes.push(identity_route(3, id));
+            assert!(duplicate_instance_warnings(&identity_node(1, id), &routes).is_empty());
+        }
+        assert!(duplicate_instance_warnings(&identity_node(1, INSTANCE_A), &routes).is_empty());
+    }
+
+    #[test]
+    fn equivalent_uuid_spellings_are_normalized() {
+        let node = identity_node(1, INSTANCE_C);
+        let routes = vec![
+            identity_route(2, &INSTANCE_A.to_ascii_uppercase()),
+            identity_route(3, &INSTANCE_A.replace('-', "")),
+        ];
+        let warnings = duplicate_instance_warnings(&node, &routes);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains(INSTANCE_A));
+        assert!(warnings[0].contains("peer IDs [2, 3]"));
+    }
+
+    #[test]
+    fn multiple_duplicate_instance_ids_are_reported_in_stable_order() {
+        let node = identity_node(1, INSTANCE_C);
+        let mut routes = vec![
+            identity_route(4, INSTANCE_B),
+            identity_route(9, INSTANCE_A),
+            identity_route(3, INSTANCE_B),
+            identity_route(2, INSTANCE_A),
+        ];
+        let warnings = duplicate_instance_warnings(&node, &routes);
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains(INSTANCE_A));
+        assert!(warnings[1].contains(INSTANCE_B));
+        routes.reverse();
+        assert_eq!(warnings, duplicate_instance_warnings(&node, &routes));
+    }
+
+    #[test]
+    fn instance_id_reuse_across_separate_network_queries_does_not_warn() {
+        let first = PeerListData {
+            node_info: identity_node(1, INSTANCE_A),
+            peer_routes: vec![identity_route(2, INSTANCE_B)],
+        };
+        let second = RouteListData {
+            node_info: identity_node(3, INSTANCE_A),
+            peer_routes: vec![identity_route(4, INSTANCE_B)],
+        };
+        assert!(duplicate_instance_warnings(&first.node_info, &first.peer_routes).is_empty());
+        assert!(duplicate_instance_warnings(&second.node_info, &second.peer_routes).is_empty());
+    }
 }
 
 fn format_proxy_cidrs(value: &str) -> String {
@@ -1136,6 +1258,58 @@ struct PeerListData {
 struct RouteListData {
     node_info: NodeInfo,
     peer_routes: Vec<PeerRoutePair>,
+}
+
+fn duplicate_instance_warnings(node_info: &NodeInfo, peer_routes: &[PeerRoutePair]) -> Vec<String> {
+    let mut peers_by_instance = BTreeMap::<uuid::Uuid, BTreeSet<u32>>::new();
+    let identities = std::iter::once((node_info.inst_id.as_str(), node_info.peer_id)).chain(
+        peer_routes
+            .iter()
+            .filter_map(|pair| pair.route.as_ref())
+            .map(|route| (route.inst_id.as_str(), route.peer_id)),
+    );
+    for (instance_id, peer_id) in identities {
+        let Ok(instance_id) = uuid::Uuid::parse_str(instance_id) else {
+            continue;
+        };
+        // Older peers and virtual routes may not provide a usable instance ID.
+        if instance_id.is_nil() {
+            continue;
+        }
+        peers_by_instance
+            .entry(instance_id)
+            .or_default()
+            .insert(peer_id);
+    }
+    peers_by_instance
+        .into_iter()
+        .filter(|(_, peer_ids)| peer_ids.len() > 1)
+        .map(|(instance_id, peer_ids)| {
+            let peer_ids = peer_ids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+            format!(
+                "duplicate instance_id detected: {instance_id} advertised by peer IDs [{peer_ids}]. \
+                 Check for copied configs or overlapping restarts; distinct nodes need unique instance_id values."
+            )
+        })
+        .collect()
+}
+
+fn print_duplicate_instance_warnings(
+    node_info: &NodeInfo,
+    peer_routes: &[PeerRoutePair],
+    target: Option<&InstanceTarget>,
+) {
+    let warnings = duplicate_instance_warnings(node_info, peer_routes);
+    if warnings.is_empty() {
+        return;
+    }
+    let context = target
+        .map(InstanceTarget::label)
+        .unwrap_or_else(|| format!("local peer {}", node_info.peer_id));
+    for warning in warnings {
+        // Keep diagnostics out of stdout, including JSON and verbose output.
+        eprintln!("Warning [{context}]: {warning}");
+    }
 }
 
 struct PeerIpv6DataRaw {
@@ -1984,6 +2158,13 @@ impl<'a> CommandHandler<'a> {
         let results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_peer_list_data()))
             .await?;
+        for result in &results {
+            print_duplicate_instance_warnings(
+                &result.value.node_info,
+                &result.value.peer_routes,
+                result.target.as_ref(),
+            );
+        }
 
         if self.verbose {
             return self.print_json_results(
@@ -2371,6 +2552,13 @@ impl<'a> CommandHandler<'a> {
         let results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_route_list_data()))
             .await?;
+        for result in &results {
+            print_duplicate_instance_warnings(
+                &result.value.node_info,
+                &result.value.peer_routes,
+                result.target.as_ref(),
+            );
+        }
 
         if self.verbose {
             return self.print_json_results(results);
