@@ -4,6 +4,12 @@ cli:
   db:
     en: "path to the sqlite3 database file, used to save all the data"
     zh-CN: "sqlite3 数据库文件路径, 用于保存所有数据"
+  console_config_file:
+    en: "Path to a TOML file containing console_enroll_command for the web console"
+    zh-CN: "网页控制台的 TOML 配置文件路径，支持 console_enroll_command 字段"
+  console_enroll_command:
+    en: "Device enrollment command template shown and copied in the web console. Supports {username}, {host}, {protocol}, {port}; overrides the console config file"
+    zh-CN: "网页控制台中显示和复制的设备接入命令模板，支持 {username}、{host}、{protocol}、{port}，优先于控制台配置文件"
   console_log_level:
     en: "The log level for the console logger. Possible values: trace, debug, info, warn, error"
     zh-CN: "控制台日志级别。可能的值：trace, debug, info, warn, error"

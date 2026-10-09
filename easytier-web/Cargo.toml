@@ -66,6 +66,7 @@ clap = { workspace = true, features = [
 ] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+toml.workspace = true
 uuid = { workspace = true, features = [
     "v4",
     "fast-rng",
@@ -102,4 +103,5 @@ ignored = [
 ]
 
 [dev-dependencies]
+tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }
