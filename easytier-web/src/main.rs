@@ -16,7 +16,6 @@ use easytier::{
         constants::EASYTIER_VERSION,
         error::Error,
         log,
-        network::{local_ipv4, local_ipv6},
     },
     proto::rpc::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
@@ -28,6 +27,8 @@ use mimalloc::MiMalloc;
 
 mod central_network;
 mod client_manager;
+#[cfg(test)]
+mod config_server_listener_tests;
 mod db;
 mod migrator;
 mod restful;
@@ -278,23 +279,19 @@ async fn get_dual_stack_listener(
     let scheme = protocol
         .parse()
         .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
-    let v6_listener =
-        if local_ipv6().await.is_ok() && matches!(scheme, IpScheme::Tcp | IpScheme::Udp) {
-            get_listener_by_url(
-                scheme,
-                &format!("{protocol}://[::]:{port}").parse().unwrap(),
-            )
-        } else {
-            None
-        };
-    let v4_listener = if local_ipv4().await.is_ok() {
+    // Wildcard binds do not require a default route or a public IP address.
+    let v6_listener = if matches!(scheme, IpScheme::Tcp | IpScheme::Udp) {
         get_listener_by_url(
             scheme,
-            &format!("{protocol}://0.0.0.0:{port}").parse().unwrap(),
+            &format!("{protocol}://[::]:{port}").parse().unwrap(),
         )
     } else {
         None
     };
+    let v4_listener = get_listener_by_url(
+        scheme,
+        &format!("{protocol}://0.0.0.0:{port}").parse().unwrap(),
+    );
     Ok((v6_listener, v4_listener))
 }
 
@@ -404,20 +401,26 @@ async fn main() {
         get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
             .await
             .unwrap();
-    if v4_listener.is_none() && v6_listener.is_none() {
-        panic!("Listen to both IPv4 and IPv6 failed");
-    }
     for listener in [v6_listener, v4_listener].into_iter().flatten() {
-        if let Some(instances) = network_instances.as_ref() {
+        let local_url = listener.local_url();
+        let result = if let Some(instances) = network_instances.as_ref() {
             mgr.add_listener(gateway::listener::GatewayListener::new(
                 listener,
                 instances.clone(),
             ))
             .await
-            .unwrap();
         } else {
-            mgr.add_listener(listener).await.unwrap();
+            mgr.add_listener(listener).await
+        };
+        if let Err(error) = result {
+            tracing::warn!(%local_url, error = %format_args!("{error:#}"), "Failed to bind config server listener");
         }
+    }
+    if !mgr.is_running() {
+        panic!(
+            "Failed to bind any config server listener for {} on port {}",
+            cli.config_server_protocol, cli.config_server_port
+        );
     }
 
     let mgr = Arc::new(mgr);

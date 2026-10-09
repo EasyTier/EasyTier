@@ -162,3 +162,41 @@ async fn completed_handshake_does_not_cancel_pending_accept() {
     .unwrap();
     wait_until(|| manager.client_sessions.len() == 2).await;
 }
+
+#[derive(Debug)]
+struct UnboundListener {
+    listened: bool,
+}
+
+#[async_trait::async_trait]
+impl SocketListener for UnboundListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        self.listened = true;
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        unreachable!("an unbound listener must not accept connections")
+    }
+
+    fn local_url(&self) -> url::Url {
+        let port = if self.listened { 0 } else { 22020 };
+        format!("udp://[::]:{port}").parse().unwrap()
+    }
+}
+
+#[tokio::test]
+async fn unbound_listener_is_not_counted_as_running() {
+    let mut manager = manager().await;
+    let error = manager
+        .add_listener(UnboundListener { listened: false })
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("did not bind requested address"),
+        "{error}"
+    );
+    assert!(!manager.is_running());
+}
