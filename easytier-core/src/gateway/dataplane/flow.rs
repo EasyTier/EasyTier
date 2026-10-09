@@ -1,7 +1,7 @@
 //! Shared data-plane flow registration and ownership.
 
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -24,6 +24,16 @@ pub(crate) struct FlowKey {
     pub src: SocketAddr,
     pub dst: SocketAddr,
     pub kind: FlowKind,
+}
+
+impl FlowKey {
+    pub(super) fn udp_bind(local_addr: SocketAddr) -> Self {
+        Self {
+            src: local_addr,
+            dst: SocketAddr::from(([0, 0, 0, 0], 0)),
+            kind: FlowKind::Udp,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,14 +146,12 @@ impl<V> FlowTable<V> {
         self.entries.is_empty()
     }
 
-    pub fn contains_key(&self, entry: &FlowKey) -> bool {
-        self.entries.contains_key(entry)
+    pub(super) fn registration(&self, entry: &FlowKey) -> Option<u64> {
+        self.entries.get(entry).map(|flow| flow.registration)
     }
 
-    pub fn contains_destination_ip(&self, destination: IpAddr) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.key().dst.ip() == destination)
+    pub fn contains_key(&self, entry: &FlowKey) -> bool {
+        self.entries.contains_key(entry)
     }
 
     #[cfg(test)]
@@ -376,7 +384,6 @@ mod tests {
         assert!(!table.try_insert(first.clone(), 2));
         assert!(table.try_insert(second.clone(), 3));
         assert_eq!(table.count(), 2);
-        assert!(table.contains_destination_ip(first.dst.ip()));
 
         let retained = table.retain(|entry, _| entry == &second);
         assert_eq!(retained.removed, 1);

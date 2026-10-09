@@ -82,6 +82,9 @@ impl std::fmt::Debug for Net {
 }
 
 impl Net {
+    const EPHEMERAL_PORT_START: u16 = 10000;
+    const EPHEMERAL_PORT_END: u16 = 60001;
+
     /// Creates a new `Net` instance. It panics if the medium is not supported.
     pub fn new<D: device::AsyncDevice + 'static>(device: D, config: NetConfig) -> Net {
         Self::new2(device, config)
@@ -119,18 +122,44 @@ impl Net {
         Net {
             reactor: Arc::new(reactor),
             ip_addr: config.ip_addr,
-            from_port: AtomicU16::new(10001),
+            from_port: AtomicU16::new(Self::EPHEMERAL_PORT_START + 1),
             stopper,
             _fut: AbortOnDropHandle::new(tokio::spawn(fut)),
         }
     }
+    fn next_port(port: u16) -> u16 {
+        if port >= Self::EPHEMERAL_PORT_END {
+            Self::EPHEMERAL_PORT_START
+        } else {
+            port + 1
+        }
+    }
+
     pub fn get_port(&self) -> u16 {
         self.from_port
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                Some(if x > 60000 { 10000 } else { x + 1 })
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |port| {
+                Some(Self::next_port(port))
             })
             .unwrap()
     }
+    /// Visit each ephemeral port once, independently of concurrent allocations.
+    pub(crate) fn ephemeral_ports(&self) -> impl Iterator<Item = u16> {
+        let start = self.get_port();
+        std::iter::once(start).chain(
+            (start + 1..=Self::EPHEMERAL_PORT_END)
+                .chain(Self::EPHEMERAL_PORT_START..start)
+                .inspect(|&port| {
+                    // Follow the scan, but never overwrite another allocator's progress.
+                    let _ = self.from_port.compare_exchange(
+                        port,
+                        Self::next_port(port),
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                }),
+        )
+    }
+
     /// Creates a new TcpListener, which will be bound to the specified address.
     pub async fn tcp_bind(&self, addr: SocketAddr) -> io::Result<TcpListener> {
         let addr = self.set_address(addr);

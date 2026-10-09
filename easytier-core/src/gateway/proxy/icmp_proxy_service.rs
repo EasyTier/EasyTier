@@ -15,7 +15,7 @@ use tokio::{
 use crate::{
     packet::ZCPacket,
     peers::{
-        PeerPacketFilter,
+        PeerPacketFilter, PeerPacketFilterResult,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
 };
@@ -249,11 +249,11 @@ struct IcmpProxyServiceFilter<R: IcmpProxyRuntime + 'static> {
 
 #[async_trait::async_trait]
 impl<R: IcmpProxyRuntime + 'static> PeerPacketFilter for IcmpProxyServiceFilter<R> {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
         let Some(service) = self.service.upgrade() else {
-            return Some(packet);
+            return PeerPacketFilterResult::Pass(packet);
         };
-        service.handle_peer_packet(packet).await
+        service.handle_peer_packet(packet).await.into()
     }
 }
 
