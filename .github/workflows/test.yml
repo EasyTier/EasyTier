@@ -30,6 +30,7 @@ jobs:
         "easytier-core/**", "easytier-proto/**", "easytier-rpc-build/**",
         "easytier-web/**", "easytier-gui/src-tauri/**",
         "tauri-plugin-vpnservice/**", "easytier-contrib/**",
+        "script/build-wasi-core.sh", "script/test-build-wasi-core.sh",
         ".github/workflows/test.yml", ".github/actions/**"]
     outputs:
       should_skip: >-
@@ -92,11 +93,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo hack check --package easytier --each-feature --exclude-features macos-ne --verbose
 
-      - name: Check WASI
+      - name: Build and validate WASI imports
         if: ${{ !cancelled() }}
-        run: >-
-          cargo check --package easytier-core --lib --target wasm32-wasip1
-          --features management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload
+        run: |
+          script/build-wasi-core.sh
+          WASM_OPT=$(find target/binaryen -type f -path '*/bin/wasm-opt' -print -quit) \
+            script/test-build-wasi-core.sh
 
       - name: Check Cargo.lock is up to date
         if: ${{ !cancelled() }}
