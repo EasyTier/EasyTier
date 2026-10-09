@@ -789,6 +789,7 @@ where
             host.clone(),
             direct_options.tcp_bind.context.clone(),
             events.clone(),
+            instance_runtime.runtime_handle(),
         );
         #[cfg(feature = "tcp-hole-punch")]
         let tcp_hole_punch = stun

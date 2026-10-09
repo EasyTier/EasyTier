@@ -100,6 +100,7 @@ where
 {
     operation: Mutex<()>,
     started: AtomicBool,
+    runtime_handle: Option<tokio::runtime::Handle>,
     runtime_config: CoreRuntimeConfigStore,
     data_plane: Arc<DataPlaneRuntime<H>>,
     host: Arc<H>,
@@ -124,10 +125,12 @@ where
         host: Arc<H>,
         socket_context: SocketContext,
         events: Arc<dyn CoreEventSink>,
+        runtime_handle: Option<tokio::runtime::Handle>,
     ) -> Arc<Self> {
         Arc::new(Self {
             operation: Mutex::new(()),
             started: AtomicBool::new(false),
+            runtime_handle,
             runtime_config,
             data_plane,
             host,
@@ -168,7 +171,22 @@ where
         Ok(())
     }
 
-    pub(crate) async fn reload(&self, cfgs: &[PortForwardConfig]) -> anyhow::Result<()> {
+    pub(crate) async fn reload(self: &Arc<Self>, cfgs: &[PortForwardConfig]) -> anyhow::Result<()> {
+        if let Some(runtime) = &self.runtime_handle {
+            let adapter = self.clone();
+            let cfgs = cfgs.to_vec();
+            // Binding and spawning must both happen on the instance executor,
+            // including reloads reached through management config patches.
+            return AbortOnDropHandle::new(
+                runtime.spawn(async move { adapter.reload_on_runtime(&cfgs).await }),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("port-forward reload task failed: {error}"))?;
+        }
+        self.reload_on_runtime(cfgs).await
+    }
+
+    async fn reload_on_runtime(&self, cfgs: &[PortForwardConfig]) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         if !self.started.load(Ordering::Acquire) {
             return Ok(());

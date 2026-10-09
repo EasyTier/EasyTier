@@ -326,6 +326,131 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "smoltcp", feature = "management"))]
+    #[test]
+    fn hot_added_port_forwards_outlive_the_callers_runtime() {
+        use easytier_core::{
+            config::{gateway::PortForwardConfig, runtime::CoreInstanceRuntimeConfig},
+            instance::CoreInstanceConfig,
+        };
+        use easytier_proto::api::config::{
+            ConfigPatchAction, InstanceConfigPatch, PortForwardPatch,
+        };
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        for multi_thread in [false, true] {
+            for via_patch in [false, true] {
+                let observer = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let (tcp_echo, udp_echo) = observer.block_on(async {
+                    (
+                        tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+                        tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap(),
+                    )
+                });
+                let tcp_reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let udp_reservation = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+                let forwards = vec![
+                    PortForwardConfig {
+                        bind_addr: tcp_reservation.local_addr().unwrap(),
+                        dst_addr: tcp_echo.local_addr().unwrap(),
+                        proto: "tcp".to_owned(),
+                    },
+                    PortForwardConfig {
+                        bind_addr: udp_reservation.local_addr().unwrap(),
+                        dst_addr: udp_echo.local_addr().unwrap(),
+                        proto: "udp".to_owned(),
+                    },
+                ];
+                let config = isolated_config(multi_thread, 2);
+                // Local virtual-IP forwarding uses native loopback endpoints,
+                // avoiding TUN devices, network namespaces and remote peers.
+                config.set_ipv4(Some("127.0.0.1/32".parse().unwrap()));
+                let instance = create_native_instance(config.clone()).unwrap();
+                let caller = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                caller.block_on(async {
+                    instance.start().await.unwrap();
+                    drop(tcp_reservation);
+                    drop(udp_reservation);
+                    if via_patch {
+                        easytier_core::management::apply_config_patch(
+                            &instance,
+                            InstanceConfigPatch {
+                                port_forwards: forwards
+                                    .iter()
+                                    .cloned()
+                                    .map(|forward| PortForwardPatch {
+                                        action: ConfigPatchAction::Add as i32,
+                                        cfg: Some(forward.into()),
+                                    })
+                                    .collect(),
+                                ..Default::default()
+                            },
+                            None,
+                        )
+                        .await
+                        .unwrap();
+                    } else {
+                        let mut normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+                        normalized.connectivity.runtime.gateway.port_forwards = forwards.clone();
+                        instance
+                            .update_runtime_config(CoreInstanceRuntimeConfig {
+                                services: normalized.connectivity.runtime,
+                                peer: Arc::new(normalized.peer.snapshot),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                });
+                // No accept/receive task or reactor may depend on this runtime.
+                drop(caller);
+                assert_eq!(instance.state(), CoreInstanceState::Running);
+
+                observer.block_on(async {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        let tcp_response = tokio::spawn(async move {
+                            let (mut stream, _) = tcp_echo.accept().await.unwrap();
+                            let mut request = [0; 4];
+                            stream.read_exact(&mut request).await.unwrap();
+                            stream.write_all(&request).await.unwrap();
+                        });
+                        let udp_response = tokio::spawn(async move {
+                            let mut request = [0; 4];
+                            let (len, source) = udp_echo.recv_from(&mut request).await.unwrap();
+                            udp_echo.send_to(&request[..len], source).await.unwrap();
+                        });
+                        let mut stream = tokio::net::TcpStream::connect(forwards[0].bind_addr)
+                            .await
+                            .unwrap();
+                        stream.write_all(b"ping").await.unwrap();
+                        let mut reply = [0; 4];
+                        stream.read_exact(&mut reply).await.unwrap();
+                        assert_eq!(&reply, b"ping");
+                        tcp_response.await.unwrap();
+
+                        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                        socket
+                            .send_to(b"pong", forwards[1].bind_addr)
+                            .await
+                            .unwrap();
+                        let (len, _) = socket.recv_from(&mut reply).await.unwrap();
+                        assert_eq!(&reply[..len], b"pong");
+                        udp_response.await.unwrap();
+                    })
+                    .await
+                    .expect("hot-added TCP/UDP forwarding must survive caller-runtime shutdown");
+                    instance.stop().await;
+                });
+                assert_eq!(instance.state(), CoreInstanceState::Stopped);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn compact_manager_retains_the_supplied_runtime() {
         let caller = tokio::runtime::Handle::current();

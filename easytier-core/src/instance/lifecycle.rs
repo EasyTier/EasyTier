@@ -280,11 +280,12 @@ where
         self.cancel.cancel();
         if let Some(runtime) = self.runtime_handle() {
             let instance = self.clone();
-            tokio_util::task::AbortOnDropHandle::new(
-                runtime.spawn(async move { instance.stop_on_runtime().await }),
-            )
-            .await
-            .expect("instance stop task failed");
+            // Cleanup must survive cancellation even before its first poll.
+            // Dropping a plain JoinHandle detaches rather than aborts the task.
+            runtime
+                .spawn(async move { instance.stop_on_runtime().await })
+                .await
+                .expect("instance stop task failed");
         } else {
             self.stop_on_runtime().await;
         }
