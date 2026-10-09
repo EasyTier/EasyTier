@@ -355,7 +355,7 @@ full = [
     "extended-services",
     "tcp-hole-punch",
 ]
-cli = ["management", "dep:tabled", "dep:humansize", "dep:terminal_size", "dep:unicode-width"]
+cli = ["management", "dep:tabled", "dep:humansize", "dep:terminal_size", "dep:unicode-width", "dep:sha2"]
 wireguard = ["vpn-portal", "dep:boringtun", "dep:hkdf", "dep:sha2", "ring-crypto", "easytier-proto/wireguard"]
 quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "easytier-proto/quic"]
 kcp = ["wrapped-transport", "easytier-core/proxy-packet", "dep:kcp-sys"]
