@@ -252,7 +252,7 @@ impl<V> FlowTable<V> {
     fn increment_count(&self) -> FlowCountChange {
         let previous = self
             .count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_add(1)
             })
             .expect("flow count overflow");
@@ -294,7 +294,7 @@ impl<V> FlowTable<V> {
 
         let previous = self
             .count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(delta)
             })
             .expect("flow count underflow");
