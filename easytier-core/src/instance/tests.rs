@@ -1463,10 +1463,87 @@ virtual_ip = "10.82.0.2/24"
         assert!(manager.failed_instance_ids().is_empty());
     }
 
-    #[tokio::test]
-    async fn aborting_host_prepare_runs_unified_cleanup() {
+    #[cfg(not(target_family = "wasm"))]
+    fn instance_test_runtimes() -> (tokio::runtime::Runtime, tokio::runtime::Runtime) {
+        let caller = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let instance = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        (caller, instance)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn host_lifecycle_runs_on_selected_runtime() {
+        struct SelectedRuntimeHost {
+            runtime: tokio::runtime::Handle,
+            prepare_calls: AtomicUsize,
+            shutdown_calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl InstanceRuntimeHost for SelectedRuntimeHost {
+            fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+                Some(self.runtime.clone())
+            }
+
+            async fn prepare(
+                &self,
+                _packet_plane: Arc<CorePacketPlane>,
+            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+                assert_eq!(tokio::runtime::Handle::current().id(), self.runtime.id());
+                self.prepare_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(None)
+            }
+
+            async fn shutdown(&self) {
+                assert_eq!(tokio::runtime::Handle::current().id(), self.runtime.id());
+                self.shutdown_calls.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        // Own both runtimes outside block_on so they also drop safely on panic.
+        let (caller_runtime, instance_runtime) = instance_test_runtimes();
+        caller_runtime.block_on(async {
+            assert_ne!(
+                tokio::runtime::Handle::current().id(),
+                instance_runtime.handle().id()
+            );
+            let runtime_host = Arc::new(SelectedRuntimeHost {
+                runtime: instance_runtime.handle().clone(),
+                prepare_calls: AtomicUsize::new(0),
+                shutdown_calls: AtomicUsize::new(0),
+            });
+            let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+            let mut adapters = adapters(None, Arc::new(packet_sink));
+            adapters.instance_runtime = runtime_host.clone();
+            let instance = CoreInstance::new(test_config("selected-runtime"), adapters).unwrap();
+
+            instance.start().await.unwrap();
+            assert_eq!(instance.state(), CoreInstanceState::Running);
+            assert_eq!(runtime_host.prepare_calls.load(Ordering::Relaxed), 1);
+            instance.stop().await;
+
+            assert_eq!(instance.state(), CoreInstanceState::Stopped);
+            assert_eq!(runtime_host.shutdown_calls.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                tokio::runtime::Handle::current().id(),
+                caller_runtime.handle().id()
+            );
+        });
+    }
+
+    async fn assert_aborting_host_prepare_runs_unified_cleanup(
+        runtime: Option<tokio::runtime::Handle>,
+    ) {
         #[derive(Default)]
         struct BlockingPrepareRuntimeHost {
+            runtime: Option<tokio::runtime::Handle>,
             prepare_started: Notify,
             prepare_release: Notify,
             shutdown_calls: AtomicUsize,
@@ -1474,6 +1551,10 @@ virtual_ip = "10.82.0.2/24"
 
         #[async_trait]
         impl InstanceRuntimeHost for BlockingPrepareRuntimeHost {
+            fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+                self.runtime.clone()
+            }
+
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
@@ -1488,7 +1569,10 @@ virtual_ip = "10.82.0.2/24"
             }
         }
 
-        let runtime_host = Arc::new(BlockingPrepareRuntimeHost::default());
+        let runtime_host = Arc::new(BlockingPrepareRuntimeHost {
+            runtime,
+            ..Default::default()
+        });
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
         let mut adapters = adapters(None, Arc::new(packet_sink));
         adapters.instance_runtime = runtime_host.clone();
@@ -1511,6 +1595,95 @@ virtual_ip = "10.82.0.2/24"
 
         assert!(!instance.is_ready());
         assert_eq!(runtime_host.shutdown_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn aborting_host_prepare_runs_unified_cleanup() {
+        assert_aborting_host_prepare_runs_unified_cleanup(None).await;
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn aborting_host_prepare_on_selected_runtime_runs_unified_cleanup() {
+        let (caller_runtime, instance_runtime) = instance_test_runtimes();
+        caller_runtime.block_on(assert_aborting_host_prepare_runs_unified_cleanup(Some(
+            instance_runtime.handle().clone(),
+        )));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn cancelled_stop_on_selected_runtime_finishes_cleanup() {
+        struct BlockingShutdownRuntimeHost {
+            runtime: tokio::runtime::Handle,
+            shutdown_started: Notify,
+            shutdown_release: Notify,
+            shutdown_calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl InstanceRuntimeHost for BlockingShutdownRuntimeHost {
+            fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+                Some(self.runtime.clone())
+            }
+
+            async fn prepare(
+                &self,
+                _packet_plane: Arc<CorePacketPlane>,
+            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+                Ok(None)
+            }
+
+            async fn shutdown(&self) {
+                assert_eq!(tokio::runtime::Handle::current().id(), self.runtime.id());
+                self.shutdown_calls.fetch_add(1, Ordering::Relaxed);
+                self.shutdown_started.notify_one();
+                self.shutdown_release.notified().await;
+            }
+        }
+
+        let (caller_runtime, instance_runtime) = instance_test_runtimes();
+        caller_runtime.block_on(async {
+            let runtime_host = Arc::new(BlockingShutdownRuntimeHost {
+                runtime: instance_runtime.handle().clone(),
+                shutdown_started: Notify::new(),
+                shutdown_release: Notify::new(),
+                shutdown_calls: AtomicUsize::new(0),
+            });
+            let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+            let mut adapters = adapters(None, Arc::new(packet_sink));
+            adapters.instance_runtime = runtime_host.clone();
+            let instance = CoreInstance::new(test_config("cancelled-stop"), adapters).unwrap();
+            instance.start().await.unwrap();
+
+            let stop = tokio::spawn({
+                let instance = instance.clone();
+                async move { instance.stop().await }
+            });
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                runtime_host.shutdown_started.notified(),
+            )
+            .await
+            .expect("shutdown should reach the Host");
+            stop.abort();
+            assert!(stop.await.unwrap_err().is_cancelled());
+            assert_eq!(instance.state(), CoreInstanceState::Stopping);
+
+            runtime_host.shutdown_release.notify_one();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while instance.state() != CoreInstanceState::Stopped {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("shutdown should finish after its caller is cancelled");
+
+            assert!(!instance.is_ready());
+            assert_eq!(runtime_host.shutdown_calls.load(Ordering::Relaxed), 1);
+            instance.stop().await;
+            assert_eq!(runtime_host.shutdown_calls.load(Ordering::Relaxed), 1);
+        });
     }
 
     #[cfg(feature = "management")]

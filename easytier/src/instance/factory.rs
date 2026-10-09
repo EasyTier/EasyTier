@@ -5,7 +5,7 @@ use easytier_core::instance::manager::InstanceManager;
 #[cfg(feature = "management-rpc")]
 use easytier_core::management::ProcessRuntimeProvider;
 use easytier_core::{
-    config::toml::TomlConfig,
+    config::toml::{ConfigLoader as _, TomlConfig},
     instance::{CoreInstance, manager::InstanceFactory},
     process_runtime::CoreProcessRuntime,
 };
@@ -13,8 +13,8 @@ use easytier_core::{
 use crate::common::global_ctx::EventBusSubscriber;
 
 use super::{
-    composition::compose_native_core_instance, host::NativeInstanceHost,
-    runtime_host::NativeInstanceRuntimeHost,
+    composition::compose_native_core_instance, executor::NativeInstanceExecutor,
+    host::NativeInstanceHost, runtime_host::NativeInstanceRuntimeHost,
 };
 
 pub type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
@@ -142,14 +142,19 @@ impl InstanceFactory for NativeInstanceFactory {
         config: TomlConfig,
         (): Self::CreateContext,
     ) -> Result<Arc<Self::Instance>, Self::Error> {
-        let _runtime = self
-            .runtime_handle
-            .as_ref()
-            .map(tokio::runtime::Handle::enter);
+        let executor = if let Some(runtime) = &self.runtime_handle {
+            NativeInstanceExecutor::external(runtime.clone())
+        } else {
+            let flags = config.get_flags();
+            NativeInstanceExecutor::owned(flags.multi_thread, flags.multi_thread_count as usize)?
+        };
+        let runtime = executor.handle();
+        let _runtime = runtime.enter();
         let instance = compose_native_core_instance(
             config,
             self.process_runtime.clone(),
             self.compact_runtime,
+            executor,
         )?;
         #[cfg(feature = "logging")]
         if self.log_cli_events {
@@ -173,6 +178,72 @@ mod tests {
     use easytier_core::{config::toml::ConfigLoader as _, instance::CoreInstanceState};
 
     use super::*;
+
+    #[tokio::test]
+    async fn native_manager_uses_each_instances_configured_executor() {
+        use tokio::runtime::RuntimeFlavor;
+
+        let manager = native_instance_manager();
+        for (multi_thread, workers, expected) in [(true, 3, 3), (false, 8, 1)] {
+            let config = TomlConfig::default();
+            let mut flags = config.get_flags();
+            flags.no_tun = true;
+            flags.multi_thread = multi_thread;
+            flags.multi_thread_count = workers;
+            config.set_flags(flags);
+            config.set_listeners(Vec::new());
+
+            let instance = manager.create(config, ()).unwrap();
+            let runtime = manager
+                .data_plane_runtime_handle(&instance.instance_id())
+                .unwrap();
+            assert_eq!(runtime.metrics().num_workers(), expected);
+            assert_eq!(
+                runtime.runtime_flavor(),
+                if multi_thread {
+                    RuntimeFlavor::MultiThread
+                } else {
+                    RuntimeFlavor::CurrentThread
+                }
+            );
+            instance.start().await.unwrap();
+            manager
+                .delete_network_instances([instance.instance_id()])
+                .await
+                .unwrap();
+            assert_eq!(instance.state(), CoreInstanceState::Stopped);
+        }
+    }
+
+    #[tokio::test]
+    async fn supplied_executor_takes_precedence_over_instance_flags() {
+        let supplied = tokio::runtime::Handle::current();
+        let manager = native_instance_manager_with_runtime(supplied.clone());
+        let config = TomlConfig::default();
+        let mut flags = config.get_flags();
+        flags.multi_thread = true;
+        flags.multi_thread_count = 4;
+        flags.no_tun = true;
+        config.set_flags(flags);
+        config.set_listeners(Vec::new());
+
+        let instance = manager.create(config, ()).unwrap();
+        let runtime = manager
+            .data_plane_runtime_handle(&instance.instance_id())
+            .unwrap();
+        assert_eq!(runtime.runtime_flavor(), supplied.runtime_flavor());
+        assert_eq!(
+            runtime.metrics().num_workers(),
+            supplied.metrics().num_workers()
+        );
+        instance.start().await.unwrap();
+        manager
+            .delete_network_instances([instance.instance_id()])
+            .await
+            .unwrap();
+        drop(instance);
+        assert_eq!(tokio::spawn(async { 42 }).await.unwrap(), 42);
+    }
 
     #[tokio::test]
     async fn core_manager_stores_and_runs_native_core_instance_directly() {

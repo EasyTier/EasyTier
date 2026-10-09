@@ -5,6 +5,7 @@ pub(crate) mod config;
 #[cfg(feature = "management")]
 pub(crate) mod config_storage;
 pub mod dns_server;
+mod executor;
 pub mod factory;
 pub mod host;
 pub(crate) mod runtime_host;

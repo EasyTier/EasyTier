@@ -5,6 +5,7 @@
 //! cleanup path.
 
 use std::sync::{Arc, Weak};
+use tokio_util::task::AbortOnDropHandle;
 
 #[cfg(feature = "dhcp-ipv4")]
 use crate::gateway::dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource};
@@ -52,9 +53,15 @@ where
         let weak: Weak<Self> = Arc::downgrade(self);
         RecoveryGuard::new(move || {
             if let Some(instance) = weak.upgrade() {
-                tokio::spawn(async move {
-                    instance.stop().await;
-                });
+                let runtime = instance.runtime_handle();
+                let cleanup = async move {
+                    instance.stop_on_runtime().await;
+                };
+                if let Some(runtime) = runtime {
+                    runtime.spawn(cleanup);
+                } else {
+                    tokio::spawn(cleanup);
+                }
             }
         })
     }
@@ -218,6 +225,25 @@ where
 
     /// Starts the complete instance through one serial composition path.
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            // Cancelling the caller must still cancel startup and invoke its
+            // recovery guard, rather than detach a partially started instance.
+            return AbortOnDropHandle::new(
+                runtime.spawn(async move { instance.start_on_runtime().await }),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("instance start task failed: {error}"))?;
+        }
+        self.start_on_runtime().await
+    }
+
+    /// Returns the executor selected by the Host for this instance's tasks.
+    pub fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.instance_runtime.runtime_handle()
+    }
+
+    async fn start_on_runtime(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Created {
@@ -260,6 +286,22 @@ where
     }
 
     pub async fn stop(self: &Arc<Self>) {
+        self.cancel.cancel();
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            // Shutdown must finish even if the caller stops waiting for it.
+            if let Err(error) = runtime
+                .spawn(async move { instance.stop_on_runtime().await })
+                .await
+            {
+                tracing::error!(%error, instance = %self.instance_id(), "instance stop task failed");
+            }
+            return;
+        }
+        self.stop_on_runtime().await;
+    }
+
+    async fn stop_on_runtime(self: &Arc<Self>) {
         self.cancel.cancel();
         let mut recovery = self.recovery_guard();
         let _operation = self.operation.lock().await;

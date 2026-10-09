@@ -25,12 +25,14 @@ mod tun_runtime;
 #[path = "runtime_host/tun_mobile.rs"]
 mod tun_runtime;
 
+use super::executor::NativeInstanceExecutor;
 use event_journal::EventJournal;
 #[cfg(feature = "tun")]
 use magic_dns::MagicDnsRuntime;
 use tun_runtime::NativeTunRuntime;
 
 pub(crate) struct NativeInstanceRuntimeHost {
+    executor: Option<NativeInstanceExecutor>,
     global_ctx: ArcGlobalCtx,
     operation: Arc<Mutex<()>>,
     cancel: CancellationToken,
@@ -39,11 +41,20 @@ pub(crate) struct NativeInstanceRuntimeHost {
 }
 
 impl NativeInstanceRuntimeHost {
+    #[cfg(test)]
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Arc<Self> {
+        Self::new_with_executor(global_ctx, None)
+    }
+
+    pub(crate) fn new_with_executor(
+        global_ctx: ArcGlobalCtx,
+        executor: Option<NativeInstanceExecutor>,
+    ) -> Arc<Self> {
         let cancel = CancellationToken::new();
         let tun = NativeTunRuntime::new(global_ctx.clone(), cancel.clone());
         let event_journal = EventJournal::new(&global_ctx);
         Arc::new(Self {
+            executor,
             global_ctx,
             event_journal,
             operation: Arc::new(Mutex::new(())),
