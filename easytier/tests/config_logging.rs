@@ -8,7 +8,10 @@ use std::{
 use tempfile::NamedTempFile;
 
 fn check_config_command() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_easytier-core"));
+    // Nextest remaps this path when running tests from an extracted archive.
+    let binary = std::env::var_os("NEXTEST_BIN_EXE_easytier_core")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_easytier-core").into());
+    let mut command = Command::new(binary);
     command
         .env_clear()
         .arg("--check-config")
