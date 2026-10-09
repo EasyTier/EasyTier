@@ -58,13 +58,15 @@ vi.mock('./backend', () => ({
   setTunFd: mocks.setTunFd,
 }))
 
-function setConfig(instanceId: string, noTun = false) {
+function setConfig(instanceId: string, noTun = false, devName?: string) {
   mocks.configs.set(instanceId, {
     no_tun: noTun,
+    dev_name: devName,
     dhcp: false,
     enable_magic_dns: false,
     routes: [],
   })
+  mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: [...mocks.configs.keys()] })
 }
 
 function setReady(instanceId: string, ipv4: string) {
@@ -106,30 +108,110 @@ beforeEach(() => {
   mocks.stopVpn.mockClear()
 })
 
-describe('mobile VPN reconciliation ownership', () => {
-  it('stops A before retrying an unavailable B, then starts B when it becomes ready', async () => {
-    setConfig('A')
-    setConfig('B')
+describe('mobile VPN reconciliation', () => {
+  it('keeps attached shared members during a temporary status gap', async () => {
+    setConfig('A', false, 'shared0')
+    setConfig('B', false, 'shared0')
     setReady('A', '10.0.0.1')
+    setReady('B', '10.0.1.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    mocks.startVpn.mockClear()
+
+    mocks.networkInfo.delete('B')
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
+    expect(mocks.startVpn).not.toHaveBeenCalled()
+
+    setReady('B', '10.0.1.2')
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', '10.0.1.2/24'],
+    }))
+  })
+
+  it('keeps a ready member active while a new shared member awaits an IP', async () => {
+    setConfig('A', false, 'shared0')
+    setReady('A', '10.0.0.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+
+    setConfig('B', false, 'shared0')
+    await vpn.onNetworkInstanceChange('B')
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
+    expect(mocks.startVpn).toHaveBeenCalledTimes(1)
+
+    setReady('B', '10.0.1.1')
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', '10.0.1.1/24'],
+    }))
+  })
+
+  it('uses one VPN for different dev_name values and keeps the remaining member', async () => {
+    setConfig('A', false, 'shared0')
+    setConfig('B', false, 'other0')
+    setConfig('C', true)
+    setReady('A', '10.0.0.1')
+    setReady('B', '10.0.1.1')
     const vpn = await loadVpnModule()
 
     await vpn.onNetworkInstanceChange('A')
-    expect(mocks.startVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', '10.0.1.1/24'],
+    }))
+    expect(mocks.setTunFd).toHaveBeenCalledWith(1)
 
     mocks.startVpn.mockClear()
-    await vpn.onNetworkInstanceChange('B')
+    mocks.stopVpn.mockClear()
+    mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: ['C', 'B'] })
+    await vpn.onNetworkInstanceChange('A')
 
     expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
-    expect(mocks.startVpn).not.toHaveBeenCalled()
-
-    setReady('B', '10.0.0.2')
-    await vpn.onNetworkInstanceUpdate('B')
-
-    expect(mocks.startVpn).toHaveBeenCalledTimes(1)
-    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({ ipv4Addr: '10.0.0.2/24' }))
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.1.1/24'],
+    }))
+    expect(mocks.setTunFd).toHaveBeenLastCalledWith(1)
   })
 
-  it('stops the previous owner during pre-run even if the new instance never reaches post-run', async () => {
+  it('removes a shared member when its DHCP address is withdrawn', async () => {
+    setConfig('A', false, 'shared0')
+    setConfig('B', false, 'shared0')
+    mocks.configs.get('B')!.dhcp = true
+    setReady('A', '10.0.0.1')
+    setReady('B', '10.0.1.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+
+    mocks.networkInfo.set('B', { my_node_info: {}, routes: [] })
+    await vpn.onNetworkInstanceUpdate('B')
+
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24'],
+    }))
+    expect(mocks.setTunFd).toHaveBeenLastCalledWith(1)
+  })
+
+  it('uses manual routes instead of peer proxy routes', async () => {
+    setConfig('A')
+    mocks.configs.get('A')!.enable_manual_routes = true
+    mocks.configs.get('A')!.routes = ['192.0.2.0/24']
+    setReady('A', '10.0.0.1')
+    const info = mocks.networkInfo.get('A') as { routes: unknown[] }
+    info.routes = [{ proxy_cidrs: ['10.9.0.0/16'] }]
+    const vpn = await loadVpnModule()
+
+    await vpn.onNetworkInstanceChange('A')
+
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      routes: ['10.0.0.0/24', '192.0.2.0/24'],
+    }))
+  })
+
+  it('keeps the VPN during pre-run of another instance', async () => {
     setConfig('A')
     setConfig('B')
     setReady('A', '10.0.0.1')
@@ -140,7 +222,7 @@ describe('mobile VPN reconciliation ownership', () => {
 
     await vpn.prepareVpnService('B')
 
-    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
   })
 
   it('preserves the VPN while retrying the same instance', async () => {
@@ -157,22 +239,25 @@ describe('mobile VPN reconciliation ownership', () => {
     expect(mocks.stopVpn).not.toHaveBeenCalled()
   })
 
-  it('ignores an update from an instance that no longer owns the VPN', async () => {
+  it('reconciles all running members after any member update', async () => {
     setConfig('A')
-    setConfig('B')
+    setConfig('B', false, 'other0')
     setReady('A', '10.0.0.1')
+    setReady('B', '10.0.1.1')
     const vpn = await loadVpnModule()
 
     await vpn.onNetworkInstanceChange('A')
-    await vpn.onNetworkInstanceChange('B')
-    mocks.collectNetworkInfo.mockClear()
+    mocks.startVpn.mockClear()
+    setReady('B', '10.0.1.2')
 
     await vpn.onNetworkInstanceUpdate('A')
 
-    expect(mocks.collectNetworkInfo).not.toHaveBeenCalled()
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', '10.0.1.2/24'],
+    }))
   })
 
-  it('does not apply an in-flight result after the desired instance changes', async () => {
+  it('does not apply a stale in-flight network result', async () => {
     setConfig('A')
     setConfig('B')
     setReady('A', '10.0.0.1')
@@ -195,7 +280,7 @@ describe('mobile VPN reconciliation ownership', () => {
 
     const staleUpdate = vpn.onNetworkInstanceUpdate('A')
     await collectStarted
-    const switchToB = vpn.onNetworkInstanceChange('B')
+    const newerUpdate = vpn.onNetworkInstanceChange('B')
     resolveNetworkInfo({
       info: {
         map: {
@@ -212,13 +297,13 @@ describe('mobile VPN reconciliation ownership', () => {
       },
     })
 
-    await Promise.all([staleUpdate, switchToB])
+    await Promise.all([staleUpdate, newerUpdate])
 
     expect(mocks.startVpn).not.toHaveBeenCalled()
-    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
   })
 
-  it('stops a native VPN with unknown ownership before retrying the selected instance', async () => {
+  it('preserves a native VPN while network info is unavailable', async () => {
     setConfig('A')
     mocks.getVpnStatus.mockResolvedValue({
       running: true,
@@ -230,7 +315,7 @@ describe('mobile VPN reconciliation ownership', () => {
 
     await vpn.syncMobileVpnService()
 
-    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
     expect(mocks.startVpn).not.toHaveBeenCalled()
   })
 })
