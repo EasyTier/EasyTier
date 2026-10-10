@@ -50,6 +50,7 @@ pub struct RestfulServer {
     webhook_config: SharedWebhookConfig,
     config_server_protocol: String,
     config_server_port: u16,
+    console_enroll_command: Option<String>,
     db: Db,
     oidc_config: oidc::OidcConfig,
     web_router: Option<Router>,
@@ -70,6 +71,7 @@ struct GetSummaryJsonResp {
 struct ConsoleInfoConfig {
     config_server_protocol: String,
     config_server_port: u16,
+    console_enroll_command: Option<String>,
     webhook_auth: bool,
 }
 
@@ -78,6 +80,7 @@ struct GetConsoleInfoJsonResp {
     username: String,
     config_server_protocol: String,
     config_server_port: u16,
+    console_enroll_command: Option<String>,
     webhook_auth: bool,
 }
 
@@ -155,6 +158,7 @@ impl RestfulServer {
         webhook_config: SharedWebhookConfig,
         config_server_protocol: String,
         config_server_port: u16,
+        console_enroll_command: Option<String>,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
@@ -166,6 +170,7 @@ impl RestfulServer {
             webhook_config,
             config_server_protocol,
             config_server_port,
+            console_enroll_command,
             db,
             oidc_config,
             web_router,
@@ -222,6 +227,7 @@ impl RestfulServer {
             username: user.db_user.username,
             config_server_protocol: config.config_server_protocol,
             config_server_port: config.config_server_port,
+            console_enroll_command: config.console_enroll_command,
             webhook_auth: config.webhook_auth,
         }
         .into())
@@ -361,6 +367,7 @@ impl RestfulServer {
             .layer(Extension(ConsoleInfoConfig {
                 config_server_protocol: self.config_server_protocol.clone(),
                 config_server_port: self.config_server_port,
+                console_enroll_command: self.console_enroll_command.clone(),
                 webhook_auth: self.webhook_config.has_external_endpoint(),
             }))
             .layer(MessagesManagerLayer)
@@ -432,5 +439,84 @@ async fn internal_auth_middleware(
                 r#"{"error":"unauthorized: invalid or missing X-Internal-Auth header"}"#,
             ))
             .unwrap(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn console_info_exposes_configured_template_to_authenticated_users() {
+        let db = Db::memory_db().await;
+        let db_user = db.auto_create_user("console-user").await.unwrap();
+        let session_store = SqliteStore::new(db.inner());
+        session_store.migrate().await.unwrap();
+        let auth_layer =
+            AuthManagerLayerBuilder::new(Backend::new(db), SessionManagerLayer::new(session_store))
+                .build();
+
+        for command in [
+            None,
+            Some("custom-core --config-server tcp://vpn.example:443/{username}\n".to_owned()),
+        ] {
+            let config = ConsoleInfoConfig {
+                config_server_protocol: "udp".to_owned(),
+                config_server_port: 22020,
+                console_enroll_command: command.clone(),
+                webhook_auth: false,
+            };
+            let user = users::User {
+                db_user: db_user.clone(),
+                tokens: vec![],
+            };
+            let app = Router::new()
+                .route(
+                    "/authenticated",
+                    get(move |mut auth: AuthSession, config: Extension<ConsoleInfoConfig>| async move {
+                        auth.user = Some(user);
+                        RestfulServer::handle_get_console_info(auth, config).await
+                    }),
+                )
+                .route("/anonymous", get(RestfulServer::handle_get_console_info))
+                .layer(Extension(config))
+                .layer(auth_layer.clone());
+
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get("/authenticated")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                json,
+                serde_json::json!({
+                    "username": "console-user",
+                    "config_server_protocol": "udp",
+                    "config_server_port": 22020,
+                    "console_enroll_command": command,
+                    "webhook_auth": false,
+                })
+            );
+
+            let response = app
+                .oneshot(
+                    Request::get("/anonymous")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 }

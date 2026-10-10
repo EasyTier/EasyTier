@@ -25,6 +25,7 @@ import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
 import ApiClient, { type BlockedDevice, type CentralNetworkSummary } from '../modules/api';
 import { getApiBase } from '../modules/api-host';
+import { buildEnrollCommand } from '../modules/enrollment';
 
 const { t } = useI18n()
 const router = useRouter();
@@ -107,12 +108,7 @@ watch([() => enrollInfo.value?.webhook_auth, () => route.name], ([external, name
     }
 });
 
-const enrollCommand = computed(() => {
-    if (!enrollInfo.value) return '';
-    const host = new URL(getApiBase(), window.location.href).hostname;
-    const { config_server_protocol: proto, config_server_port: port, username } = enrollInfo.value;
-    return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;
-});
+const enrollCommand = computed(() => buildEnrollCommand(enrollInfo.value));
 
 const toggleEnrollBell = async (event: Event) => {
     enrollBell.value.toggle(event);
@@ -281,11 +277,11 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                             <template v-else-if="enrollInfo">
                                 <div class="flex items-center gap-2">
                                     <code class="mono-value flex-1 p-2 rounded"
-                                        style="background: var(--console-ground); word-break: break-all">{{ enrollCommand }}</code>
+                                        style="background: var(--console-ground); word-break: break-all; white-space: pre-wrap">{{ enrollCommand }}</code>
                                     <Button icon="pi pi-copy" severity="secondary" outlined size="small"
                                         :aria-label="t('web.console.enroll_copy')" @click="copyEnrollCommand" />
                                 </div>
-                                <p class="text-xs muted m-0">
+                                <p v-if="enrollInfo.console_enroll_command == null" class="text-xs muted m-0">
                                     {{ enrollInfo.webhook_auth ? t('web.console.enroll_webhook_note') : t('web.console.enroll_token_note') }}
                                 </p>
                             </template>
