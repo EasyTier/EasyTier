@@ -1,7 +1,7 @@
 use super::*;
 
 use easytier::proto::rpc::standalone::{
-    RuntimeRpcListener, runtime_rpc_dialer, runtime_rpc_listener,
+    RuntimeRpcListener, runtime_rpc_dialer, runtime_rpc_listener, runtime_udp_tunnel_listener,
 };
 use easytier_core::connectivity::protocol::raw::TunnelDialer;
 use std::sync::atomic::AtomicUsize;
@@ -161,4 +161,67 @@ async fn completed_handshake_does_not_cancel_pending_accept() {
     .expect("pending accept was cancelled when the first handshake completed")
     .unwrap();
     wait_until(|| manager.client_sessions.len() == 2).await;
+}
+
+#[derive(Debug)]
+struct UnboundListener {
+    requested_port: u16,
+    listened: bool,
+}
+
+#[async_trait::async_trait]
+impl SocketListener for UnboundListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        self.listened = true;
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        unreachable!("an unbound listener must not accept connections")
+    }
+
+    fn local_url(&self) -> url::Url {
+        let port = if self.listened {
+            0
+        } else {
+            self.requested_port
+        };
+        format!("udp://[::]:{port}").parse().unwrap()
+    }
+}
+
+#[tokio::test]
+async fn unbound_listener_is_not_counted_as_running() {
+    for requested_port in [22020, 0] {
+        let mut manager = manager().await;
+        let error = manager
+            .add_listener(UnboundListener {
+                requested_port,
+                listened: false,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("did not bind requested address"),
+            "{error}"
+        );
+        assert!(!manager.is_running());
+    }
+}
+
+#[tokio::test]
+async fn ephemeral_udp_listener_is_counted_as_running() {
+    let mut manager = manager().await;
+    let local_url = "udp://127.0.0.1:0".parse().unwrap();
+    let bound_url = manager
+        .add_listener(runtime_udp_tunnel_listener(
+            local_url,
+            "127.0.0.1:0".parse().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert!(bound_url.port().is_some_and(|port| port != 0));
+    assert!(manager.is_running());
 }

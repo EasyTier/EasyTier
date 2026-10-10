@@ -194,8 +194,19 @@ impl ClientManager {
         &mut self,
         mut listener: L,
     ) -> Result<url::Url, anyhow::Error> {
+        let requested_url = listener.local_url();
         listener.listen().await?;
         let local_url = listener.local_url();
+        // Native UDP may tolerate an IPv6 bind error and return an unbound
+        // socket. Ephemeral binds must also report an assigned, nonzero port.
+        if local_url.port() == Some(0)
+            || (requested_url.port().is_some_and(|port| port != 0)
+                && local_url.port() != requested_url.port())
+        {
+            anyhow::bail!(
+                "listener did not bind requested address {requested_url}; actual address {local_url}"
+            );
+        }
         self.listeners_cnt.fetch_add(1, Ordering::Relaxed);
         let sessions = self.client_sessions.clone();
         let storage = self.storage.weak_ref();
