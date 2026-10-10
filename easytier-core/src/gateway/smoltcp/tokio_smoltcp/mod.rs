@@ -194,6 +194,7 @@ mod tests {
     use super::*;
     use smoltcp::{phy::Medium, wire::HardwareAddress};
 
+    #[allow(clippy::unused_async)]
     #[tokio::test]
     async fn port_allocation_returns_previous_value_and_wraps() {
         let mut capabilities = device::DeviceCapabilities::default();
