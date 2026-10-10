@@ -370,6 +370,7 @@ impl MagicDnsServerInstance {
         let dns_config = RunConfigBuilder::default()
             .general(GeneralConfigBuilder::default().build()?)
             .excluded_forward_nameservers(vec![fake_ip.into()])
+            .hosts(global_ctx.config.get_hosts())
             .build()?;
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;

@@ -16,6 +16,10 @@ pub struct RunConfig {
     #[builder(default = Vec::new())]
     #[serde(default)]
     excluded_forward_nameservers: Vec<IpAddr>,
+
+    #[builder(default = HashMap::new())]
+    #[serde(default)]
+    hosts: HashMap<String, Vec<String>>,
 }
 
 impl RunConfig {
@@ -29,6 +33,10 @@ impl RunConfig {
 
     pub fn excluded_forward_nameservers(&self) -> &Vec<IpAddr> {
         &self.excluded_forward_nameservers
+    }
+
+    pub fn hosts(&self) -> &HashMap<String, Vec<String>> {
+        &self.hosts
     }
 }
 

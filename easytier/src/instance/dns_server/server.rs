@@ -18,7 +18,7 @@ use tokio::sync::{RwLock, RwLockReadGuard};
 
 use crate::common::dns::get_default_resolver_config;
 
-use super::config::{GeneralConfig, Record, RunConfig};
+use super::config::{GeneralConfig, Record, RecordBuilder, RecordType, RunConfig};
 
 pub struct Server {
     server: ServerFuture<CatalogRequestHandler>,
@@ -77,7 +77,62 @@ impl Server {
 
     fn try_new(config: RunConfig) -> Result<Self> {
         let mut catalog = Catalog::new();
-        for (domain, records) in config.zones().iter() {
+
+        // Merge config zones with hosts entries
+        let mut all_zones: std::collections::HashMap<String, Vec<Record>> = config.zones().clone();
+
+        for (ip, domains) in config.hosts().iter() {
+            for domain in domains {
+                let domain = domain.trim();
+                if domain.is_empty() {
+                    continue;
+                }
+
+                // Normalize domain to FQDN
+                let fqdn = if domain.ends_with('.') {
+                    domain.to_string()
+                } else {
+                    format!("{}.", domain)
+                };
+
+                // Extract zone (everything after the first label)
+                let zone = match domain.find('.') {
+                    Some(first_dot)
+                        if first_dot > 0 && first_dot < domain.len().saturating_sub(1) =>
+                    {
+                        let zone_part = &domain[first_dot + 1..];
+                        if zone_part.ends_with('.') {
+                            zone_part.to_string()
+                        } else {
+                            format!("{}.", zone_part)
+                        }
+                    }
+                    _ => continue,
+                };
+
+                match RecordBuilder::default()
+                    .rr_type(RecordType::A)
+                    .name(fqdn)
+                    .value(ip.clone())
+                    .ttl(Duration::from_secs(60))
+                    .build()
+                {
+                    Ok(record) => {
+                        all_zones.entry(zone).or_default().push(record);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to build DNS record for host {} -> {}: {}",
+                            domain,
+                            ip,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        for (domain, records) in all_zones.iter() {
             let zone = rr::Name::from_str(domain.as_str())?;
             let authroty = build_authority(domain, records)?;
             catalog.upsert(zone.clone().into(), vec![Arc::new(authroty)]);

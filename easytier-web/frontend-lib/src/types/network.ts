@@ -153,6 +153,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_private_mode: false,
     port_forwards: [],
     acl: emptyAcl(),
+    hosts: [],
   }
 }
 
@@ -326,6 +327,9 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
     })
   }
   normalized.acl = config.acl === undefined ? undefined : normalizeAcl(normalized.acl)
+if (config.hosts !== undefined) {
+  normalized.hosts = normalized.hosts ?? []
+}
 
   // A credential-mode instance (no network secret, private key from the
   // admin-issued credential) surfaces its key in the form's credential
