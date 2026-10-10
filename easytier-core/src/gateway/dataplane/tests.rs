@@ -113,8 +113,8 @@ async fn setup_data_plane_pair() -> (DataPlaneEndpoint, DataPlaneEndpoint) {
     let client_tunnel = registry.connect(listener_id).unwrap().into_tunnel();
     let server_tunnel = listener.accept().await.unwrap().into_tunnel();
     let (client, server) = tokio::join!(
-        b.peer_manager.add_client_tunnel(client_tunnel, true),
-        a.peer_manager.add_tunnel_as_server(server_tunnel, true),
+        b.peer_manager.add_client_tunnel(client_tunnel),
+        a.peer_manager.add_tunnel_as_server(server_tunnel),
     );
     client.unwrap();
     server.unwrap();

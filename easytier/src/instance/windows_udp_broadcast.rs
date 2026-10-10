@@ -40,7 +40,10 @@ fn build_windivert_udp_filter(physical_interfaces: &[PhysicalInterface]) -> Stri
     dst_filters.push("(ip.DstAddr >= 224.0.0.0 and ip.DstAddr <= 239.255.255.255)".to_owned());
 
     format!(
-        "outbound and ip and udp and ({}) and ({})",
+        // Windows can report a local loopback copy of outgoing broadcasts as
+        // outbound too. Capture only the non-loopback copy; payload-based
+        // deduplication would also discard legitimate discovery retries.
+        "outbound and not loopback and ip and udp and ({}) and ({})",
         src_filter,
         dst_filters.join(" or ")
     )
@@ -60,7 +63,7 @@ mod tests {
 
         let filter = build_windivert_udp_filter(&interfaces);
 
-        assert!(filter.starts_with("outbound and ip and udp and "));
+        assert!(filter.starts_with("outbound and not loopback and ip and udp and "));
         assert!(filter.contains("ip.SrcAddr == 192.168.1.7"));
         assert!(filter.contains("ip.SrcAddr == 169.254.13.10"));
         assert!(filter.contains("ip.DstAddr == 255.255.255.255"));

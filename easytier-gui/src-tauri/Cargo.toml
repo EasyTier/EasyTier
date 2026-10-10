@@ -4,6 +4,7 @@ version = "2.7.0"
 description = "EasyTier GUI"
 authors = ["you"]
 edition.workspace = true
+rust-version.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -45,7 +46,7 @@ async-trait.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 winapi = { workspace = true, features = ["securitybaseapi", "processthreadsapi"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]

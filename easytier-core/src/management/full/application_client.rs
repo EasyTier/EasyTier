@@ -8,6 +8,7 @@ use crate::management::remote_client::{ListNetworkProps, RemoteClientManager, St
 use crate::rpc::bidirect::BidirectRpcManager;
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
+use easytier_proto::api::config::{ConfigRpc, ConfigRpcClientFactory, VpnPortalClientPatch};
 use easytier_proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
 use easytier_proto::api::manage::RunNetworkInstanceRequest;
 use easytier_proto::api::manage::{WebClientService, WebClientServiceClientFactory};
@@ -573,11 +574,24 @@ impl<H: ManagementHost> ApplicationClient<H> {
         .await
     }
 
-    pub fn save_configuration(&self, app: &H, config: NetworkConfig) -> anyhow::Result<()> {
+    pub async fn save_configuration(&self, app: &H, config: NetworkConfig) -> anyhow::Result<()> {
+        let _operation = self.operations.lock().await;
         let id = Uuid::parse_str(config.instance_id())?;
         // Editing a profile is not an instance start/stop operation.
         self.storage
             .save_config(app, id, config, PersistedConfigSource::User)
+    }
+
+    pub async fn patch_vpn_portal_clients(
+        &self,
+        app: H,
+        instance_id: Uuid,
+        patches: Vec<VpnPortalClientPatch>,
+    ) -> anyhow::Result<()> {
+        let _operation = self.operations.lock().await;
+        self.handle_patch_vpn_portal_clients(app, instance_id, patches)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
     }
 
     pub fn new(
@@ -853,6 +867,17 @@ impl<H: ManagementHost> ApplicationClient<H> {
 impl<H: ManagementHost> RemoteClientManager<H, ApplicationConfig, anyhow::Error>
     for ApplicationClient<H>
 {
+    fn get_config_rpc_client(
+        &self,
+        _: H,
+    ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>> {
+        Some(
+            self.rpc_manager
+                .rpc_client()
+                .scoped_client::<ConfigRpcClientFactory<BaseController>>(1, 1, String::new()),
+        )
+    }
+
     fn get_rpc_client(
         &self,
         _: H,

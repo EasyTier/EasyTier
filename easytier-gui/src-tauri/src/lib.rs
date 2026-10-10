@@ -8,10 +8,7 @@ mod elevate;
 use anyhow::Context;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
-use easytier::proto::api::config::{
-    ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch, PatchConfigRequest,
-    VpnPortalClientPatch,
-};
+use easytier::proto::api::config::{ConfigPatchAction, VpnPortalClientPatch};
 use easytier::proto::api::instance::{
     GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
     VpnPortalRpcClientFactory, instance_identifier,
@@ -185,6 +182,7 @@ async fn get_vpn_portal_info(instance_id: String) -> Result<Option<VpnPortalInfo
 
 #[tauri::command]
 async fn patch_vpn_portal_clients(
+    app: AppHandle,
     instance_id: String,
     action: String,
     name: Option<String>,
@@ -211,28 +209,17 @@ async fn patch_vpn_portal_clients(
     };
 
     let client_manager = get_client_manager!()?;
-    let rpc = client_manager
-        .rpc_manager
-        .rpc_client()
-        .scoped_client::<ConfigRpcClientFactory<BaseController>>(1, 1, "".to_string());
-    rpc.patch_config(
-        BaseController::default(),
-        PatchConfigRequest {
-            instance: Some(InstanceIdentifier {
-                selector: Some(instance_identifier::Selector::Id(instance_id.into())),
-            }),
-            patch: Some(InstanceConfigPatch {
-                vpn_portal_clients: vec![VpnPortalClientPatch {
-                    action: action as i32,
-                    client,
-                }],
-                ..Default::default()
-            }),
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    client_manager
+        .patch_vpn_portal_clients(
+            manager::GuiHost(app),
+            instance_id,
+            vec![VpnPortalClientPatch {
+                action: action as i32,
+                client,
+            }],
+        )
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -309,6 +296,7 @@ async fn update_network_config_state(
 async fn save_network_config(app: AppHandle, cfg: NetworkConfig) -> Result<(), String> {
     get_client_manager!()?
         .save_configuration(&manager::GuiHost(app), cfg)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -909,6 +897,7 @@ pub fn run_gui() -> std::process::ExitCode {
     }
 
     setup_panic_handler();
+    easytier::utils::init_crypto_provider();
 
     let mut builder = tauri::Builder::default();
 

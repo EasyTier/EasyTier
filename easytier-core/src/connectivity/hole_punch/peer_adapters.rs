@@ -9,7 +9,7 @@ use quanta::Instant;
 use crate::{
     config::{P2pPolicyFlags, PeerId},
     foundation::task::ExternalTaskSignal,
-    peers::peer_manager::PeerManagerCore,
+    peers::{PeerConnectionOrigin, peer_manager::PeerManagerCore},
     proto::{
         common::NatType,
         peer_rpc::{
@@ -97,16 +97,25 @@ impl UdpHolePunchRpcSource for PeerManagerCore {
 
 #[async_trait]
 impl HolePunchTunnelSink for PeerManagerCore {
-    async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        PeerManagerCore::add_client_tunnel(self, tunnel, false)
+    async fn add_client_tunnel(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        origin: PeerConnectionOrigin,
+    ) -> anyhow::Result<()> {
+        self.add_client_tunnel_with_peer_id_hint(tunnel, origin, None)
             .await
             .map(|_| ())
             .map_err(anyhow::Error::from)
     }
 
-    async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        PeerManagerCore::add_tunnel_as_server(self, tunnel, false)
+    async fn add_server_tunnel(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        origin: PeerConnectionOrigin,
+    ) -> anyhow::Result<()> {
+        self.add_tunnel_as_server_with_origin(tunnel, origin)
             .await
+            .map(|_| ())
             .map_err(anyhow::Error::from)
     }
 }

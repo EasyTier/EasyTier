@@ -471,7 +471,7 @@ onUnmounted(() => {
         <ConfirmPopup></ConfirmPopup>
 
         <!-- 网络选择和操作按钮始终在同一行 -->
-        <div class="network-header bg-surface-50 p-3 rounded-lg shadow-sm mb-1">
+        <div class="network-header mb-3">
             <div class="flex flex-row justify-between items-center gap-2" style="align-items: center;">
                 <!-- 网络选择 -->
                 <div class="flex-1 min-w-0">
@@ -556,7 +556,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Main Content Area -->
-        <div class="network-content bg-surface-0 p-4 rounded-lg shadow-sm">
+        <div class="network-content">
             <!-- Network Creation Form -->
             <div v-if="isEditingNetwork || networkIsDisabled" class="network-creation-container">
                 <div class="network-creation-header flex items-center gap-2 mb-3">
@@ -588,7 +588,7 @@ onUnmounted(() => {
                 </div>
 
                 <Status v-if="curNetworkInfo && curNetworkInfo.error_msg === ''" v-bind:cur-network-inst="curNetworkInfo"
-                    :api="api"
+                    :api="api" :readonly="!currentNetworkControl.editable.value"
                     class="mb-4">
                 </Status>
                 <Message v-else-if="curNetworkInfo?.error_msg" severity="error" class="mb-4">{{
@@ -630,6 +630,9 @@ onUnmounted(() => {
     height: 100%;
     display: flex;
     flex-direction: column;
+    /* hosts that mount this full-page (easytier-gui) have no padding of
+       their own, so keep a safe inset here; panel chrome stays with hosts */
+    padding: 0.75rem;
 }
 
 .network-content {
@@ -695,9 +698,12 @@ onUnmounted(() => {
     max-width: 100%;
 }
 
-/* Dark mode adaptations */
+/* Dark mode adaptations: surface utilities follow host theme tokens; the
+   app-dark branch supplies dark fallbacks for hosts that define no tokens.
+   :global must own the whole selector — mixing it with :deep in one selector
+   makes the compiler drop the :deep part. */
 :deep(.bg-surface-50) {
-    background-color: var(--surface-50, #f8fafc);
+    background-color: var(--surface-ground, #f8fafc);
 }
 
 :deep(.bg-surface-0) {
@@ -712,25 +718,16 @@ onUnmounted(() => {
     color: var(--text-color-secondary, #64748b);
 }
 
-@media (prefers-color-scheme: dark) {
-    :deep(.bg-surface-50) {
-        background-color: var(--surface-ground, #0f172a);
-    }
+:global(html.app-dark .device-management .bg-surface-50) {
+    background-color: var(--surface-ground, #0f172a);
+}
 
-    :deep(.bg-surface-0) {
-        background-color: var(--surface-card, #1e293b);
-    }
+:global(html.app-dark .device-management .bg-surface-0) {
+    background-color: var(--surface-card, #1e293b);
 }
 
 /* Responsive design for mobile devices */
 @media (max-width: 768px) {
-    .network-header {
-        padding: 0.75rem;
-    }
-
-    .network-content {
-        padding: 0.75rem;
-    }
 
     /* 在小屏幕上缩短网络标签文本 */
     .network-label {

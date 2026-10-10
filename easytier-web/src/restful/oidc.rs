@@ -1,4 +1,4 @@
-use openidconnect::reqwest;
+use oauth2_reqwest::ReqwestClient;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -180,7 +180,7 @@ pub struct OidcConfig {
     pub scopes: Vec<String>,
     pub pkce_enabled: bool,
     pub frontend_base_url: Option<String>,
-    pub http_client: Option<reqwest::Client>,
+    pub http_client: Option<ReqwestClient>,
     cached_client: Option<Arc<ConfiguredAppClient>>,
 }
 
@@ -224,10 +224,14 @@ impl OidcConfig {
         if oidc_username_claim.trim().is_empty() {
             return Err(anyhow::anyhow!("--oidc-username-claim cannot be empty"));
         }
-        let http_client = reqwest::ClientBuilder::new()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(30))
-            .build()?;
+        // OIDC configuration can also be created outside the web entry point.
+        easytier::utils::init_crypto_provider();
+        let http_client = ReqwestClient::from(
+            reqwest::ClientBuilder::new()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(30))
+                .build()?,
+        );
 
         let issuer_url = oidc_issuer_url.ok_or_else(|| {
             anyhow::anyhow!("--oidc-issuer-url is required when using OIDC authentication")
@@ -696,6 +700,121 @@ mod route {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reqwest_adapter_supports_discovery_and_token_exchange() {
+        use axum::{
+            Form, Json,
+            http::{HeaderMap, StatusCode},
+            response::{IntoResponse, Redirect},
+            routing::post,
+        };
+        use openidconnect::{AuthorizationCode, OAuth2TokenResponse, RequestTokenError};
+        use serde_json::json;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio_util::task::AbortOnDropHandle;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let metadata = json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/authorize"),
+            "token_endpoint": format!("{issuer}/token"),
+            "jwks_uri": format!("{issuer}/jwks"),
+            "response_types_supported": ["code"],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["RS256"],
+        });
+        let redirect_hits = Arc::new(AtomicUsize::new(0));
+        let hits = redirect_hits.clone();
+        let app = Router::new()
+            .route(
+                "/.well-known/openid-configuration",
+                get(move || async move { Json(metadata) }),
+            )
+            .route("/jwks", get(|| async { Json(json!({ "keys": [] })) }))
+            .route(
+                "/token",
+                post(
+                    |headers: HeaderMap, Form(form): Form<HashMap<String, String>>| async move {
+                        assert_eq!(
+                            headers["authorization"],
+                            "Basic dGVzdC1jbGllbnQ6dGVzdC1zZWNyZXQ="
+                        );
+                        assert_eq!(form["grant_type"], "authorization_code");
+                        assert_eq!(form["redirect_uri"], "http://localhost/callback");
+                        match form["code"].as_str() {
+                            "valid" => Json(json!({
+                                "access_token": "test-access-token",
+                                "token_type": "Bearer",
+                                "expires_in": 3600,
+                            }))
+                            .into_response(),
+                            "redirect" => Redirect::temporary("/unexpected").into_response(),
+                            _ => (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({ "error": "invalid_grant" })),
+                            )
+                                .into_response(),
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/unexpected",
+                post(move || async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({ "access_token": "unexpected", "token_type": "Bearer" }))
+                }),
+            );
+        let _server = AbortOnDropHandle::new(tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        }));
+
+        let config = OidcConfig::from_params(OidcOptions {
+            oidc_issuer_url: Some(issuer),
+            oidc_client_id: Some("test-client".to_owned()),
+            oidc_client_secret: Some("test-secret".to_owned()),
+            oidc_username_claim: "preferred_username".to_owned(),
+            oidc_scopes: vec!["openid".to_owned()],
+            oidc_redirect_url: Some("http://localhost/callback".to_owned()),
+            oidc_disable_pkce: false,
+            oidc_frontend_base_url: None,
+        })
+        .await
+        .unwrap();
+        let client = config.client().unwrap();
+        let http_client = config.http_client.as_ref().unwrap();
+        let token = client
+            .exchange_code(AuthorizationCode::new("valid".to_owned()))
+            .unwrap()
+            .request_async(http_client)
+            .await
+            .unwrap();
+        assert_eq!(token.access_token().secret(), "test-access-token");
+        assert_eq!(token.expires_in(), Some(Duration::from_secs(3600)));
+
+        let error = client
+            .exchange_code(AuthorizationCode::new("invalid".to_owned()))
+            .unwrap()
+            .request_async(http_client)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, RequestTokenError::ServerResponse(ref response)
+            if response.error() == &CoreErrorResponseType::InvalidGrant)
+        );
+
+        assert!(
+            client
+                .exchange_code(AuthorizationCode::new("redirect".to_owned()))
+                .unwrap()
+                .request_async(http_client)
+                .await
+                .is_err()
+        );
+        assert_eq!(redirect_hits.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn test_dot_path_to_json_pointer() {

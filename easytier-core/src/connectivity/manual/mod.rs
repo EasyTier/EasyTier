@@ -26,7 +26,7 @@ use crate::{
     },
     events::{CoreEvent, CoreEventSink},
     host::dns::{DnsQuery, DnsResolver},
-    peers::peer_manager::PeerManagerCore,
+    peers::{PeerConnectionOrigin, peer_manager::PeerManagerCore},
     proto::common::TunnelInfo,
     socket::{
         IpVersion, SocketContext,
@@ -47,7 +47,8 @@ fn is_manual_endpoint_scheme(scheme: &str) -> bool {
     matches!(scheme, "http" | "https" | "txt" | "srv")
 }
 
-fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
+/// Checks supported connector and discovery schemes without resolving the URL.
+pub fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
     if ManualTransport::from_url(url).is_ok() || is_manual_endpoint_scheme(url.scheme()) {
         Ok(())
     } else {
@@ -890,7 +891,7 @@ where
     let (peer_id, conn_id) =
         with_timeout_budget("handshake", started_at, connect_timeout, async move {
             peer_manager
-                .add_client_tunnel_with_peer_id_hint(tunnel, true, None)
+                .add_client_tunnel_with_peer_id_hint(tunnel, PeerConnectionOrigin::Manual, None)
                 .await
                 .map_err(anyhow::Error::from)
         })

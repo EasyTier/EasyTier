@@ -59,9 +59,9 @@ quanta.workspace = true
 
 strum = { workspace = true, features = ["derive"] }
 
-gethostname = "1.1.0"
+gethostname.workspace = true
 
-futures = { workspace = true, features = ["bilock", "unstable"] }
+futures = { workspace = true, features = ["default", "bilock", "unstable"] }
 
 tokio = { workspace = true, features = [
     "fs",
@@ -178,7 +178,8 @@ network-interface = "2.0.5"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
-hkdf = { version = "0.13", optional = true }
+# Share the workspace HMAC/SHA2 digest generation for WireGuard key derivation.
+hkdf = { version = "0.12.4", optional = true }
 sha2 = { workspace = true, optional = true }
 
 # for cli
@@ -241,7 +242,7 @@ windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adc
 ] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = [
+windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
@@ -415,6 +416,7 @@ upnp = [
 ]
 endpoint-discovery = [
     "dns-resolver",
+    "dep:rustls",
     "easytier-core/endpoint-discovery",
 ]
 dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]
@@ -448,6 +450,44 @@ hotpath-cpu = ["hotpath"]
 hotpath-alloc = ["hotpath"]
 # For Network Extension on macOS
 macos-ne = []
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ os-name }-{ target-arch }-v{ version }.zip"
+bin-dir = "{ name }-{ os-name }-{ target-arch }/{ bin }{ binary-ext }"
+pkg-fmt = "zip"
+
+# Release names distinguish hard-float ARM builds from their soft-float peers.
+[package.metadata.binstall.overrides.arm-unknown-linux-musleabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-armhf-v{ version }.zip"
+bin-dir = "{ name }-linux-armhf/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.arm-unknown-linux-gnueabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-armhf-v{ version }.zip"
+bin-dir = "{ name }-linux-armhf/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.armv7-unknown-linux-musleabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-armv7hf-v{ version }.zip"
+bin-dir = "{ name }-linux-armv7hf/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.armv7-unknown-linux-gnueabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-armv7hf-v{ version }.zip"
+bin-dir = "{ name }-linux-armv7hf/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.riscv64gc-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-riscv64-v{ version }.zip"
+bin-dir = "{ name }-linux-riscv64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.riscv64gc-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-riscv64-v{ version }.zip"
+bin-dir = "{ name }-linux-riscv64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-windows-arm64-v{ version }.zip"
+bin-dir = "{ name }-windows-arm64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-unknown-freebsd]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-freebsd-13.2-x86_64-v{ version }.zip"
+bin-dir = "{ name }-freebsd-13.2-x86_64/{ bin }{ binary-ext }"
 
 [package.metadata.cargo-machete]
 ignored = [

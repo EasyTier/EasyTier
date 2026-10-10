@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Context;
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use quanta::Instant;
 use rand::{Rng, seq::SliceRandom as _};
 use tokio::{

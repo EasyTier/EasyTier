@@ -101,6 +101,13 @@ struct Cli {
     machine_id: Option<String>,
 
     #[arg(
+        long,
+        env = "ET_STATE_DIR",
+        help = t!("core_clap.state_dir").to_string()
+    )]
+    state_dir: Option<PathBuf>,
+
+    #[arg(
         short,
         long,
         env = "ET_CONFIG_FILE",
@@ -1123,6 +1130,11 @@ impl NetworkOptions {
                 .vpn_portal_private_key
                 .clone()
                 .or_else(|| existing.as_ref()?.wireguard_private_key.clone());
+            let enabled = if self.vpn_portal.is_some() {
+                Some(true)
+            } else {
+                existing.as_ref().and_then(|portal| portal.enabled)
+            };
             let clients = if self.vpn_portal_clients.is_empty() {
                 existing.map_or_else(Vec::new, |portal| portal.clients)
             } else {
@@ -1130,6 +1142,7 @@ impl NetworkOptions {
             };
 
             cfg.set_vpn_portal_config(VpnPortalConfig {
+                enabled,
                 wireguard_listen,
                 wireguard_private_key,
                 clients,
@@ -1530,7 +1543,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             config_server_url_s,
             crate::common::MachineIdOptions {
                 explicit_machine_id: cli.machine_id.clone(),
-                state_dir: None,
+                state_dir: cli.state_dir.clone(),
             },
             cli.network_options.hostname.clone(),
             cli.network_options.secure_mode.unwrap_or(false),
@@ -1727,6 +1740,7 @@ pub async fn main() -> ExitCode {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
     setup_panic_handler();
+    crate::utils::init_crypto_provider();
 
     #[cfg(target_os = "windows")]
     match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {

@@ -14,6 +14,7 @@ use crate::{
         transport::{ConnectedTransport, ConnectedUdpSession},
     },
     foundation::task::ExternalTaskSignal,
+    peers::PeerConnectionOrigin,
     socket::{
         ListenerConnectionCounter, SocketContext,
         udp::{UdpBindOptions, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory},
@@ -271,7 +272,9 @@ where
         requested_url: url::Url,
     ) -> anyhow::Result<()> {
         let tunnel = self.upgrade(connected, requested_url).await?;
-        self.tunnel_sink.add_client_tunnel(tunnel).await
+        self.tunnel_sink
+            .add_client_tunnel(tunnel, PeerConnectionOrigin::UdpHolePunch)
+            .await
     }
 
     async fn add_server_transport(
@@ -280,7 +283,9 @@ where
         requested_url: url::Url,
     ) -> anyhow::Result<()> {
         let tunnel = self.upgrade(connected, requested_url).await?;
-        self.tunnel_sink.add_server_tunnel(tunnel).await
+        self.tunnel_sink
+            .add_server_tunnel(tunnel, PeerConnectionOrigin::UdpHolePunch)
+            .await
     }
 }
 
@@ -428,12 +433,22 @@ mod tests {
 
     #[async_trait]
     impl HolePunchTunnelSink for MockTunnelSink {
-        async fn add_client_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        async fn add_client_tunnel(
+            &self,
+            _tunnel: Box<dyn Tunnel>,
+            origin: PeerConnectionOrigin,
+        ) -> anyhow::Result<()> {
+            assert_eq!(origin, PeerConnectionOrigin::UdpHolePunch);
             self.clients.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
-        async fn add_server_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        async fn add_server_tunnel(
+            &self,
+            _tunnel: Box<dyn Tunnel>,
+            origin: PeerConnectionOrigin,
+        ) -> anyhow::Result<()> {
+            assert_eq!(origin, PeerConnectionOrigin::UdpHolePunch);
             self.servers.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
