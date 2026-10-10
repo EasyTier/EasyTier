@@ -85,6 +85,14 @@ async function loadVpnModule() {
   return mobileVpn
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   vi.resetModules()
@@ -107,6 +115,119 @@ beforeEach(() => {
 })
 
 describe('mobile VPN reconciliation ownership', () => {
+  it('ignores an intermediate empty running-ID reply after replacement B attaches', async () => {
+    setConfig('A')
+    setConfig('B')
+    setReady('A', '10.0.0.1')
+    setReady('B', '10.0.0.2')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+
+    const reply = deferred<{ running_inst_ids: unknown[] }>()
+    const queried = deferred<void>()
+    mocks.listNetworkInstanceIds.mockImplementationOnce(() => {
+      queried.resolve()
+      return reply.promise
+    })
+    // Represents the stop notification sent between removing A and starting B.
+    mocks.getVpnStatus.mockResolvedValueOnce({ running: true, ipv4Addr: '10.0.0.1/24', routes: [] })
+    const oldSync = vpn.syncMobileVpnService()
+    await queried.promise
+    await vpn.prepareVpnService('B')
+    await vpn.onNetworkInstanceChange('B')
+    expect(mocks.startVpn).toHaveBeenCalledTimes(2)
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+
+    reply.resolve({ running_inst_ids: [] })
+    await oldSync
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.startVpn).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores a stale native-status reply before it can clear B ownership', async () => {
+    setConfig('A')
+    setConfig('B')
+    setReady('A', '10.0.0.1')
+    setReady('B', '10.0.0.2')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    const reply = deferred<{ running: boolean }>()
+    mocks.getVpnStatus.mockImplementationOnce(() => reply.promise)
+    const oldSync = vpn.syncMobileVpnService()
+    await vpn.prepareVpnService('B')
+    await vpn.onNetworkInstanceChange('B')
+
+    reply.resolve({ running: false })
+    await oldSync
+    expect(mocks.listNetworkInstanceIds).not.toHaveBeenCalled()
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenCalledTimes(2)
+  })
+
+  it('discards the old sync as soon as a newer sync begins, before either applies a result', async () => {
+    setConfig('A')
+    setReady('A', '10.0.0.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    mocks.getVpnStatus.mockResolvedValue({ running: true, ipv4Addr: '10.0.0.1/24', routes: [] })
+    const oldReply = deferred<{ running_inst_ids: unknown[] }>()
+    const newReply = deferred<{ running_inst_ids: unknown[] }>()
+    const firstQuery = deferred<void>()
+    const secondQuery = deferred<void>()
+    mocks.listNetworkInstanceIds
+      .mockImplementationOnce(() => {
+        firstQuery.resolve()
+        return oldReply.promise
+      })
+      .mockImplementationOnce(() => {
+        secondQuery.resolve()
+        return newReply.promise
+      })
+    const oldSync = vpn.syncMobileVpnService()
+    await firstQuery.promise
+    const newSync = vpn.syncMobileVpnService()
+    await secondQuery.promise
+
+    oldReply.resolve({ running_inst_ids: [] })
+    await oldSync
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
+    newReply.resolve({ running_inst_ids: ['A'] })
+    await newSync
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
+    expect(mocks.startVpn).toHaveBeenCalledTimes(1)
+  })
+
+  it('still stops an attached VPN when a current query confirms no running network', async () => {
+    setConfig('A')
+    setReady('A', '10.0.0.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    mocks.getVpnStatus.mockResolvedValueOnce({ running: true, ipv4Addr: '10.0.0.1/24', routes: [] })
+    await vpn.syncMobileVpnService()
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenCalledTimes(1)
+  })
+
+  it('still clears the VPN and pending retries when replacement B fails to start', async () => {
+    setConfig('A')
+    setConfig('B')
+    setReady('A', '10.0.0.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    await vpn.prepareVpnService('B')
+    // B never becomes ready and leaves a pending reconciliation retry.
+    await vpn.onNetworkInstanceChange('B')
+    mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: [] })
+    await vpn.syncMobileVpnService()
+    setReady('B', '10.0.0.2')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenCalledTimes(1)
+  })
+
   it('stops A before retrying an unavailable B, then starts B when it becomes ready', async () => {
     setConfig('A')
     setConfig('B')
