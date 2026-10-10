@@ -349,6 +349,14 @@ A core instance:
 `CoreProcessRuntime`, plus optional protocol and platform capabilities. The
 bundle carries capabilities, not preconstructed portable managers.
 
+The standard native factory owns one continuously driven Tokio executor per
+instance. `multi_thread` selects a multi-thread or current-thread runtime;
+`multi_thread_count` sets the worker count with the historical minimum of two.
+Construction, start/stop, and FFI data-plane tasks use that executor, independent
+of the process management runtime. Dropping its Host owner shuts down the
+executor without blocking a worker on its own termination. Compact and WASI
+Hosts retain their externally supplied execution model.
+
 Each Module owns partial-start cleanup for its internal resources.
 `CoreInstance` has one outer cancellation and recovery path for the complete
 serial startup. `Running` therefore means the Host runtime and every enabled

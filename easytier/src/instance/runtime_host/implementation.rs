@@ -10,6 +10,10 @@ use super::NativeInstanceRuntimeHost;
 
 #[async_trait::async_trait]
 impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
+    fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.executor.as_ref().map(|executor| executor.handle())
+    }
+
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,

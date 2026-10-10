@@ -229,6 +229,12 @@ fn proxy_cidr_snapshot(config: &CoreInstanceRuntimeConfig) -> ProxyCidrSnapshot 
 /// lifetime, such as a native packet interface.
 #[async_trait::async_trait]
 pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
+    /// Optional Host-owned executor used for construction, lifecycle, and data-plane tasks.
+    /// Hosts without a dedicated executor continue to use the caller's runtime.
+    fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        None
+    }
+
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,
@@ -783,6 +789,7 @@ where
             host.clone(),
             direct_options.tcp_bind.context.clone(),
             events.clone(),
+            instance_runtime.runtime_handle(),
         );
         #[cfg(feature = "tcp-hole-punch")]
         let tcp_hole_punch = stun

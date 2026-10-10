@@ -1513,6 +1513,162 @@ virtual_ip = "10.82.0.2/24"
         assert_eq!(runtime_host.shutdown_calls.load(Ordering::Relaxed), 1);
     }
 
+    #[test]
+    fn host_executor_routes_lifecycle_and_cancelled_start() {
+        struct ExecutorRuntimeHost {
+            handle: tokio::runtime::Handle,
+            block_prepare: bool,
+            prepare_started: Notify,
+            shutdown_calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl InstanceRuntimeHost for ExecutorRuntimeHost {
+            fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+                Some(self.handle.clone())
+            }
+
+            async fn prepare(
+                &self,
+                _packet_plane: Arc<CorePacketPlane>,
+            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+                assert_eq!(tokio::runtime::Handle::current().id(), self.handle.id());
+                self.prepare_started.notify_one();
+                if self.block_prepare {
+                    std::future::pending::<()>().await;
+                }
+                Ok(None)
+            }
+
+            async fn shutdown(&self) {
+                assert_eq!(tokio::runtime::Handle::current().id(), self.handle.id());
+                self.shutdown_calls.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        for block_prepare in [false, true] {
+            let executor = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let caller = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let runtime_host = Arc::new(ExecutorRuntimeHost {
+                handle: executor.handle().clone(),
+                block_prepare,
+                prepare_started: Notify::new(),
+                shutdown_calls: AtomicUsize::new(0),
+            });
+            let instance = {
+                let _runtime = executor.enter();
+                let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+                let mut adapters = adapters(None, Arc::new(packet_sink));
+                adapters.instance_runtime = runtime_host.clone();
+                CoreInstance::new(test_config("host-executor"), adapters).unwrap()
+            };
+            caller.block_on(async {
+                if block_prepare {
+                    let start = tokio::spawn({
+                        let instance = instance.clone();
+                        async move { instance.start().await }
+                    });
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        runtime_host.prepare_started.notified(),
+                    )
+                    .await
+                    .unwrap();
+                    start.abort();
+                    assert!(start.await.unwrap_err().is_cancelled());
+                } else {
+                    instance.start().await.unwrap();
+                    assert_eq!(instance.state(), CoreInstanceState::Running);
+                    instance.stop().await;
+                }
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while instance.state() != CoreInstanceState::Stopped {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .expect("lifecycle cleanup must complete on the Host executor");
+                assert_eq!(runtime_host.shutdown_calls.load(Ordering::Relaxed), 1);
+            });
+        }
+    }
+
+    #[test]
+    fn cancelled_stop_before_executor_poll_still_finishes_cleanup() {
+        struct ExecutorRuntimeHost {
+            handle: tokio::runtime::Handle,
+            shutdown_calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl InstanceRuntimeHost for ExecutorRuntimeHost {
+            fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+                Some(self.handle.clone())
+            }
+
+            async fn prepare(
+                &self,
+                _packet_plane: Arc<CorePacketPlane>,
+            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+                Ok(None)
+            }
+
+            async fn shutdown(&self) {
+                assert_eq!(tokio::runtime::Handle::current().id(), self.handle.id());
+                self.shutdown_calls.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let runtime_host = Arc::new(ExecutorRuntimeHost {
+            handle: executor.handle().clone(),
+            shutdown_calls: AtomicUsize::new(0),
+        });
+        let instance = {
+            let _runtime = executor.enter();
+            let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+            let mut adapters = adapters(None, Arc::new(packet_sink));
+            adapters.instance_runtime = runtime_host.clone();
+            CoreInstance::new(test_config("cancel-stop-before-poll"), adapters).unwrap()
+        };
+        executor.block_on(instance.start()).unwrap();
+        assert_eq!(instance.state(), CoreInstanceState::Running);
+
+        let caller = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        caller.block_on(async {
+            // The instance executor is not driven here, so the dispatched stop
+            // cannot be polled before its caller is cancelled.
+            let mut stop = Box::pin(instance.stop());
+            assert!(futures::poll!(&mut stop).is_pending());
+            drop(stop);
+        });
+        drop(caller);
+
+        executor.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while instance.state() != CoreInstanceState::Stopped {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("cancelled stop must still finish on the instance executor");
+        });
+        assert_eq!(runtime_host.shutdown_calls.load(Ordering::Relaxed), 1);
+    }
+
     #[cfg(feature = "management")]
     #[tokio::test]
     async fn cancelled_delete_finishes_stop_and_keeps_wait_blocked() {
