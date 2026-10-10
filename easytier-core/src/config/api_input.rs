@@ -528,7 +528,6 @@ pub fn network_config_from_raw(raw: &InstanceConfigRaw) -> NetworkConfig {
                 peer_public_key: p.peer_public_key.clone(),
             })
             .collect();
-
     }
 
     result.listener_urls = raw

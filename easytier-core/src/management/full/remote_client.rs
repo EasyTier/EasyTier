@@ -69,17 +69,10 @@ where
             // from runtime. Validate the actual saved candidate as well.
             if let Some(vpn_portal_config) = candidate.parsed().vpn_portal_config.as_ref() {
                 let portal_runtime = crate::gateway::vpn_portal::PortalRuntimeConfig {
-                    clients: vpn_portal_config
-                        .clients
-                        .iter()
-                        .map(Into::into)
-                        .collect(),
+                    clients: vpn_portal_config.clients.iter().map(Into::into).collect(),
                 };
-                crate::gateway::vpn_portal::validate_clients(
-                    &portal_runtime,
-                    candidate.parsed(),
-                )
-                .map_err(|e| RemoteClientError::Other(e.to_string()))?;
+                crate::gateway::vpn_portal::validate_clients(&portal_runtime, candidate.parsed())
+                    .map_err(|e| RemoteClientError::Other(e.to_string()))?;
             }
             let updated = crate::config::api_input::network_config_from_raw(candidate.raw());
             // Keep pending saved changes, including the listener and key.

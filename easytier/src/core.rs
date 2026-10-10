@@ -2,11 +2,12 @@ use crate::{
     ShellType,
     common::{
         config::{
-            add_proxy_network_to_raw, load_config_from_file, load_toml_config_from_path,
+            ConfigFileControl, ConsoleLoggerConfig, FileLoggerConfig, InstanceConfig,
+            InstanceConfigRaw, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
+            VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_raw,
+            load_config_from_file, load_toml_config_from_path,
             load_toml_config_from_str_with_source, parse_mapped_listener_urls,
-            serialize_raw_to_toml_redacted, ConfigFileControl, ConsoleLoggerConfig, FileLoggerConfig, InstanceConfig, InstanceConfigRaw,
-            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
-            VpnPortalClientConfig, VpnPortalConfig,
+            serialize_raw_to_toml_redacted,
         },
         constants::EASYTIER_VERSION,
         log,
