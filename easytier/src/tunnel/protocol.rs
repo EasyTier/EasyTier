@@ -448,7 +448,7 @@ mod tests {
             else {
                 panic!("QUIC must keep accepting connections from its UDP session");
             };
-            let tunnel = accepted.accept().await.unwrap();
+            let tunnel = accepted.accept().await.unwrap().unwrap();
             crate::tunnel::common::tests::_tunnel_echo_server(tunnel, false).await;
         });
 
