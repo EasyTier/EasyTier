@@ -507,8 +507,8 @@ web:
     virtual_cidr: Virtual Subnet
     secure_mode: Secure Mode
     secure_mode_hint: Noise encrypted handshakes with identity verification; enables temporary credentials. Member instances restart on change
-    virtual_cidr_hint: When set, members get static IPs assigned from this subnet in join order (.1, .2, ...); leave empty for node-negotiated DHCP
-    virtual_cidr_placeholder: e.g. 10.200.0.0/24, empty for auto
+    virtual_cidr_hint: Defaults to /24 when the subnet mask is omitted. When set, members get static IPs assigned from this subnet in join order (.1, .2, ...); leave empty for node-negotiated DHCP
+    virtual_cidr_placeholder: e.g. 10.200.0.0 (defaults to /24), empty for auto
     peer_urls_placeholder: One peer URL per line, e.g. tcp://10.0.0.1:11010
     create_hint: The network secret is generated automatically and can be viewed or reset in the network detail page
     gateway_mode: Gateway
@@ -800,3 +800,8 @@ acl:
     name: Name
     type: Type
   match: Match
+
+disable_relay_data: Disable Data Relay
+disable_relay_data_help: Do not relay data packets for other peers, so this node carries no traffic it did not originate.
+prefer_peer_relay: Prefer Peer Relay
+prefer_peer_relay_help: Prefer a credential peer that already relays to a destination over advertising another direct edge to the same destination.

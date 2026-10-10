@@ -127,8 +127,12 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
         else if (path.includes('/networks/config/')) result = { instance_id: id(100), network_name: 'Engineering', hostname: 'Amsterdam gateway', networking_method: 'Standalone' };
         await route.fulfill({ json: result });
     });
+    const gatewayReady = state.waitForGateway
+        ? page.waitForResponse(response => response.url().endsWith('/networks/gateway-info')).then(response => response.finished())
+        : undefined;
     await page.goto(`${base}/#${route}`);
     await page.locator('.console-page').waitFor();
+    await gatewayReady;
     return { page, state, context };
 }
 
@@ -237,6 +241,57 @@ test('network creation retains gateway and advanced standalone modes', async t =
     await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/networks/created-*');
     assert.equal(state.writes.filter(w => w.path === '/networks').at(-1).payload.settings.networking_method, 'Standalone');
+});
+
+for (const [input, expected] of [
+    [' 10.200.0.0 ', '10.200.0.0/24'],
+    [' 10.200.0.0/16 ', '10.200.0.0/16'],
+    ['   ', null],
+]) {
+    for (const gatewayEnabled of [true, false]) {
+        test(`network creation normalizes virtual subnet ${JSON.stringify(input)} with gateway ${gatewayEnabled}`, async t => {
+            const { page, state } = await open(t, '/h/networks', {}, state => {
+                state.gatewayEnabled = gatewayEnabled;
+                state.waitForGateway = true;
+            });
+            await page.getByRole('button', { name: 'Create Network', exact: true }).click();
+            await page.locator('#network-display-name').fill('Subnet test');
+            const subnet = page.locator('#network-cidr');
+            await subnet.fill(input);
+            await subnet.press('Tab');
+            assert.equal(await subnet.inputValue(), expected ?? '');
+            await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
+            await page.waitForURL('**/networks/created-*');
+            const settings = state.writes.find(write => write.path === '/networks').payload.settings;
+            assert.equal(settings.virtual_cidr, expected);
+            assert.equal(settings.networking_method, gatewayEnabled ? 'Gateway' : 'Standalone');
+            await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+            assert.equal(await page.locator('#settings-virtual-cidr').inputValue(), expected ?? '');
+        });
+    }
+}
+
+test('network settings normalize virtual subnets and preserve explicit masks and DHCP', async t => {
+    const { page, state } = await open(t, '/h/networks/network-0');
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    for (const [input, expected] of [
+        [' 10.201.0.0 ', '10.201.0.0/24'],
+        ['10.201.0.0/20', '10.201.0.0/20'],
+        ['   ', null],
+    ]) {
+        const subnet = page.locator('#settings-virtual-cidr');
+        await subnet.fill(input);
+        await subnet.press('Tab');
+        assert.equal(await subnet.inputValue(), expected ?? '');
+        const saved = page.waitForResponse(response => response.url().endsWith('/networks/network-0') && response.request().method() === 'PATCH');
+        await page.getByRole('button', { name: 'Save', exact: true }).click();
+        await saved;
+        assert.equal(state.writes.filter(write => write.method === 'PATCH').at(-1).payload.settings.virtual_cidr, expected);
+        await page.getByText('Config Saved', { exact: true }).waitFor();
+        await page.reload();
+        await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+        assert.equal(await subnet.inputValue(), expected ?? '');
+    }
 });
 
 test('PublicServer settings retain discovery mode when renamed or edited to the gateway URL', async t => {
