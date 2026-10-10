@@ -5,7 +5,8 @@ use crate::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
             FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
             TomlConfigLoader, VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_config,
-            load_config_from_file, load_toml_config_from_path, parse_mapped_listener_urls,
+            load_config_from_file, load_toml_config_from_path,
+            load_toml_config_from_str_with_source, parse_mapped_listener_urls,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -1789,6 +1790,10 @@ pub async fn main() -> ExitCode {
 
     // Verify configurations
     if cli.check_config {
+        if let Err(error) = log::init_console() {
+            eprintln!("Failed to initialize logging: {error}");
+            return ExitCode::FAILURE;
+        }
         if let Err(error) = validate_config(&cli).await {
             log::error!(%error, "Config validation failed");
             return ExitCode::FAILURE;
@@ -1824,7 +1829,7 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
                 .read_to_string(&mut stdin)
                 .await
                 .context("failed to read config from stdin")?;
-            TomlConfigLoader::new_from_str_with_source("stdin", stdin.as_str())?;
+            load_toml_config_from_str_with_source("stdin", stdin.as_str())?;
         } else {
             load_toml_config_from_path(config_file)?;
         };
