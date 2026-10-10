@@ -8,10 +8,7 @@ use std::{
 };
 
 use base64::Engine as _;
-use easytier::{
-    common::config::{ConfigLoader as _, NetworkConfig, TomlConfigLoader},
-    proto::api::manage::CollectNetworkInfoResponse,
-};
+use easytier::{common::config::NetworkConfig, proto::api::manage::CollectNetworkInfoResponse};
 use easytier_core::management::remote_client::{RemoteClientError, RemoteClientManager as _};
 use futures::{StreamExt as _, TryStreamExt as _};
 use rand::{RngCore as _, rngs::OsRng};
@@ -1181,9 +1178,9 @@ fn sync_member_credential_proxy_cidrs(
         .as_ref()
         .map(|config| config.proxy_cidrs.clone())
         .unwrap_or_default();
-    let config = TomlConfigLoader::default();
+    let mut raw = easytier_core::config::InstanceConfigRaw::default();
     for cidr in &proxy_cidrs {
-        easytier_core::config::api_input::add_proxy_network_to_config(cidr, &config)
+        easytier_core::config::api_input::add_proxy_network_to_raw(cidr, &mut raw)
             .map_err(|error| CentralNetworkServiceError::Invalid(error.to_string()))?;
     }
     let credential = intent
@@ -1195,8 +1192,9 @@ fn sync_member_credential_proxy_cidrs(
                 "member credential not found: {credential_id}"
             ))
         })?;
-    credential.grant.allowed_proxy_cidrs = config
-        .get_proxy_cidrs()
+    credential.grant.allowed_proxy_cidrs = raw
+        .proxy_network
+        .unwrap_or_default()
         .into_iter()
         .map(|proxy| proxy.mapped_cidr.unwrap_or(proxy.cidr).to_string())
         .collect();

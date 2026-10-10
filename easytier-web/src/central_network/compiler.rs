@@ -12,8 +12,8 @@ use easytier::{
     },
 };
 use easytier_core::{
-    config::runtime::CoreInstanceRuntimeConfig, connectivity::manual::validate_manual_url,
-    gateway::vpn_portal::validate_clients, instance::CoreInstanceConfig,
+    connectivity::manual::validate_manual_url,
+    gateway::vpn_portal::{PortalRuntimeConfig, validate_clients},
     peers::credential_manager::validate_managed_credential_set,
 };
 use uuid::Uuid;
@@ -170,15 +170,12 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
 }
 
 fn validate_member_config(config: &NetworkConfig) -> anyhow::Result<()> {
-    let normalized = CoreInstanceConfig::from_toml(&config.gen_config()?)?;
-    if let Some(portal) = &normalized.vpn_portal {
-        validate_clients(
-            portal,
-            &CoreInstanceRuntimeConfig {
-                services: normalized.connectivity.runtime,
-                peer: normalized.peer.snapshot.into(),
-            },
-        )?;
+    let instance_config = config.gen_config()?;
+    if let Some(portal) = instance_config.parsed().vpn_portal_config.as_ref() {
+        let portal_runtime = PortalRuntimeConfig {
+            clients: portal.clients.iter().cloned().map(Into::into).collect(),
+        };
+        validate_clients(&portal_runtime, instance_config.parsed())?;
     }
     Ok(())
 }

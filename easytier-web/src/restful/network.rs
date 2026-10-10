@@ -885,7 +885,7 @@ mod tests {
         use std::{future::Future, time::Duration};
 
         use easytier::{
-            common::config::NetworkConfigExt as _, instance::factory::native_instance_manager,
+            common::config::network_config_from_raw, instance::factory::native_instance_manager,
             web_client::WebClient,
         };
         use easytier_core::{
@@ -1118,7 +1118,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         wait_until(|| async {
             core.config(instance_id)
-                .and_then(|config| NetworkConfig::new_from_config(&config).ok())
+                .map(|config| network_config_from_raw(config.raw()))
                 .is_some_and(|config| config.network_name.as_deref() == Some("managed-network"))
         })
         .await;

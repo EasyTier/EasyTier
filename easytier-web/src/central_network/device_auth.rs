@@ -92,7 +92,7 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use easytier::{
-        common::config::{ConfigSource, NetworkConfig, NetworkConfigExt},
+        common::config::{ConfigSource, network_config_from_raw},
         instance::factory::native_instance_manager,
         proto::rpc::standalone::{runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener},
         web_client::WebClient,
@@ -196,7 +196,7 @@ mod tests {
             .unwrap();
         wait_until(|| async {
             core.config(instance_id)
-                .and_then(|config| NetworkConfig::new_from_config(&config).ok())
+                .map(|config| network_config_from_raw(config.raw()))
                 .is_some_and(|config| {
                     config.network_name.as_deref() == Some("local-managed-network")
                 })

@@ -8948,6 +8948,8 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "599b506ccc4aff8cf7844bc42cf783009a434c1e26c964432560fb6d6ad02d82"
 dependencies = [
+ "aes-gcm",
+ "blake2 0.10.6",
  "chacha20poly1305 0.10.1",
  "curve25519-dalek 4.1.3",
  "getrandom 0.3.4",

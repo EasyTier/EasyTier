@@ -181,7 +181,7 @@ level = 123
 "#;
         let config = load_toml_config_from_str_with_source("legacy.toml", input).unwrap();
 
-        assert_eq!(config.get_inst_name(), "legacy-logging");
+        assert_eq!(config.parsed().instance_name, "legacy-logging");
         assert_eq!(
             ignored_logging_sections(input),
             ["file_logger", "console_logger"]

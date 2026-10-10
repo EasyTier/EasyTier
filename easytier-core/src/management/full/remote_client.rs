@@ -60,19 +60,28 @@ where
             let candidate = config
                 .gen_config()
                 .map_err(|e| RemoteClientError::Other(e.to_string()))?;
-            super::config_patch::apply_vpn_portal_client_patches(&candidate, patches.clone())
+            let mut raw = candidate.into_raw();
+            super::config_patch::apply_vpn_portal_client_patches(&mut raw, patches.clone())
                 .map_err(|e| RemoteClientError::Other(e.to_string()))?;
-            let normalized = crate::instance::CoreInstanceConfig::from_toml(&candidate)
+            let candidate = crate::config::InstanceConfig::try_from(raw)
                 .map_err(|e| RemoteClientError::Other(e.to_string()))?;
             // Pending saved clients, addresses and ACL declarations may differ
             // from runtime. Validate the actual saved candidate as well.
-            crate::gateway::vpn_portal::validate_clients(
-                normalized.vpn_portal.as_ref().unwrap(),
-                &super::config_patch::runtime_config_from_normalized(&normalized),
-            )
-            .map_err(|e| RemoteClientError::Other(e.to_string()))?;
-            let updated = NetworkConfig::new_from_config(&candidate)
+            if let Some(vpn_portal_config) = candidate.parsed().vpn_portal_config.as_ref() {
+                let portal_runtime = crate::gateway::vpn_portal::PortalRuntimeConfig {
+                    clients: vpn_portal_config
+                        .clients
+                        .iter()
+                        .map(Into::into)
+                        .collect(),
+                };
+                crate::gateway::vpn_portal::validate_clients(
+                    &portal_runtime,
+                    candidate.parsed(),
+                )
                 .map_err(|e| RemoteClientError::Other(e.to_string()))?;
+            }
+            let updated = crate::config::api_input::network_config_from_raw(candidate.raw());
             // Keep pending saved changes, including the listener and key.
             // Only the requested device changes belong to this operation.
             config.vpn_portal_config.as_mut().unwrap().clients =

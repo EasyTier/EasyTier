@@ -569,6 +569,7 @@ pub fn network_config_from_raw(raw: &InstanceConfigRaw) -> NetworkConfig {
 
     if let Some(vpn_config) = raw.vpn_portal_config.as_ref() {
         result.vpn_portal_config = Some(manage::VpnPortalConfig {
+            enabled: vpn_config.enabled,
             wireguard_listen: vpn_config.wireguard_listen.to_string(),
             wireguard_private_key: vpn_config.wireguard_private_key.clone(),
             clients: vpn_config
@@ -782,21 +783,23 @@ mod tests {
             ..standalone_config()
         };
         let config = input.gen_config().unwrap();
-        let restored = crate::config::toml::TomlConfig::new_from_str(&config.dump()).unwrap();
-        let output = NetworkConfig::new_from_config(&restored).unwrap();
+        let output = network_config_from_raw(config.raw());
         assert_eq!(output.vpn_portal_config, input.vpn_portal_config);
-        assert!(
-            crate::instance::CoreInstanceConfig::from_toml(&restored)
-                .unwrap()
-                .vpn_portal
-                .is_none()
-        );
+        assert!(config.parsed().vpn_portal_config.is_none());
 
-        let mut portal = restored.get_vpn_portal_config().unwrap();
-        portal.enabled = Some(true);
-        restored.set_vpn_portal_config(portal);
-        let runtime = crate::instance::CoreInstanceConfig::from_toml(&restored).unwrap();
-        assert_eq!(runtime.vpn_portal.unwrap().clients[0].name, "alice");
+        let mut raw = config.into_raw();
+        raw.vpn_portal_config.as_mut().unwrap().enabled = Some(true);
+        let restored = InstanceConfig::try_from(raw).unwrap();
+        assert_eq!(
+            restored
+                .parsed()
+                .vpn_portal_config
+                .as_ref()
+                .unwrap()
+                .clients[0]
+                .name,
+            "alice"
+        );
     }
 
     #[test]

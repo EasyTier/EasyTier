@@ -3,9 +3,8 @@ use crate::{
     common::{
         config::{
             add_proxy_network_to_raw, load_config_from_file, load_toml_config_from_path,
-            load_toml_config_from_str_with_source, parse_instance_config,
-            parse_mapped_listener_urls, serialize_raw_to_toml_redacted, ConfigFileControl,
-            ConsoleLoggerConfig, FileLoggerConfig, InstanceConfig, InstanceConfigRaw,
+            load_toml_config_from_str_with_source, parse_mapped_listener_urls,
+            serialize_raw_to_toml_redacted, ConfigFileControl, ConsoleLoggerConfig, FileLoggerConfig, InstanceConfig, InstanceConfigRaw,
             LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
             VpnPortalClientConfig, VpnPortalConfig,
         },
@@ -1505,7 +1504,7 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::config::serialize_raw_to_toml;
+    use crate::common::config::{parse_instance_config, serialize_raw_to_toml};
     use crate::proto::common::CompressionAlgoPb;
 
     #[test]

@@ -301,6 +301,7 @@ mod portable_runtime {
         );
         config.parsed_mut().ipv4 = Some("10.82.0.1/24".parse().unwrap());
         config.parsed_mut().vpn_portal_config = Some(crate::config::toml::VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "0.0.0.0:0".parse().unwrap(),
             wireguard_private_key: None,
             clients: vec![crate::config::toml::VpnPortalClientConfig {

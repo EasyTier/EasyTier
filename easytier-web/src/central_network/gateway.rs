@@ -10,7 +10,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use base64::Engine as _;
 use easytier::{
-    common::config::{ConfigLoader as _, NetworkIdentity, TomlConfigLoader},
+    common::config::{InstanceConfig, InstanceConfigRaw, NetworkIdentity},
     instance::factory::{NativeCoreInstance, create_native_instance},
     tunnel::IpScheme,
 };
@@ -153,29 +153,29 @@ struct NativeGatewayRuntimeFactory;
 
 impl GatewayRuntimeFactory for NativeGatewayRuntimeFactory {
     fn build(&self, spec: &GatewayRuntimeSpec) -> anyhow::Result<Arc<dyn GatewayRuntime>> {
-        let config = TomlConfigLoader::default();
-        config.set_inst_name(format!(
-            "easytier-web-gw-{}-{}",
-            spec.user_id, spec.network_id
-        ));
-        config.set_hostname(Some(hostname_or_default()));
-        config.set_network_identity(NetworkIdentity::new(
-            spec.mesh_name.clone(),
-            spec.network_secret.clone(),
-        ));
-        config.set_dhcp(false);
-        config.set_listeners(vec![]);
+        let mut raw = InstanceConfigRaw {
+            instance_name: Some(format!(
+                "easytier-web-gw-{}-{}",
+                spec.user_id, spec.network_id
+            )),
+            hostname: Some(hostname_or_default()),
+            network_identity: Some(NetworkIdentity::new(
+                spec.mesh_name.clone(),
+                spec.network_secret.clone(),
+            )),
+            dhcp: Some(false),
+            listeners: Some(vec![]),
+            ..Default::default()
+        };
 
-        let mut flags = config.get_flags();
-        flags.no_tun = true;
-        flags.disable_relay_data = !spec.relay_data;
-        flags.bind_device = false;
-        config.set_flags(flags);
+        raw.flags.no_tun = Some(true);
+        raw.flags.disable_relay_data = Some(!spec.relay_data);
+        raw.flags.bind_device = Some(false);
 
         if spec.secure_mode {
             let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
             let public = x25519_dalek::PublicKey::from(&private);
-            config.set_secure_mode(Some(easytier::proto::common::SecureModeConfig {
+            raw.secure_mode = Some(easytier::proto::common::SecureModeConfig {
                 enabled: true,
                 local_private_key: Some(
                     base64::engine::general_purpose::STANDARD.encode(private.as_bytes()),
@@ -183,9 +183,10 @@ impl GatewayRuntimeFactory for NativeGatewayRuntimeFactory {
                 local_public_key: Some(
                     base64::engine::general_purpose::STANDARD.encode(public.as_bytes()),
                 ),
-            }));
+            });
         }
-        config.set_managed_credentials(spec.credentials.clone());
+        raw.managed_credentials = Some(spec.credentials.clone());
+        let config = InstanceConfig::try_from(raw)?;
         Ok(Arc::new(NativeGatewayRuntime(create_native_instance(
             config,
         )?)))

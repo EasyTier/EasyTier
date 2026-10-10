@@ -547,7 +547,7 @@ fn patch_mapped_listeners(
 /// Applies VPN portal client patches to the candidate model. The live
 /// portal is updated by the caller after the candidate commits, so deep
 /// validation runs against the final configuration state.
-fn apply_vpn_portal_client_patches(
+pub(super) fn apply_vpn_portal_client_patches(
     raw: &mut InstanceConfigRaw,
     patches: Vec<VpnPortalClientPatch>,
 ) -> anyhow::Result<()> {
@@ -652,6 +652,7 @@ mod tests {
     fn portal_config() -> InstanceConfigRaw {
         InstanceConfigRaw {
             vpn_portal_config: Some(VpnPortalConfig {
+                enabled: None,
                 wireguard_listen: "0.0.0.0:51820".parse().unwrap(),
                 wireguard_private_key: None,
                 clients: vec![VpnPortalClientConfig {
