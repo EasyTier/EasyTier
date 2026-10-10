@@ -451,6 +451,44 @@ hotpath-alloc = ["hotpath"]
 # For Network Extension on macOS
 macos-ne = []
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ os-name }-{ target-arch }-v{ version }.zip"
+bin-dir = "{ name }-{ os-name }-{ target-arch }/{ bin }{ binary-ext }"
+pkg-fmt = "zip"
+
+# Release names distinguish hard-float ARM builds from their soft-float peers.
+[package.metadata.binstall.overrides.arm-unknown-linux-musleabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-armhf-v{ version }.zip"
+bin-dir = "{ name }-linux-armhf/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.arm-unknown-linux-gnueabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-armhf-v{ version }.zip"
+bin-dir = "{ name }-linux-armhf/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.armv7-unknown-linux-musleabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-armv7hf-v{ version }.zip"
+bin-dir = "{ name }-linux-armv7hf/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.armv7-unknown-linux-gnueabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-armv7hf-v{ version }.zip"
+bin-dir = "{ name }-linux-armv7hf/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.riscv64gc-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-riscv64-v{ version }.zip"
+bin-dir = "{ name }-linux-riscv64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.riscv64gc-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-riscv64-v{ version }.zip"
+bin-dir = "{ name }-linux-riscv64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-windows-arm64-v{ version }.zip"
+bin-dir = "{ name }-windows-arm64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-unknown-freebsd]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-freebsd-13.2-x86_64-v{ version }.zip"
+bin-dir = "{ name }-freebsd-13.2-x86_64/{ bin }{ binary-ext }"
+
 [package.metadata.cargo-machete]
 ignored = [
     # Used by build/main.rs, including the Windows-only thunk setup.
