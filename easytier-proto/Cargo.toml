@@ -22,12 +22,12 @@ bytes = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["serde"], optional = true }
 cidr = { workspace = true, features = ["serde"], optional = true }
 hmac = { workspace = true, optional = true }
-pastey.workspace = true
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 prost-wkt-types = { version = "0.7.2", optional = true }
 pbjson = { version = "0.9.0", optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
+serde-unknown = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 strum = { workspace = true, features = ["derive"], optional = true }
@@ -92,6 +92,7 @@ core = [
     "dep:prost",
     "dep:prost-types",
     "dep:serde",
+    "dep:serde-unknown",
     "dep:serde_json",
     "dep:sha2",
     "dep:strum",
@@ -124,5 +125,6 @@ ignored = [
     "auto_impl",
     "pbjson",
     "serde",
+    "serde-unknown",
     "strum",
 ]

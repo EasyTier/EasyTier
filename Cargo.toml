@@ -76,6 +76,7 @@ rustls = { version = "0.23.45", default-features = false }
 sea-orm = "1.1.20"
 sea-orm-migration = "1.1.20"
 serde = "1.0.229"
+serde-unknown = "0.1.0"
 serde_json = "1.0"
 # See the HMAC constraint above; SHA2 must use the same digest generation.
 sha2 = "0.10.9"

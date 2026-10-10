@@ -1226,6 +1226,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
+name = "castaway"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec551ab6e7578819132c713a93c022a05d60159dc86e7a7050223577484c55a"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1525,6 +1534,19 @@ checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "compact_str"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79fcda08c33bb58b97008b2cdada6622500e949e060f5913361763121abd2416"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "static_assertions",
+ "zmij",
 ]
 
 [[package]]
@@ -2846,7 +2868,6 @@ dependencies = [
  "hmac 0.12.1",
  "indoc",
  "optionize",
- "pastey 0.2.3",
  "pbjson",
  "pbjson-build",
  "proc-macro2",
@@ -2858,6 +2879,7 @@ dependencies = [
  "quote",
  "reqwest",
  "serde",
+ "serde-unknown",
  "serde_json",
  "sha2 0.10.9",
  "strum 0.28.0",
@@ -8495,6 +8517,19 @@ dependencies = [
  "serde_core",
  "smallvec",
  "zmij",
+]
+
+[[package]]
+name = "serde-unknown"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68c196e57ffaab28017203eff28a2d0859ee13843f089e3b9a623555f5f481d3"
+dependencies = [
+ "compact_str",
+ "derive_more",
+ "pastey 0.2.3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
