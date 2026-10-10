@@ -30,6 +30,7 @@ after(async () => {
 
 const uuid = n => ({ part1: 0, part2: 0, part3: 0, part4: n });
 const id = n => `00000000-0000-0000-0000-${n.toString(16).padStart(12, '0')}`;
+const uuidV4Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function fixture() {
     const machines = ['Amsterdam gateway', 'Build server', 'Office workstation', 'Storage node', 'Travel laptop', 'Windows desktop'].map((hostname, i) => ({
@@ -90,12 +91,12 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
             result = { enabled: state.gatewayEnabled, peer_url: 'tcp://192.0.2.1:11010', relay_data: true };
         } else if (path === '/networks') {
             if (method === 'POST') {
-                result = { ...payload.settings, network_id: `created-${state.networks.length}`, network_secret: 'new-secret', member_count: 0, online_member_count: 0 };
+                result = { ...payload.settings, network_id: `created-${state.networks.length}`, network_secret: payload.network_secret ?? 'new-secret', member_count: 0, online_member_count: 0 };
                 state.networks.push(result);
             } else result = { networks: state.networks };
         } else if (/^\/networks\/[^/]+$/.test(path)) {
             const network = state.networks.find(n => n.network_id === path.split('/')[2]);
-            if (method === 'PATCH') Object.assign(network, payload.settings, payload.network_secret ? { network_secret: payload.network_secret } : {});
+            if (method === 'PATCH') Object.assign(network, payload.settings, payload.network_secret !== undefined ? { network_secret: payload.network_secret } : {});
             if (method === 'DELETE') state.networks = state.networks.filter(n => n !== network);
             result = network ?? {};
         } else if (path.endsWith('/acl-policy')) {
@@ -138,6 +139,19 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
 
 async function refresh(page) {
     await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+}
+
+async function waitForNetworkPoll(page, networkId) {
+    const response = await page.waitForResponse(response => response.url().endsWith(`/networks/${networkId}`) && response.request().method() === 'GET');
+    await response.finished();
+    // Let the completed response update Vue before inspecting the form.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function saveNetworkSettings(page, networkId) {
+    const saved = page.waitForResponse(response => response.url().endsWith(`/networks/${networkId}`) && response.request().method() === 'PATCH');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await (await saved).finished();
 }
 
 test('overview uses real counts and recovers from partial refresh failures', async t => {
@@ -227,12 +241,16 @@ test('network creation retains gateway and advanced standalone modes', async t =
     await page.getByRole('button', { name: 'Clear search' }).click();
     await page.getByRole('button', { name: 'Create Network', exact: true }).click();
     await page.getByRole('dialog').getByText('Secure Mode', { exact: true }).waitFor();
+    assert.equal(await page.locator('#create-network-secret').inputValue(), '');
     await page.getByRole('dialog').locator('label[for="create-secure-mode"] + .pi-question-circle').hover();
     await page.getByText('Noise encrypted handshakes with identity verification; enables temporary credentials. Member instances restart on change').waitFor();
     await page.locator('#network-display-name').fill('Research');
     await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/networks/created-*');
     assert.equal(state.writes.find(w => w.path === '/networks')?.payload.settings.networking_method, 'Gateway');
+    assert.equal(Object.hasOwn(state.writes.find(w => w.path === '/networks').payload, 'network_secret'), false);
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    assert.equal(await page.locator('#settings-network-secret').inputValue(), 'new-secret');
     await page.getByRole('button', { name: 'Back to networks' }).click();
     await page.getByRole('button', { name: 'Create Network', exact: true }).click();
     await page.getByRole('dialog').getByRole('button', { name: /Advanced/ }).click();
@@ -242,6 +260,68 @@ test('network creation retains gateway and advanced standalone modes', async t =
     await page.waitForURL('**/networks/created-*');
     assert.equal(state.writes.filter(w => w.path === '/networks').at(-1).payload.settings.networking_method, 'Standalone');
 });
+
+test('network creation preserves manual secrets and resets cancelled drafts', async t => {
+    const { page, state } = await open(t, '/h/networks');
+    const dialog = page.getByRole('dialog');
+    const secret = page.locator('#create-network-secret');
+    await page.getByRole('button', { name: 'Create Network', exact: true }).click();
+    await secret.fill('cancelled draft');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await dialog.waitFor({ state: 'detached' });
+    await page.getByRole('button', { name: 'Create Network', exact: true }).click();
+    assert.equal(await secret.inputValue(), '');
+    const manualSecret = '  shared password  ';
+    await page.locator('#network-display-name').fill('Manual password');
+    await secret.fill(manualSecret);
+    await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.waitForURL('**/networks/created-*');
+    const created = state.networks.at(-1);
+    assert.equal(state.writes.find(write => write.path === '/networks').payload.network_secret, manualSecret);
+    assert.equal(created.network_secret, manualSecret);
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    assert.equal(await page.locator('#settings-network-secret').inputValue(), manualSecret);
+    const fixedSecret = '  fixed replacement  ';
+    await page.locator('#settings-network-secret').fill(fixedSecret);
+    await saveNetworkSettings(page, created.network_id);
+    await page.getByText('Config Saved', { exact: true }).waitFor();
+    assert.equal(state.writes.filter(write => write.method === 'PATCH').at(-1).payload.network_secret, fixedSecret);
+    await page.reload();
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    assert.equal(await page.locator('#settings-network-secret').inputValue(), fixedSecret);
+
+    await page.getByRole('button', { name: 'Back to networks' }).click();
+    await page.getByRole('button', { name: 'Create Network', exact: true }).click();
+    assert.equal(await secret.inputValue(), '');
+    await page.locator('#network-display-name').fill('Whitespace password');
+    await secret.fill('   ');
+    await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.waitForURL('**/networks/created-*');
+    assert.equal(state.writes.filter(write => write.path === '/networks').at(-1).payload.network_secret, '   ');
+});
+
+for (const noRandomUUID of [false, true]) {
+    test(`network creation generates an editable secure secret with randomUUID ${!noRandomUUID}`, async t => {
+        const { page, state } = await open(t, '/h/networks', {}, state => { state.noRandomUUID = noRandomUUID; });
+        await page.getByRole('button', { name: 'Create Network', exact: true }).click();
+        const secret = page.locator('#create-network-secret');
+        await page.getByRole('button', { name: 'Generate network secret', exact: true }).click();
+        const generated = await secret.inputValue();
+        assert.match(generated, uuidV4Pattern);
+        assert.equal(state.writes.length, 0, 'generation only changes the draft');
+        if (noRandomUUID) assert.ok(await page.evaluate(() => window.secureRandomCalls) > 0);
+        await secret.fill('editable generated draft');
+        await page.getByRole('button', { name: 'Generate network secret', exact: true }).click();
+        const submitted = await secret.inputValue();
+        assert.match(submitted, uuidV4Pattern);
+        assert.notEqual(submitted, generated);
+        await page.locator('#network-display-name').fill('Generated password');
+        await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
+        await page.waitForURL('**/networks/created-*');
+        assert.equal(state.writes.find(write => write.path === '/networks').payload.network_secret, submitted);
+        assert.equal(state.networks.at(-1).network_secret, submitted);
+    });
+}
 
 for (const [input, expected] of [
     [' 10.200.0.0 ', '10.200.0.0/24'],
@@ -323,20 +403,26 @@ test('network tabs preserve gateway settings and unsaved input across polling', 
     const { page, state } = await open(t, '/h/networks/network-0');
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     await page.locator('#settings-display-name').fill('Engineering draft');
-    const count = state.requests.filter(r => r.path === '/networks/network-0').length;
-    for (let i = 0; i < 50 && state.requests.filter(r => r.path === '/networks/network-0').length <= count; i++) await delay(100);
-    assert.ok(state.requests.filter(r => r.path === '/networks/network-0').length > count, 'polling continues');
+    await page.locator('#settings-network-secret').fill('  unsaved password  ');
+    state.networks[0].network_secret = 'external password';
+    await waitForNetworkPoll(page, 'network-0');
     assert.equal(await page.locator('#settings-display-name').inputValue(), 'Engineering draft');
+    assert.equal(await page.locator('#settings-network-secret').inputValue(), '  unsaved password  ');
     await page.getByRole('tab', { name: 'Members', exact: true }).click();
     await page.locator('.desktop-list').getByText('Running', { exact: true }).waitFor();
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     assert.equal(await page.locator('#settings-display-name').inputValue(), 'Engineering draft');
-    await page.locator('#regenerate-secret').check();
+    assert.equal(await page.locator('#settings-network-secret').inputValue(), '  unsaved password  ');
+    await page.getByRole('button', { name: 'Regenerate network secret', exact: true }).click();
+    const regenerated = await page.locator('#settings-network-secret').inputValue();
+    assert.match(regenerated, uuidV4Pattern);
+    assert.equal(state.networks[0].network_secret, 'external password', 'regeneration only changes the draft');
+    assert.equal(state.writes.some(write => write.method === 'PATCH'), false);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await page.getByRole('heading', { name: 'Engineering draft' }).waitFor();
     const saved = state.writes.find(w => w.method === 'PATCH');
     assert.equal(saved.payload.settings.networking_method, 'Gateway');
-    assert.match(saved.payload.network_secret, /^[0-9a-f-]{36}$/);
+    assert.equal(saved.payload.network_secret, regenerated);
     await page.getByRole('button', { name: 'Delete Network', exact: true }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: 'Cancel', exact: true }).click();
     assert.equal(state.writes.some(w => w.method === 'DELETE'), false);
@@ -344,6 +430,61 @@ test('network tabs preserve gateway settings and unsaved input across polling', 
     await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/#/h/networks');
     assert.equal(state.networks.length, 2);
+});
+
+test('unchanged secret saves preserve external updates and refresh the form baseline', async t => {
+    const { page, state } = await open(t, '/h/networks/network-0');
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    const secret = page.locator('#settings-network-secret');
+    assert.equal(await secret.inputValue(), 'test-secret');
+    await page.locator('#settings-display-name').fill('Renamed network');
+    await saveNetworkSettings(page, 'network-0');
+    await page.getByRole('heading', { name: 'Renamed network', exact: true }).waitFor();
+    assert.equal(Object.hasOwn(state.writes.filter(write => write.method === 'PATCH').at(-1).payload, 'network_secret'), false);
+
+    state.networks[0].network_secret = 'changed by another client';
+    await waitForNetworkPoll(page, 'network-0');
+    assert.equal(await secret.inputValue(), 'test-secret');
+    // Returning to the form's original value is unchanged, even after polling.
+    await secret.fill('temporary edit');
+    await secret.fill('test-secret');
+    await page.getByRole('tab', { name: 'Members', exact: true }).click();
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    await page.locator('#settings-display-name').fill('External password retained');
+    await saveNetworkSettings(page, 'network-0');
+    await page.getByRole('heading', { name: 'External password retained', exact: true }).waitFor();
+    assert.equal(Object.hasOwn(state.writes.filter(write => write.method === 'PATCH').at(-1).payload, 'network_secret'), false);
+    assert.equal(state.networks[0].network_secret, 'changed by another client');
+    await page.waitForFunction(() => document.querySelector('#settings-network-secret')?.value === 'changed by another client');
+    await saveNetworkSettings(page, 'network-0');
+    assert.equal(Object.hasOwn(state.writes.filter(write => write.method === 'PATCH').at(-1).payload, 'network_secret'), false);
+});
+
+test('failed secret saves keep the draft for retry and allow explicit clearing', async t => {
+    const { page, state } = await open(t, '/h/networks/network-0');
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    const secret = page.locator('#settings-network-secret');
+    const draft = '  retry this password  ';
+    await secret.fill(draft);
+    state.failures.add('/networks/network-0');
+    await saveNetworkSettings(page, 'network-0');
+    await page.getByText('Test unavailable', { exact: true }).waitFor();
+    assert.equal(await secret.inputValue(), draft);
+    assert.equal(state.networks[0].network_secret, 'test-secret');
+    state.failures.clear();
+    await saveNetworkSettings(page, 'network-0');
+    await page.getByText('Config Saved', { exact: true }).waitFor();
+    assert.deepEqual(state.writes.filter(write => write.method === 'PATCH').map(write => write.payload.network_secret), [draft, draft]);
+    assert.equal(state.networks[0].network_secret, draft);
+    assert.equal(await secret.inputValue(), draft);
+
+    await secret.fill('');
+    await saveNetworkSettings(page, 'network-0');
+    assert.equal(state.writes.filter(write => write.method === 'PATCH').at(-1).payload.network_secret, '');
+    assert.equal(state.networks[0].network_secret, '');
+    await page.reload();
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    assert.equal(await secret.inputValue(), '');
 });
 
 test('ACL rules and network secrets use secure randomness without randomUUID', async t => {
@@ -367,12 +508,15 @@ test('ACL rules and network secrets use secure randomness without randomUUID', a
 
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     const randomCalls = await page.evaluate(() => window.secureRandomCalls);
-    await page.locator('#regenerate-secret').check();
+    await page.getByRole('button', { name: 'Regenerate network secret', exact: true }).click();
+    const regenerated = await page.locator('#settings-network-secret').inputValue();
+    assert.match(regenerated, uuidV4Pattern);
+    assert.equal(state.networks[0].network_secret, 'test-secret');
+    assert.ok(await page.evaluate(() => window.secureRandomCalls) > randomCalls);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await page.getByText('Config Saved', { exact: true }).waitFor();
     const saved = state.writes.find(write => write.method === 'PATCH');
-    assert.match(saved.payload.network_secret, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-    assert.ok(await page.evaluate(() => window.secureRandomCalls) > randomCalls);
+    assert.equal(saved.payload.network_secret, regenerated);
 });
 
 test('a late member configuration response cannot overwrite the next member', async t => {
@@ -678,13 +822,20 @@ test('responsive layouts, localization, dark mode and mobile drawer', async t =>
         for (const width of [1440, 1024, 390]) {
             await page.setViewportSize({ width, height: 960 });
             for (const language of ['en', 'cn']) {
-                for (const [name, route] of [['overview', '/h'], ['devices', '/h/deviceList'], ['networks', '/h/networks'], ['members', '/h/networks/network-0']]) {
+                for (const [name, route] of [['overview', '/h'], ['devices', '/h/deviceList'], ['networks', '/h/networks'], ['members', '/h/networks/network-0'], ['create-network', '/h/networks'], ['network-settings', '/h/networks/network-0']]) {
                     await page.goto(`${base}/#${route}`);
                     await page.locator('.console-page').waitFor();
                     if (await page.evaluate(() => localStorage.getItem('lang')) !== language) {
                         await page.getByRole('button', { name: /Switch language|切换语言/ }).click();
                     }
                     await page.locator('.p-skeleton').first().waitFor({ state: 'detached' });
+                    if (name === 'create-network') {
+                        await page.getByRole('button', { name: language === 'en' ? 'Create Network' : '创建网络', exact: true }).click();
+                        await page.locator('#create-network-secret').waitFor();
+                    } else if (name === 'network-settings') {
+                        await page.getByRole('tab', { name: language === 'en' ? 'Settings' : '网络设置', exact: true }).click();
+                        await page.locator('#settings-network-secret').waitFor();
+                    }
                     assert.equal(await page.locator('.web-console').evaluate(el => getComputedStyle(el).backgroundColor), colorScheme === 'light' ? 'rgb(247, 248, 249)' : 'rgb(16, 23, 30)');
                     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${name} ${width} ${colorScheme} must not overflow`);
                     if (screenshotDir) await page.screenshot({ path: `${screenshotDir}/${name}-${language}-${colorScheme}-${width}.png`, fullPage: true, animations: 'disabled' });
