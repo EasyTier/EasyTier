@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Context as _;
 use log::{Level, LevelFilter, Metadata as LogMetadata, Record as LogRecord};
-use paste::paste;
+use pastey::paste;
 use tracing::{
     Event,
     field::{Field, Visit},
