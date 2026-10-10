@@ -7,8 +7,8 @@
 // all the clients will exit and let the easytier instance to launch a new server instance.
 
 use super::{
-    MAGIC_DNS_INSTANCE_SOCKET_ADDR,
     config::{GeneralConfigBuilder, RunConfigBuilder},
+    endpoint::{MAGIC_DNS_BIND_ADDR, MagicDnsServerLease},
     server::Server,
     system_config::{OSConfig, SystemConfig},
 };
@@ -41,6 +41,7 @@ use easytier_core::gateway::magic_dns::{
     MagicDnsRoute,
 };
 use easytier_core::instance::CorePacketPlane;
+use easytier_core::socket::SocketListener;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
@@ -330,6 +331,8 @@ impl RpcServerHook for MagicDnsServerInstanceData {
 
 pub struct MagicDnsServerInstance {
     _rpc_server: StandAloneServer<RuntimeRpcListener>,
+    _server_lease: MagicDnsServerLease,
+    endpoint: url::Url,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     packet_filter: MagicDnsResolverRegistration,
     tun_inet: Ipv4Inet,
@@ -362,10 +365,15 @@ impl MagicDnsServerInstance {
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
-    ) -> Result<Self, anyhow::Error> {
-        let tcp_listener = runtime_rpc_listener(MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse()?);
+    ) -> Result<Option<Self>, anyhow::Error> {
+        let Some(mut server_lease) = MagicDnsServerLease::try_acquire()? else {
+            return Ok(None);
+        };
+
+        let mut tcp_listener = runtime_rpc_listener(MAGIC_DNS_BIND_ADDR.parse()?);
+        tcp_listener.listen().await?;
+        let endpoint = tcp_listener.local_url();
         let mut rpc_server = StandAloneServer::new(tcp_listener);
-        rpc_server.serve().await?;
 
         let dns_config = RunConfigBuilder::default()
             .general(GeneralConfigBuilder::default().build()?)
@@ -410,6 +418,11 @@ impl MagicDnsServerInstance {
             .await
             .context("Failed to initialize DNS zone")?;
 
+        rpc_server.serve().await?;
+        server_lease
+            .publish(&endpoint)
+            .context("Failed to publish Magic DNS RPC endpoint")?;
+
         let data_clone = data.clone();
         tokio::task::spawn_blocking(move || data_clone.do_system_config(&tld_dns_zone_clone))
             .await
@@ -422,12 +435,18 @@ impl MagicDnsServerInstance {
             .register_magic_dns_resolver(fake_ip, data.clone())
             .await;
 
-        Ok(Self {
+        Ok(Some(Self {
             _rpc_server: rpc_server,
+            _server_lease: server_lease,
+            endpoint,
             data,
             packet_filter,
             tun_inet,
-        })
+        }))
+    }
+
+    pub(crate) fn endpoint(&self) -> &url::Url {
+        &self.endpoint
     }
 
     pub async fn clean_env(&self) {
