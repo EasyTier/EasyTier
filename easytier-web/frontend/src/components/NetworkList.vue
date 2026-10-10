@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { v4 as uuidv4 } from 'uuid';
-import { Button, Column, DataTable, Dialog, InputSwitch, InputText, Message, Password, Skeleton, Tag, useToast } from 'primevue';
+import { Button, Checkbox, Column, DataTable, Dialog, InputSwitch, InputText, Message, Password, Skeleton, Tag, useToast } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { UrlListInput, Utils } from 'easytier-frontend-lib';
@@ -57,6 +57,7 @@ const creating = ref(false);
 const createForm = ref({
     display_name: '',
     network_secret: '',
+    no_password: false,
     virtual_cidr: '',
     secure_mode: false,
 });
@@ -102,6 +103,7 @@ const openCreate = () => {
     createForm.value = {
         display_name: '',
         network_secret: '',
+        no_password: false,
         virtual_cidr: '',
         // The built-in gateway speaks the Noise handshake; third-party
         // peers of advanced networking may not, so secure mode defaults on
@@ -140,7 +142,9 @@ const createNetwork = async () => {
                 secure_mode: createForm.value.secure_mode,
             };
         }
-        const detail = await api?.create_network(settings, createForm.value.network_secret || undefined);
+        const trimmedSecret = createForm.value.network_secret.trim();
+        const networkSecret = createForm.value.no_password ? '' : (trimmedSecret || undefined);
+        const detail = await api?.create_network(settings, networkSecret);
         createVisible.value = false;
         await loadNetworks();
         if (detail) {
@@ -221,12 +225,17 @@ const openNetwork = (network: CentralNetworkSummary) => {
                     <div class="flex flex-col sm:flex-row gap-2">
                         <Password inputId="create-network-secret" v-model="createForm.network_secret"
                             :placeholder="t('web.network_list.network_secret_placeholder')"
-                            toggleMask :feedback="false" fluid class="flex-1 min-w-0" :disabled="creating"
+                            toggleMask :feedback="false" fluid class="flex-1 min-w-0" :disabled="creating || createForm.no_password"
                             :inputProps="{ autocomplete: 'new-password', 'aria-describedby': 'create-network-secret-hint' }" />
                         <Button :label="t('web.network_list.generate_secret')" icon="pi pi-refresh"
-                            severity="secondary" outlined :disabled="creating"
+                            severity="secondary" outlined :disabled="creating || createForm.no_password"
                             @click="createForm.network_secret = uuidv4()" />
                     </div>
+                    <div class="flex items-center gap-2">
+                        <Checkbox inputId="create-no-password" v-model="createForm.no_password" :binary="true" :disabled="creating" />
+                        <label for="create-no-password" class="text-sm">{{ t('web.network_list.no_password') }}</label>
+                    </div>
+                    <small v-if="createForm.no_password" class="text-500">{{ t('web.network_list.no_password_hint') }}</small>
                 </div>
                 <div class="flex flex-col gap-1">
                     <div class="flex items-center">

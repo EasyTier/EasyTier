@@ -512,6 +512,8 @@ web:
     peer_urls_placeholder: 每行一个节点地址，例如 tcp://10.0.0.1:11010
     generate_secret: 自动生成
     network_secret_placeholder: 留空则自动生成
+    no_password: 不使用密码
+    no_password_hint: 禁用密码保护，成员无需密码即可加入网络
     create_hint: 可手动输入固定密码或自动生成；留空将在创建时自动生成，创建后可在网络设置中修改
     gateway_mode: 接入点
     gateway_hint: 成员将通过本控制台的内置接入点自动组网（发现与打洞辅助，默认不中继数据）
@@ -541,6 +543,8 @@ web:
     static_ip_hint: 留空使用 DHCP；指定后该成员固定使用此 IP（/24）
     settings: 网络设置
     regenerate_secret: 重新生成网络密码
+    no_password: 不使用密码
+    no_password_hint: 禁用密码保护，成员无需密码即可加入网络
     network_secret_hint: 可手动输入固定密码或重新生成，保存后应用到成员配置
     danger_zone: 危险操作
     delete: 删除网络

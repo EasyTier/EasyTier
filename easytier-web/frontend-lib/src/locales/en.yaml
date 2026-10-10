@@ -512,6 +512,8 @@ web:
     peer_urls_placeholder: One peer URL per line, e.g. tcp://10.0.0.1:11010
     generate_secret: Generate network secret
     network_secret_placeholder: Leave empty to generate automatically
+    no_password: No password
+    no_password_hint: Disable password protection; members can join without a password
     create_hint: Enter a fixed network secret or generate one automatically. An empty field generates a secret on creation. You can change it later in network settings
     gateway_mode: Gateway
     gateway_hint: Members are meshed automatically through this console's built-in gateway (discovery and hole-punch assistance, no data relay by default)
@@ -541,6 +543,8 @@ web:
     static_ip_hint: Leave empty for DHCP; a fixed IP (/24) is assigned when set
     settings: Network Settings
     regenerate_secret: Regenerate network secret
+    no_password: No password
+    no_password_hint: Disable password protection; members can join without a password
     network_secret_hint: Enter a fixed secret or generate a new one. Changes apply to member configs after saving
     danger_zone: Danger Zone
     delete: Delete Network

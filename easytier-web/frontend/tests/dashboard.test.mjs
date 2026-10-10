@@ -277,18 +277,18 @@ test('network creation preserves manual secrets and resets cancelled drafts', as
     await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/networks/created-*');
     const created = state.networks.at(-1);
-    assert.equal(state.writes.find(write => write.path === '/networks').payload.network_secret, manualSecret);
-    assert.equal(created.network_secret, manualSecret);
+    assert.equal(state.writes.find(write => write.path === '/networks').payload.network_secret, manualSecret.trim());
+    assert.equal(created.network_secret, manualSecret.trim());
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
-    assert.equal(await page.locator('#settings-network-secret').inputValue(), manualSecret);
+    assert.equal(await page.locator('#settings-network-secret').inputValue(), manualSecret.trim());
     const fixedSecret = '  fixed replacement  ';
     await page.locator('#settings-network-secret').fill(fixedSecret);
     await saveNetworkSettings(page, created.network_id);
     await page.getByText('Config Saved', { exact: true }).waitFor();
-    assert.equal(state.writes.filter(write => write.method === 'PATCH').at(-1).payload.network_secret, fixedSecret);
+    assert.equal(state.writes.filter(write => write.method === 'PATCH').at(-1).payload.network_secret, fixedSecret.trim());
     await page.reload();
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
-    assert.equal(await page.locator('#settings-network-secret').inputValue(), fixedSecret);
+    assert.equal(await page.locator('#settings-network-secret').inputValue(), fixedSecret.trim());
 
     await page.getByRole('button', { name: 'Back to networks' }).click();
     await page.getByRole('button', { name: 'Create Network', exact: true }).click();
@@ -297,7 +297,7 @@ test('network creation preserves manual secrets and resets cancelled drafts', as
     await secret.fill('   ');
     await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/networks/created-*');
-    assert.equal(state.writes.filter(write => write.path === '/networks').at(-1).payload.network_secret, '   ');
+    assert.equal(Object.hasOwn(state.writes.filter(write => write.path === '/networks').at(-1).payload, 'network_secret'), false, 'whitespace-only secret is trimmed to auto-generate');
 });
 
 for (const noRandomUUID of [false, true]) {
@@ -469,14 +469,14 @@ test('failed secret saves keep the draft for retry and allow explicit clearing',
     state.failures.add('/networks/network-0');
     await saveNetworkSettings(page, 'network-0');
     await page.getByText('Test unavailable', { exact: true }).waitFor();
-    assert.equal(await secret.inputValue(), draft);
+    assert.equal(await secret.inputValue(), draft.trim());
     assert.equal(state.networks[0].network_secret, 'test-secret');
     state.failures.clear();
     await saveNetworkSettings(page, 'network-0');
     await page.getByText('Config Saved', { exact: true }).waitFor();
-    assert.deepEqual(state.writes.filter(write => write.method === 'PATCH').map(write => write.payload.network_secret), [draft, draft]);
-    assert.equal(state.networks[0].network_secret, draft);
-    assert.equal(await secret.inputValue(), draft);
+    assert.deepEqual(state.writes.filter(write => write.method === 'PATCH').map(write => write.payload.network_secret), [draft.trim(), draft.trim()]);
+    assert.equal(state.networks[0].network_secret, draft.trim());
+    assert.equal(await secret.inputValue(), draft.trim());
 
     await secret.fill('');
     await saveNetworkSettings(page, 'network-0');
@@ -485,6 +485,37 @@ test('failed secret saves keep the draft for retry and allow explicit clearing',
     await page.reload();
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     assert.equal(await secret.inputValue(), '');
+});
+
+test('create network with no password and toggle it back in settings', async t => {
+    const { page, state } = await open(t, '/h/networks');
+    await page.getByRole('button', { name: 'Create Network', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    const secret = page.locator('#create-network-secret');
+    await page.locator('#network-display-name').fill('Open Network');
+    await page.getByLabel('No password').check();
+    assert.ok(await secret.isDisabled(), 'secret input is disabled when no-password is checked');
+    await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.waitForURL('**/networks/created-*');
+    assert.equal(state.writes.filter(write => write.path === '/networks').at(-1).payload.network_secret, '');
+    assert.equal(state.networks.at(-1).network_secret, '');
+
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    const settingsSecret = page.locator('#settings-network-secret');
+    assert.ok(await page.getByLabel('No password').isChecked(), 'no-password checkbox reflects the current state');
+    assert.ok(await settingsSecret.isDisabled());
+
+    await page.getByLabel('No password').uncheck();
+    assert.ok(await settingsSecret.isEnabled(), 'secret input is re-enabled when no-password is unchecked');
+    await page.getByRole('button', { name: 'Regenerate network secret', exact: true }).click();
+    const regenerated = await settingsSecret.inputValue();
+    assert.match(regenerated, uuidV4Pattern);
+    await saveNetworkSettings(page, state.networks.at(-1).network_id);
+    await page.getByText('Config Saved', { exact: true }).waitFor();
+    assert.equal(state.writes.filter(write => write.method === 'PATCH').at(-1).payload.network_secret, regenerated);
+    assert.equal(state.networks.at(-1).network_secret, regenerated);
+    assert.equal(await settingsSecret.inputValue(), regenerated);
+    assert.equal(await page.getByLabel('No password').isChecked(), false);
 });
 
 test('ACL rules and network secrets use secure randomness without randomUUID', async t => {
