@@ -126,7 +126,7 @@ impl Net {
     }
     pub fn get_port(&self) -> u16 {
         self.from_port
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
                 Some(if x > 60000 { 10000 } else { x + 1 })
             })
             .unwrap()
@@ -186,5 +186,38 @@ fn socket_addr_to_endpoint(addr: SocketAddr) -> smoltcp::wire::IpEndpoint {
 impl Drop for Net {
     fn drop(&mut self) {
         self.stopper.notify_waiters()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::{phy::Medium, wire::HardwareAddress};
+
+    #[allow(clippy::unused_async)]
+    #[tokio::test]
+    async fn port_allocation_returns_previous_value_and_wraps() {
+        let mut capabilities = device::DeviceCapabilities::default();
+        capabilities.medium = Medium::Ip;
+        capabilities.max_transmission_unit = 1280;
+        let (device, _ingress, _egress) = channel_device::ChannelDevice::new(capabilities);
+        let net = Net::new(
+            device,
+            NetConfig::new(
+                Config::new(HardwareAddress::Ip),
+                "10.126.126.1/24".parse().unwrap(),
+                Vec::new(),
+                None,
+            ),
+        );
+
+        assert_eq!(net.get_port(), 10001);
+        assert_eq!(net.get_port(), 10002);
+
+        net.from_port.store(60000, Ordering::SeqCst);
+        assert_eq!(net.get_port(), 60000);
+        assert_eq!(net.get_port(), 60001);
+        assert_eq!(net.get_port(), 10000);
+        assert_eq!(net.get_port(), 10001);
     }
 }
