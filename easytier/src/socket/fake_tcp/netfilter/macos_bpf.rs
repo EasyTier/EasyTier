@@ -232,7 +232,7 @@ fn iowr<T>(group: u8, num: u8) -> libc::c_ulong {
 }
 
 unsafe fn ioctl_ptr<T>(fd: libc::c_int, req: libc::c_ulong, arg: *mut T) -> io::Result<()> {
-    let ret = libc::ioctl(fd, req, arg);
+    let ret = unsafe { libc::ioctl(fd, req, arg) };
     if ret < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -240,7 +240,7 @@ unsafe fn ioctl_ptr<T>(fd: libc::c_int, req: libc::c_ulong, arg: *mut T) -> io::
 }
 
 unsafe fn ioctl_void(fd: libc::c_int, req: libc::c_ulong) -> io::Result<()> {
-    let ret = libc::ioctl(fd, req);
+    let ret = unsafe { libc::ioctl(fd, req) };
     if ret < 0 {
         return Err(io::Error::last_os_error());
     }
