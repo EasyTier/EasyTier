@@ -1142,9 +1142,10 @@ mod tests {
     #[test]
     fn duplicate_instance_ids_report_distinct_sorted_peers() {
         let node = identity_node(1, INSTANCE_A);
+        let uppercase_instance_b = "11223344-5566-7788-99AA-BBCCDDEEFF00";
         let mut routes = vec![
             identity_route(9, INSTANCE_B),
-            identity_route(2, &INSTANCE_B.to_ascii_uppercase()),
+            identity_route(2, uppercase_instance_b),
             identity_route(9, INSTANCE_B),
         ];
         let warnings = duplicate_instance_warnings(&node, &routes);
@@ -1153,6 +1154,36 @@ mod tests {
         assert!(warnings[0].contains("peer IDs [2, 9]"));
         routes.reverse();
         assert_eq!(warnings, duplicate_instance_warnings(&node, &routes));
+    }
+
+    #[test]
+    fn remote_identity_comes_from_routes_with_or_without_peer_connections() {
+        let node = identity_node(1, INSTANCE_A);
+        let mut pairs = list_peer_route_pair(
+            vec![PeerInfo {
+                peer_id: 2,
+                ..Default::default()
+            }],
+            vec![
+                identity_route(2, INSTANCE_B).route.unwrap(),
+                identity_route(9, INSTANCE_B).route.unwrap(),
+            ],
+        );
+        assert!(pairs.iter().any(|pair| pair.peer.is_some()));
+        assert!(pairs.iter().any(|pair| pair.peer.is_none()));
+        let warnings = duplicate_instance_warnings(&node, &pairs);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("peer IDs [2, 9]"));
+
+        // A peer-only record has no instance ID to compare.
+        pairs.push(PeerRoutePair {
+            route: None,
+            peer: Some(PeerInfo {
+                peer_id: 42,
+                ..Default::default()
+            }),
+        });
+        assert_eq!(warnings, duplicate_instance_warnings(&node, &pairs));
     }
 
     #[test]
@@ -1214,6 +1245,7 @@ fn duplicate_instance_warnings(node_info: &NodeInfo, peer_routes: &[PeerRoutePai
     let identities = std::iter::once((node_info.inst_id.as_str(), node_info.peer_id)).chain(
         peer_routes
             .iter()
+            // PeerInfo has connection metadata but no instance ID; routes carry remote identity.
             .filter_map(|pair| pair.route.as_ref())
             .map(|route| (route.inst_id.as_str(), route.peer_id)),
     );
