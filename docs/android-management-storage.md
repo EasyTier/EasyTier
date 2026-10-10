@@ -94,6 +94,13 @@ state is **not** proof that Android has attached a TUN. Native VPN reconciliatio
 still belongs to the existing UI path. The generic `RemoteClientManager` mutation
 defaults are not used by these application commands; other consumers are unchanged.
 
+VPN synchronization queries capture both the current reconciliation generation and
+a sync request sequence. Late native-status/config/running-ID results are discarded
+if a newer start, stop, update or sync has superseded them. In particular, an empty
+running-ID list sampled between replacing A and starting B cannot later stop B.
+Stop notifications remain available for genuine stops and failed replacements;
+only obsolete observations are ignored, not the stop notification itself.
+
 ## Follow-up boundaries
 
 Still required by #2538:
@@ -105,9 +112,9 @@ Still required by #2538:
 4. Explicit recovery policy (including permission, locked-device and unsupported
    backend handling); never treat Android force-stop as self-recoverable.
 
-This PR deliberately leaves the UI-backed VPN reconciliation, tile cold-start
-behavior and foreground-service lifecycle unchanged. The snapshot repository
-serializes persistence updates; it is not a lifecycle serializer.
+This PR keeps VPN reconciliation UI-backed (with stale-query protection), and leaves
+tile cold-start behavior and foreground-service lifecycle unchanged. The snapshot
+repository serializes persistence updates; it is not a lifecycle serializer.
 
 ## Validation
 
@@ -128,6 +135,8 @@ serializes persistence updates; it is not a lifecycle serializer.
   identifiers remain unchanged. This is a contract test, not a native bridge smoke test.
 - Frontend tests cover native-first loading, migration/deletion ordering, retries,
   corrupt data, preference write ordering, and the existing mobile VPN/tile tests.
+  Delayed-response tests cover a stale empty running-ID list during replacement,
+  a late native-status reply, overlapping syncs, and normal/failed-replacement stops.
 - Before release, device-test upgrading a configured installation, process restart,
   managed configuration updates, selection persistence, remote-mode UI operation,
   and storage failure handling. Check that the legacy Android localStorage keys

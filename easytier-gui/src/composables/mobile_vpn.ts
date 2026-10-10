@@ -28,6 +28,7 @@ const VPN_RECONCILE_MAX_ATTEMPTS = 60
 let desiredVpnInstanceId: string | undefined
 let activeVpnInstanceId: string | undefined
 let vpnReconcileGeneration = 0
+let vpnSyncGeneration = 0
 let vpnReconcileAttempts = 0
 let vpnReconcileQueue: Promise<void> = Promise.resolve()
 let vpnPermissionRequest: Promise<boolean> | null = null
@@ -537,8 +538,22 @@ export async function prepareVpnService(instanceId: string) {
 }
 
 export async function syncMobileVpnService() {
-  syncVpnStatusFromNative(await get_vpn_status())
+  // A stop/reconnect notification can query the gap between replacing A and
+  // starting B. Neither a late native status nor a late empty running-ID list
+  // may create a new reconciliation generation that cancels B's newer work.
+  const generation = vpnReconcileGeneration
+  const syncGeneration = ++vpnSyncGeneration
+  const isCurrent = () => generation === vpnReconcileGeneration && syncGeneration === vpnSyncGeneration
+  const status = await get_vpn_status()
+  if (!isCurrent())
+    return
+
   const instanceId = await findRunningTunInstanceId()
+  if (!isCurrent())
+    return
+
+  // Apply the observation only after all asynchronous queries are still current.
+  syncVpnStatusFromNative(status)
   if (instanceId) {
     console.log('vpn service sync selected instance', instanceId)
     await onNetworkInstanceChange(instanceId)
