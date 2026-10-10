@@ -395,6 +395,15 @@ mod tests {
     fn named_wireguard_keys_are_stable_and_client_scoped() {
         let master = [7; 32];
         let client = derive_named_key(&master, b"wireguard-client", "laptop").unwrap();
+        // Pin the derived key across crypto dependency upgrades/downgrades.
+        // Independently calculated with RFC 5869 HKDF-SHA256.
+        assert_eq!(
+            client,
+            [
+                5, 98, 244, 32, 245, 111, 41, 24, 163, 149, 201, 218, 22, 228, 8, 224, 134, 16,
+                173, 29, 62, 138, 202, 41, 172, 230, 189, 237, 207, 100, 51, 236,
+            ]
+        );
         assert_eq!(
             client,
             derive_named_key(&master, b"wireguard-client", "laptop").unwrap()
@@ -409,6 +418,7 @@ mod tests {
     fn explicit_server_key_is_the_derivation_master() {
         let key = [9; 32];
         let config = VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "127.0.0.1:51820".parse().unwrap(),
             wireguard_private_key: Some(BASE64_STANDARD.encode(key)),
             clients: Vec::new(),
@@ -419,6 +429,7 @@ mod tests {
     #[test]
     fn portal_key_has_no_network_secret_fallback() {
         let config = VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "127.0.0.1:51820".parse().unwrap(),
             wireguard_private_key: None,
             clients: Vec::new(),

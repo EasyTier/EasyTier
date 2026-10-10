@@ -1565,21 +1565,19 @@ impl PeerManagerCore {
     pub async fn add_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        self.peer_connection_admission
-            .add_client_tunnel(tunnel, is_directly_connected)
+        self.add_client_tunnel_with_peer_id_hint(tunnel, PeerConnectionOrigin::Manual, None)
             .await
     }
 
-    pub async fn add_client_tunnel_with_peer_id_hint(
+    pub(crate) async fn add_client_tunnel_with_peer_id_hint(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
+        origin: PeerConnectionOrigin,
         peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error> {
         self.peer_connection_admission
-            .add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, peer_id_hint)
+            .add_client_tunnel_with_peer_id_hint(tunnel, origin, peer_id_hint)
             .await
     }
 
@@ -1587,18 +1585,23 @@ impl PeerManagerCore {
         &self,
         tunnel: Box<dyn Tunnel>,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        self.peer_connection_admission
-            .add_client_tunnel_with_origin(tunnel, true, None, PeerConnectionOrigin::Attached)
+        self.add_client_tunnel_with_peer_id_hint(tunnel, PeerConnectionOrigin::Attached, None)
             .await
     }
 
-    pub async fn add_tunnel_as_server(
+    pub async fn add_tunnel_as_server(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+        self.add_tunnel_as_server_with_origin(tunnel, PeerConnectionOrigin::Listener)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn add_tunnel_as_server_with_origin(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(), Error> {
+        origin: PeerConnectionOrigin,
+    ) -> Result<(PeerId, PeerConnId), Error> {
         self.peer_connection_admission
-            .add_tunnel_as_server(tunnel, is_directly_connected)
+            .add_tunnel_as_server_with_origin(tunnel, origin)
             .await
     }
 
@@ -1606,8 +1609,7 @@ impl PeerManagerCore {
         &self,
         tunnel: Box<dyn Tunnel>,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        self.peer_connection_admission
-            .add_tunnel_as_server_with_origin(tunnel, true, PeerConnectionOrigin::Attached)
+        self.add_tunnel_as_server_with_origin(tunnel, PeerConnectionOrigin::Attached)
             .await
     }
 
@@ -1958,36 +1960,11 @@ impl PeerConnectionAdmission {
         }
     }
 
-    pub async fn add_client_tunnel(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(PeerId, PeerConnId), Error> {
-        self.add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, None)
-            .await
-    }
-
     pub async fn add_client_tunnel_with_peer_id_hint(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-        peer_id_hint: Option<PeerId>,
-    ) -> Result<(PeerId, PeerConnId), Error> {
-        self.add_client_tunnel_with_origin(
-            tunnel,
-            is_directly_connected,
-            peer_id_hint,
-            PeerConnectionOrigin::Network,
-        )
-        .await
-    }
-
-    async fn add_client_tunnel_with_origin(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-        peer_id_hint: Option<PeerId>,
         origin: PeerConnectionOrigin,
+        peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error> {
         let mut peer = PeerConn::new_with_peer_id_hint_and_origin(
             self.my_peer_id,
@@ -1997,7 +1974,6 @@ impl PeerConnectionAdmission {
             self.peer_session_store.clone(),
             origin,
         );
-        peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
@@ -2036,24 +2012,9 @@ impl PeerConnectionAdmission {
     }
 
     #[tracing::instrument(ret, skip(self, tunnel))]
-    pub async fn add_tunnel_as_server(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(), Error> {
-        self.add_tunnel_as_server_with_origin(
-            tunnel,
-            is_directly_connected,
-            PeerConnectionOrigin::Network,
-        )
-        .await
-        .map(|_| ())
-    }
-
     async fn add_tunnel_as_server_with_origin(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
         origin: PeerConnectionOrigin,
     ) -> Result<(PeerId, PeerConnId), Error> {
         tracing::info!("add tunnel as server start");
@@ -2137,8 +2098,6 @@ impl PeerConnectionAdmission {
                 "private mode is turned on, foreign network secret mismatch".to_string(),
             ));
         }
-
-        conn.set_is_hole_punched(!is_directly_connected);
 
         let add_peer_ret = if is_local_network {
             let local_secure_mode = self
@@ -4424,19 +4383,27 @@ mod tests {
     #[test]
     fn forged_attached_source_header_does_not_bypass_relay_disable() {
         let packet = data_packet(77, 3);
-        let network_ingress = PeerPacketIngress::Peer {
-            peer_id: 2,
-            conn_id: PeerConnId::new_v4(),
-            origin: PeerConnectionOrigin::Network,
-        };
+        for origin in [
+            PeerConnectionOrigin::Manual,
+            PeerConnectionOrigin::Direct,
+            PeerConnectionOrigin::Listener,
+            PeerConnectionOrigin::TcpHolePunch,
+            PeerConnectionOrigin::UdpHolePunch,
+        ] {
+            let network_ingress = PeerPacketIngress::Peer {
+                peer_id: 2,
+                conn_id: PeerConnId::new_v4(),
+                origin,
+            };
 
-        assert!(should_drop_relay_data(
-            true,
-            &packet,
-            1,
-            network_ingress,
-            false,
-        ));
+            assert!(should_drop_relay_data(
+                true,
+                &packet,
+                1,
+                network_ingress,
+                false,
+            ));
+        }
     }
 
     #[test]
@@ -4450,7 +4417,7 @@ mod tests {
         let network_ingress = PeerPacketIngress::Peer {
             peer_id: 2,
             conn_id: PeerConnId::new_v4(),
-            origin: PeerConnectionOrigin::Network,
+            origin: PeerConnectionOrigin::Listener,
         };
 
         assert!(!should_drop_relay_data(

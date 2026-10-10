@@ -5,7 +5,8 @@ use crate::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
             LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
             VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_config,
-            load_config_from_file, load_toml_config_from_path, parse_mapped_listener_urls,
+            load_config_from_file, load_toml_config_from_path,
+            load_toml_config_from_str_with_source, parse_mapped_listener_urls,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -103,6 +104,13 @@ struct Cli {
         help = t!("core_clap.machine_id").to_string()
     )]
     machine_id: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_STATE_DIR",
+        help = t!("core_clap.state_dir").to_string()
+    )]
+    state_dir: Option<PathBuf>,
 
     #[arg(
         short,
@@ -789,6 +797,11 @@ impl NetworkOptions {
                 .vpn_portal_private_key
                 .clone()
                 .or_else(|| existing.as_ref()?.wireguard_private_key.clone());
+            let enabled = if self.vpn_portal.is_some() {
+                Some(true)
+            } else {
+                existing.as_ref().and_then(|portal| portal.enabled)
+            };
             let clients = if self.vpn_portal_clients.is_empty() {
                 existing.map_or_else(Vec::new, |portal| portal.clients)
             } else {
@@ -796,6 +809,7 @@ impl NetworkOptions {
             };
 
             cfg.set_vpn_portal_config(VpnPortalConfig {
+                enabled,
                 wireguard_listen,
                 wireguard_private_key,
                 clients,
@@ -1200,7 +1214,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             config_server_url_s,
             crate::common::MachineIdOptions {
                 explicit_machine_id: cli.machine_id.clone(),
-                state_dir: None,
+                state_dir: cli.state_dir.clone(),
             },
             cli.network_options.hostname.clone(),
             cli.network_options.secure_mode.unwrap_or(false),
@@ -1397,6 +1411,7 @@ pub async fn main() -> ExitCode {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
     setup_panic_handler();
+    crate::utils::init_crypto_provider();
 
     #[cfg(target_os = "windows")]
     match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {
@@ -1445,6 +1460,10 @@ pub async fn main() -> ExitCode {
 
     // Verify configurations
     if cli.check_config {
+        if let Err(error) = log::init_console() {
+            eprintln!("Failed to initialize logging: {error}");
+            return ExitCode::FAILURE;
+        }
         if let Err(error) = validate_config(&cli).await {
             log::error!(%error, "Config validation failed");
             return ExitCode::FAILURE;
@@ -1480,7 +1499,7 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
                 .read_to_string(&mut stdin)
                 .await
                 .context("failed to read config from stdin")?;
-            TomlConfigLoader::new_from_str_with_source("stdin", stdin.as_str())?;
+            load_toml_config_from_str_with_source("stdin", stdin.as_str())?;
         } else {
             load_toml_config_from_path(config_file)?;
         };

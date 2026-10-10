@@ -187,9 +187,16 @@ where
         let root_store = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
-        let tls_config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+        // A host application can enable another rustls backend through Cargo
+        // feature unification. Select ring explicitly instead of requiring a
+        // process-wide provider to have been initialized first (#2607).
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .context("selecting HTTPS protocol versions failed")?
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
         let stream = TlsConnector::from(Arc::new(tls_config))
             .connect(server_name, socket)
             .await
@@ -629,6 +636,44 @@ mod tests {
         assert_eq!(options.remote_addr, "192.0.2.1:18080".parse().unwrap());
         assert_eq!(options.purpose, TcpSocketPurpose::ManualConnect);
         assert_eq!(options.bind.context.socket_mark, Some(9));
+    }
+
+    #[tokio::test]
+    async fn https_fetch_reaches_tls_handshake_without_global_provider() {
+        // Also run with rustls/aws_lc_rs enabled: feature unification must not
+        // make HTTPS discovery panic before it can send a ClientHello (#2607).
+        let (client, mut server) = tokio::io::duplex(8192);
+        let host = Arc::new(HttpTestHost {
+            stream: Mutex::new(Some(client)),
+            connects: Mutex::new(Vec::new()),
+        });
+        let dns = HttpTestDns {
+            queries: Mutex::new(Vec::new()),
+        };
+        let server_task = tokio::spawn(async move {
+            let mut record_header = [0; 5];
+            server.read_exact(&mut record_header).await.unwrap();
+            assert_eq!(record_header[0], 22, "expected a TLS handshake record");
+            // Close without replying; discovery should report a handshake
+            // error rather than panic while selecting a crypto provider.
+        });
+
+        let error = fetch_http_discovery(
+            host,
+            &dns,
+            HttpDiscoveryRequest {
+                url: "https://discovery.example/lookup".parse().unwrap(),
+                user_agent: "easytier/test".to_owned(),
+                network_name: "test-network".to_owned(),
+                timeout: Duration::from_secs(5),
+                ip_version: IpVersion::V4,
+                tcp_bind: TcpBindOptions::default(),
+            },
+        )
+        .await
+        .expect_err("server closed during the TLS handshake");
+        assert!(format!("{error:#}").contains("HTTPS handshake failed"));
+        server_task.await.unwrap();
     }
 
     #[test]

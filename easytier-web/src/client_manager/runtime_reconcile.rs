@@ -348,13 +348,17 @@ fn web_source_runtime_patch(
         normalized_vpn_portal(desired)?,
     ) {
         (Some(current_portal), Some(desired_portal)) => {
-            if current_portal.wireguard_listen != desired_portal.wireguard_listen
+            if current_portal.enabled.unwrap_or(true) != desired_portal.enabled.unwrap_or(true)
+                || current_portal.wireguard_listen != desired_portal.wireguard_listen
                 || current_portal.wireguard_private_key != desired_portal.wireguard_private_key
             {
                 // The listener identity changed; the portal must be rebuilt.
                 return Ok(None);
             }
             if current_portal.clients != desired_portal.clients {
+                if desired_portal.enabled == Some(false) {
+                    return Ok(None);
+                }
                 patch.vpn_portal_clients =
                     diff_vpn_portal_clients(&current_portal.clients, &desired_portal.clients);
             }
@@ -595,6 +599,7 @@ mod tests {
         config.virtual_ipv4 = Some("10.144.0.1".to_string());
         config.network_length = Some(24);
         config.vpn_portal_config = Some(easytier::proto::api::manage::VpnPortalConfig {
+            enabled: None,
             wireguard_listen: listen.to_owned(),
             wireguard_private_key: Some("dGVzdC1rZXk=".to_owned()),
             clients,
@@ -726,6 +731,30 @@ mod tests {
         );
         assert!(
             web_source_runtime_patch(&with_portal, &without_portal)
+                .unwrap()
+                .is_none()
+        );
+
+        let mut disabled = with_portal.clone();
+        disabled.vpn_portal_config.as_mut().unwrap().enabled = Some(false);
+        assert!(
+            web_source_runtime_patch(&with_portal, &disabled)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            web_source_runtime_patch(&disabled, &with_portal)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            web_source_runtime_patch(&disabled, &disabled).unwrap(),
+            Some(InstanceConfigPatch::default())
+        );
+        let mut edited = disabled.clone();
+        edited.vpn_portal_config.as_mut().unwrap().clients.clear();
+        assert!(
+            web_source_runtime_patch(&disabled, &edited)
                 .unwrap()
                 .is_none()
         );

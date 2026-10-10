@@ -15,23 +15,56 @@ virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称
 network_secret: 网络密码
+secure_mode: 安全模式
+secure_mode_hint: 节点间使用 Noise 加密握手与身份认证；对端节点需支持安全模式
+credential_secret: 临时凭证
+credential_secret_hint: 粘贴管理员签发的临时凭证
+use_credential: 我有管理员签发的临时凭证
+use_network_secret: 改用网络密钥
+credential_mode_hint: 使用临时凭证加入网络：连接自动加密，到期自动失效。如果你没有收到凭证，请改用网络密钥。
 public_server_url: 公共服务器地址
 peer_urls: 对等节点地址
 proxy_cidrs: 子网代理CIDR
+vpn_portal_enable: "启用 WireGuard"
+vpn_portal_setup_help: "启动节点后，在状态页的“WireGuard 设备”中添加设备并扫码连接。停用会保留密钥和设备。"
+vpn_portal_advanced: "高级设置"
+vpn_portal_config_clients_help: "设备变更会随成员配置一起保存并应用到节点。"
+vpn_portal_devices: "WireGuard 设备"
+vpn_portal_devices_help: "每台设备使用独立的连接配置。"
+vpn_portal_client_address: "设备虚拟 IP"
+vpn_portal_client_prefix: "网段前缀长度"
+vpn_portal_address_help: "这是设备在 EasyTier 网络中的独立地址。建议值会避开当前已知的占用地址。"
+vpn_portal_invalid_name: "名称不能重复，限 1–63 个英文字母、数字或连字符，首尾须为字母或数字。"
+vpn_portal_invalid_address: "请输入有效且未被占用的设备 IP，并在高级设置中确认网段前缀。"
+vpn_portal_generate_config: "生成连接配置"
+vpn_portal_save_failed: "添加设备失败"
+vpn_portal_remove_failed: "删除设备失败"
+vpn_portal_remove_confirm: "删除后，此设备将无法继续连接。"
+vpn_portal_connect_device: "连接配置"
+vpn_portal_server_endpoint: "服务器连接地址"
+vpn_portal_custom_endpoint: "自定义连接地址"
+vpn_portal_endpoint_help: "默认使用本节点公网地址。使用域名或不同的映射端口时，可在此修改。"
+vpn_portal_endpoint_required: "未获得有效连接地址，请填写设备可访问的 IP 或域名及 UDP 端口。"
+vpn_portal_scan_help: "在设备的 WireGuard App 中扫描二维码，或导入下载的配置文件。"
+vpn_portal_qr_alt: "WireGuard 连接配置二维码"
+vpn_portal_qr_failed: "无法生成二维码，请下载或复制配置。"
+vpn_portal_download_config: "下载配置"
+vpn_portal_show_config: "查看配置文本"
+vpn_portal_copy_failed: "复制失败，请下载配置。"
 vpn_portal_wireguard_listen: WireGuard 监听地址
 vpn_portal_wireguard_listen_placeholder: 例如：0.0.0.0:22022
 vpn_portal_wireguard_private_key: WireGuard 服务端私钥
 vpn_portal_wireguard_private_key_placeholder: 必填 Base64 密钥（可用 wg genkey 生成）
 vpn_portal_clients: WireGuard 客户端
-vpn_portal_add_client: 添加客户端
-vpn_portal_no_clients: 尚未配置客户端
-vpn_portal_client_name: 客户端名称
+vpn_portal_add_client: "添加设备"
+vpn_portal_no_clients: "尚未添加设备。添加后即可扫码或下载配置。"
+vpn_portal_client_name: "设备名称（选填）"
 vpn_portal_client_name_placeholder: 例如：alice-phone
 vpn_portal_client_virtual_ip: 虚拟网 CIDR
 vpn_portal_client_virtual_ip_placeholder: 例如：10.126.126.10/24
 vpn_portal_client_groups: ACL 组
 vpn_portal_client_groups_placeholder: 选择 ACL 组
-vpn_portal_remove_client: 删除客户端
+vpn_portal_remove_client: "删除设备"
 dev_name: TUN接口名称
 advanced_settings: 高级设置
 basic_settings: 基础设置
@@ -116,7 +149,7 @@ upload: 上传
 download: 下载
 show_vpn_portal_config: 显示VPN门户配置
 vpn_portal_config: VPN门户配置
-vpn_portal_not_configured: 当前节点未配置 VPN 门户
+vpn_portal_not_configured: "WireGuard 未启用或尚未开始监听。"
 vpn_portal_load_failed: VPN 门户信息加载失败
 vpn_portal_listener: 监听地址
 vpn_portal_type: 类型
@@ -124,7 +157,7 @@ vpn_portal_state: 状态
 vpn_portal_peer_id: 节点 ID
 vpn_portal_endpoint: 客户端端点
 vpn_portal_tunnel_ip: 客户端隧道地址
-vpn_portal_client_config: 客户端配置
+vpn_portal_client_config: "连接配置"
 vpn_portal_copy_client_config: 复制客户端配置
 vpn_portal_state_unspecified: 未知
 vpn_portal_state_offline: 离线
@@ -316,6 +349,70 @@ event:
   UdpBroadcastRelayStartResult: UDP广播中继启动结果
 
 web:
+  console:
+    theme_mode: 主题（浅色 / 深色 / 跟随系统）
+    location: "位置"
+    console: "管理控制台"
+    workspace: "工作空间"
+    navigation: "导航"
+    documentation: "使用文档"
+    language: "切换语言"
+    account: "账户"
+    skip_content: "跳转到正文"
+    devices_description: "查看接入的设备，管理设备上的网络实例。"
+    device_count: "设备"
+    online_device_count: "在线设备"
+    network_count: "管理网络"
+    instance_count: "运行实例"
+    device_note: "注册过的设备总数"
+    online_device_note: "当前在线的设备数量"
+    delete_device: "删除设备"
+    set_alias: "设置别名"
+    alias_dialog_title: "设置设备别名"
+    alias_hint: "别名将在控制台中替代主机名显示，留空即清除。"
+    delete_device_confirm: "确定删除设备 {device}？若它在网络中，将被移出并回收托管配置。"
+    block_device: "同时拉黑该设备"
+    block_device_hint: "拉黑后该设备将无法重新接入，可在顶栏通知中解除。"
+    no_block_device_hint: "不拉黑：设备重新连接控制台后会自动回到设备列表。"
+    enroll_title: "设备接入"
+    enroll_hint: "在设备上运行以下命令，将其接入本控制台托管："
+    enroll_copy: "复制接入命令"
+    enroll_token_note: "命令末尾的路径是接入令牌（当前用户名）。设备接入后会出现在设备列表中。"
+    enroll_webhook_note: "本控制台使用外部认证系统签发接入令牌，请使用认证系统分配的令牌替换命令末尾的用户名。"
+    blocked_devices: "设备黑名单"
+    blocked_empty: "暂无拉黑的设备。"
+    blocked_attempted: "{time} 尝试接入，已拦截（共 {count} 次）"
+    blocked_no_attempt: "已拉黑，暂无接入尝试。"
+    unblock: "解除拉黑"
+    network_note: "集中管理的网络数量"
+    instance_note: "接入设备上的运行实例"
+    view_all: "查看全部"
+    refresh: "刷新"
+    retry: "重试"
+    load_failed: "数据刷新失败，已显示的数据来自上次成功刷新。"
+    devices_empty: "还没有设备"
+    devices_empty_hint: "将 EasyTier 客户端连接至此控制器，即可在这里管理设备。"
+    networks_empty: "还没有管理网络"
+    networks_empty_hint: "创建网络后，添加设备来建立连接。"
+    search_devices: "搜索名称或地址"
+    search_networks: "搜索网络"
+    no_results: "没有匹配结果"
+    clear_search: "清除搜索"
+    manage: "管理"
+    details: "详细信息"
+    more_details: "更多详情"
+    items: "共 {count} 项"
+    automatic_refresh: "每 2 秒自动更新"
+    online_members: "在线 / 总成员"
+    back_networks: "返回网络列表"
+    all_details: "展开全部详情"
+    ascending: "升序"
+    descending: "降序"
+    device_missing: "设备已不在当前设备列表中。"
+    loading: "加载中"
+    instances: "个实例"
+    view_table: "表格视图"
+    view_card: "卡片视图"
   login:
     title: 登录
     username: 用户名
@@ -323,7 +420,6 @@ web:
     submit: 登录
     register: 注册
     remember_me: 记住我
-    api_host: API主机
     captcha: 验证码
     back_to_login: 返回登录
     login: 登录
@@ -346,6 +442,7 @@ web:
     logout: 退出登录
     language: 语言
     change_password: 修改密码
+    network_list: 网络
 
   device:
     list: 设备列表
@@ -358,16 +455,6 @@ web:
     offline: 离线
     last_seen: 最后在线
     no_devices: 未找到设备
-    sort_by: 排序依据
-    sort_direction: 排序方向
-    show_detailed_view: 显示详情
-    hide_detailed_view: 隐藏详情
-    sort_by_hostname: 主机名
-    sort_by_public_ip: 公网IP
-    sort_by_version: 版本
-    sort_by_networks: 网络数量
-    sort_direction_asc: 当前升序，点击切换为降序
-    sort_direction_desc: 当前降序，点击切换为升序
     hostname: 主机名
     public_ip: 公网IP
     networks: 网络数量
@@ -375,6 +462,7 @@ web:
     version: 版本
     machine_id: 机器ID
     unknown_location: 未知位置
+    central_networks: 所属网络
 
   device_management:
     edit_network: 编辑网络
@@ -410,6 +498,188 @@ web:
     import: 导入配置
     export: 导出配置
 
+  network_list:
+    title: 网络
+    create: 创建网络
+    empty: 暂无网络，点击“创建网络”开始集中管理设备
+    members: 成员设备
+    display_name: 网络显示名称
+    virtual_cidr: 虚拟网段
+    secure_mode: 安全模式
+    secure_mode_hint: 节点间使用 Noise 加密握手与身份认证；开启后可签发临时凭证，设备实例将重建
+    virtual_cidr_hint: 未填写子网掩码时默认补上 /24。设置后成员将按加入顺序从该网段分配静态 IP（10.x.0.1、.2…）；留空则由节点自动协商（DHCP）
+    virtual_cidr_placeholder: 例如 10.200.0.0（默认 /24），留空自动
+    peer_urls_placeholder: 每行一个节点地址，例如 tcp://10.0.0.1:11010
+    create_hint: 网络密码将自动生成，可在网络详情中查看或重置
+    gateway_mode: 接入点
+    gateway_hint: 成员将通过本控制台的内置接入点自动组网（发现与打洞辅助，默认不中继数据）
+    advanced_mode: 高级：手动指定初始节点
+    use_gateway: 返回：使用控制台接入点
+
+  network_detail:
+    tab_members: 成员设备
+    mesh_name: 网络标识（自动生成，设备加入时使用）
+    tab_settings: 网络设置
+    tab_status: 运行状态
+    members_hint: 成员的组网配置由控制台统一下发，设备离线时配置将在其重新上线后生效
+    add_member: 添加设备
+    add_temporary_member: 添加为临时节点
+    add_temporary_hint: 临时节点使用专属凭证接入，不会收到网络密钥；凭证到期或被吊销后自动断开
+    add_temporary_needs_secure: 需要先在网络设置中开启安全模式才能添加临时节点
+    expires_at: 到期
+    locate_credential: 查看凭证
+    no_candidate_devices: 暂无可添加的设备
+    remove_member: 移除设备
+    remove_member_confirm: 确定将设备 {device} 移出该网络？其托管配置将被回收
+    edit_member: 编辑成员
+    tab_basic_settings: 常规设置
+    hostname_override: 主机名覆盖
+    hostname_override_placeholder: 留空使用设备上报的主机名
+    static_ip: 静态虚拟 IP
+    static_ip_hint: 留空使用 DHCP；指定后该成员固定使用此 IP（/24）
+    settings: 网络设置
+    regenerate_secret: 重新生成网络密码
+    danger_zone: 危险操作
+    delete: 删除网络
+    delete_confirm: 确定删除网络 {name}？所有成员的托管配置将被回收
+    delete_hint: 删除网络会移除所有成员并回收其托管配置
+    gateway_followed: 初始节点仅保留控制台接入点，成员配置将跟随接入点地址自动更新
+    advanced_config: 高级配置
+    has_override: 该成员已配置高级覆盖
+    identity_ignored: 网络名称与密码由网络设置统一管理，本次修改将被忽略
+    reset_default: 恢复默认
+    config_reset: 已恢复默认编译配置
+    proxy_cidr_hint: 该成员路由进虚拟网的真实网段；点击下方检测到的网段即可添加
+    proxy_add_suggestion: 添加 {cidr}
+    proxy_remove_suggestion: 移除 {cidr}
+    proxy_no_suggestions: 未检测到可共享的本机网段，可手动输入
+    proxy_cidr_placeholder: 例如 192.168.1.1 或 10.0.0.0/16，回车添加
+    proxy_cidr_invalid: 无法识别的地址，请输入 IPv4 地址或 CIDR（如 192.168.1.0/24）
+    tab_credentials: 临时凭证
+    credentials_hint: 凭证用于临时设备短期接入本网络，到期自动失效
+    generate_credential: 生成凭证
+    credential_id: 凭证 ID
+    credential_secret: 凭证密钥
+    credential_show_secret: 显示密钥
+    credential_hide_secret: 隐藏密钥
+    credential_copy_secret: 复制密钥
+    credential_show_command: 查看加入命令
+    credential_copy_command: 复制加入命令
+    credential_join_cli: 命令行
+    credential_join_toml: 配置文件
+    copy_failed: 复制失败，请选中文本手动复制
+    credential_online_devices: 在线设备
+    credential_expiry: 到期时间
+    credential_status: 状态
+    credential_active: 有效
+    credential_expired: 已过期
+    credential_reusable: 可复用
+    revoke_credential: 吊销凭证
+    revoke_credential_confirm: 确定吊销凭证 {id}？使用它的临时设备将被断开
+    credential_ttl: 有效期
+    ttl_1h: 1 小时
+    ttl_24h: 1 天
+    ttl_7d: 7 天
+    ttl_30d: 30 天
+    credential_reusable_hint: 取消勾选则同一凭证同时只允许一台设备在线
+    credential_secret_hint: "凭证密钥（已保存，可随时在凭证列表中查看）："
+    join_command: 临时设备加入命令
+    temporary_devices: 临时设备
+    temporary_devices_hint: 通过凭证接入的在线设备，吊销对应凭证可将其断开
+    temporary_device: 临时设备
+    temporary_tag: 临时
+    temporary_credential: 凭证
+    temporary_credential_unknown: 未知凭证（可能已吊销）
+    member_error: 错误
+    tab_general: 常规
+    node_overview: 概览
+    node_actions: 设置与操作
+    node_peers: 对等节点
+    node_no_peers: 暂无其他节点
+    node_no_peers_hint: 此网络的其他节点连接后，会显示在这里。
+    peer_ipv4: 虚拟 IP
+    log_level: 日志级别
+    log_level_hint: 对整台设备进程生效（含所有网络实例）
+    log_disabled: 禁用
+    log_error: 错误
+    log_warning: 警告
+    log_info: 信息
+    log_debug: 调试
+    log_trace: 跟踪
+    export_config: 导出配置
+    export_config_hint: 该节点当前生效的 TOML 配置（同 easytier-cli node config）
+    download: 下载
+    node_detail: 节点详情
+    node_detail_offline: 设备在线时才能查看节点详情
+    node_routes: 路由
+    node_conns: 连接明细
+    route_cost: 连接方式
+    path_latency: 路径延迟
+    conn_type: 类型
+    conn_remote: 对端地址
+    loss_rate: 丢包率
+    traffic: 流量
+    acl_stats: ACL 统计
+    acl_rule: 规则
+    acl_packets: 包数
+    acl_bytes: 字节数
+    instance_state: 实例状态
+    running: 运行中
+    stopped: 未运行
+
+  acl:
+    trust_hint: 永久成员属于可信管理员。ACL 用于管理其正常流量，不能防止设备管理员修改身份或策略。不可信设备请使用临时凭据接入。
+    tab: 访问控制
+    default_action: 未命中规则时
+    default_allow: 默认允许
+    default_deny: 默认拒绝
+    default_allow_hint: 未被规则命中的流量默认放行
+    default_deny_hint: 未被规则命中的流量默认拒绝
+    rule_summary: "{total} 条规则 · {enabled} 条启用"
+    unsaved: 有未保存的修改
+    saved: 访问策略已保存
+    save_failed: 保存失败
+    save: 保存策略
+    add_rule: 新增规则
+    edit_rule: 编辑规则
+    save_rule: 保存规则
+    rule_name: 规则名称
+    name_placeholder: 例如：允许财务设备访问 MySQL
+    action: 动作
+    allow: 允许
+    deny: 拒绝
+    enabled: 启用
+    disabled: 已停用
+    source: 来源
+    target: 目标
+    all_members: 全部成员
+    subnet: 子网
+    source_placeholder: 搜索并选择发起访问的成员
+    target_placeholder: 搜索并选择目标成员或子网
+    target_hint: 选择成员或成员代理的子网
+    protocols: 协议
+    stateful: 有状态跟踪
+    stateful_hint: 仅统计已建立连接的流量信息，适用于 TCP 允许规则
+    port_single: 单端口
+    port_range: 范围
+    port_start: 起始端口
+    port_end: 结束端口
+    port_to: 到
+    add_port: 新增端口
+    add_range: 新增范围
+    all_ports: 全部端口
+    quick_add: 快捷添加
+    icmp_note: ICMP 不需要填写端口
+    swap: 与目标交换
+    drag_hint: 拖拽调整顺序
+    empty_title: 暂无访问规则
+    empty_allow: 网络当前保持默认放行，未命中的流量不受限制
+    empty_deny: 网络当前默认拒绝，未命中规则的流量将被拦截
+    error_name: 请填写规则名称
+    error_source: 请至少选择一个来源
+    error_target: 请至少选择一个目标或填写自定义网段
+    error_protocol: 请至少勾选一个协议
+    error_ports: "{protocol} 规则至少需要一个端口（可点“全部端口”）"
   common:
     confirm: 确认
     cancel: 取消

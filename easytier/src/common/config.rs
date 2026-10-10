@@ -16,6 +16,8 @@ pub use easytier_core::config::toml::*;
 
 #[cfg(feature = "management")]
 use crate::common::env_parser;
+#[cfg(feature = "logging")]
+use crate::common::log;
 use crate::tunnel::IpScheme;
 
 #[cfg(feature = "management")]
@@ -31,7 +33,39 @@ pub fn parse_mapped_listener_urls(
 pub fn load_toml_config_from_path(path: &PathBuf) -> Result<TomlConfigLoader, anyhow::Error> {
     let config = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
-    TomlConfigLoader::new_from_str_with_source(&path.display().to_string(), &config)
+    load_toml_config_from_str_with_source(&path.display().to_string(), &config)
+}
+
+pub fn load_toml_config_from_str_with_source(
+    source_name: &str,
+    config_str: &str,
+) -> Result<TomlConfigLoader, anyhow::Error> {
+    let config = TomlConfigLoader::new_from_str_with_source(source_name, config_str)?;
+    #[cfg(feature = "logging")]
+    {
+        let ignored_sections = ignored_logging_sections(config_str);
+        if !ignored_sections.is_empty() {
+            log::warn!(
+                config_source = source_name,
+                ?ignored_sections,
+                "Logging configuration in TOML is ignored because logging is process-wide. \
+                 Use command-line options (e.g. --console-log-level, --file-log-level, --file-log-dir) \
+                 or ET_* logging environment variables instead."
+            );
+        }
+    }
+    Ok(config)
+}
+
+#[cfg(any(feature = "logging", test))]
+fn ignored_logging_sections(config_str: &str) -> Vec<&'static str> {
+    let Ok(config) = toml::from_str::<toml::Table>(config_str) else {
+        return Vec::new();
+    };
+    ["file_logger", "console_logger"]
+        .into_iter()
+        .filter(|section| config.contains_key(*section))
+        .collect()
 }
 
 #[cfg(feature = "management-rpc")]
@@ -65,7 +99,7 @@ pub async fn load_config_from_file(
             .read_to_string(&mut stdin)
             .await
             .context("failed to read config from stdin")?;
-        let config = TomlConfigLoader::new_from_str_with_source("stdin", &stdin)?;
+        let config = load_toml_config_from_str_with_source("stdin", &stdin)?;
         return Ok((config, ConfigFileControl::STATIC_CONFIG));
     }
 
@@ -85,7 +119,7 @@ pub async fn load_config_from_file(
     }
 
     let source_name = config_file.display().to_string();
-    let config = TomlConfigLoader::new_from_str_with_source(&source_name, &expanded_config_str)?;
+    let config = load_toml_config_from_str_with_source(&source_name, &expanded_config_str)?;
     let mut control = config_file_control_from_path(config_file.clone()).await;
 
     if uses_env_vars {
@@ -112,6 +146,41 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn detects_only_top_level_logging_sections() {
+        let cases: [(&str, &[&str]); 6] = [
+            ("", &[]),
+            ("[file_logger]\nlevel = \"info\"", &["file_logger"]),
+            ("console_logger = { level = \"warn\" }", &["console_logger"]),
+            (
+                "[console_logger]\n[file_logger]",
+                &["file_logger", "console_logger"],
+            ),
+            ("# [file_logger]\ninstance_name = '[console_logger]'", &[]),
+            ("[unknown.file_logger]\nlevel = \"info\"", &[]),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(ignored_logging_sections(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn ignored_logging_values_do_not_change_config_validation() {
+        let input = r#"
+instance_name = "legacy-logging"
+file_logger = "ignored"
+[console_logger]
+level = 123
+"#;
+        let config = load_toml_config_from_str_with_source("legacy.toml", input).unwrap();
+
+        assert_eq!(config.get_inst_name(), "legacy-logging");
+        assert_eq!(
+            ignored_logging_sections(input),
+            ["file_logger", "console_logger"]
+        );
+    }
 
     #[test]
     fn path_adapter_preserves_file_name_in_parse_error() {

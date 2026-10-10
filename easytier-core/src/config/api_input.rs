@@ -369,6 +369,7 @@ impl NetworkConfigExt for NetworkConfig {
 
         if let Some(vpn_config) = &self.vpn_portal_config {
             cfg.set_vpn_portal_config(VpnPortalConfig {
+                enabled: vpn_config.enabled,
                 wireguard_listen: vpn_config.wireguard_listen.parse().with_context(|| {
                     format!(
                         "failed to parse vpn portal wireguard listen address: {}",
@@ -619,6 +620,7 @@ impl NetworkConfigExt for NetworkConfig {
 
         if let Some(vpn_config) = config.get_vpn_portal_config() {
             result.vpn_portal_config = Some(manage::VpnPortalConfig {
+                enabled: vpn_config.enabled,
                 wireguard_listen: vpn_config.wireguard_listen.to_string(),
                 wireguard_private_key: vpn_config.wireguard_private_key,
                 clients: vpn_config
@@ -680,6 +682,7 @@ mod tests {
 
     fn api_portal_config() -> manage::VpnPortalConfig {
         manage::VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "0.0.0.0:51820".to_owned(),
             wireguard_private_key: Some("server-private-key".to_owned()),
             clients: vec![manage::VpnPortalClientConfig {
@@ -815,6 +818,32 @@ mod tests {
         let output = NetworkConfig::new_from_config(&config).unwrap();
         assert_eq!(output.vpn_portal_config, input.vpn_portal_config);
         assert_eq!(output.enable_vpn_portal, None);
+    }
+
+    #[test]
+    fn disabled_vpn_portal_preserves_clients_and_key_without_a_runtime() {
+        let mut portal = api_portal_config();
+        portal.enabled = Some(false);
+        let input = NetworkConfig {
+            vpn_portal_config: Some(portal),
+            ..standalone_config()
+        };
+        let config = input.gen_config().unwrap();
+        let restored = crate::config::toml::TomlConfig::new_from_str(&config.dump()).unwrap();
+        let output = NetworkConfig::new_from_config(&restored).unwrap();
+        assert_eq!(output.vpn_portal_config, input.vpn_portal_config);
+        assert!(
+            crate::instance::CoreInstanceConfig::from_toml(&restored)
+                .unwrap()
+                .vpn_portal
+                .is_none()
+        );
+
+        let mut portal = restored.get_vpn_portal_config().unwrap();
+        portal.enabled = Some(true);
+        restored.set_vpn_portal_config(portal);
+        let runtime = crate::instance::CoreInstanceConfig::from_toml(&restored).unwrap();
+        assert_eq!(runtime.vpn_portal.unwrap().clients[0].name, "alice");
     }
 
     #[test]

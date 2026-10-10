@@ -236,6 +236,27 @@ impl Default for CredentialManager {
     }
 }
 
+/// Validate a complete managed credential replacement with the same
+/// normalization and key-identity rules used when it is installed.
+#[cfg(any(feature = "management-rpc", feature = "browser-config"))]
+pub fn validate_managed_credential_set(
+    credentials: &[crate::proto::api::manage::ManagedCredentialConfig],
+) -> Result<(), String> {
+    let credentials: Vec<_> = credentials
+        .iter()
+        .map(|credential| ManagedCredentialConfig {
+            credential_id: credential.credential_id.clone(),
+            credential_secret: credential.credential_secret.clone(),
+            groups: credential.groups.clone(),
+            allow_relay: credential.allow_relay,
+            allowed_proxy_cidrs: credential.allowed_proxy_cidrs.clone(),
+            expiry_unix: credential.expiry_unix,
+            reusable: credential.reusable.unwrap_or(true),
+        })
+        .collect();
+    CredentialManager::build_managed_entries(&credentials).map(|_| ())
+}
+
 impl CredentialManager {
     pub fn new() -> Self {
         Self {

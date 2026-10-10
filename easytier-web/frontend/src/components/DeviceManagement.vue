@@ -122,33 +122,6 @@ const newConfigGenerator = () => {
     max-width: 100%;
 }
 
-/* Dark mode adaptations */
-:deep(.bg-surface-50) {
-    background-color: var(--surface-50, #f8fafc);
-}
-
-:deep(.bg-surface-0) {
-    background-color: var(--surface-card, #ffffff);
-}
-
-:deep(.text-primary) {
-    color: var(--primary-color, #3b82f6);
-}
-
-:deep(.text-secondary) {
-    color: var(--text-color-secondary, #64748b);
-}
-
-@media (prefers-color-scheme: dark) {
-    :deep(.bg-surface-50) {
-        background-color: var(--surface-ground, #0f172a);
-    }
-
-    :deep(.bg-surface-0) {
-        background-color: var(--surface-card, #1e293b);
-    }
-}
-
 /* Responsive design for mobile devices */
 @media (max-width: 768px) {
     .network-header {

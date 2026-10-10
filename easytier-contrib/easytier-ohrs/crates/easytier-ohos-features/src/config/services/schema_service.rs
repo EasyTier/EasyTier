@@ -173,6 +173,7 @@ fn kind_to_value_kind(field: &FieldDescriptor) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_node(
     node_kind: &str,
     name: String,
@@ -238,10 +239,10 @@ fn build_map_entry_node(
 }
 
 fn field_children(field: &FieldDescriptor, path: &mut ExpansionPath) -> Vec<NetworkConfigSchema> {
-    if field.is_map() {
-        if let Kind::Message(message_desc) = field.kind() {
-            return vec![build_map_entry_node(&message_desc, path)];
-        }
+    if field.is_map()
+        && let Kind::Message(message_desc) = field.kind()
+    {
+        return vec![build_map_entry_node(&message_desc, path)];
     }
 
     match field.kind() {

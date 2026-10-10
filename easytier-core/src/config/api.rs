@@ -86,6 +86,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
 
     if let Some(vpn_config) = config.get_vpn_portal_config() {
         result.vpn_portal_config = Some(manage::VpnPortalConfig {
+            enabled: vpn_config.enabled,
             wireguard_listen: vpn_config.wireguard_listen.to_string(),
             wireguard_private_key: vpn_config.wireguard_private_key,
             clients: vpn_config

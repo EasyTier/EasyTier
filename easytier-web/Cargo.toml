@@ -2,6 +2,7 @@
 name = "easytier-web"
 version = "2.7.0"
 edition.workspace = true
+rust-version.workspace = true
 description = "Config server for easytier. easytier-core gets config from this and web frontend use it as restful api server."
 
 [dependencies]
@@ -16,10 +17,12 @@ tokio-util = { workspace = true, features = ["rt"] }
 dashmap.workspace = true
 url.workspace = true
 async-trait.workspace = true
+futures = { workspace = true, features = ["default"] }
+prost.workspace = true
 
 maxminddb = "0.32"
 
-axum = { version = "0.8", features = ["macros"] }
+axum = { workspace = true, features = ["macros"] }
 axum-login = { version = "0.18" }
 password-auth = { version = "1.0.0" }
 axum-messages = "0.8.0"
@@ -43,7 +46,11 @@ sea-orm-migration.workspace = true
 # for captcha
 rust-embed = { version = "8.12.0", features = ["debug-embed", "include-exclude"] }
 base64.workspace = true
+cidr.workspace = true
 rand.workspace = true
+sha2.workspace = true
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+easytier-proto.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 ab_glyph = "0.2.32"
 imageproc = { version = "0.27.0", default-features = false, features = ["text"] }
@@ -68,8 +75,14 @@ uuid = { workspace = true, features = [
 ] }
 
 chrono = { workspace = true, features = ["serde"] }
-openidconnect = { version = "4.0", default-features = false, features = ["accept-rfc3339-timestamps", "reqwest"] }
-reqwest = { workspace = true, features = ["json", "rustls"] }
+# Keep the bundled reqwest 0.12 client disabled; use the official 0.13 adapter.
+openidconnect = { version = "4.0", default-features = false, features = ["accept-rfc3339-timestamps"] }
+# Pin the adapter until its API stabilizes.
+oauth2-reqwest = "=0.1.0-alpha.3"
+# Reuse EasyTier's ring provider. reqwest 0.13's rustls feature adds aws-lc,
+# making rustls backend selection ambiguous when core/web are built together.
+# Initialize the process provider before constructing a reqwest client.
+reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
 subtle = "2.6"
 
 mimalloc.workspace = true
@@ -88,3 +101,6 @@ ignored = [
     # Windows-only build.rs setup calls thunk::thunk().
     "thunk-rs",
 ]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

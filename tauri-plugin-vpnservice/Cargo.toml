@@ -4,6 +4,7 @@ version = "0.0.0"
 authors = ["You"]
 description = ""
 edition.workspace = true
+rust-version.workspace = true
 exclude = ["/examples", "/webview-dist", "/webview-src", "/node_modules"]
 links = "tauri-plugin-vpnservice"
 
