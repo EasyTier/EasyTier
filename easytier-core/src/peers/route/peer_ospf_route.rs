@@ -4886,8 +4886,8 @@ mod tests {
             CoreNetworkIdentity::default()
         }
 
-        fn flags(&self) -> crate::proto::common::FlagsInConfig {
-            crate::proto::common::FlagsInConfig {
+        fn flags(&self) -> crate::proto::common::Flags {
+            crate::proto::common::Flags {
                 prefer_peer_relay: self.enabled.load(Ordering::Relaxed),
                 ..Default::default()
             }
@@ -5012,7 +5012,7 @@ mod tests {
     }
 
     fn test_peer_relay_service_impl(my_peer_id: PeerId) -> PeerRouteServiceImpl {
-        let flags = crate::proto::common::FlagsInConfig {
+        let flags = crate::proto::common::Flags {
             prefer_peer_relay: true,
             ..Default::default()
         };
