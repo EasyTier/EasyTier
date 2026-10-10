@@ -78,6 +78,14 @@ does not lose the warning. A persistence failure cannot undo a completed stop;
 the latest in-memory intent is retried on a later operation, not an old captured
 snapshot. Until persistence succeeds, process death can still lose those changes.
 
+RPC reconnection is not an application restart: it replaces only the mutation/query
+transport, retaining configurations, desired intent and persistence warnings in the
+existing application client. It does not reload an older durable snapshot or replay
+desired starts. Runtime observations become unconfirmed until reconciliation with
+the new connection. A later configuration reload still must flush pending intent
+successfully before reading durable state; if storage remains unavailable, it fails
+without discarding the in-memory changes.
+
 An RPC error is not proof that the operation had no effect. Query actual instance
 IDs and trigger the existing VPN reconciliation path before returning the error.
 If querying also fails, expose unknown runtime state and block further starts
@@ -106,6 +114,9 @@ serializes persistence updates; it is not a lifecycle serializer.
 - Rust application-client tests cover source compatibility, managed/user priority,
   TUN candidate selection, `no_tun` coexistence and VPN-stop event selection, plus
   disk/event failures, lost RPC replies, unknown runtime state, and latest-intent retry.
+  The GUI's shared connect/reconnect entry point is tested with a real snapshot
+  repository after runtime deletion and failed persistence, including repeated
+  reconnects, unavailable storage and eventual successful persistence.
 - Rust snapshot tests cover one-time migration, corrupt/future data, failed writes,
   backend preservation, invalid IDs, deletion of desired/selected state, and
   refresh/blocking after an uncertain commit.

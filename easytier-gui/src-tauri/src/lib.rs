@@ -528,7 +528,7 @@ async fn init_rpc_connection(
         *rpc_server_guard = None;
     }
 
-    let client_manager = tokio::time::timeout(std::time::Duration::from_millis(1000), async {
+    let tunnel = tokio::time::timeout(std::time::Duration::from_millis(1000), async {
         let tunnel = if let Some(url) = client_url {
             runtime_rpc_dialer(url.parse()?).connect().await?
         } else {
@@ -536,13 +536,14 @@ async fn init_rpc_connection(
                 .context("local RPC requires a core process runtime")?
                 .connect_ring_tunnel(*RPC_RING_UUID.deref())?
         };
-        manager::GUIClientManager::new(tunnel, repository)
+        Ok::<_, anyhow::Error>(tunnel)
     })
     .await
     .map_err(|_| "connect remote rpc timed out".to_string())?
     .with_context(|| "Failed to connect remote rpc")
     .map_err(|e| format!("{:#}", e))?;
-    *client_manager_guard = Some(client_manager);
+    manager::GUIClientManager::connect_or_reconnect(&mut client_manager_guard, tunnel, repository)
+        .map_err(|e| format!("{:#}", e))?;
 
     if !is_normal_mode {
         drop(WEB_CLIENT.write().await.take());

@@ -368,6 +368,30 @@ pub struct ApplicationClient<H: ManagementHost> {
     runtime_state_known: std::sync::atomic::AtomicBool,
 }
 impl<H: ManagementHost> ApplicationClient<H> {
+    /// Transport reconnects must not reconstruct application state from an older
+    /// durable snapshot. The caller holds exclusive access while replacing the
+    /// connection, so no operation can retain the previous mutation transport.
+    pub fn connect_or_reconnect(
+        slot: &mut Option<Self>,
+        tunnel: Box<dyn crate::tunnel::Tunnel>,
+        repository: Option<Arc<dyn ConfigRepository>>,
+    ) -> anyhow::Result<()> {
+        if let Some(client) = slot {
+            let rpc_manager = Arc::new(BidirectRpcManager::new());
+            rpc_manager.run_with_tunnel(tunnel);
+            client.control = Arc::new(RpcInstanceControl(rpc_manager.clone()));
+            client.rpc_manager = rpc_manager;
+            // Keep configurations, desired intent and the last persistence result.
+            // Observations from the old endpoint are not proof of current runtime state.
+            client
+                .runtime_state_known
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            *slot = Some(Self::new(tunnel, repository)?);
+        }
+        Ok(())
+    }
+
     pub fn management_status(&self) -> ManagementStatus {
         ManagementStatus {
             running_instances: self.storage.enabled_networks.iter().map(|id| *id).collect(),
@@ -799,6 +823,7 @@ impl<H: ManagementHost> ApplicationClient<H> {
             .is_some()
         {
             self.storage.persist_intent()?;
+            self.last_outcome.lock().unwrap().persistence_warning = None;
         }
         {
             // A concurrent web hook must not persist a half-replaced configuration list.
@@ -983,6 +1008,141 @@ mod tests {
     }
     fn config() -> NetworkConfig {
         NetworkConfig::new_from_config(&crate::config::toml::TomlConfigLoader::default()).unwrap()
+    }
+
+    #[derive(Clone, Default)]
+    struct ReconnectBackend {
+        data: Arc<std::sync::Mutex<Option<String>>>,
+        fail_write: Arc<AtomicBool>,
+        fail_read: Arc<AtomicBool>,
+    }
+
+    impl super::super::application_snapshot::SnapshotBackend for ReconnectBackend {
+        fn read(&self) -> anyhow::Result<Option<String>> {
+            anyhow::ensure!(!self.fail_read.load(Ordering::SeqCst), "read unavailable");
+            Ok(self.data.lock().unwrap().clone())
+        }
+        fn write(&self, payload: &str) -> anyhow::Result<()> {
+            anyhow::ensure!(!self.fail_write.load(Ordering::SeqCst), "disk unavailable");
+            *self.data.lock().unwrap() = Some(payload.to_owned());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn reconnect_preserves_failed_deletion_and_warning_until_latest_intent_is_saved() {
+        use super::super::application_snapshot::{ApplicationSnapshot, SnapshotRepository};
+        use crate::tunnel::ring::create_ring_tunnel_pair;
+
+        let backend = ReconnectBackend::default();
+        let removed = config();
+        let retained = config();
+        let removed_id = Uuid::parse_str(removed.instance_id()).unwrap();
+        let retained_id = Uuid::parse_str(retained.instance_id()).unwrap();
+        let repository = Arc::new(
+            SnapshotRepository::open(
+                backend.clone(),
+                ApplicationSnapshot {
+                    schema_version: 1,
+                    configs: vec![
+                        StoredConfig {
+                            config: removed,
+                            source: PersistedConfigSource::User,
+                        },
+                        StoredConfig {
+                            config: retained,
+                            source: PersistedConfigSource::Web,
+                        },
+                    ],
+                    desired_enabled: vec![removed_id.to_string(), retained_id.to_string()],
+                    profile: serde_json::json!({"mode": "normal"}),
+                    selected_network: Some(removed_id.to_string()),
+                },
+            )
+            .unwrap(),
+        );
+        let mut slot = None;
+        let (tunnel, _peer) = create_ring_tunnel_pair();
+        ApplicationClient::<TestHost>::connect_or_reconnect(
+            &mut slot,
+            tunnel,
+            Some(repository.clone()),
+        )
+        .unwrap();
+        let host = TestHost::default();
+        let client = slot.as_mut().unwrap();
+        let control = Arc::new(FakeControl::default());
+        control.running.lock().unwrap().insert(removed_id);
+        client.control = control.clone();
+        client.storage.record_running(removed_id, true);
+
+        backend.fail_write.store(true, Ordering::SeqCst);
+        let outcome = client.stop_network(&host, removed_id, true).await.unwrap();
+        assert!(outcome.runtime_applied && outcome.persistence_warning.is_some());
+        assert!(!control.running.lock().unwrap().contains(&removed_id));
+        // The on-disk snapshot really is stale, not a stub that always returns empty.
+        assert_eq!(repository.snapshot().unwrap().configs.len(), 2);
+
+        for _ in 0..2 {
+            let old_rpc = slot.as_ref().unwrap().rpc_manager.clone();
+            let (tunnel, _peer) = create_ring_tunnel_pair();
+            backend.fail_read.store(true, Ordering::SeqCst);
+            // The GUI uses this exact entry point with the same repository.
+            ApplicationClient::connect_or_reconnect(&mut slot, tunnel, Some(repository.clone()))
+                .unwrap();
+            let client = slot.as_ref().unwrap();
+            assert!(!Arc::ptr_eq(&old_rpc, &client.rpc_manager));
+            assert!(client.rpc_manager.is_running());
+            assert!(!client.storage.network_configs.contains_key(&removed_id));
+            assert_eq!(
+                client
+                    .storage
+                    .network_configs
+                    .get(&retained_id)
+                    .unwrap()
+                    .source,
+                PersistedConfigSource::Web
+            );
+            let status = client.management_status();
+            assert_eq!(status.desired_enabled, vec![retained_id]);
+            assert!(!status.runtime_state_known);
+            assert_eq!(
+                status.last_outcome.persistence_warning,
+                outcome.persistence_warning
+            );
+            assert!(status.last_outcome.runtime_applied);
+            // The frontend reload after reconnect cannot resurrect a failed deletion either.
+            assert!(
+                client
+                    .load_configs(host.clone(), vec![], vec![])
+                    .await
+                    .is_err()
+            );
+            assert!(!client.storage.network_configs.contains_key(&removed_id));
+            backend.fail_read.store(false, Ordering::SeqCst);
+        }
+        backend.fail_write.store(false, Ordering::SeqCst);
+        let client = slot.as_ref().unwrap();
+        client
+            .load_configs(host.clone(), vec![], vec![])
+            .await
+            .unwrap();
+        assert!(
+            client
+                .management_status()
+                .last_outcome
+                .persistence_warning
+                .is_none()
+        );
+        let persisted = repository.snapshot().unwrap();
+        assert_eq!(persisted.configs.len(), 1);
+        assert_eq!(
+            persisted.configs[0].config.instance_id(),
+            retained_id.to_string()
+        );
+        assert_eq!(persisted.desired_enabled, vec![retained_id.to_string()]);
+        assert!(persisted.selected_network.is_none());
+        assert_eq!(control.starts.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
