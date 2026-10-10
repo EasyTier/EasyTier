@@ -388,6 +388,10 @@ impl std::fmt::Debug for ManagedCredentialConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "config-write", derive(Serialize))]
 struct Config {
+    /// Console/file logging for embedders that drive the core through the ABI: the CLI packages
+    /// install their own subscriber from clap arguments, which an embedded instance never parses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logging: Option<LoggingConfig>,
     netns: Option<String>,
     hostname: Option<String>,
     instance_name: Option<String>,
@@ -546,6 +550,11 @@ impl TomlConfig {
                 credential.credential_secret = REDACTED.to_owned();
             }
         }
+    }
+
+    /// Logging configuration carried by the instance config, if any.
+    pub fn logging(&self) -> Option<LoggingConfig> {
+        self.config.lock().unwrap().logging.clone()
     }
 
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
@@ -1060,6 +1069,35 @@ impl ConfigLoader for TomlConfig {
 
 /// Transitional name retained while native consumers migrate to [`TomlConfig`].
 pub type TomlConfigLoader = TomlConfig;
+
+#[cfg(test)]
+mod logging_config_tests {
+    use super::*;
+
+    #[test]
+    fn instance_config_carries_the_console_level() {
+        let config = TomlConfig::new_from_str(
+            "instance_name = \"embedded\"\n\
+             [logging.console_logger]\n\
+             level = \"trace\"\n",
+        )
+        .unwrap();
+        let logging = config.logging().expect("logging section");
+        assert_eq!(
+            logging
+                .console_logger
+                .and_then(|console| console.level)
+                .as_deref(),
+            Some("trace")
+        );
+    }
+
+    #[test]
+    fn instance_config_without_logging_section_is_fine() {
+        let config = TomlConfig::new_from_str("instance_name = \"embedded\"").unwrap();
+        assert!(config.logging().is_none());
+    }
+}
 
 #[cfg(test)]
 mod tests {
