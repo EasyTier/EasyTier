@@ -2588,6 +2588,7 @@ dependencies = [
  "service-manager",
  "sha2 0.10.9",
  "shellexpand",
+ "shlex 2.0.1",
  "smoltcp",
  "socket2",
  "strum 0.28.0",

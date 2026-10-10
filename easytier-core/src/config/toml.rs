@@ -283,6 +283,11 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
 
+    fn get_hook(&self) -> Option<String> {
+        None
+    }
+    fn set_hook(&self, _hook: Option<String>) {}
+
     fn dump(&self) -> String;
     fn dump_redacted(&self) -> String {
         self.dump()
@@ -560,6 +565,8 @@ struct Config {
     stun_servers: Option<Vec<String>>,
     tcp_stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
+
+    hook: Option<String>,
 
     credential_file: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1170,6 +1177,14 @@ impl ConfigLoader for TomlConfig {
             ConfigSource::User => None,
             other => Some(ConfigSourceConfig { source: other }),
         });
+    }
+
+    fn get_hook(&self) -> Option<String> {
+        self.config.lock().unwrap().hook.clone()
+    }
+
+    fn set_hook(&self, hook: Option<String>) {
+        self.config.lock().unwrap().hook = hook;
     }
 
     fn dump(&self) -> String {
