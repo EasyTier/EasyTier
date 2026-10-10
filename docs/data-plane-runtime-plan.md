@@ -290,7 +290,11 @@ Each resource owns explicit leases:
   lease through the backend connection wrapper;
 - a listener owns its wildcard listener lease;
 - an accepted stream owns an independent exact flow lease;
-- a UDP socket owns the destination flow leases it created;
+- a UDP socket owns one bound local-endpoint lease, independent of its remote
+  destinations; an unconnected socket can receive before its first send;
+- UDP binds allocate and reserve ports within the instance, independently of
+  TUN and Host sockets. Bound endpoints are owned by the data plane; unmatched
+  traffic continues through the peer-packet pipeline;
 - a direct or local stream reports its actual address and does not fabricate a
   smoltcp address.
 
@@ -305,12 +309,25 @@ flow table using pointer equality.
 
 Packet classification behavior must remain compatible:
 
-- malformed or unmatched packets pass to the next pipeline;
+- malformed or unmatched nonfragmented packets pass to the next pipeline;
 - exact TCP flows win over wildcard listeners;
 - only supported EasyTier data packet kinds are consumed;
 - modified-source packets that are not local loopback traffic pass through;
-- fragmented UDP response routing remains supported;
-- a packet is consumed only when the owning flow exists.
+- local UDP fragments follow the route selected by the first fragment's
+  destination port. Earlier tails wait for that decision, then continue as
+  original packets, without mirroring or changing packet sizes;
+- a shallow cache retains up to 1,024 routes and 1 MiB of pending packet
+  bytes, with a one-second idle timeout. Expiry and LRU eviction discard
+  pending fragments; they never fall back to a different route. Each new
+  data-plane smoltcp stack uses a random seed to avoid replaying its IP ID
+  sequence. Residual 16-bit ID collisions can still reuse a cached route,
+  causing UDP loss or unintended downstream delivery. This tradeoff is
+  accepted to avoid tracking fragment ranges and completion. Cache hits
+  refresh the idle timeout, so repeated collisions can prolong the effect;
+- a closed UDP binding cannot transfer its cached fragments to a new binding.
+  Address changes and runtime shutdown clear the cache;
+- released batches resume at the next filter in the current pipeline snapshot;
+- nonfragmented packets are consumed only when the owning flow exists.
 
 `DataPlaneRuntime`, not the SOCKS5 Adapter, registers and owns the peer-packet
 pipeline.

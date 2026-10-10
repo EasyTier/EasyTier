@@ -77,7 +77,9 @@ impl SmoltcpPlane {
             tracing::debug!("smoltcp-to-peer bridge stopped");
         });
 
-        let interface_config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
+        // A fixed seed replays IP IDs after the last consumer closes and the
+        // stack is recreated, potentially reusing a remote shallow-cache route.
+        let interface_config = Self::interface_config(rand::random());
         let net = Net::new(
             device,
             NetConfig::new(
@@ -115,6 +117,12 @@ impl SmoltcpPlane {
             generation: DataPlaneIoGuard::new(),
             _forward_tasks: forward_tasks,
         }
+    }
+
+    pub(super) fn interface_config(random_seed: u64) -> smoltcp::iface::Config {
+        let mut config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
+        config.random_seed = random_seed;
+        config
     }
 
     pub(super) fn lease(&self) -> DataPlaneIoGuard {
