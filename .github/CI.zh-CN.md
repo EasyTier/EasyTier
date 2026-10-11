@@ -11,6 +11,11 @@ Test 运行 CI 脚本测试、fmt、clippy、WASI、Cargo.lock 检查，以及
 `easytier`/`easytier-core` 的 Linux 测试（含 `three_node`）。全量模式还逐个
 检查 `easytier` 的 feature，排除 `macos-ne`。
 
+Linux 测试使用一个 runner，nextest 总并发度为 32。网络集成测试为每个测试
+创建独立的 namespace 和网桥。子网代理用例最多同时运行八个；带宽测试、
+使用宿主机全局网络状态的测试和时间敏感的连通性测试优先独占
+执行，完成后再运行并发测试。
+
 这四个 workflow 的构建和测试任务跳过 draft PR。普通构建和 Rust 任务可因
 无关路径或重复内容而跳过。汇总检查为 `core-result`、`gui-result`、
 `mobile-result` 和 `test`。

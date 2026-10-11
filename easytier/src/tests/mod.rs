@@ -1,6 +1,9 @@
 #[cfg(target_os = "linux")]
 mod three_node;
 
+#[cfg(target_os = "linux")]
+mod network;
+
 mod ipv6_test;
 
 #[cfg(target_os = "linux")]
@@ -68,21 +71,34 @@ pub fn del_netns(name: &str) {
         .output();
 }
 
+fn run_network_command(program: &str, args: &[&str]) {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{} {:?} failed: stdout={}, stderr={}",
+        program,
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 pub fn create_netns(name: &str, ipv4: &str, ipv6: &str) {
     // create netns
-    let _ = std::process::Command::new("ip")
-        .args(["netns", "add", name])
-        .output()
-        .unwrap();
+    run_network_command("ip", &["netns", "add", name]);
 
     // set lo up
-    let _ = std::process::Command::new("ip")
-        .args(["netns", "exec", name, "ip", "link", "set", "lo", "up"])
-        .output()
-        .unwrap();
+    run_network_command(
+        "ip",
+        &["netns", "exec", name, "ip", "link", "set", "lo", "up"],
+    );
 
-    let _ = std::process::Command::new("ip")
-        .args([
+    run_network_command(
+        "ip",
+        &[
             "link",
             "add",
             get_host_veth_name(name),
@@ -91,17 +107,17 @@ pub fn create_netns(name: &str, ipv4: &str, ipv6: &str) {
             "peer",
             "name",
             get_guest_veth_name(name),
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
 
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", get_guest_veth_name(name), "netns", name])
-        .output()
-        .unwrap();
+    run_network_command(
+        "ip",
+        &["link", "set", get_guest_veth_name(name), "netns", name],
+    );
 
-    let _ = std::process::Command::new("ip")
-        .args([
+    run_network_command(
+        "ip",
+        &[
             "netns",
             "exec",
             name,
@@ -110,18 +126,15 @@ pub fn create_netns(name: &str, ipv4: &str, ipv6: &str) {
             "set",
             get_guest_veth_name(name),
             "up",
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
 
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", get_host_veth_name(name), "up"])
-        .output()
-        .unwrap();
+    run_network_command("ip", &["link", "set", get_host_veth_name(name), "up"]);
 
     for ip in [ipv4, ipv6] {
-        let _ = std::process::Command::new("ip")
-            .args([
+        run_network_command(
+            "ip",
+            &[
                 "netns",
                 "exec",
                 name,
@@ -131,36 +144,17 @@ pub fn create_netns(name: &str, ipv4: &str, ipv6: &str) {
                 ip,
                 "dev",
                 get_guest_veth_name(name),
-            ])
-            .output()
-            .unwrap();
+            ],
+        );
     }
-}
-
-pub fn prepare_bridge(name: &str) {
-    // del bridge with brctl
-    let _ = std::process::Command::new("brctl")
-        .args(["delbr", name])
-        .output();
-
-    // create new br
-    let _ = std::process::Command::new("brctl")
-        .args(["addbr", name])
-        .output();
 }
 
 pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
     // use brctl to add ns to bridge
-    let _ = std::process::Command::new("brctl")
-        .args(["addif", br_name, get_host_veth_name(ns_name)])
-        .output()
-        .unwrap();
+    run_network_command("brctl", &["addif", br_name, get_host_veth_name(ns_name)]);
 
     // set bridge up
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", br_name, "up"])
-        .output()
-        .unwrap();
+    run_network_command("ip", &["link", "set", br_name, "up"]);
 }
 
 fn check_route(

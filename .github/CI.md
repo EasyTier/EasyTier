@@ -11,6 +11,12 @@ Test runs CI script tests, fmt, clippy, WASI, Cargo.lock validation, and
 Linux tests for `easytier`/`easytier-core`, including `three_node`. Full mode
 also checks each `easytier` feature except `macos-ne`.
 
+Linux tests run on one runner with 32 concurrent nextest processes. Network
+integration tests use separate namespaces and bridges for each test. Subnet
+proxy cases run at most eight at a time. Tests that use host-wide network state,
+measure bandwidth, or make time-sensitive connectivity assertions run first,
+exclusively, before the parallel tests.
+
 These four workflows skip build/test jobs for draft PRs. Path and duplicate
 content checks can skip ordinary builds and Rust jobs. The result jobs are
 `core-result`, `gui-result`, `mobile-result`, and `test`.

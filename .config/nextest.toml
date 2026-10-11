@@ -3,3 +3,28 @@ slow-timeout = { period = "60s", terminate-after = 1 }
 
 [profile.default.junit]
 path = "junit.xml"
+
+[profile.ci]
+test-threads = 32
+
+[test-groups.subnet-proxy]
+max-threads = 8
+
+[[profile.default.overrides]]
+filter = 'test(tests::three_node::subnet_proxy_three_node_test)'
+test-group = 'subnet-proxy'
+
+# These tests modify or inspect host-wide interfaces, routes, or BPF state.
+# They must exclude all other tests, including the isolated network fixtures.
+# Run exclusive tests first so the parallel pool does not repeatedly drain.
+[[profile.default.overrides]]
+filter = 'test(tests::upnp_test) | test(common::ifcfg::netlink::tests) | test(instance::public_ipv6_provider::platform::tests) | test(instance::dns_server::tests) | test(socket::fake_tcp::netfilter::linux_bpf::tests)'
+threads-required = 'num-test-threads'
+priority = 100
+
+# These assertions require a reply within 100 ms, on the first ping, or a
+# minimum measured throughput. Competing tests can delay packet processing.
+[[profile.default.overrides]]
+filter = 'test(tests::three_node::p2p_only_test) | test(tests::three_node::relay_peer_e2e_encryption) | test(relay_bps_limit_test) | test(instance_recv_bps_limit_test)'
+threads-required = 'num-test-threads'
+priority = 100
