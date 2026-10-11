@@ -50,6 +50,15 @@ pub struct Service {
 
 impl Service {
     pub fn new(name: String) -> Result<Self, anyhow::Error> {
+        // OHOS reports target_os = "linux", but has neither systemd nor OpenRC.
+        if cfg!(target_env = "ohos") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "System service management is not supported on HarmonyOS; run easytier-core in the foreground",
+            )
+            .into());
+        }
+
         #[cfg(target_os = "windows")]
         let service_manager = Box::new(self::win_service_manager::WinServiceManager::new()?);
         #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
