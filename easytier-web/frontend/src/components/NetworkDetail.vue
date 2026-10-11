@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { v4 as uuidv4 } from 'uuid';
-import { Button, Column, ConfirmDialog, DataTable, Dialog, Drawer, InputSwitch, InputText, Message, ProgressSpinner, ScrollPanel, Select, SelectButton, Skeleton, Tab, TabList, TabPanel, TabPanels, Tabs, Tag, useConfirm, useToast } from 'primevue';
+import { Button, Checkbox, Column, ConfirmDialog, DataTable, Dialog, Drawer, InputSwitch, InputText, Message, Password, ProgressSpinner, ScrollPanel, Select, SelectButton, Skeleton, Tab, TabList, TabPanel, TabPanels, Tabs, Tag, useConfirm, useToast } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { Config, NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
@@ -290,10 +290,14 @@ const saveMember = async () => {
 const settingsForm = ref({
     display_name: '',
     network_name: '',
+    network_secret: '',
     virtual_cidr: '',
     secure_mode: false,
-    regenerate_secret: false,
 });
+const settingsNoPassword = ref(false);
+// Keep the edit baseline separate from the polled network so unrelated
+// settings changes do not overwrite a secret updated by another session.
+const settingsSecretBaseline = ref('');
 // Initial nodes in the same model as the GUI config form; an empty list
 // means Standalone.
 const initialNodes = ref<string[]>([]);
@@ -321,10 +325,12 @@ const loadSettingsForm = () => {
     settingsForm.value = {
         display_name: network.value.display_name,
         network_name: network.value.network_name,
+        network_secret: network.value.network_secret,
         virtual_cidr: network.value.virtual_cidr ?? '',
         secure_mode: network.value.secure_mode ?? false,
-        regenerate_secret: false,
     };
+    settingsNoPassword.value = network.value.network_secret === '';
+    settingsSecretBaseline.value = network.value.network_secret;
     // Present every networking method as an initial-node list: the gateway
     // URL for gateway networks, the stored peers otherwise.
     switch (network.value.networking_method) {
@@ -350,6 +356,7 @@ const loadSettingsForm = () => {
 };
 
 const saveSettings = async () => {
+    if (savingSettings.value) return;
     savingSettings.value = true;
     try {
         // PublicServer retains its discovery mode while it has a single URL.
@@ -368,8 +375,20 @@ const saveSettings = async () => {
             virtual_cidr: normalizeVirtualSubnet(settingsForm.value.virtual_cidr) || null,
             secure_mode: settingsForm.value.secure_mode,
         };
-        await api?.update_network(networkId.value, settings, settingsForm.value.regenerate_secret ? uuidv4() : undefined);
-        settingsForm.value.regenerate_secret = false;
+        const trimmedSecret = settingsForm.value.network_secret.trim();
+        if (settingsNoPassword.value) {
+            settingsForm.value.network_secret = '';
+        } else {
+            settingsForm.value.network_secret = trimmedSecret;
+        }
+        const secret = settingsForm.value.network_secret !== settingsSecretBaseline.value
+            ? settingsForm.value.network_secret : undefined;
+        const updated = await api?.update_network(networkId.value, settings, secret);
+        if (updated) {
+            settingsForm.value.network_secret = updated.network_secret;
+            settingsNoPassword.value = updated.network_secret === '';
+            settingsSecretBaseline.value = updated.network_secret;
+        }
         await loadAll();
         toast.add({ severity: 'success', summary: t('web.network_detail.settings'), detail: t('web.device_management.config_saved'), life: 2000 });
     } catch (e: any) {
@@ -1159,14 +1178,22 @@ const switchTab = async (tab: string) => {
                     <InputSwitch inputId="settings-secure-mode" v-model="settingsForm.secure_mode" />
                 </div>
                 <div class="flex flex-col gap-1">
-                    <label>{{ t('network_secret') }}</label>
+                    <label for="settings-network-secret">{{ t('network_secret') }}</label>
+                    <div class="flex flex-col sm:flex-row gap-2">
+                        <Password inputId="settings-network-secret" v-model="settingsForm.network_secret"
+                            toggleMask :feedback="false" fluid
+                            class="flex-1 min-w-0" :disabled="savingSettings || settingsNoPassword"
+                            :inputProps="{ autocomplete: 'new-password', 'aria-describedby': 'settings-network-secret-hint' }" />
+                        <Button :label="t('web.network_detail.regenerate_secret')" icon="pi pi-refresh"
+                            severity="secondary" outlined :disabled="savingSettings || settingsNoPassword"
+                            @click="settingsForm.network_secret = uuidv4()" />
+                    </div>
                     <div class="flex items-center gap-2">
-                        <InputText :model-value="network.network_secret" :aria-label="t('network_secret')" readonly class="flex-1 min-w-0" />
+                        <Checkbox inputId="settings-no-password" v-model="settingsNoPassword" :binary="true" :disabled="savingSettings" />
+                        <label for="settings-no-password" class="text-sm">{{ t('web.network_detail.no_password') }}</label>
                     </div>
-                    <div class="flex items-center gap-2 mt-1">
-                        <InputSwitch inputId="regenerate-secret" v-model="settingsForm.regenerate_secret" />
-                        <label for="regenerate-secret" class="text-sm">{{ t('web.network_detail.regenerate_secret') }}</label>
-                    </div>
+                    <small v-if="settingsNoPassword" class="text-500">{{ t('web.network_detail.no_password_hint') }}</small>
+                    <small id="settings-network-secret-hint" class="text-500">{{ t('web.network_detail.network_secret_hint') }}</small>
                 </div>
                 <div v-if="gatewayFollowed()" class="flex items-start gap-2 p-3 surface-100 rounded-md">
                     <i class="pi pi-check-circle text-green-500 mt-0.5"></i>

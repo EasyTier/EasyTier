@@ -396,12 +396,17 @@ impl CentralNetworkService {
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| generated_network_name(&settings.display_name));
         let mode = mode_from_settings(&settings, self.gateway_config())?;
+        // None means auto-generate; Some("") (after trim) means no password;
+        // Some(custom) means use the custom password.
+        let network_secret = network_secret
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(random_secret);
         let intent = CentralNetworkIntent {
             id: Uuid::new_v4(),
             user_id,
             display_name: settings.display_name,
             network_name,
-            network_secret: network_secret.unwrap_or_else(random_secret),
+            network_secret,
             mode,
             virtual_cidr: settings.virtual_cidr,
             secure_mode: settings.secure_mode,
@@ -457,7 +462,7 @@ impl CentralNetworkService {
         }
         intent.virtual_cidr = request.settings.virtual_cidr;
         intent.secure_mode = request.settings.secure_mode;
-        if let Some(secret) = request.network_secret {
+        if let Some(secret) = request.network_secret.map(|s| s.trim().to_string()) {
             intent.network_secret = secret;
         }
         self.persist(intent).await?;

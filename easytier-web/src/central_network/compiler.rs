@@ -42,8 +42,6 @@ pub enum CompileError {
     EmptyDisplayName,
     #[error("network name must not be empty")]
     EmptyNetworkName,
-    #[error("network secret must not be empty")]
-    EmptyNetworkSecret,
     #[error("invalid network URL: {0}")]
     InvalidUrl(String),
     #[error("manual networking requires at least one peer URL")]
@@ -123,7 +121,8 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                 network_length,
                 hostname: member.hostname.clone(),
                 network_name: Some(intent.network_name.clone()),
-                network_secret: (!temporary).then(|| intent.network_secret.clone()),
+                network_secret: (!temporary && !intent.network_secret.is_empty())
+                    .then(|| intent.network_secret.clone()),
                 networking_method: Some(networking_method as i32),
                 public_server_url: public_server_url.clone(),
                 peer_urls: peer_urls.clone(),
@@ -215,9 +214,6 @@ fn validate_network(intent: &CentralNetworkIntent) -> Result<(), CompileError> {
     }
     if intent.network_name.trim().is_empty() {
         return Err(CompileError::EmptyNetworkName);
-    }
-    if intent.network_secret.is_empty() {
-        return Err(CompileError::EmptyNetworkSecret);
     }
     compile_mode(&intent.mode)?;
     Ok(())

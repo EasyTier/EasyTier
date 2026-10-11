@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { Button, Column, DataTable, Dialog, InputSwitch, InputText, Message, Skeleton, Tag, useToast } from 'primevue';
+import { v4 as uuidv4 } from 'uuid';
+import { Button, Checkbox, Column, DataTable, Dialog, InputSwitch, InputText, Message, Password, Skeleton, Tag, useToast } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { UrlListInput, Utils } from 'easytier-frontend-lib';
@@ -55,6 +56,8 @@ const createVisible = ref(false);
 const creating = ref(false);
 const createForm = ref({
     display_name: '',
+    network_secret: '',
+    no_password: false,
     virtual_cidr: '',
     secure_mode: false,
 });
@@ -99,6 +102,8 @@ onUnmounted(() => {
 const openCreate = () => {
     createForm.value = {
         display_name: '',
+        network_secret: '',
+        no_password: false,
         virtual_cidr: '',
         // The built-in gateway speaks the Noise handshake; third-party
         // peers of advanced networking may not, so secure mode defaults on
@@ -137,7 +142,9 @@ const createNetwork = async () => {
                 secure_mode: createForm.value.secure_mode,
             };
         }
-        const detail = await api?.create_network(settings);
+        const trimmedSecret = createForm.value.network_secret.trim();
+        const networkSecret = createForm.value.no_password ? '' : (trimmedSecret || undefined);
+        const detail = await api?.create_network(settings, networkSecret);
         createVisible.value = false;
         await loadNetworks();
         if (detail) {
@@ -214,6 +221,23 @@ const openNetwork = (network: CentralNetworkSummary) => {
                     <InputText id="network-display-name" v-model="createForm.display_name" />
                 </div>
                 <div class="flex flex-col gap-1">
+                    <label for="create-network-secret">{{ t('network_secret') }}</label>
+                    <div class="flex flex-col sm:flex-row gap-2">
+                        <Password inputId="create-network-secret" v-model="createForm.network_secret"
+                            :placeholder="t('web.network_list.network_secret_placeholder')"
+                            toggleMask :feedback="false" fluid class="flex-1 min-w-0" :disabled="creating || createForm.no_password"
+                            :inputProps="{ autocomplete: 'new-password', 'aria-describedby': 'create-network-secret-hint' }" />
+                        <Button :label="t('web.network_list.generate_secret')" icon="pi pi-refresh"
+                            severity="secondary" outlined :disabled="creating || createForm.no_password"
+                            @click="createForm.network_secret = uuidv4()" />
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <Checkbox inputId="create-no-password" v-model="createForm.no_password" :binary="true" :disabled="creating" />
+                        <label for="create-no-password" class="text-sm">{{ t('web.network_list.no_password') }}</label>
+                    </div>
+                    <small v-if="createForm.no_password" class="text-500">{{ t('web.network_list.no_password_hint') }}</small>
+                </div>
+                <div class="flex flex-col gap-1">
                     <div class="flex items-center">
                         <label for="network-cidr">{{ t('web.network_list.virtual_cidr') }}</label>
                         <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('web.network_list.virtual_cidr_hint')"></span>
@@ -243,7 +267,7 @@ const openNetwork = (network: CentralNetworkSummary) => {
                         {{ advancedMode ? t('web.network_list.use_gateway') : t('web.network_list.advanced_mode') }}
                     </button>
                 </div>
-                <div class="text-sm text-500">{{ t('web.network_list.create_hint') }}</div>
+                <div id="create-network-secret-hint" class="text-sm text-500">{{ t('web.network_list.create_hint') }}</div>
             </div>
             <template #footer>
                 <Button :label="t('web.common.cancel')" icon="pi pi-times" text severity="secondary" @click="createVisible = false" />
