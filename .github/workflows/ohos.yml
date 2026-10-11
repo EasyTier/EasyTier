@@ -80,29 +80,62 @@ jobs:
         uses: ErBWs/setup-ohos@v1
 
       - name: Install ohrs
+        if: github.event_name != 'pull_request'
         uses: taiki-e/install-action@v2
         with:
           tool: ohrs
 
-      - name: Build HAR
-        id: package
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      - name: Prepare OHOS tools
         run: |
           set -euo pipefail
           sudo apt-get install -qqy \
             pkg-config curl libgl1-mesa-dev expect llvm clang lldb lld
           rustup component add rustfmt
+
+          sudo mkdir -p "$OHOS_NDK_HOME/native/llvm"
+          sudo tee "$OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh" >/dev/null <<'EOF'
+          #!/bin/sh
+          exec "$OHOS_NDK_HOME/native/llvm/bin/clang" \
+            -target aarch64-linux-ohos \
+            --sysroot="$OHOS_NDK_HOME/native/sysroot" \
+            -D__MUSL__ "$@"
+          EOF
+          sudo chmod +x \
+            "$OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh"
+
+      - name: Check formatting
+        run: |
           cargo fmt --all --manifest-path \
             easytier-contrib/easytier-ohrs/Cargo.toml -- --check
+
+      - name: Test OHOS bridge
+        run: |
           cargo test --locked --manifest-path \
             easytier-contrib/easytier-ohrs/Cargo.toml \
             -p easytier-ohos-core -p easytier-ohos-features \
             --lib -- --test-threads=1
+
+      - name: Check OHOS bindings
+        run: |
           cargo check --locked --manifest-path \
             easytier-contrib/easytier-ohrs/Cargo.toml \
             -p easytier-ohrs --tests
 
+      - name: Check OHOS target
+        if: github.event_name == 'pull_request'
+        working-directory: easytier-contrib/easytier-ohrs
+        run: |
+          source env.sh
+          cargo check --locked -p easytier-ohrs --tests \
+            --target aarch64-unknown-linux-ohos
+
+      - name: Build HAR
+        if: github.event_name != 'pull_request'
+        id: package
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
           cargo_version=$(cargo metadata --format-version 1 --no-deps \
             --manifest-path easytier/Cargo.toml | jq -r '.packages[0].version')
           last_tag=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)
@@ -149,17 +182,6 @@ jobs:
             echo
           } > "$package_dir/CHANGELOG.md"
 
-          sudo mkdir -p "$OHOS_NDK_HOME/native/llvm"
-          sudo tee "$OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh" >/dev/null <<'EOF'
-          #!/bin/sh
-          exec "$OHOS_NDK_HOME/native/llvm/bin/clang" \
-            -target aarch64-linux-ohos \
-            --sysroot="$OHOS_NDK_HOME/native/sysroot" \
-            -D__MUSL__ "$@"
-          EOF
-          sudo chmod +x \
-            "$OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh"
-
           cd easytier-contrib/easytier-ohrs
           source env.sh
           ohrs build --release --arch aarch
@@ -167,6 +189,7 @@ jobs:
           mv package.har "$package_name.har"
 
       - name: Upload HAR
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.package.outputs.name }}

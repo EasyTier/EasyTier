@@ -57,6 +57,8 @@ It downloads their artifacts and creates a draft release.
 
 ## Other workflows
 
-- OHOS runs independently; relevant PRs can still upload HAR artifacts.
+- OHOS runs independently. Relevant PRs run bridge tests and check the bindings
+  for the host and ARM64 OHOS. Non-PR runs build and upload HAR artifacts;
+  publishing and downstream builds retain their existing main/manual conditions.
 - Go, JavaScript Hosts, and Nix use their own path filters.
 - Docker is manual; it downloads a specified Core run's artifacts and pushes images.
