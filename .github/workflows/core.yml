@@ -37,8 +37,17 @@ jobs:
         "easytier-core/**", "easytier-proto/**", "easytier-rpc-build/**",
         "easytier-web/**", "easytier-contrib/easytier-magisk/**",
         ".github/workflows/core.yml", ".github/actions/**"]
+      FRONTEND_PATHS: >-
+        ["easytier-web/frontend/**", "easytier-web/frontend-lib/**",
+        "easytier-web/config-generator/**", "easytier-proto/proto/**",
+        "easytier-core/src/config/**", "easytier-core/src/lib.rs",
+        "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json",
+        "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
+        "easytier-core/Cargo.toml", "easytier-proto/Cargo.toml",
+        ".github/workflows/core.yml", ".github/actions/prepare-pnpm/**"]
     outputs:
       full_build: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
+      frontend_changed: ${{ steps.path_filter.outputs.frontend }}
       # Release builds must run even if they only change release metadata.
       should_skip: >-
         ${{
@@ -69,10 +78,11 @@ jobs:
         with:
           filters: |
             relevant: ${{ env.RELEVANT_PATHS }}
+            frontend: ${{ env.FRONTEND_PATHS }}
 
   check:
     name: Check (${{ matrix.TARGET }})
-    needs: [ pre_job, build_web ]
+    needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.full_build != 'true'
     strategy:
       fail-fast: true
@@ -91,11 +101,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: easytier-web-dashboard
-          path: easytier-web/frontend/dist/
-
       - uses: ./.github/actions/prepare-build
         with:
           target: ${{ matrix.TARGET }}
@@ -109,14 +114,18 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Check Core and Web
-        run: |
-          cargo check --locked --all-targets --target ${{ matrix.TARGET }} --features ${{ matrix.FEATURES }}
-          cargo check --locked --target ${{ matrix.TARGET }} --package easytier-web --features embed
+        run: cargo check --locked --all-targets --target ${{ matrix.TARGET }} --features ${{ matrix.FEATURES }}
 
   build_web:
     runs-on: ubuntu-latest
     needs: pre_job
-    if: needs.pre_job.outputs.should_skip != 'true'
+    if: >-
+      needs.pre_job.outputs.should_skip != 'true' &&
+      (
+        needs.pre_job.outputs.full_build == 'true' ||
+        github.event_name != 'pull_request' ||
+        needs.pre_job.outputs.frontend_changed == 'true'
+      )
     steps:
       - uses: actions/checkout@v5
 
@@ -127,6 +136,7 @@ jobs:
           build-filter: './easytier-web/*'
 
       - name: Archive artifact
+        if: needs.pre_job.outputs.full_build == 'true'
         uses: actions/upload-artifact@v5
         with:
           name: easytier-web-dashboard

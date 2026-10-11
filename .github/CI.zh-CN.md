@@ -15,9 +15,14 @@ Test 运行 CI 脚本测试、fmt、clippy、WASI、Cargo.lock 检查，以及
 无关路径或重复内容而跳过。汇总检查为 `core-result`、`gui-result`、
 `mobile-result` 和 `test`。
 
-PR 可上传供 CI 内部复用的 Web 前端和测试归档。Core 二进制、GUI 安装包、
-APK 和 Magisk 产物仅在全量模式上传。编译产物启用缓存。普通 push 不会取消
-全量构建。
+PR 仅在前端、Core 配置源码、schema 或构建配置变化时构建 Web 前端。
+普通分支 push 仍构建 Web 前端。Core 检查独立运行；Web 的嵌入模式仅在
+全量构建中编译。
+Test 在普通模式下跳过前端构建，测试归档仅构建 Rust 包。
+
+PR 可上传供 CI 内部复用的测试归档。Web 前端仅在全量模式上传。
+Core 二进制、GUI 安装包、APK 和 Magisk 产物仅在全量模式上传。编译产物
+启用缓存。普通 push 不会取消全量构建。
 
 ## 每日构建
 

@@ -92,7 +92,7 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          pnpm: true
+          pnpm: ${{ needs.pre_job.outputs.full_build == 'true' }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -147,8 +147,8 @@ jobs:
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
         with:
-          gui: true
-          pnpm: true
+          gui: false
+          pnpm: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2

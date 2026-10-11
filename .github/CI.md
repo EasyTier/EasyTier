@@ -15,7 +15,14 @@ These four workflows skip build/test jobs for draft PRs. Path and duplicate
 content checks can skip ordinary builds and Rust jobs. The result jobs are
 `core-result`, `gui-result`, `mobile-result`, and `test`.
 
-PR runs can upload the dashboard and test archive for reuse within CI.
+PR dashboard builds run only for frontend, Core configuration, schema, or
+build configuration changes. Ordinary branch pushes build the dashboard.
+Core checks run independently; Web embedding is compiled only in full mode.
+Test skips the frontend build in ordinary mode; its test archive builds
+only Rust packages.
+
+PR runs can upload the test archive for reuse within CI. The dashboard is
+uploaded only in full mode.
 Core binaries, GUI installers, APKs, and Magisk artifacts require full mode.
 Compilation outputs are cached. Ordinary pushes do not cancel full builds.
 
