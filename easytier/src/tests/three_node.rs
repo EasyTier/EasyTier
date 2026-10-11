@@ -4525,6 +4525,7 @@ pub async fn whitelist_test(
     }
 
     if test_outbound_allow_list {
+        drop_insts(insts).await;
         return;
     }
 

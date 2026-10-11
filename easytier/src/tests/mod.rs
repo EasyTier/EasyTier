@@ -78,9 +78,10 @@ fn run_network_command(program: &str, args: &[&str]) {
         .unwrap();
     assert!(
         output.status.success(),
-        "{} {:?} failed: stdout={}, stderr={}",
+        "{} {:?} failed ({}): stdout={}, stderr={}",
         program,
         args,
+        output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

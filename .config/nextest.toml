@@ -25,6 +25,6 @@ priority = 100
 # These assertions require a reply within 100 ms, on the first ping, or a
 # minimum measured throughput. Competing tests can delay packet processing.
 [[profile.default.overrides]]
-filter = 'test(tests::three_node::p2p_only_test) | test(tests::three_node::relay_peer_e2e_encryption) | test(relay_bps_limit_test) | test(instance_recv_bps_limit_test)'
+filter = 'test(tests::three_node::p2p_only_test) | test(tests::three_node::relay_peer_e2e_encryption) | test(tests::three_node::whitelist_test) | test(relay_bps_limit_test) | test(instance_recv_bps_limit_test)'
 threads-required = 'num-test-threads'
 priority = 100
