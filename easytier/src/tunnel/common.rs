@@ -94,13 +94,7 @@ fn setup_socket2_ext(
         let _ = reuse_port;
     }
 
-    if let Err(e) = socket2_socket.bind(&socket2::SockAddr::from(*bind_addr)) {
-        if bind_addr.is_ipv4() {
-            return Err(e.into());
-        } else {
-            tracing::warn!(?e, "bind failed, do not return error for ipv6");
-        }
-    }
+    socket2_socket.bind(&socket2::SockAddr::from(*bind_addr))?;
 
     // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
     // win can handle this with bind correctly
@@ -254,15 +248,82 @@ pub(crate) mod tests {
 
     use anyhow::Context as _;
     use futures::{Future, SinkExt, StreamExt};
+    use tokio::net::{TcpListener, TcpSocket, UdpSocket};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
     use tokio_util::task::AbortOnDropHandle;
 
     use easytier_core::{
-        connectivity::protocol::raw::TunnelDialer, packet::ZCPacket, socket::SocketListener,
-        tunnel::Tunnel,
+        connectivity::protocol::raw::TunnelDialer,
+        packet::ZCPacket,
+        socket::SocketListener,
+        tunnel::{Tunnel, TunnelError},
     };
 
     use crate::common::netns::NetNS;
+
+    #[tokio::test]
+    async fn bind_rejects_occupied_ports() {
+        for ip in ["127.0.0.1", "::1"] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            let occupied_udp = std::net::UdpSocket::bind((ip, 0)).unwrap();
+            let occupied_tcp = std::net::TcpListener::bind((ip, 0)).unwrap();
+            let udp_addr = occupied_udp.local_addr().unwrap();
+            let tcp_addr = occupied_tcp.local_addr().unwrap();
+
+            for error in [
+                super::bind::<UdpSocket>()
+                    .addr(udp_addr)
+                    .call()
+                    .await
+                    .unwrap_err(),
+                super::bind::<TcpSocket>()
+                    .addr(tcp_addr)
+                    .call()
+                    .await
+                    .unwrap_err(),
+                super::bind::<TcpListener>()
+                    .addr(tcp_addr)
+                    .call()
+                    .await
+                    .unwrap_err(),
+            ] {
+                assert!(matches!(
+                    error,
+                    TunnelError::IOError(error) if error.kind() == std::io::ErrorKind::AddrInUse
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_nonlocal_ipv6_address() {
+        let addr = "[2001:db8::ffff]:0".parse().unwrap();
+        for error in [
+            super::bind::<UdpSocket>()
+                .addr(addr)
+                .dev(super::BindDev::Disabled)
+                .call()
+                .await
+                .unwrap_err(),
+            super::bind::<TcpSocket>()
+                .addr(addr)
+                .dev(super::BindDev::Disabled)
+                .call()
+                .await
+                .unwrap_err(),
+            super::bind::<TcpListener>()
+                .addr(addr)
+                .dev(super::BindDev::Disabled)
+                .call()
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(matches!(
+                error,
+                TunnelError::IOError(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable
+            ));
+        }
+    }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     #[test]
