@@ -985,8 +985,10 @@ async fn assert_shared_visibility_stable(
             );
         }
 
-        let ping_from_admin_a = ping_test(network.namespace("ns_adm"), peer_ip, None).await;
-        let ping_from_admin_c = ping_test(network.namespace("ns_c3"), peer_ip, None).await;
+        let (ping_from_admin_a, ping_from_admin_c) = tokio::join!(
+            ping_test(network.namespace("ns_adm"), peer_ip, None),
+            ping_test(network.namespace("ns_c3"), peer_ip, None),
+        );
         if should_exist {
             assert!(ping_from_admin_a, "admin_a should reach {}", label);
             assert!(ping_from_admin_c, "admin_c should reach {}", label);
