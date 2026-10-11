@@ -122,13 +122,14 @@ impl Service {
              }| {
                 quote! {
                     #method_str | #method_proto_str => {
-                        let req: #Input = crate::ignored::deserialize(json, |path| {
+                        let req: #Input = ::serde_unknown::DeserializerExt::deserialize(json, |path| {
                             ::tracing::error!(
                                 service = #Service_str,
                                 method = #method_str,
                                 field = %path,
                                 "Ignored unknown RPC request field"
                             );
+                            Ok(())
                         })
                             .map_err(|e| #namespace::error::Error::MalformatRpcPacket(format!("json error: {}", e)))?;
                         let resp = self.#method(ctrl, req).await?;
