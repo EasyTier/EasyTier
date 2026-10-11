@@ -2,6 +2,11 @@ name: EasyTier Core
 
 on:
   workflow_dispatch:
+    inputs:
+      sign_windows:
+        description: Submit Windows artifacts for SignPath test signing
+        type: boolean
+        default: true
   push:
     branches: [ "develop", "main", "releases/**" ]
   pull_request:
@@ -9,7 +14,8 @@ on:
     types: [ opened, synchronize, reopened, ready_for_review ]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A new PR or branch push must not cancel a full build.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -32,6 +38,7 @@ jobs:
         "easytier-web/**", "easytier-contrib/easytier-magisk/**",
         ".github/workflows/core.yml", ".github/actions/**"]
     outputs:
+      full_build: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
       # Release builds must run even if they only change release metadata.
       should_skip: >-
         ${{
@@ -42,15 +49,16 @@ jobs:
               steps.path_filter.outputs.relevant != 'true'
             )
           ) &&
+          github.event_name != 'workflow_dispatch' &&
           !startsWith(github.ref_name, 'releases/')
         }}
     steps:
       - id: skip_check
+        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/')
         uses: fkirc/skip-duplicate-actions@v5
         with:
           concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
-          cancel_others: 'true'
           paths: ${{ env.RELEVANT_PATHS }}
 
       - id: path_filter
@@ -61,6 +69,50 @@ jobs:
         with:
           filters: |
             relevant: ${{ env.RELEVANT_PATHS }}
+
+  check:
+    name: Check (${{ matrix.TARGET }})
+    needs: [ pre_job, build_web ]
+    if: needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.full_build != 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - TARGET: x86_64-unknown-linux-musl
+            OS: ubuntu-24.04
+            FEATURES: jemalloc
+          - TARGET: aarch64-apple-darwin
+            OS: macos-latest
+            FEATURES: jemalloc
+          - TARGET: x86_64-pc-windows-msvc
+            OS: windows-latest
+            FEATURES: mimalloc
+    runs-on: ${{ matrix.OS }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: easytier-web-dashboard
+          path: easytier-web/frontend/dist/
+
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.TARGET }}
+          gui: false
+          pnpm: false
+          token: ${{ github.token }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core-check-${{ matrix.TARGET }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+
+      - name: Check Core and Web
+        run: |
+          cargo check --locked --all-targets --target ${{ matrix.TARGET }} --features ${{ matrix.FEATURES }}
+          cargo check --locked --target ${{ matrix.TARGET }} --package easytier-web --features embed
+
   build_web:
     runs-on: ubuntu-latest
     needs: pre_job
@@ -150,7 +202,7 @@ jobs:
     needs:
       - pre_job
       - build_web
-    if: needs.pre_job.outputs.should_skip != 'true'
+    if: needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.full_build == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -168,8 +220,8 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           target: ${{ matrix.TARGET }}
-          gui: true
-          pnpm: true
+          gui: false
+          pnpm: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
@@ -177,8 +229,8 @@ jobs:
           # The prefix cache key, this can be changed to start a new cache manually.
           # default: "v0-rust"
           prefix-key: ""
-          shared-key: "core-registry"
-          cache-targets: "false"
+          shared-key: core-release-${{ matrix.TARGET }}
+          cache-targets: "true"
 
       - uses: mlugg/setup-zig@v2
         if: ${{ contains(matrix.OS, 'ubuntu') }}
@@ -286,7 +338,7 @@ jobs:
             ./artifacts/*
 
       - name: Prepare SignPath test artifact
-        if: ${{ github.event_name == 'workflow_dispatch' && contains(matrix.TARGET, 'windows') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
         run: |
           mkdir -p ./signpath-artifacts
           cp \
@@ -297,7 +349,7 @@ jobs:
             ./signpath-artifacts/
 
       - name: Upload unsigned SignPath test artifact
-        if: ${{ github.event_name == 'workflow_dispatch' && contains(matrix.TARGET, 'windows') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
         id: signpath-upload
         uses: actions/upload-artifact@v5
         with:
@@ -306,7 +358,7 @@ jobs:
           if-no-files-found: error
 
       - name: Submit SignPath test-signing request
-        if: ${{ github.event_name == 'workflow_dispatch' && contains(matrix.TARGET, 'windows') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -319,7 +371,7 @@ jobs:
           output-artifact-directory: ./signpath-signed-artifacts
 
       - name: Upload signed SignPath test artifact
-        if: ${{ github.event_name == 'workflow_dispatch' && contains(matrix.TARGET, 'windows') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
         uses: actions/upload-artifact@v5
         with:
           name: signpath-signed-${{ matrix.ARTIFACT_NAME }}
@@ -329,7 +381,7 @@ jobs:
   build_magisk:
     runs-on: ubuntu-latest
     needs: [ pre_job, build_web, build ]
-    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.full_build == 'true' && !cancelled()
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5  # 必须先检出代码才能获取模块配置
@@ -371,9 +423,9 @@ jobs:
 
   core-result:
     runs-on: ubuntu-latest
-    needs: [ pre_job, build_web, build, build_magisk ]
-    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    needs: [ pre_job, check, build_web, build, build_magisk ]
+    if: ${{ always() }}
     steps:
       - name: Mark result as failed
-        if: contains(needs.*.result, 'failure')
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
