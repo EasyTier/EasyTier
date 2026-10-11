@@ -33,6 +33,7 @@ sha2 = { workspace = true, optional = true }
 strum = { workspace = true, features = ["derive"], optional = true }
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }
+tracing = { workspace = true, optional = true }
 url = { workspace = true, features = ["serde"], optional = true }
 uuid = { workspace = true, features = ["serde"], optional = true }
 x25519-dalek = { workspace = true, features = ["static_secrets"], optional = true }
@@ -109,7 +110,7 @@ utils = []
 websocket = []
 wireguard = []
 zstd = []
-json-rpc = ["dep:prost-wkt-types"]
+json-rpc = ["dep:prost-wkt-types", "dep:tracing"]
 
 [package.metadata.cargo-machete]
 ignored = [

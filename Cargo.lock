@@ -2885,6 +2885,7 @@ dependencies = [
  "strum 0.28.0",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
  "url",
  "uuid",
  "x25519-dalek 2.0.1",

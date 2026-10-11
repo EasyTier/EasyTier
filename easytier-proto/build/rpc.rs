@@ -107,6 +107,7 @@ impl Service {
             namespace,
             doc,
             Service,
+            Service_str,
             methods,
             ..
         } = self;
@@ -121,7 +122,14 @@ impl Service {
              }| {
                 quote! {
                     #method_str | #method_proto_str => {
-                        let req: #Input = ::serde_json::from_value(json)
+                        let req: #Input = crate::ignored::deserialize(json, |path| {
+                            ::tracing::error!(
+                                service = #Service_str,
+                                method = #method_str,
+                                field = %path,
+                                "Ignored unknown RPC request field"
+                            );
+                        })
                             .map_err(|e| #namespace::error::Error::MalformatRpcPacket(format!("json error: {}", e)))?;
                         let resp = self.#method(ctrl, req).await?;
                         Ok(::serde_json::to_value(resp)
