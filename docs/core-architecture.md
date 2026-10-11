@@ -430,6 +430,9 @@ the platform VPN owns its addresses, routes, and MTU.
 If applying native claims fails, the shared NIC is invalidated and its
 dispatcher is stopped so every member can recreate the device. Restoring only
 the recorded claims would leave partially applied OS configuration in use.
+TUN replacement and I/O failures also invalidate the shared NIC. TUN writes
+have bounded waits so a stalled device cannot indefinitely block claim updates
+or member cleanup.
 
 Desktop and mobile shared TUNs use the same lazily initialized native Tokio
 runtime, independent of every member's executor. It creates the device's async

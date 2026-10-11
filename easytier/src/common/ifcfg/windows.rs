@@ -9,7 +9,7 @@ use std::{
 };
 use windows::Win32::NetworkManagement::IpHelper::INTERNAL_IF_OPER_STATUS;
 use windows::Win32::{
-    Foundation::NO_ERROR,
+    Foundation::{ERROR_NOT_FOUND, NO_ERROR},
     NetworkManagement::IpHelper::{GetIfEntry, MIB_IFROW, SetIfEntry},
     System::Diagnostics::Debug::{
         FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
@@ -24,6 +24,13 @@ use winreg::{
 use super::{Error, IfConfiguerTrait};
 #[derive(Default)]
 pub struct WindowsIfConfiger {}
+
+fn ignore_removed_not_found(result: Result<(), u32>) -> Result<(), u32> {
+    match result {
+        Err(error) if error == ERROR_NOT_FOUND.0 => Ok(()),
+        other => other,
+    }
+}
 
 fn format_win_error(error: u32) -> String {
     // use FormatMessageW to get the error message
@@ -75,7 +82,7 @@ impl WindowsIfConfiger {
             anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
         })?;
         if let Some(addr) = addr {
-            luid.delete_ipv4_address(&addr).map_err(|e| {
+            ignore_removed_not_found(luid.delete_ipv4_address(&addr)).map_err(|e| {
                 anyhow::anyhow!("Failed to delete IPv4 address: {}", format_win_error(e))
             })?;
         } else {
@@ -168,7 +175,7 @@ impl WindowsIfConfiger {
             anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
         })?;
         if let Some(addr) = addr {
-            luid.delete_ipv6_address(&addr).map_err(|e| {
+            ignore_removed_not_found(luid.delete_ipv6_address(&addr)).map_err(|e| {
                 anyhow::anyhow!("Failed to delete IPv6 address: {}", format_win_error(e))
             })?;
         } else {
@@ -217,10 +224,10 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
             anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
         })?;
-        luid.delete_route_ipv4(
+        ignore_removed_not_found(luid.delete_route_ipv4(
             &Ipv4Inet::new(address, cidr_prefix).unwrap(),
             &Ipv4Addr::UNSPECIFIED,
-        )
+        ))
         .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", format_win_error(e)))?;
         Ok(())
     }
@@ -307,10 +314,10 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
         })?;
 
-        luid.delete_route_ipv6(
+        ignore_removed_not_found(luid.delete_route_ipv6(
             &Ipv6Inet::new(address, cidr_prefix).unwrap(),
             &Ipv6Addr::UNSPECIFIED,
-        )
+        ))
         .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", format_win_error(e)))?;
         Ok(())
     }
@@ -529,5 +536,26 @@ impl RegistryManager {
             "NetbiosOptions",
             2,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ERROR_NOT_FOUND, ignore_removed_not_found};
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER,
+    };
+
+    #[test]
+    fn removed_windows_ifcfg_ignores_only_not_found() {
+        assert_eq!(ignore_removed_not_found(Ok(())), Ok(()));
+        assert_eq!(ignore_removed_not_found(Err(ERROR_NOT_FOUND.0)), Ok(()));
+        for error in [
+            ERROR_ACCESS_DENIED.0,
+            ERROR_INVALID_PARAMETER.0,
+            ERROR_FILE_NOT_FOUND.0,
+        ] {
+            assert_eq!(ignore_removed_not_found(Err(error)), Err(error));
+        }
     }
 }

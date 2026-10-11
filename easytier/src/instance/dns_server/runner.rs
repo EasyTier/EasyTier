@@ -5,15 +5,7 @@ use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 
 use easytier_core::instance::CorePacketPlane;
 
-use crate::{
-    common::{
-        error::Error as EtError,
-        global_ctx::ArcGlobalCtx,
-        ifcfg::{IfConfiger, IfConfiguerTrait},
-        netns::NetNS,
-    },
-    instance::virtual_nic::NicBackend,
-};
+use crate::{common::global_ctx::ArcGlobalCtx, instance::virtual_nic::NicBackend};
 
 use super::{client_instance::MagicDnsClientInstance, server_instance::MagicDnsServerInstance};
 
@@ -30,8 +22,6 @@ pub struct DnsRunner {
 }
 
 struct MagicDnsFakeIpRouteClaim {
-    tun_dev: Option<String>,
-    net_ns: NetNS,
     fake_ip: Ipv4Addr,
     route_backend: NicBackend,
 }
@@ -44,26 +34,10 @@ impl MagicDnsFakeIpRouteClaim {
             None
         };
 
-        match self
-            .route_backend
+        self.route_backend
             .add_route_with_cost(self.fake_ip, 32, cost)
-            .await
-        {
-            Err(EtError::IOError(err))
-                if err.kind() == std::io::ErrorKind::AlreadyExists && self.tun_dev.is_some() =>
-            {
-                let ifcfg = IfConfiger::default();
-                let _guard = self.net_ns.guard();
-                ifcfg
-                    .remove_ipv4_route(self.tun_dev.as_deref().unwrap(), self.fake_ip, 32)
-                    .await?;
-                self.route_backend
-                    .add_route_with_cost(self.fake_ip, 32, cost)
-                    .await?;
-                Ok(())
-            }
-            result => result.map_err(Into::into),
-        }
+            .await?;
+        Ok(())
     }
 
     async fn remove(&self) {
@@ -119,8 +93,6 @@ impl DnsRunner {
         }
 
         Some(MagicDnsFakeIpRouteClaim {
-            tun_dev: self.tun_dev.clone(),
-            net_ns: self.global_ctx.net_ns.clone(),
             fake_ip: self.fake_ip,
             route_backend: self.shared_route_backend.clone()?,
         })

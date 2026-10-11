@@ -14,13 +14,13 @@ use smoltcp::wire::{
     Icmpv4Message, Icmpv4Packet, Icmpv6Message, Icmpv6Packet, IpAddress, IpProtocol, Ipv4Packet,
     Ipv6Packet, TcpPacket, UdpPacket,
 };
-#[cfg(mobile)]
+#[cfg(any(mobile, all(test, unix)))]
 use tokio::sync::Mutex;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::common::error::Error;
-#[cfg(mobile)]
+#[cfg(any(mobile, all(test, unix)))]
 use crate::instance::virtual_nic::VirtualNic;
 use easytier_core::{
     packet::ZCPacket,
@@ -37,13 +37,14 @@ const FLOW_OWNER_LIMIT: usize = 4096;
 // Match the core UDP proxy's idle lifetime; reclaim lazily under table pressure.
 const FLOW_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const DISPATCHER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const DISPATCHER_TUN_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct SharedVirtualNicMemberPacket {
     member_id: SharedVirtualNicMemberId,
     packet: ZCPacket,
 }
 
-#[cfg(mobile)]
+#[cfg(any(mobile, all(test, unix)))]
 struct SharedVirtualNicMobileTunUpdate {
     tun_fd: std::os::fd::RawFd,
     ack: oneshot::Sender<Result<(), Error>>,
@@ -781,6 +782,14 @@ fn acknowledge_dispatcher_shutdown(ack: Option<oneshot::Sender<()>>) {
     }
 }
 
+async fn send_packet_to_tun(
+    tun_sink: &mut Pin<Box<dyn ZCPacketSink>>,
+    packet: ZCPacket,
+) -> Result<(), Error> {
+    tokio::time::timeout(DISPATCHER_TUN_WRITE_TIMEOUT, tun_sink.send(packet)).await??;
+    Ok(())
+}
+
 struct SharedVirtualNicDispatcherTask {
     tun_stream: Pin<Box<dyn ZCPacketStream>>,
     tun_sink: Pin<Box<dyn ZCPacketSink>>,
@@ -849,7 +858,7 @@ impl SharedVirtualNicDispatcherTask {
         else {
             return true;
         };
-        if let Err(err) = self.tun_sink.send(packet).await {
+        if let Err(err) = send_packet_to_tun(&mut self.tun_sink, packet).await {
             tracing::error!(?err, "shared virtual nic write to tun failed");
             return false;
         }
@@ -857,7 +866,7 @@ impl SharedVirtualNicDispatcherTask {
     }
 }
 
-#[cfg(mobile)]
+#[cfg(any(mobile, all(test, unix)))]
 struct SharedVirtualNicMobileDispatcherTask {
     nic: Arc<Mutex<VirtualNic>>,
     tun_stream: Option<Pin<Box<dyn ZCPacketStream>>>,
@@ -871,8 +880,9 @@ struct SharedVirtualNicMobileDispatcherTask {
     state: SharedVirtualNicDispatcherState,
 }
 
-#[cfg(mobile)]
+#[cfg(any(mobile, all(test, unix)))]
 impl SharedVirtualNicMobileDispatcherTask {
+    #[cfg(mobile)]
     async fn run(mut self, first_open_sender: oneshot::Sender<Result<(), Error>>) {
         match self.open_tun().await {
             Ok(()) => {
@@ -888,6 +898,10 @@ impl SharedVirtualNicMobileDispatcherTask {
             }
         }
 
+        self.run_opened_tun().await;
+    }
+
+    async fn run_opened_tun(mut self) {
         loop {
             tokio::select! {
                 control = self.control_receiver.recv() => {
@@ -900,7 +914,10 @@ impl SharedVirtualNicMobileDispatcherTask {
                         self.cleanup(true);
                         return;
                     };
-                    self.forward_member_packet_to_tun(member_packet).await;
+                    if !self.forward_member_packet_to_tun(member_packet).await {
+                        self.cleanup(true);
+                        return;
+                    }
                 }
                 packet = async {
                     match self.tun_stream.as_mut() {
@@ -910,14 +927,15 @@ impl SharedVirtualNicMobileDispatcherTask {
                 } => {
                     let Some(packet) = packet else {
                         tracing::error!("shared virtual nic mobile tun stream closed");
-                        self.drop_tun();
-                        continue;
+                        self.cleanup(true);
+                        return;
                     };
                     match packet {
                         Ok(packet) => self.state.forward_tun_packet_to_member(packet).await,
                         Err(err) => {
                             tracing::error!(?err, "shared virtual nic read from mobile tun failed");
-                            self.drop_tun();
+                            self.cleanup(true);
+                            return;
                         }
                     }
                 }
@@ -926,7 +944,9 @@ impl SharedVirtualNicMobileDispatcherTask {
                         self.cleanup(true);
                         return;
                     };
-                    self.apply_tun_update(update).await;
+                    if !self.apply_tun_update(update).await {
+                        return;
+                    }
                 }
             }
         }
@@ -942,39 +962,42 @@ impl SharedVirtualNicMobileDispatcherTask {
         Ok(())
     }
 
-    async fn apply_tun_update(&mut self, update: SharedVirtualNicMobileTunUpdate) {
+    async fn apply_tun_update(&mut self, update: SharedVirtualNicMobileTunUpdate) -> bool {
         self.drop_tun();
         self.tun_fd = update.tun_fd;
         match self.open_tun().await {
             Ok(()) => {
                 let _ = update.ack.send(Ok(()));
+                true
             }
             Err(err) => {
                 tracing::error!(fd = self.tun_fd, ?err, "failed to replace mobile tun");
+                self.cleanup(true);
                 let _ = update.ack.send(Err(err));
+                false
             }
         }
     }
 
-    async fn forward_member_packet_to_tun(&mut self, member_packet: SharedVirtualNicMemberPacket) {
+    async fn forward_member_packet_to_tun(
+        &mut self,
+        member_packet: SharedVirtualNicMemberPacket,
+    ) -> bool {
         let Some(packet) = self
             .state
             .prepare_member_packet_to_tun(member_packet.member_id, member_packet.packet)
         else {
-            return;
+            return true;
         };
         let Some(tun_sink) = self.tun_sink.as_mut() else {
-            tracing::trace!(
-                member_id = ?member_packet.member_id,
-                "shared virtual nic dropped member packet without mobile tun"
-            );
-            return;
+            return false;
         };
 
-        if let Err(err) = tun_sink.send(packet).await {
+        if let Err(err) = send_packet_to_tun(tun_sink, packet).await {
             tracing::error!(?err, "shared virtual nic write to mobile tun failed");
-            self.drop_tun();
+            return false;
         }
+        true
     }
 
     fn handle_control(&mut self, control: Option<SharedVirtualNicControl>) -> bool {
@@ -1978,6 +2001,240 @@ mod tests {
             sender,
             close_notifier: Arc::new(Notify::new()),
             _tasks: Vec::new(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn start_mobile_dispatcher_for_test(
+        tunnel: Box<dyn Tunnel>,
+        member_tunnel_table: SharedVirtualNicMemberTunnelTable,
+        valid: Arc<AtomicBool>,
+    ) -> (
+        SharedVirtualNicDispatcher,
+        mpsc::UnboundedSender<SharedVirtualNicMobileTunUpdate>,
+    ) {
+        use crate::{common::netns::NetNS, instance::virtual_nic::VirtualNicConfig};
+
+        let (tun_stream, tun_sink) = tunnel.split();
+        let (to_tun_sender, to_tun_receiver) = mpsc::channel(MEMBER_TUNNEL_BUFFER_SIZE);
+        let (control_sender, control_receiver) = mpsc::unbounded_channel();
+        let (tun_update_sender, tun_update_receiver) = mpsc::unbounded_channel();
+        member_tunnel_table.attach_dispatcher(to_tun_sender, control_sender.clone());
+        let task = SharedVirtualNicMobileDispatcherTask {
+            nic: Arc::new(Mutex::new(VirtualNic::new(VirtualNicConfig::new(
+                String::new(),
+                1300,
+                NetNS::new(None),
+            )))),
+            tun_stream: Some(tun_stream),
+            tun_sink: Some(tun_sink),
+            tun_fd: -1,
+            tun_update_receiver,
+            to_tun_receiver,
+            control_receiver,
+            member_tunnel_table,
+            valid,
+            state: SharedVirtualNicDispatcherState {
+                translate_unknown_sources: true,
+                ..Default::default()
+            },
+        };
+        let dispatcher = SharedVirtualNicDispatcher {
+            _task: AbortOnDropHandle::new(tokio::spawn(task.run_opened_tun())),
+            control_sender,
+            #[cfg(mobile)]
+            mobile_tun_update_sender: Some(tun_update_sender.clone()),
+        };
+        (dispatcher, tun_update_sender)
+    }
+
+    async fn register_dispatcher_test_members(
+        dispatcher: &SharedVirtualNicDispatcher,
+        member_tunnel_table: &SharedVirtualNicMemberTunnelTable,
+    ) -> (Vec<Box<dyn Tunnel>>, Vec<Arc<Notify>>) {
+        let mut tunnels = Vec::new();
+        let mut close_notifiers = Vec::new();
+        for id in 1..=2 {
+            let member_id = uuid::Uuid::from_u128(id);
+            let close_notifier = Arc::new(Notify::new());
+            let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
+            member_tunnel_table
+                .register(
+                    member_id,
+                    uuid::Uuid::new_v4(),
+                    shared_tunnel,
+                    close_notifier.clone(),
+                )
+                .unwrap();
+            dispatcher
+                .update_sources(member_id, &SharedIfConfigClaims::default())
+                .await
+                .unwrap();
+            tunnels.push(member_tunnel);
+            close_notifiers.push(close_notifier);
+        }
+        (tunnels, close_notifiers)
+    }
+
+    fn stalled_tun_for_test() -> (Box<dyn Tunnel>, Arc<Notify>) {
+        let writing = Arc::new(Notify::new());
+        let sink_writing = writing.clone();
+        let tun_sink = futures::sink::unfold((), move |(), _packet: ZCPacket| {
+            let writing = sink_writing.clone();
+            async move {
+                writing.notify_one();
+                std::future::pending::<Result<(), TunnelError>>().await
+            }
+        });
+        let tun_stream = futures::stream::pending::<Result<ZCPacket, TunnelError>>();
+        (
+            Box::new(TunnelWrapper::new(tun_stream, tun_sink, None)),
+            writing,
+        )
+    }
+
+    async fn check_dispatcher_tun_write_timeout(
+        dispatcher: SharedVirtualNicDispatcher,
+        member_tunnel_table: SharedVirtualNicMemberTunnelTable,
+        valid: Arc<AtomicBool>,
+        writing: Arc<Notify>,
+    ) {
+        let (members, close_notifiers) =
+            register_dispatcher_test_members(&dispatcher, &member_tunnel_table).await;
+        let (_, mut member_sink) = members[0].split();
+        member_sink
+            .send(ipv4_udp_packet(
+                Ipv4Addr::new(10, 231, 1, 1),
+                Ipv4Addr::new(203, 0, 113, 1),
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), writing.notified())
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(
+            DISPATCHER_TUN_WRITE_TIMEOUT + Duration::from_secs(1),
+            dispatcher.remove_sources(uuid::Uuid::from_u128(1)),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        for close_notifier in close_notifiers {
+            tokio::time::timeout(Duration::from_secs(1), close_notifier.notified())
+                .await
+                .unwrap();
+        }
+        assert!(!valid.load(Ordering::Acquire));
+        assert!(member_tunnel_table.dispatcher_channels().is_none());
+        tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatcher_tun_write_timeout_closes_members_and_source_updates() {
+        let (tunnel, writing) = stalled_tun_for_test();
+        let member_tunnel_table = SharedVirtualNicMemberTunnelTable::default();
+        let valid = Arc::new(AtomicBool::new(true));
+        let dispatcher =
+            SharedVirtualNicDispatcher::start(tunnel, member_tunnel_table.clone(), valid.clone());
+
+        check_dispatcher_tun_write_timeout(dispatcher, member_tunnel_table, valid, writing).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mobile_dispatcher_tun_write_timeout_closes_members_and_source_updates() {
+        let (tunnel, writing) = stalled_tun_for_test();
+        let member_tunnel_table = SharedVirtualNicMemberTunnelTable::default();
+        let valid = Arc::new(AtomicBool::new(true));
+        let (dispatcher, _updates) =
+            start_mobile_dispatcher_for_test(tunnel, member_tunnel_table.clone(), valid.clone());
+
+        check_dispatcher_tun_write_timeout(dispatcher, member_tunnel_table, valid, writing).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mobile_dispatcher_invalidates_shared_nic_when_tun_replacement_fails() {
+        let (_tun, tunnel) = create_ring_tunnel_pair();
+        let member_tunnel_table = SharedVirtualNicMemberTunnelTable::default();
+        let valid = Arc::new(AtomicBool::new(true));
+        let (dispatcher, updates) =
+            start_mobile_dispatcher_for_test(tunnel, member_tunnel_table.clone(), valid.clone());
+        let (_members, close_notifiers) =
+            register_dispatcher_test_members(&dispatcher, &member_tunnel_table).await;
+        let (ack, receiver) = oneshot::channel();
+
+        updates
+            .send(SharedVirtualNicMobileTunUpdate { tun_fd: -1, ack })
+            .unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), await_mobile_open(receiver))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        for close_notifier in close_notifiers {
+            tokio::time::timeout(Duration::from_secs(1), close_notifier.notified())
+                .await
+                .unwrap();
+        }
+        assert!(!valid.load(Ordering::Acquire));
+        assert!(member_tunnel_table.dispatcher_channels().is_none());
+        assert!(
+            dispatcher
+                .remove_sources(uuid::Uuid::from_u128(1))
+                .await
+                .is_err()
+        );
+        tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mobile_dispatcher_invalidates_shared_nic_when_tun_read_closes() {
+        for read_error in [false, true] {
+            let (tun_tx, tun_rx) = mpsc::unbounded_channel();
+            let tun_stream = futures::stream::unfold(tun_rx, |mut receiver| async move {
+                receiver.recv().await.map(|packet| (packet, receiver))
+            });
+            let tun_sink = futures::sink::unfold((), |(), _packet: ZCPacket| async {
+                Ok::<(), TunnelError>(())
+            });
+            let tunnel = Box::new(TunnelWrapper::new(tun_stream, tun_sink, None));
+            let member_tunnel_table = SharedVirtualNicMemberTunnelTable::default();
+            let valid = Arc::new(AtomicBool::new(true));
+            let (dispatcher, _updates) = start_mobile_dispatcher_for_test(
+                tunnel,
+                member_tunnel_table.clone(),
+                valid.clone(),
+            );
+            let (_members, close_notifiers) =
+                register_dispatcher_test_members(&dispatcher, &member_tunnel_table).await;
+
+            if read_error {
+                tun_tx.send(Err(TunnelError::Shutdown)).unwrap();
+            }
+            drop(tun_tx);
+
+            for close_notifier in close_notifiers {
+                tokio::time::timeout(Duration::from_secs(1), close_notifier.notified())
+                    .await
+                    .unwrap();
+            }
+            assert!(!valid.load(Ordering::Acquire));
+            assert!(member_tunnel_table.dispatcher_channels().is_none());
+            tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
+                .await
+                .unwrap()
+                .unwrap();
         }
     }
 

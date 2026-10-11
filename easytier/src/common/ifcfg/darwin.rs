@@ -1,6 +1,8 @@
 use std::{collections::BTreeSet, net::Ipv4Addr};
 
-use super::{Error, IfConfiguerTrait, cidr_to_subnet_mask, run_shell_cmd};
+use super::{
+    Error, IfConfiguerTrait, cidr_to_subnet_mask, ignore_removed_shell_cmd_not_found, run_shell_cmd,
+};
 use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
 use tokio::sync::Mutex;
@@ -31,6 +33,10 @@ impl MacIfConfiger {
             )
         }
     }
+}
+
+async fn run_delete_shell_cmd(cmd: &str) -> Result<(), Error> {
+    ignore_removed_shell_cmd_not_found(run_shell_cmd(cmd).await)
 }
 
 #[async_trait]
@@ -77,7 +83,7 @@ impl IfConfiguerTrait for MacIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_shell_cmd(
+        run_delete_shell_cmd(
             format!(
                 "route -n delete {} -netmask {} -interface {}",
                 address,
@@ -114,11 +120,13 @@ impl IfConfiguerTrait for MacIfConfiger {
     async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         let mut configured_ipv4 = self.configured_ipv4.lock().await;
         if let Some(ip) = ip {
-            run_shell_cmd(format!("ifconfig {} inet {} delete", name, ip.address()).as_str())
-                .await?;
+            run_delete_shell_cmd(
+                format!("ifconfig {} inet {} delete", name, ip.address()).as_str(),
+            )
+            .await?;
             configured_ipv4.remove(&ip);
         } else {
-            run_shell_cmd(format!("ifconfig {} inet delete", name).as_str()).await?;
+            run_delete_shell_cmd(format!("ifconfig {} inet delete", name).as_str()).await?;
             configured_ipv4.clear();
         }
         Ok(())
@@ -140,7 +148,10 @@ impl IfConfiguerTrait for MacIfConfiger {
 
     async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
         if let Some(ip) = ip {
-            run_shell_cmd(format!("ifconfig {} inet6 {} delete", name, ip.address()).as_str()).await
+            run_delete_shell_cmd(
+                format!("ifconfig {} inet6 {} delete", name, ip.address()).as_str(),
+            )
+            .await
         } else {
             // Remove all IPv6 addresses is more complex on macOS, just succeed
             Ok(())
@@ -174,7 +185,7 @@ impl IfConfiguerTrait for MacIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_shell_cmd(
+        run_delete_shell_cmd(
             format!(
                 "route -n delete -inet6 {}/{} -interface {}",
                 address, cidr_prefix, name

@@ -705,7 +705,10 @@ impl SharedVirtualNic {
 
         if let Some(dispatcher) = &self.dispatcher {
             if replace_tun_fd {
-                dispatcher.update_mobile_tun_fd(tun_fd).await?;
+                if let Err(err) = dispatcher.update_mobile_tun_fd(tun_fd).await {
+                    self.invalidate_and_shutdown_dispatcher().await;
+                    return Err(err);
+                }
             }
             return Ok(());
         }

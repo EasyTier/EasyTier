@@ -600,12 +600,12 @@ impl VirtualNic {
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(mobile)]
+    #[cfg(any(mobile, all(test, unix)))]
     pub fn set_mobile_tun_fd_name(&mut self, tun_fd: std::os::fd::RawFd) {
         self.ifname = Some(format!("tunfd_{}", tun_fd));
     }
 
-    #[cfg(mobile)]
+    #[cfg(any(mobile, all(test, unix)))]
     pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
