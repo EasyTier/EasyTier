@@ -6,6 +6,7 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, patch},
 };
+use easytier::common::config::{DeserializeConfig, NetworkConfig};
 use uuid::Uuid;
 
 use super::{AppStateInner, Error, HttpHandleError, authed_user_id, users::AuthSession};
@@ -59,7 +60,12 @@ struct ListCredentialsJsonResp {
 
 #[derive(Debug, serde::Deserialize)]
 struct SetMemberConfigJsonReq {
-    config: easytier::common::config::NetworkConfig,
+    #[serde(deserialize_with = "<SetMemberConfigJsonReq as DeserializeConfig>::deserialize")]
+    config: NetworkConfig,
+}
+
+impl DeserializeConfig for SetMemberConfigJsonReq {
+    const SOURCE: &'static str = "web: set member config";
 }
 
 #[derive(Debug, serde::Serialize)]

@@ -9,6 +9,7 @@ use easytier::proto::{
     rpc_types::controller::BaseController,
     web::HeartbeatRequest,
 };
+use easytier_core::config;
 use easytier_core::management::remote_client::{ListNetworkProps, Storage as _};
 use tokio::sync::{RwLock, broadcast};
 
@@ -942,7 +943,10 @@ async fn reconcile_desired_runtime_configs(
             continue;
         }
 
-        let desired_config = match serde_json::from_str::<NetworkConfig>(&config.network_config) {
+        let desired_config = match config::parse_json::<NetworkConfig>(
+            &config.network_instance_id,
+            &config.network_config,
+        ) {
             Ok(cfg) => cfg,
             Err(e) => {
                 tracing::error!(

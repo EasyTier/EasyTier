@@ -1,4 +1,5 @@
 use crate::{
+    config,
     foundation::time::{clear_domain, enter_domain},
     wasi::{
         schema::WasiWebClientCreateConfig,
@@ -33,13 +34,14 @@ pub extern "C" fn easytier_web_client_create(config_pointer: u32, config_length:
             return INVALID_INPUT;
         }
     };
-    let config: WasiWebClientCreateConfig = match serde_json::from_slice(&encoded) {
-        Ok(config) => config,
-        Err(error) => {
-            set_abi_error(error);
-            return INVALID_INPUT;
-        }
-    };
+    let config: WasiWebClientCreateConfig =
+        match config::parse_json("host web client config", &encoded) {
+            Ok(config) => config,
+            Err(error) => {
+                set_abi_error(error);
+                return INVALID_INPUT;
+            }
+        };
     if let Err(error) = config.validate() {
         set_abi_error(error);
         return INVALID_INPUT;

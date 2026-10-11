@@ -20,6 +20,7 @@ use easytier::proto::{
     },
     rpc_types::controller::BaseController,
 };
+use easytier_core::config;
 
 use crate::{
     central_network::service::CentralNetworkService,
@@ -173,6 +174,17 @@ async fn handle_proxy_rpc_by_session(
     }
 }
 
+fn parse_request<T: serde::de::DeserializeOwned>(
+    req: &ProxyRpcRequest,
+) -> Result<T, HttpHandleError> {
+    config::deserialize(&req.service_name, req.payload.clone()).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            other_error(format!("Invalid RPC payload: {error}")).into(),
+        )
+    })
+}
+
 async fn ensure_instance_mutation_allowed(
     req: &mut ProxyRpcRequest,
     central: &[CentralOwnedRuntimeConfig],
@@ -183,29 +195,19 @@ async fn ensure_instance_mutation_allowed(
     }
     let instance = match req.method_name.as_str() {
         "generate_credential" | "GenerateCredential" => {
-            serde_json::from_value::<GenerateCredentialRequest>(req.payload.clone())
-                .map(|request| request.instance)
+            parse_request::<GenerateCredentialRequest>(req).map(|request| request.instance)
         }
         "revoke_credential" | "RevokeCredential" => {
-            serde_json::from_value::<RevokeCredentialRequest>(req.payload.clone())
-                .map(|request| request.instance)
+            parse_request::<RevokeCredentialRequest>(req).map(|request| request.instance)
         }
         "upsert_credential" | "UpsertCredential" => {
-            serde_json::from_value::<UpsertCredentialRequest>(req.payload.clone())
-                .map(|request| request.instance)
+            parse_request::<UpsertCredentialRequest>(req).map(|request| request.instance)
         }
         "patch_config" | "PatchConfig" => {
-            serde_json::from_value::<PatchConfigRequest>(req.payload.clone())
-                .map(|request| request.instance)
+            parse_request::<PatchConfigRequest>(req).map(|request| request.instance)
         }
         _ => return Ok(()),
-    }
-    .map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            other_error(format!("Invalid RPC payload: {error}")).into(),
-        )
-    })?;
+    }?;
     let instance_id = match instance
         .as_ref()
         .and_then(|instance| instance.selector.as_ref())
@@ -262,17 +264,9 @@ async fn ensure_runtime_mutation_allowed(
     if req.service_name == "api.instance.CredentialManageRpcService" {
         return ensure_instance_mutation_allowed(req, central, client).await;
     }
-    fn parse<T: serde::de::DeserializeOwned>(req: &ProxyRpcRequest) -> Result<T, HttpHandleError> {
-        serde_json::from_value(req.payload.clone()).map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                other_error(format!("Invalid RPC payload: {error}")).into(),
-            )
-        })
-    }
     let conflicts = match (req.service_name.as_str(), req.method_name.as_str()) {
         ("api.manage.WebClientService", "run_network_instance" | "RunNetworkInstance") => {
-            let request: RunNetworkInstanceRequest = parse(req)?;
+            let request: RunNetworkInstanceRequest = parse_request(req)?;
             central.iter().any(|config| {
                 request
                     .inst_id
@@ -289,7 +283,7 @@ async fn ensure_runtime_mutation_allowed(
             })
         }
         ("api.manage.WebClientService", "retain_network_instance" | "RetainNetworkInstance") => {
-            let request: RetainNetworkInstanceRequest = parse(req)?;
+            let request: RetainNetworkInstanceRequest = parse_request(req)?;
             central.iter().any(|config| {
                 !request
                     .inst_ids
@@ -298,7 +292,7 @@ async fn ensure_runtime_mutation_allowed(
             })
         }
         ("api.manage.WebClientService", "delete_network_instance" | "DeleteNetworkInstance") => {
-            let request: DeleteNetworkInstanceRequest = parse(req)?;
+            let request: DeleteNetworkInstanceRequest = parse_request(req)?;
             central.iter().any(|config| {
                 request
                     .inst_ids

@@ -33,7 +33,7 @@ use easytier::service_manager::{Service, ServiceInstallOptions};
 use tokio::time::timeout;
 
 use easytier::{
-    common::{constants::EASYTIER_VERSION, stun::runtime_stun_info_collector},
+    common::{config, constants::EASYTIER_VERSION, stun::runtime_stun_info_collector},
     proto::{
         acl::{Acl, AclStats},
         api::{
@@ -2457,36 +2457,35 @@ impl<'a> CommandHandler<'a> {
             raw.to_string()
         };
 
-        // Try parsing as JSON first, then fallback to TOML if JSON parsing fails.
+        let source = raw.strip_prefix('@').unwrap_or("inline ACL");
         #[derive(serde::Deserialize, Default)]
-        struct AclWrapper {
-            acl: Option<Acl>,
-        }
-
-        // Your JSON file includes a full PatchConfigRequest structure: {"instance": ..., "patch": {"acl": {"acl": ...}}}
-        // Let's support parsing full PatchConfigRequest or patch payload or Acl directly.
-        #[derive(serde::Deserialize, Default)]
-        struct PatchRequestJson {
+        struct AclInput {
+            #[serde(rename = "instance")]
+            _instance: Option<InstanceIdentifier>,
             patch: Option<InstanceConfigPatch>,
+            acl: Option<Acl>,
+            #[serde(alias = "aclV1")]
+            acl_v1: Option<easytier::proto::acl::AclV1>,
         }
 
-        let acl = if let Ok(parsed_req) = serde_json::from_str::<PatchRequestJson>(&text) {
-            parsed_req
+        let acl = if let Ok(input) = config::parse_json::<AclInput>(source, &text) {
+            input
                 .patch
                 .and_then(|p| p.acl)
                 .and_then(|a| a.acl)
+                .or(input.acl)
+                .or_else(|| {
+                    input.acl_v1.map(|acl_v1| Acl {
+                        acl_v1: Some(acl_v1),
+                    })
+                })
                 .unwrap_or_default()
-        } else if let Ok(parsed_json) = serde_json::from_str::<AclWrapper>(&text) {
-            parsed_json.acl.unwrap_or_default()
-        } else if let Ok(parsed_json_direct) = serde_json::from_str::<Acl>(&text) {
-            parsed_json_direct
         } else {
-            // Fallback to TOML
             #[derive(serde::Deserialize, Default)]
             struct AclToml {
                 acl: Option<Acl>,
             }
-            let parsed_toml: AclToml = toml::from_str(&text).with_context(
+            let parsed_toml: AclToml = config::parse_toml(source, &text).with_context(
                 || "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)",
             )?;
             parsed_toml.acl.unwrap_or_default()

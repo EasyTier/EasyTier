@@ -1,5 +1,7 @@
 use wasm_bindgen::prelude::*;
 
+use crate::config;
+
 use super::{
     api_input::{NetworkConfig, NetworkConfigExt, merge_network_config_toml},
     toml::{ConfigLoader, TomlConfig},
@@ -11,7 +13,8 @@ fn js_error(error: impl std::fmt::Debug) -> JsValue {
 
 #[wasm_bindgen]
 pub fn generate_config(config_json: &str) -> Result<String, JsValue> {
-    let config: NetworkConfig = serde_json::from_str(config_json).map_err(js_error)?;
+    let config: NetworkConfig =
+        config::parse_json("browser network config", config_json).map_err(js_error)?;
     config
         .gen_config()
         .map(|config| config.dump())
@@ -20,7 +23,8 @@ pub fn generate_config(config_json: &str) -> Result<String, JsValue> {
 
 #[wasm_bindgen]
 pub fn merge_config(original_toml: &str, config_json: &str) -> Result<String, JsValue> {
-    let config: NetworkConfig = serde_json::from_str(config_json).map_err(js_error)?;
+    let config: NetworkConfig =
+        config::parse_json("browser network config", config_json).map_err(js_error)?;
     merge_network_config_toml(original_toml, &config).map_err(js_error)
 }
 

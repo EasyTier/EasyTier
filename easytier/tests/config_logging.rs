@@ -102,3 +102,60 @@ fn check_config_does_not_warn_for_comments_strings_or_nested_sections() {
 
     assert!(!stderr.contains("Logging configuration in TOML is ignored"));
 }
+
+#[test]
+fn check_config_logs_unknown_field_paths_and_continues_loading() {
+    let mut config = NamedTempFile::new().unwrap();
+    writeln!(
+        config,
+        r#"
+instance_name = "known-instance"
+future = {{ nested = true }}
+
+[network_identity]
+network_name = "known-network"
+future = true
+
+[[peer]]
+uri = "tcp://127.0.0.1:11010"
+future = true
+
+[flags]
+enable_encryption = false
+future = true
+
+[vpn_portal_config]
+wireguard_listen = "127.0.0.1:22020"
+client_cidr = "10.1.0.0/24"
+future = true
+
+[[vpn_portal_config.clients]]
+name = "known-client"
+virtual_ip = "10.1.0.2/24"
+future = true
+"#
+    )
+    .unwrap();
+
+    let output = check_config_command()
+        .env("RUST_LOG", "CORE=error")
+        .arg("--config-file")
+        .arg(config.path())
+        .output()
+        .unwrap();
+    let stderr = stderr_on_success(output);
+
+    assert_eq!(stderr.matches("Unknown configuration field").count(), 7);
+    assert!(stderr.contains(&format!("{:?}", config.path().display().to_string())));
+    for path in [
+        "future",
+        "network_identity.future",
+        "peer[0].future",
+        "flags.future",
+        "vpn_portal_config.future",
+        "vpn_portal_config.client_cidr",
+        "vpn_portal_config.clients[0].future",
+    ] {
+        assert!(stderr.contains(path), "{stderr}");
+    }
+}

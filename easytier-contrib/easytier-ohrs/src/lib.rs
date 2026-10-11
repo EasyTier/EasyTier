@@ -28,29 +28,24 @@ mod napi_types;
 mod nearby_management;
 mod platform;
 
-use config::repository::cache_runtime_config_snapshot;
-use config::services::schema_service::{
+use easytier::common::MachineIdOptions;
+use easytier::common::config::{self, ConfigLoader, NetworkConfigExt, TomlConfigLoader};
+use easytier::common::constants::EASYTIER_VERSION;
+use easytier::proto::api::manage::{NetworkConfig, NetworkingMethod};
+use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
+use easytier_ohos_core::{ASYNC_RUNTIME, INSTANCE_MANAGER, runtime};
+use easytier_ohos_features::config::repository::{self, cache_runtime_config_snapshot};
+use easytier_ohos_features::config::services::schema_service::{
     get_network_config_field_mappings as build_network_config_field_mappings,
     get_network_config_schema as build_network_config_schema,
 };
-use config::services::share_link_service::{
+use easytier_ohos_features::config::services::share_link_service::{
     build_config_share_link as build_config_share_link_inner,
     import_config_share_link as import_config_share_link_inner,
     parse_config_share_link as parse_config_share_link_inner,
 };
-use config::storage::config_meta::get_config_display_name;
-use easytier::common::config::NetworkConfigExt;
-use easytier::common::constants::EASYTIER_VERSION;
-use easytier::common::{
-    MachineIdOptions,
-    config::{ConfigLoader, TomlConfigLoader},
-};
-use easytier::proto::api::manage::NetworkConfig;
-use easytier::proto::api::manage::NetworkingMethod;
-use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
-use easytier_ohos_core::runtime;
-use easytier_ohos_core::{ASYNC_RUNTIME, INSTANCE_MANAGER};
-use easytier_ohos_features::config;
+use easytier_ohos_features::config::storage;
+use easytier_ohos_features::config::storage::config_meta::get_config_display_name;
 use kernel_bridge::{
     start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
@@ -663,14 +658,14 @@ fn convert_toml_to_network_config_inner(toml_text: &str) -> Result<String, Strin
 }
 
 fn parse_network_config_inner(cfg_json: &str) -> bool {
-    serde_json::from_str::<NetworkConfig>(cfg_json)
+    config::parse_json::<NetworkConfig>("OHOS network config", cfg_json)
         .ok()
         .and_then(|cfg| cfg.gen_config().ok())
         .is_some()
 }
 
 pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
-    let config = match serde_json::from_str::<NetworkConfig>(cfg_json) {
+    let config = match config::parse_json::<NetworkConfig>("OHOS network config", cfg_json) {
         Ok(cfg) => cfg,
         Err(e) => {
             ohrs_log_error!("[Rust] parse config failed {}", e);
@@ -731,12 +726,12 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
 }
 
 fn start_kernel_with_config_id(config_id: &str) -> bool {
-    let Some(raw) = config::repository::load_config_json(config_id) else {
+    let Some(raw) = repository::load_config_json(config_id) else {
         return false;
     };
     let display_name = get_config_display_name(config_id).unwrap_or_else(|| config_id.to_string());
     let started = run_network_instance_from_json(&raw);
-    if started && let Ok(config) = serde_json::from_str::<NetworkConfig>(&raw) {
+    if started && let Ok(config) = config::parse_json::<NetworkConfig>(config_id, &raw) {
         cache_runtime_config_snapshot(config_id.to_string(), display_name, config);
     }
     started
@@ -784,7 +779,7 @@ pub fn create_config(config_id: String, display_name: String) -> bool {
 
 #[napi]
 pub fn rename_stored_config(config_id: String, display_name: String) -> bool {
-    config::storage::config_meta::set_config_display_name(config_id, display_name).is_some()
+    storage::config_meta::set_config_display_name(config_id, display_name).is_some()
 }
 
 #[napi]

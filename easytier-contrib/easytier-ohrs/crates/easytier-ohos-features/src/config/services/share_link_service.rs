@@ -2,6 +2,7 @@ use crate::config::repository::{get_config_record, save_config_record};
 use crate::config::services::schema_service::get_network_config_field_mappings;
 use crate::config::types::stored_config::SharedConfigLinkPayload;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use easytier::common::config;
 use easytier::proto::api::manage::NetworkConfig;
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use gethostname::gethostname;
@@ -59,7 +60,8 @@ fn unmap_config_json(raw: &str) -> Result<NetworkConfig, String> {
         let field_name = field_id_to_name.get(&key).cloned().unwrap_or(key);
         mapped.insert(field_name, value);
     }
-    serde_json::from_value(serde_json::Value::Object(mapped)).map_err(|err| err.to_string())
+    config::deserialize("shared network config", serde_json::Value::Object(mapped))
+        .map_err(|err| err.to_string())
 }
 
 fn compress_to_base64url(raw: &str) -> Result<String, String> {
@@ -87,7 +89,7 @@ pub fn build_config_share_link(
     only_start: bool,
 ) -> Option<String> {
     let record = get_config_record(config_id)?;
-    let config = serde_json::from_str::<NetworkConfig>(&record.config_json).ok()?;
+    let config = config::parse_json::<NetworkConfig>(config_id, &record.config_json).ok()?;
     let mapped_json = map_config_json(&config).ok()?;
     let compressed = compress_to_base64url(&mapped_json).ok()?;
     let final_name = display_name
@@ -148,7 +150,8 @@ pub fn import_config_share_link(
     display_name_override: Option<String>,
 ) -> Option<String> {
     let payload = parse_config_share_link(share_link)?;
-    let config = serde_json::from_str::<NetworkConfig>(&payload.config_json).ok()?;
+    let config =
+        config::parse_json::<NetworkConfig>("shared network config", &payload.config_json).ok()?;
     let config_id = config.instance_id.clone()?;
     let display_name = display_name_override
         .filter(|name| !name.is_empty())

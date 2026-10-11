@@ -29,6 +29,7 @@ use easytier_core::{
     socket::{SocketListener, tcp::VirtualTcpSocket},
     tunnel::{SplitTunnel, Tunnel, tcp::TcpTunnelUpgrader},
 };
+use easytier_ohos_features::config::repository::config_root_dir;
 use easytier_proto::{
     api::manage::{
         CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
@@ -60,7 +61,7 @@ use tokio::{
 use url::Url;
 use uuid::Uuid;
 
-use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER, config::repository::config_root_dir};
+use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER};
 
 const MAX_NEARBY_SESSIONS: usize = 8;
 const MAX_SESSION_KEY_LENGTH: usize = 128;

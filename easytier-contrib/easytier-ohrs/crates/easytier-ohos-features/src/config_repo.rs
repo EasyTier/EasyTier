@@ -4,7 +4,7 @@ use crate::config::storage::config_meta::{
     reset_config_meta_store, upsert_config_meta_in_tx,
 };
 use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
-use easytier::common::config::{NetworkConfigExt, TomlConfigLoader};
+use easytier::common::config::{self, NetworkConfigExt, TomlConfigLoader};
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::common::CompressionAlgoPb;
 use once_cell::sync::Lazy;
@@ -272,7 +272,7 @@ pub fn get_default_config_json() -> Option<String> {
 pub fn create_config_record(config_id: String, display_name: String) -> Option<StoredConfigRecord> {
     validation::validate_config_id(&config_id).ok()?;
     let raw = get_default_config_json()?;
-    let mut config = serde_json::from_str::<NetworkConfig>(&raw).ok()?;
+    let mut config = config::parse_json::<NetworkConfig>(&config_id, &raw).ok()?;
     config.instance_id = Some(config_id.clone());
     let normalized_json = serde_json::to_string(&config).ok()?;
     save_config_record(config_id, display_name, normalized_json)

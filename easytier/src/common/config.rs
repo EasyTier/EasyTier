@@ -13,6 +13,7 @@ pub use easytier_core::config::api_input::{
     NetworkConfig, NetworkConfigExt, NetworkingMethod, add_proxy_network_to_config,
 };
 pub use easytier_core::config::toml::*;
+pub use easytier_core::config::{DeserializeConfig, deserialize, parse_json, parse_toml};
 
 #[cfg(feature = "management")]
 use crate::common::env_parser;
@@ -37,16 +38,16 @@ pub fn load_toml_config_from_path(path: &PathBuf) -> Result<TomlConfigLoader, an
 }
 
 pub fn load_toml_config_from_str_with_source(
-    source_name: &str,
+    source: &str,
     config_str: &str,
 ) -> Result<TomlConfigLoader, anyhow::Error> {
-    let config = TomlConfigLoader::new_from_str_with_source(source_name, config_str)?;
+    let config = TomlConfigLoader::new_from_str_with_source(source, config_str)?;
     #[cfg(feature = "logging")]
     {
         let ignored_sections = ignored_logging_sections(config_str);
         if !ignored_sections.is_empty() {
             log::warn!(
-                config_source = source_name,
+                source,
                 ?ignored_sections,
                 "Logging configuration in TOML is ignored because logging is process-wide. \
                  Use command-line options (e.g. --console-log-level, --file-log-level, --file-log-dir) \
@@ -118,8 +119,8 @@ pub async fn load_config_from_file(
         tracing::info!(?config_file, "environment variables detected and expanded");
     }
 
-    let source_name = config_file.display().to_string();
-    let config = load_toml_config_from_str_with_source(&source_name, &expanded_config_str)?;
+    let source = config_file.display().to_string();
+    let config = load_toml_config_from_str_with_source(&source, &expanded_config_str)?;
     let mut control = config_file_control_from_path(config_file.clone()).await;
 
     if uses_env_vars {

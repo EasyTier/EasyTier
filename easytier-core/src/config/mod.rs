@@ -50,7 +50,57 @@ use base64::{Engine as _, prelude::BASE64_STANDARD};
 use easytier_proto::{common as common_pb, core_config as pb};
 use optionize::Optionizable;
 use serde::{Deserialize, Serialize};
+use serde_unknown::DeserializerExt as _;
 use url::Url;
+
+use crate::foundation::log;
+
+/// Deserializes configuration and logs unknown paths with their source.
+pub fn deserialize<'de, D, T>(source: &str, deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    deserializer.deserialize(|path| {
+        log::error!(source, field = %path, "Unknown configuration field");
+        Ok(())
+    })
+}
+
+/// Deserializes configuration fields with a source label for unknown-field logs.
+pub trait DeserializeConfig {
+    const SOURCE: &'static str;
+
+    fn deserialize<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        deserialize(Self::SOURCE, deserializer)
+    }
+}
+
+/// Parses a complete JSON configuration document from text or bytes.
+pub fn parse_json<'de, T>(
+    source: &str,
+    config_json: &'de (impl AsRef<[u8]> + ?Sized),
+) -> Result<T, serde_json::Error>
+where
+    T: Deserialize<'de>,
+{
+    let mut deserializer = serde_json::Deserializer::from_slice(config_json.as_ref());
+    let config = deserialize(source, &mut deserializer)?;
+    deserializer.end()?;
+    Ok(config)
+}
+
+/// Parses a complete TOML configuration document.
+pub fn parse_toml<'de, T>(source: &str, config_toml: &'de str) -> Result<T, ::toml::de::Error>
+where
+    T: Deserialize<'de>,
+{
+    deserialize(source, ::toml::de::Deserializer::parse(config_toml)?)
+}
 
 pub type PeerId = u32;
 
@@ -600,6 +650,31 @@ mod tests {
     use super::*;
     use base64::prelude::BASE64_STANDARD;
     use x25519_dalek::{PublicKey, StaticSecret};
+
+    #[test]
+    fn json_config_parser_accepts_unknown_fields_and_preserves_borrowing() {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Config<'c> {
+            name: &'c str,
+            port: u16,
+        }
+
+        let json = r#"{"name":"known","port":8080,"future":{"nested":true}}"#;
+        let config: Config<'_> = parse_json("fixture.json", json).unwrap();
+        assert_eq!(config.name, "known");
+        assert_eq!(config.port, 8080);
+        assert_eq!(
+            config.name.as_ptr(),
+            json[json.find("known").unwrap()..].as_ptr()
+        );
+    }
+
+    #[test]
+    fn json_config_parser_rejects_invalid_known_values_and_trailing_input() {
+        assert!(parse_json::<u16>("fixture.json", b"\"8080\"").is_err());
+        assert!(parse_json::<u16>("fixture.json", b"8080 9090").is_err());
+    }
 
     fn digest(network_name: &str, network_secret: &str) -> NetworkSecretDigest {
         let mut digest = [0u8; 32];

@@ -17,7 +17,9 @@ use axum::{Extension, Json, Router, extract::State, routing::get};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthUser, login_required};
 use axum_messages::MessagesManagerLayer;
-use easytier::common::config::{ConfigLoader, NetworkConfig, NetworkConfigExt, TomlConfigLoader};
+use easytier::common::config::{
+    ConfigLoader, DeserializeConfig, NetworkConfig, NetworkConfigExt, TomlConfigLoader,
+};
 use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;
@@ -83,7 +85,12 @@ struct GetConsoleInfoJsonResp {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct GenerateConfigRequest {
+    #[serde(deserialize_with = "<GenerateConfigRequest as DeserializeConfig>::deserialize")]
     config: NetworkConfig,
+}
+
+impl DeserializeConfig for GenerateConfigRequest {
+    const SOURCE: &'static str = "web: generate config";
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

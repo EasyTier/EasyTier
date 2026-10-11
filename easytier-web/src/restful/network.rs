@@ -6,7 +6,7 @@ use axum::routing::{delete, post, put};
 use axum::{Extension, Json, Router, extract::State, routing::get};
 use axum_login::AuthUser;
 use easytier::common::config::{
-    ConfigSource as RuntimeConfigSource, NetworkConfig, config_source_from_rpc,
+    ConfigSource as RuntimeConfigSource, DeserializeConfig, NetworkConfig, config_source_from_rpc,
 };
 use easytier::proto::api::config::VpnPortalClientPatch;
 use easytier::proto::common::Void;
@@ -93,24 +93,44 @@ fn convert_error(e: RemoteClientError<DbErr>) -> (StatusCode, Json<Error>) {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ValidateConfigJsonReq {
+    #[serde(deserialize_with = "<ValidateConfigJsonReq as DeserializeConfig>::deserialize")]
     config: NetworkConfig,
+}
+
+impl DeserializeConfig for ValidateConfigJsonReq {
+    const SOURCE: &'static str = "web: validate config";
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct SaveNetworkJsonReq {
+    #[serde(deserialize_with = "<SaveNetworkJsonReq as DeserializeConfig>::deserialize")]
     config: NetworkConfig,
+}
+
+impl DeserializeConfig for SaveNetworkJsonReq {
+    const SOURCE: &'static str = "web: save network config";
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct PatchVpnPortalClientsJsonReq {
+    #[serde(deserialize_with = "<PatchVpnPortalClientsJsonReq as DeserializeConfig>::deserialize")]
     patches: Vec<VpnPortalClientPatch>,
+}
+
+impl DeserializeConfig for PatchVpnPortalClientsJsonReq {
+    const SOURCE: &'static str = "web: patch VPN portal clients";
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct RunNetworkJsonReq {
+    #[serde(deserialize_with = "<RunNetworkJsonReq as DeserializeConfig>::deserialize")]
     config: NetworkConfig,
     save: bool,
     source: Option<i32>,
+}
+
+impl DeserializeConfig for RunNetworkJsonReq {
+    const SOURCE: &'static str = "web: run network";
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -879,6 +899,30 @@ impl NetworkApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_requests_accept_unknown_fields_and_validate_known_fields() {
+        let payload = serde_json::json!({
+            "config": {
+                "network_name": "known-network",
+                "future": { "nested": true },
+            },
+            "save": false,
+        });
+        let validate: ValidateConfigJsonReq = serde_json::from_value(payload.clone()).unwrap();
+        let save: SaveNetworkJsonReq = serde_json::from_value(payload.clone()).unwrap();
+        let run: RunNetworkJsonReq = serde_json::from_value(payload).unwrap();
+        for config in [validate.config, save.config, run.config] {
+            assert_eq!(config.network_name.as_deref(), Some("known-network"));
+        }
+
+        assert!(
+            serde_json::from_value::<ValidateConfigJsonReq>(serde_json::json!({
+                "config": { "network_name": 123 },
+            }))
+            .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn internal_runtime_only_write_reconciles_the_already_applied_revision() {

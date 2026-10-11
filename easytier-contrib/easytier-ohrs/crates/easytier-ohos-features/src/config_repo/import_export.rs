@@ -1,12 +1,12 @@
 use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
-use easytier::common::config::NetworkConfigExt;
-use easytier::common::config::{ConfigLoader, TomlConfigLoader};
+use easytier::common::config::{self, ConfigLoader, NetworkConfigExt, TomlConfigLoader};
 use easytier::proto::api::manage::NetworkConfig;
 
 pub(super) fn export_config_toml_from_record(
     record: &StoredConfigRecord,
 ) -> Option<ExportTomlResult> {
-    let config = serde_json::from_str::<NetworkConfig>(&record.config_json).ok()?;
+    let config =
+        config::parse_json::<NetworkConfig>(&record.meta.config_id, &record.config_json).ok()?;
     let toml = config.gen_config().ok()?;
     Some(ExportTomlResult {
         toml_text: toml.dump(),

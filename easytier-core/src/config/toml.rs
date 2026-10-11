@@ -14,7 +14,10 @@ use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, Report
 use optionize::Optionizable;
 use serde::{Deserialize, Serialize};
 
-use crate::proto::{acl::Acl, common::SecureModeConfig};
+use crate::{
+    config,
+    proto::{acl::Acl, common::SecureModeConfig},
+};
 
 pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
@@ -556,7 +559,7 @@ impl TomlConfig {
         source_name: &str,
         config_str: &str,
     ) -> Result<Self, anyhow::Error> {
-        let mut config = toml::de::from_str::<Config>(config_str).map_err(|err| {
+        let mut config: Config = config::parse_toml(source_name, config_str).map_err(|err| {
             let message = format_toml_parse_error(source_name, config_str, &err);
             anyhow::Error::new(err).context(message)
         })?;
@@ -1117,18 +1120,19 @@ socket_mark = 0
     }
 
     #[test]
-    fn legacy_vpn_portal_client_cidr_is_rejected_explicitly() {
-        let error = TomlConfig::new_from_str(
+    fn legacy_vpn_portal_client_cidr_does_not_populate_clients() {
+        let config = TomlConfig::new_from_str(
             r#"
 [vpn_portal_config]
 client_cidr = "10.14.14.0/24"
 wireguard_listen = "0.0.0.0:51820"
 "#,
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap();
 
-        assert!(error.contains("client_cidr"), "{error}");
+        let portal = config.get_vpn_portal_config().unwrap();
+        assert_eq!(portal.wireguard_listen.port(), 51820);
+        assert!(portal.clients.is_empty());
     }
 
     #[cfg(feature = "config-write")]
@@ -1376,7 +1380,7 @@ socketMark = "0"
             "enableEncryption = true\nenable_encryption = false",
             "mtu = -1",
             "mtu = 4294967296",
-            "unknown_flag = true",
+            "enable_encryption = \"not-a-bool\"",
             "data_compress_algo = 99",
         ] {
             assert!(
@@ -1384,6 +1388,39 @@ socketMark = "0"
                 "{fields}"
             );
         }
+    }
+
+    #[test]
+    fn config_accepts_unknown_fields_including_strict_and_protobuf_structs() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+future = { nested = true }
+
+[network_identity]
+network_name = "known-network"
+future = true
+
+[flags]
+enable_encryption = false
+future = true
+
+[vpn_portal_config]
+wireguard_listen = "127.0.0.1:22020"
+future = true
+
+[[vpn_portal_config.clients]]
+name = "known-client"
+virtual_ip = "10.1.0.2/24"
+future = true
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.get_network_identity().network_name, "known-network");
+        assert_eq!(config.get_flags_patch().enable_encryption, Some(false));
+        let portal = config.get_vpn_portal_config().unwrap();
+        assert_eq!(portal.wireguard_listen.port(), 22020);
+        assert_eq!(portal.clients[0].name, "known-client");
     }
 
     #[cfg(feature = "config-write")]

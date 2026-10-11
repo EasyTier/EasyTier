@@ -1,5 +1,3 @@
-use crate::config::repository::{clear_runtime_config_snapshot, get_runtime_config_snapshot};
-use crate::config::types::stored_config::KeyValuePair;
 use crate::kernel_bridge::{
     aggregate_requested_tun_routes, start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
@@ -10,6 +8,10 @@ use crate::runtime::state::runtime_state::{
     runtime_instance_from_running_info,
 };
 use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER, WEB_CLIENTS};
+use easytier_ohos_features::config::{
+    repository::{clear_runtime_config_snapshot, get_runtime_config_snapshot},
+    types::stored_config::KeyValuePair,
+};
 
 pub(crate) fn start_kernel(
     config_id: String,

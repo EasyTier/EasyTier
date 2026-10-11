@@ -199,7 +199,10 @@ mod abi {
     use tokio::{runtime::Builder, task::JoinHandle};
 
     use crate::{
-        config::toml::{ConfigLoader as _, TomlConfig},
+        config::{
+            self,
+            toml::{ConfigLoader as _, TomlConfig},
+        },
         foundation::time::{clear_domain, enter_domain, next_deadline_millis},
         host::packet::{HostPacket, HostPacketSinkHandle},
         instance::{
@@ -586,7 +589,8 @@ mod abi {
         if encoded.is_empty() || encoded.len() > MAX_CREATE_CONFIG_LEN {
             anyhow::bail!("invalid host core instance config buffer");
         }
-        let config: WasiCoreInstanceCreateConfig = serde_json::from_slice(encoded)?;
+        let config: WasiCoreInstanceCreateConfig =
+            config::parse_json("host core instance config", encoded)?;
         config.validate()?;
         Ok(config)
     }

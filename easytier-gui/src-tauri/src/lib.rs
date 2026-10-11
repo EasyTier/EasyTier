@@ -20,7 +20,7 @@ use easytier::proto::api::manage::{
 use easytier::proto::rpc_types::controller::BaseController;
 use easytier::web_client::{self, WebClient};
 use easytier::{
-    common::config::{NetworkConfig, NetworkConfigExt},
+    common::config::{DeserializeConfig, NetworkConfig, NetworkConfigExt},
     common::{
         config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
         log,
@@ -77,6 +77,16 @@ static RPC_SERVER: once_cell::sync::Lazy<Mutex<Option<RpcServer>>> =
 static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Option<WebClient>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
+#[derive(serde::Deserialize)]
+#[serde(transparent)]
+struct Config(
+    #[serde(deserialize_with = "<Self as DeserializeConfig>::deserialize")] NetworkConfig,
+);
+
+impl DeserializeConfig for Config {
+    const SOURCE: &'static str = "GUI: network config input";
+}
+
 macro_rules! get_client_manager {
     () => {{
         let guard = CLIENT_MANAGER
@@ -110,7 +120,8 @@ fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
+fn parse_network_config(cfg: Config) -> Result<String, String> {
+    let Config(cfg) = cfg;
     let toml = cfg.gen_config().map_err(|e| e.to_string())?;
     Ok(toml.dump())
 }
@@ -123,11 +134,8 @@ fn generate_network_config(toml_config: String) -> Result<NetworkConfig, String>
 }
 
 #[tauri::command]
-async fn run_network_instance(
-    app: AppHandle,
-    cfg: NetworkConfig,
-    save: bool,
-) -> Result<(), String> {
+async fn run_network_instance(app: AppHandle, cfg: Config, save: bool) -> Result<(), String> {
+    let Config(cfg) = cfg;
     let client_manager = get_client_manager!()?;
     let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
     let _mutation = client_manager.config_mutation.lock().await;
@@ -322,7 +330,8 @@ async fn update_network_config_state(
 }
 
 #[tauri::command]
-async fn save_network_config(app: AppHandle, cfg: NetworkConfig) -> Result<(), String> {
+async fn save_network_config(app: AppHandle, cfg: Config) -> Result<(), String> {
+    let Config(cfg) = cfg;
     let instance_id = cfg
         .instance_id()
         .parse()
@@ -336,10 +345,8 @@ async fn save_network_config(app: AppHandle, cfg: NetworkConfig) -> Result<(), S
 }
 
 #[tauri::command]
-async fn validate_config(
-    app: AppHandle,
-    config: NetworkConfig,
-) -> Result<ValidateConfigResponse, String> {
+async fn validate_config(app: AppHandle, config: Config) -> Result<ValidateConfigResponse, String> {
+    let Config(config) = config;
     get_client_manager!()?
         .handle_validate_config(app, config)
         .await
@@ -799,9 +806,14 @@ mod manager {
 
     #[derive(Clone, serde::Serialize, serde::Deserialize)]
     pub(super) struct StoredGuiConfig {
+        #[serde(deserialize_with = "<StoredGuiConfig as DeserializeConfig>::deserialize")]
         config: NetworkConfig,
         #[serde(default)]
         source: PersistedConfigSource,
+    }
+
+    impl DeserializeConfig for StoredGuiConfig {
+        const SOURCE: &'static str = "GUI: stored network config";
     }
 
     impl GUIConfig {
@@ -1274,6 +1286,28 @@ mod manager {
     mod tests {
         use super::{PersistedConfigSource, StoredGuiConfig};
         use easytier::proto::api::manage::NetworkConfig;
+
+        #[test]
+        fn config_inputs_accept_unknown_fields_and_validate_known_fields() {
+            let config = serde_json::json!({
+                "network_name": "known-network",
+                "future": { "nested": true },
+            });
+            let input: crate::Config = serde_json::from_value(config.clone()).unwrap();
+            let stored: StoredGuiConfig = serde_json::from_value(serde_json::json!({
+                "config": config,
+            }))
+            .unwrap();
+            assert_eq!(input.0.network_name.as_deref(), Some("known-network"));
+            assert_eq!(stored.config.network_name, input.0.network_name);
+            assert_eq!(stored.source, PersistedConfigSource::Legacy);
+            assert!(
+                serde_json::from_value::<crate::Config>(serde_json::json!({
+                    "network_name": 123,
+                }))
+                .is_err()
+            );
+        }
 
         #[test]
         fn stored_gui_config_defaults_missing_source_to_legacy() {

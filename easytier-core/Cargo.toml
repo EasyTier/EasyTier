@@ -45,6 +45,7 @@ idna = "1.1"
 atomic-shim.workspace = true
 ordered_hash_map = "0.6.1"
 parking_lot.workspace = true
+pastey.workspace = true
 percent-encoding.workspace = true
 petgraph = "0.8.3"
 pin-project-lite.workspace = true
@@ -56,6 +57,7 @@ quanta.workspace = true
 ring = { version = "0.17", optional = true }
 rustls = { workspace = true, features = ["ring", "std", "tls12"], optional = true }
 serde = { workspace = true, features = ["derive"] }
+serde-unknown.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 smoltcp = { workspace = true, optional = true }

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use base64::Engine as _;
+use easytier_core::config;
 use sha2::{Digest as _, Sha256};
 use sqlx::Sqlite;
 use uuid::Uuid;
@@ -693,7 +694,7 @@ async fn load_intent(
                     allocated_ipv4,
                     config_override: override_config
                         .as_deref()
-                        .map(serde_json::from_str)
+                        .map(|config| config::parse_json(&id, config))
                         .transpose()
                         .map_err(|error| {
                             CentralIntentError::InvalidStoredData(format!(

@@ -1,5 +1,4 @@
 use crate::collect_runtime_state_inner;
-use crate::config::repository::kernel_socket_path;
 use crate::runtime::state::runtime_state::{
     PeerConnInfo as RuntimePeerConnInfo, RuntimeAggregateState, peer_conn_to_view,
 };
@@ -10,6 +9,7 @@ use easytier_ohos_core::protocol::{
     TunRequestPayload, broadcast_local_socket_json_payload_message, broadcast_local_socket_message,
 };
 use easytier_ohos_core::routing::aggregate_tun_routes;
+use easytier_ohos_features::config::repository::kernel_socket_path;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};

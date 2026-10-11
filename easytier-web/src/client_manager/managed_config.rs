@@ -5,7 +5,7 @@ use std::{
 
 use dashmap::{DashMap, mapref::entry::Entry};
 use easytier::{
-    common::config::ConfigSource,
+    common::config::{self, ConfigSource},
     proto::{
         api::manage::{ConfigSource as RpcConfigSource, NetworkConfig, NetworkMeta},
         common::Uuid as RpcUuid,
@@ -202,7 +202,10 @@ fn normalize_network_config(
         .filter(|v| !v.is_empty())
         .ok_or_else(|| anyhow::anyhow!("webhook response missing network_name"))?;
 
-    Ok(serde_json::from_value::<NetworkConfig>(network_config)?)
+    Ok(config::deserialize(
+        "webhook network config",
+        network_config,
+    )?)
 }
 
 struct NormalizedWebConfigs {

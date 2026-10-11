@@ -1,4 +1,4 @@
-use easytier::common::config::NetworkConfigExt;
+use easytier::common::config::{self, NetworkConfigExt};
 use easytier::proto::api::manage::NetworkConfig;
 use serde_json::{Map, Value};
 use uuid::Uuid;
@@ -29,7 +29,7 @@ pub(super) fn validate_config_json(
     config_json: &str,
     config_id: String,
 ) -> Result<NetworkConfig, String> {
-    let config = serde_json::from_str::<NetworkConfig>(config_json)
+    let config = config::parse_json::<NetworkConfig>(&config_id, config_json)
         .map_err(|e| format!("parse config json failed: {}", e))?;
     let config = normalize_config_id(config, config_id)?;
     config

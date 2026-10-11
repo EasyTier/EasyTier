@@ -9,8 +9,9 @@ use std::{
 };
 
 use anyhow::Context as _;
+#[allow(unused_imports)]
+pub(crate) use easytier_core::foundation::log::{LOG_TARGET, debug, error, info, trace, warn};
 use log::{Level, LevelFilter, Metadata as LogMetadata, Record as LogRecord};
-use pastey::paste;
 use tracing::{
     Event,
     field::{Field, Visit},
@@ -24,37 +25,6 @@ pub use management::{init, init_with_default_console_targets};
 mod tracing_backend;
 
 use file::FileSink;
-
-macro_rules! __log__ {
-    (const $var:ident = $target:expr) => {
-        const $var: &'static str = $target;
-        __log__!(@impl $target, $);
-    };
-
-    (@impl $target:expr, $_:tt) => {
-        __log__!(@impl $_, $target, error, warn, info, debug, trace);
-    };
-
-    (@impl $_:tt, $target:expr, $($lvl:ident),+) => {
-        paste! {
-            $(
-                macro_rules! [< __ $lvl __ >] {
-                    (category: $cat:expr, $_ ($arg:tt)+) => {
-                        tracing::$lvl!(target: concat!($target, "::", $cat), $_ ($arg)+)
-                    };
-                    ($_ ($arg:tt)+) => {
-                        tracing::$lvl!(target: $target, $_ ($arg)+)
-                    };
-                }
-
-                #[allow(unused_imports)]
-                pub(crate) use [< __ $lvl __ >] as $lvl;
-            )+
-        }
-    };
-}
-
-__log__!(const LOG_TARGET = "CORE");
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
