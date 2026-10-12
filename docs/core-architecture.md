@@ -460,6 +460,12 @@ preserves the sequence field in each request and reply.
 Removing an involved address or member releases its mappings. A full member
 queue drops that packet without blocking other members or control messages.
 
+With one attached member, packets go directly to that member without destination
+matching or new source translations. Native flow reservations remain active so
+later members cannot reuse their tuples. Existing translations continue in both
+directions after other members leave. Unmodified IPv4 fragments and IPv6
+extension headers pass through the single-member path unchanged.
+
 Reservations are bounded at 4096 flows. Activity in either direction refreshes
 them; table pressure reclaims reservations idle for at least 180 seconds. If
 all slots remain active, new tracked flows are dropped rather than evicting a
