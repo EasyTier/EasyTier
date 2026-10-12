@@ -252,8 +252,10 @@ pub(crate) mod tests {
     use atomic_shim::AtomicU64;
     use std::{sync::Arc, time::Instant};
 
+    use anyhow::Context as _;
     use futures::{Future, SinkExt, StreamExt};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
+    use tokio_util::task::AbortOnDropHandle;
 
     use easytier_core::{
         connectivity::protocol::raw::TunnelDialer, packet::ZCPacket, socket::SocketListener,
@@ -341,7 +343,7 @@ pub(crate) mod tests {
         if !once {
             while let Some(item) = recv.next().await {
                 let Ok(msg) = item else {
-                    continue;
+                    break;
                 };
                 tracing::debug!(?msg, "recv a msg, try echo back");
                 if send.send(msg).await.is_err() {
@@ -368,23 +370,41 @@ pub(crate) mod tests {
         tracing::warn!("echo server exit...");
     }
 
+    #[tokio::test]
+    async fn echo_server_stops_on_read_error() {
+        use easytier_core::tunnel::{TunnelError, wrapper::TunnelWrapper};
+
+        let mut failed = false;
+        let reader = futures::stream::poll_fn(move |_| {
+            assert!(!failed, "a terminal read error must not be polled again");
+            failed = true;
+            std::task::Poll::Ready(Some(Err::<ZCPacket, _>(TunnelError::IOError(
+                std::io::ErrorKind::NotConnected.into(),
+            ))))
+        });
+        let writer = futures::sink::drain().sink_map_err(|err| -> TunnelError { match err {} });
+
+        _tunnel_echo_server(Box::new(TunnelWrapper::new(reader, writer, None)), false).await;
+    }
+
     async fn _tunnel_pingpong_netns<L, C>(
         mut listener: L,
         connector: C,
         l_netns: NetNS,
         c_netns: NetNS,
         buf: Vec<u8>,
-    ) where
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<()>
+    where
         L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
         C: TunnelDialer,
     {
-        l_netns
-            .run_async(|| async {
-                listener.listen().await.unwrap();
-            })
-            .await;
+        tokio::time::timeout(timeout, l_netns.run_async(|| listener.listen()))
+            .await
+            .context("listener setup timed out")?
+            .context("listener setup failed")?;
 
-        let lis = tokio::spawn(async move {
+        let lis = AbortOnDropHandle::new(tokio::spawn(async move {
             let ret = listener.accept().await.unwrap();
             println!("accept: {:?}", ret.info());
             assert_eq!(
@@ -392,9 +412,12 @@ pub(crate) mod tests {
                 listener.local_url()
             );
             _tunnel_echo_server(ret, false).await
-        });
+        }));
 
-        let tunnel = c_netns.run_async(|| connector.connect()).await.unwrap();
+        let tunnel = tokio::time::timeout(timeout, c_netns.run_async(|| connector.connect()))
+            .await
+            .context("connect timed out")?
+            .context("connect failed")?;
         println!("connect: {:?}", tunnel.info());
 
         if connector.remote_url().scheme() == "faketcp" {
@@ -409,27 +432,37 @@ pub(crate) mod tests {
 
         let (mut recv, mut send) = tunnel.split();
 
-        send.send(ZCPacket::new_with_payload(buf.as_slice()))
-            .await
-            .unwrap();
+        tokio::time::timeout(
+            timeout,
+            send.send(ZCPacket::new_with_payload(buf.as_slice())),
+        )
+        .await
+        .context("send timed out")?
+        .context("send failed")?;
 
         let ret = tokio::time::timeout(tokio::time::Duration::from_secs(1), recv.next())
             .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+            .context("echo timed out")?
+            .context("tunnel closed before echo")?
+            .context("echo read failed")?;
         println!("echo back: {:?}", ret);
         assert_eq!(ret.payload(), Bytes::from(buf));
 
-        send.close().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), send.close())
+            .await
+            .context("client close timed out")?
+            .context("client close failed")?;
 
         if ["udp", "wg"].contains(&connector.remote_url().scheme()) {
             lis.abort();
+            let _ = lis.await;
         } else {
             // lis should finish in 1 second
             let ret = tokio::time::timeout(tokio::time::Duration::from_secs(1), lis).await;
-            assert!(ret.is_ok());
+            ret.context("echo server shutdown timed out")?
+                .context("echo server task failed")?;
         }
+        Ok(())
     }
 
     pub(crate) async fn _tunnel_pingpong_netns_with_timeout<L, C>(
@@ -444,30 +477,31 @@ pub(crate) mod tests {
         L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
         C: TunnelDialer,
     {
-        let handle = tokio::spawn(async move {
-            _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf).await;
-        });
+        // Each phase has its own deadline; connection setup must not consume
+        // the echo or shutdown budget. Dropping the caller cancels both tasks.
+        let handle = AbortOnDropHandle::new(tokio::spawn(async move {
+            _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf, timeout).await
+        }));
 
-        match tokio::time::timeout(timeout, handle).await {
-            Ok(join_res) => match join_res {
-                Ok(_) => Ok(()),
-                Err(join_err) => {
-                    if join_err.is_panic() {
-                        let payload = join_err.into_panic();
-                        let msg = match payload.downcast::<String>() {
-                            Ok(s) => *s,
-                            Err(payload) => match payload.downcast::<&str>() {
-                                Ok(s) => (*s).to_string(),
-                                Err(_) => "non-string panic payload".to_string(),
-                            },
-                        };
-                        Err(anyhow::anyhow!("task panicked: {}", msg))
-                    } else {
-                        Err(anyhow::anyhow!("task cancelled"))
-                    }
+        match handle.await {
+            Ok(result) => {
+                result.inspect_err(|error| eprintln!("tunnel pingpong failed: {error:#}"))
+            }
+            Err(join_err) => {
+                if join_err.is_panic() {
+                    let payload = join_err.into_panic();
+                    let msg = match payload.downcast::<String>() {
+                        Ok(s) => *s,
+                        Err(payload) => match payload.downcast::<&str>() {
+                            Ok(s) => (*s).to_string(),
+                            Err(_) => "non-string panic payload".to_string(),
+                        },
+                    };
+                    Err(anyhow::anyhow!("task panicked: {}", msg))
+                } else {
+                    Err(anyhow::anyhow!("task cancelled"))
                 }
-            },
-            Err(elapsed) => Err(elapsed.into()),
+            }
         }
     }
 

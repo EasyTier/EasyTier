@@ -2836,13 +2836,16 @@ pub async fn port_forward_test(
     let mut buf = vec![0; buf_size as usize];
     rand::thread_rng().fill(&mut buf[..]);
 
+    // Allow the UDP connector's three-second handshake deadline to complete.
+    // Echo and shutdown retain their separate one-second deadlines.
+    let connect_timeout = Duration::from_secs(5);
     _tunnel_pingpong_netns_with_timeout(
         tcp_listener,
         tcp_connector,
         NetNS::new(Some(network.namespace("net_c").into())),
         NetNS::new(Some(network.namespace("net_a").into())),
         buf,
-        Duration::from_secs(1),
+        connect_timeout,
     )
     .await
     .unwrap();
@@ -2859,7 +2862,7 @@ pub async fn port_forward_test(
         NetNS::new(Some(network.namespace("net_d").into())),
         NetNS::new(Some(network.namespace("net_a").into())),
         buf,
-        Duration::from_secs(1),
+        connect_timeout,
     )
     .await
     .unwrap();
@@ -2876,7 +2879,7 @@ pub async fn port_forward_test(
         NetNS::new(Some(network.namespace("net_c").into())),
         NetNS::new(Some(network.namespace("net_a").into())),
         buf,
-        Duration::from_secs(1),
+        connect_timeout,
     )
     .await
     .unwrap();
@@ -2893,7 +2896,7 @@ pub async fn port_forward_test(
         NetNS::new(Some(network.namespace("net_d").into())),
         NetNS::new(Some(network.namespace("net_a").into())),
         buf,
-        Duration::from_secs(1),
+        connect_timeout,
     )
     .await
     .unwrap();
