@@ -1,7 +1,15 @@
 use std::fmt::Display;
 
-include!(concat!(env!("OUT_DIR"), "/acl.rs"));
-include!(concat!(env!("OUT_DIR"), "/acl.serde.rs"));
+#[allow(clippy::all)]
+mod generated {
+    pub use crate::*;
+
+    pub mod acl {
+        include!(concat!(env!("OUT_DIR"), "/acl.rs"));
+        include!(concat!(env!("OUT_DIR"), "/acl.serde.rs"));
+    }
+}
+pub use generated::acl::*;
 
 impl Acl {
     pub fn is_empty(&self) -> bool {
