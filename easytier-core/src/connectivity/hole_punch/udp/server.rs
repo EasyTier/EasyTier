@@ -35,6 +35,9 @@ use super::{
 };
 
 const MAX_K1_FOR_RANDOM_HARD_SYM: u32 = 180;
+// Selection precedes local socket/STUN preparation. Match the listener's
+// selection lifetime so abandoned preparations expire without per-RPC tasks.
+const PREPARED_CONE_PUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct SelectedUdpPunchListener<S> {
     /// Kept for listener-selection side effects and tests; production callers
@@ -266,8 +269,16 @@ where
                 UdpHolePunchSignalError::RemoteRejected("no listener available".into())
             })?;
 
+        if let Some(transaction_id) = request.transaction_id {
+            self.common
+                .prepare_hole_punch(&selected.mapped_addr, transaction_id)
+                .await
+                .map_err(Self::anyhow_to_signal_error)?;
+        }
+
         Ok(SelectPunchListenerResponse {
             listener_mapped_addr: selected.mapped_addr,
+            transaction_id: request.transaction_id,
         })
     }
 
@@ -276,17 +287,12 @@ where
         request: SendPunchPacketCone,
     ) -> Result<(), UdpHolePunchSignalError> {
         let _admission = self.admit().await?;
-        let listener = self
+        let (listener, observer) = self
             .common
-            .find_listener(&request.listener_mapped_addr)
+            .observe_hole_punch(&request.listener_mapped_addr, request.transaction_id)
             .await
-            .ok_or_else(|| {
-                UdpHolePunchSignalError::RemoteRejected(
-                    "send_punch_packet_for_cone failed to find listener".into(),
-                )
-            })?;
-
-        send_cone_hole_punch_packets(listener, &request)
+            .map_err(Self::anyhow_to_signal_error)?;
+        send_cone_hole_punch_packets(listener, &request, observer)
             .await
             .map_err(Self::anyhow_to_signal_error)
     }
@@ -386,6 +392,7 @@ where
                     let mut index = 0;
                     while index < listeners.len() {
                         let listener = &listeners[index];
+                        listener.hole_punch_observers.expire_prepared();
                         let active = listener.last_active_time.load().elapsed().as_secs() < 40
                             || listener.last_select_time.load().elapsed().as_secs() < 30;
                         if active {
@@ -471,6 +478,36 @@ where
             .find(|listener| listener.mapped_addr == *addr && listener.running.load())?;
 
         Some(listener.get_socket())
+    }
+
+    async fn prepare_hole_punch(
+        &self,
+        addr: &SocketAddr,
+        transaction_id: u32,
+    ) -> anyhow::Result<()> {
+        let listeners = self.listeners.lock().await;
+        let listener = listeners
+            .iter()
+            .find(|listener| listener.mapped_addr == *addr && listener.running.load())
+            .ok_or_else(|| anyhow::anyhow!("failed to find hole-punch listener"))?;
+        listener
+            .hole_punch_observers
+            .prepare(transaction_id, PREPARED_CONE_PUNCH_TIMEOUT)?;
+        Ok(())
+    }
+
+    async fn observe_hole_punch(
+        &self,
+        addr: &SocketAddr,
+        transaction_id: u32,
+    ) -> anyhow::Result<(Arc<R::Socket>, crate::socket::udp::UdpHolePunchObserver)> {
+        let listeners = self.listeners.lock().await;
+        let listener = listeners
+            .iter()
+            .find(|listener| listener.mapped_addr == *addr && listener.running.load())
+            .ok_or_else(|| anyhow::anyhow!("send_punch_packet_for_cone failed to find listener"))?;
+        let observer = listener.hole_punch_observers.observe(transaction_id)?;
+        Ok((listener.get_socket(), observer))
     }
 
     pub async fn select_listener(
@@ -572,6 +609,7 @@ where
 
 struct UdpPunchListenerRecord<S> {
     socket: Arc<S>,
+    hole_punch_observers: crate::socket::udp::UdpHolePunchObserverRegistry,
     tasks: Mutex<JoinSet<()>>,
     connection_tasks: Arc<Mutex<JoinSet<()>>>,
     running: Arc<AtomicCell<bool>>,
@@ -595,6 +633,7 @@ where
     {
         let UdpPunchListener {
             socket,
+            hole_punch_observers,
             mapped_addr,
             conn_counter,
             mut acceptor,
@@ -646,6 +685,7 @@ where
 
         Self {
             socket,
+            hole_punch_observers,
             tasks: Mutex::new(tasks),
             connection_tasks,
             running,
@@ -726,6 +766,7 @@ where
 pub async fn send_cone_hole_punch_packets<S>(
     udp: Arc<S>,
     request: &SendPunchPacketCone,
+    mut observer: crate::socket::udp::UdpHolePunchObserver,
 ) -> anyhow::Result<()>
 where
     S: VirtualUdpSocket + 'static,
@@ -738,21 +779,47 @@ where
         );
     }
 
-    for _ in 0..request.packet_batch_count {
-        tracing::info!(?request, "sending hole punching packet");
-
+    let udp = udp.as_ref();
+    let send_batch = |dest_addr| async move {
         for _ in 0..request.packet_count_per_batch {
             let udp_packet =
                 new_hole_punch_packet(request.transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
-            if let Err(err) = udp
-                .send_to(&udp_packet.into_bytes(), request.dest_addr)
-                .await
-            {
-                tracing::error!(?err, "failed to send hole punch packet to dest addr");
+            if let Err(err) = udp.send_to(&udp_packet.into_bytes(), dest_addr).await {
+                tracing::error!(
+                    ?err,
+                    ?dest_addr,
+                    "failed to send hole punch packet to dest addr"
+                );
             }
         }
-        crate::foundation::time::sleep(Duration::from_millis(request.packet_interval_ms as u64))
-            .await;
+    };
+    let mut observed_addr = observer.source_addr();
+    for _ in 0..request.packet_batch_count {
+        tracing::info!(?request, "sending hole punching packet");
+
+        send_batch(request.dest_addr).await;
+        if let Some(addr) = observed_addr.filter(|addr| *addr != request.dest_addr) {
+            send_batch(addr).await;
+        }
+        let interval = crate::foundation::time::sleep(Duration::from_millis(
+            request.packet_interval_ms as u64,
+        ));
+        tokio::pin!(interval);
+        if observed_addr.is_none() {
+            tokio::select! {
+                _ = &mut interval => {}
+                addr = observer.wait_for_source_addr() => {
+                    let addr = addr?;
+                    observed_addr = Some(addr);
+                    if addr != request.dest_addr {
+                        send_batch(addr).await;
+                    }
+                    interval.await;
+                }
+            }
+        } else {
+            interval.await;
+        }
     }
 
     Ok(())
@@ -971,6 +1038,8 @@ mod tests {
         local_addr: SocketAddr,
         sent: tokio::sync::Mutex<Vec<(Vec<u8>, SocketAddr)>>,
         fail_next_send: AtomicUsize,
+        incoming: StdMutex<VecDeque<(Vec<u8>, SocketAddr)>>,
+        incoming_notify: tokio::sync::Notify,
     }
 
     #[async_trait]
@@ -988,8 +1057,15 @@ mod tests {
             Ok(data.len())
         }
 
-        async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-            std::future::pending().await
+        async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            loop {
+                if let Some((data, addr)) = self.incoming.lock().unwrap().pop_front() {
+                    let len = data.len().min(buf.len());
+                    buf[..len].copy_from_slice(&data[..len]);
+                    return Ok((len, addr));
+                }
+                self.incoming_notify.notified().await;
+            }
         }
     }
 
@@ -1006,6 +1082,7 @@ mod tests {
 
     struct MockAcceptor {
         sockets: VecDeque<UdpPunchSocket>,
+        _layer: Arc<crate::socket::udp::UdpSessionLayer<MockSocket>>,
     }
 
     #[async_trait]
@@ -1039,6 +1116,8 @@ mod tests {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 sent: tokio::sync::Mutex::new(Vec::new()),
                 fail_next_send: AtomicUsize::new(0),
+                incoming: StdMutex::new(VecDeque::new()),
+                incoming_notify: tokio::sync::Notify::new(),
             }))
         }
 
@@ -1130,16 +1209,22 @@ mod tests {
     }
 
     fn listener(port: u16, sockets: Vec<UdpPunchSocket>) -> UdpPunchListener<MockSocket> {
+        let socket = Arc::new(MockSocket {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+            fail_next_send: AtomicUsize::new(0),
+            incoming: StdMutex::new(VecDeque::new()),
+            incoming_notify: tokio::sync::Notify::new(),
+        });
+        let layer = Arc::new(crate::socket::udp::UdpSessionLayer::new(socket.clone()));
         UdpPunchListener {
-            socket: Arc::new(MockSocket {
-                local_addr: SocketAddr::from(([127, 0, 0, 1], port)),
-                sent: tokio::sync::Mutex::new(Vec::new()),
-                fail_next_send: AtomicUsize::new(0),
-            }),
+            socket,
+            hole_punch_observers: layer.hole_punch_observers(),
             mapped_addr: SocketAddr::from(([203, 0, 113, 1], port)),
             conn_counter: Arc::new(MockCounter::default()),
             acceptor: Box::new(MockAcceptor {
                 sockets: sockets.into(),
+                _layer: layer,
             }),
             port_mapping_lease: None,
         }
@@ -1206,6 +1291,8 @@ mod tests {
             local_addr: SocketAddr::from(([127, 0, 0, 1], 10001)),
             sent: tokio::sync::Mutex::new(Vec::new()),
             fail_next_send: AtomicUsize::new(0),
+            incoming: StdMutex::new(VecDeque::new()),
+            incoming_notify: tokio::sync::Notify::new(),
         });
         let remote_addr = SocketAddr::from(([127, 0, 0, 1], 20001));
         let session =
@@ -1232,11 +1319,247 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_listener_observes_first_packet_before_cone_rpc_arrives() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener(10002, Vec::new())]));
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            Arc::new(MockSink::default()),
+            UdpSymPunchLock::default(),
+        );
+        server.start().await;
+        let selected = server
+            .select_punch_listener(SelectPunchListener {
+                force_new: false,
+                prefer_port_mapping: false,
+                transaction_id: Some(0),
+            })
+            .await
+            .unwrap();
+        assert_eq!(selected.transaction_id, Some(0));
+        let socket = server
+            .common
+            .find_listener(&selected.listener_mapped_addr)
+            .await
+            .unwrap();
+        let source = SocketAddr::from(([198, 51, 100, 1], 33140));
+        socket.incoming.lock().unwrap().push_back((
+            new_hole_punch_packet(0, HOLE_PUNCH_PACKET_BODY_LEN)
+                .into_bytes()
+                .to_vec(),
+            source,
+        ));
+        socket.incoming_notify.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !socket.incoming.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let dest_addr = SocketAddr::from(([198, 51, 100, 1], 33105));
+        server
+            .send_punch_packet_cone(SendPunchPacketCone {
+                listener_mapped_addr: selected.listener_mapped_addr,
+                dest_addr,
+                transaction_id: 0,
+                packet_count_per_batch: 2,
+                packet_batch_count: 1,
+                packet_interval_ms: 0,
+            })
+            .await
+            .unwrap();
+        let sent = socket.sent.lock().await;
+        assert_eq!(sent.len(), 4);
+        assert_eq!(
+            sent.iter().filter(|(_, addr)| *addr == dest_addr).count(),
+            2
+        );
+        assert_eq!(sent.iter().filter(|(_, addr)| *addr == source).count(), 2);
+        drop(sent);
+        server.stop().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cleanup_expires_abandoned_listener_registration() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener(10002, Vec::new())]));
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            Arc::new(MockSink::default()),
+            UdpSymPunchLock::default(),
+        );
+        server.start().await;
+        let selected = server
+            .select_punch_listener(SelectPunchListener {
+                force_new: false,
+                prefer_port_mapping: false,
+                transaction_id: Some(9),
+            })
+            .await
+            .unwrap();
+        assert!(
+            server
+                .common
+                .prepare_hole_punch(&selected.listener_mapped_addr, 9)
+                .await
+                .is_err()
+        );
+        // Let the existing periodic cleanup run as the paused clock advances.
+        crate::foundation::time::sleep(PREPARED_CONE_PUNCH_TIMEOUT + Duration::from_secs(5)).await;
+        server
+            .common
+            .prepare_hole_punch(&selected.listener_mapped_addr, 9)
+            .await
+            .unwrap();
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn cone_sender_adds_observed_source_during_last_batch_and_deduplicates() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener(10002, Vec::new())]));
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            Arc::new(MockSink::default()),
+            UdpSymPunchLock::default(),
+        );
+        server.start().await;
+        let selected = server
+            .select_punch_listener(SelectPunchListener {
+                force_new: false,
+                prefer_port_mapping: false,
+                transaction_id: None,
+            })
+            .await
+            .unwrap();
+        let socket = server
+            .common
+            .find_listener(&selected.listener_mapped_addr)
+            .await
+            .unwrap();
+        let request = SendPunchPacketCone {
+            listener_mapped_addr: selected.listener_mapped_addr,
+            dest_addr: SocketAddr::from(([198, 51, 100, 1], 33105)),
+            transaction_id: 9,
+            packet_count_per_batch: 2,
+            packet_batch_count: 1,
+            packet_interval_ms: 100,
+        };
+        for observed_addr in [
+            SocketAddr::from(([198, 51, 100, 1], 33140)),
+            request.dest_addr,
+        ] {
+            socket.sent.lock().await.clear();
+            let send = server.send_punch_packet_cone(request.clone());
+            let observe = async {
+                loop {
+                    if socket.sent.lock().await.len() == 2 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                socket.incoming.lock().unwrap().push_back((
+                    new_hole_punch_packet(request.transaction_id, HOLE_PUNCH_PACKET_BODY_LEN)
+                        .into_bytes()
+                        .to_vec(),
+                    observed_addr,
+                ));
+                socket.incoming_notify.notify_one();
+            };
+            let (result, _) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(send, observe)
+            })
+            .await
+            .unwrap();
+            result.unwrap();
+            let sent = socket.sent.lock().await;
+            let expected_count = if observed_addr == request.dest_addr {
+                2
+            } else {
+                4
+            };
+            assert_eq!(sent.len(), expected_count);
+            assert_eq!(
+                sent.iter()
+                    .filter(|(_, addr)| *addr == request.dest_addr)
+                    .count(),
+                2
+            );
+            for (packet, _) in sent.iter() {
+                assert_eq!(
+                    crate::packet::hole_punch_packet_tid(packet, HOLE_PUNCH_PACKET_BODY_LEN),
+                    Some(request.transaction_id)
+                );
+            }
+            if observed_addr != request.dest_addr {
+                assert_eq!(
+                    sent.iter()
+                        .filter(|(_, addr)| *addr == observed_addr)
+                        .count(),
+                    2
+                );
+            }
+        }
+        let (_, observer) = server
+            .common
+            .observe_hole_punch(&request.listener_mapped_addr, request.transaction_id)
+            .await
+            .unwrap();
+        assert_eq!(observer.source_addr(), None);
+        drop(observer);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_cone_sender_unregisters_observed_source() {
+        let socket = Arc::new(MockSocket {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 10002)),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+            fail_next_send: AtomicUsize::new(0),
+            incoming: StdMutex::new(VecDeque::new()),
+            incoming_notify: tokio::sync::Notify::new(),
+        });
+        let layer = crate::socket::udp::UdpSessionLayer::new(socket.clone());
+        let request = SendPunchPacketCone {
+            listener_mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10002)),
+            dest_addr: SocketAddr::from(([198, 51, 100, 1], 33105)),
+            transaction_id: 9,
+            packet_count_per_batch: 2,
+            packet_batch_count: 5,
+            packet_interval_ms: 400,
+        };
+        let observer = layer
+            .hole_punch_observers()
+            .observe(request.transaction_id)
+            .unwrap();
+        let send_socket = socket.clone();
+        let task = tokio::spawn(async move {
+            send_cone_hole_punch_packets(send_socket, &request, observer).await
+        });
+        while socket.sent.lock().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            layer
+                .hole_punch_observers()
+                .observe(9)
+                .unwrap()
+                .source_addr(),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn cone_packet_sender_keeps_old_batch_shape() {
         let socket = Arc::new(MockSocket {
             local_addr: SocketAddr::from(([127, 0, 0, 1], 10002)),
             sent: tokio::sync::Mutex::new(Vec::new()),
             fail_next_send: AtomicUsize::new(0),
+            incoming: StdMutex::new(VecDeque::new()),
+            incoming_notify: tokio::sync::Notify::new(),
         });
         let request = SendPunchPacketCone {
             listener_mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10002)),
@@ -1247,7 +1570,12 @@ mod tests {
             packet_interval_ms: 0,
         };
 
-        send_cone_hole_punch_packets(socket.clone(), &request)
+        let layer = crate::socket::udp::UdpSessionLayer::new(socket.clone());
+        let observer = layer
+            .hole_punch_observers()
+            .observe(request.transaction_id)
+            .unwrap();
+        send_cone_hole_punch_packets(socket.clone(), &request, observer)
             .await
             .unwrap();
 
@@ -1262,6 +1590,8 @@ mod tests {
             local_addr: SocketAddr::from(([127, 0, 0, 1], 10004)),
             sent: tokio::sync::Mutex::new(Vec::new()),
             fail_next_send: AtomicUsize::new(0),
+            incoming: StdMutex::new(VecDeque::new()),
+            incoming_notify: tokio::sync::Notify::new(),
         });
         let request = SendPunchPacketCone {
             listener_mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10004)),
@@ -1272,7 +1602,12 @@ mod tests {
             packet_interval_ms: 0,
         };
 
-        let err = send_cone_hole_punch_packets(socket.clone(), &request)
+        let layer = crate::socket::udp::UdpSessionLayer::new(socket.clone());
+        let observer = layer
+            .hole_punch_observers()
+            .observe(request.transaction_id)
+            .unwrap();
+        let err = send_cone_hole_punch_packets(socket.clone(), &request, observer)
             .await
             .unwrap_err();
 
@@ -1286,6 +1621,8 @@ mod tests {
             local_addr: SocketAddr::from(([127, 0, 0, 1], 10005)),
             sent: tokio::sync::Mutex::new(Vec::new()),
             fail_next_send: AtomicUsize::new(1),
+            incoming: StdMutex::new(VecDeque::new()),
+            incoming_notify: tokio::sync::Notify::new(),
         });
         let request = SendPunchPacketCone {
             listener_mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10005)),
@@ -1296,7 +1633,12 @@ mod tests {
             packet_interval_ms: 0,
         };
 
-        send_cone_hole_punch_packets(socket.clone(), &request)
+        let layer = crate::socket::udp::UdpSessionLayer::new(socket.clone());
+        let observer = layer
+            .hole_punch_observers()
+            .observe(request.transaction_id)
+            .unwrap();
+        send_cone_hole_punch_packets(socket.clone(), &request, observer)
             .await
             .unwrap();
 
@@ -1310,6 +1652,8 @@ mod tests {
             local_addr: SocketAddr::from(([127, 0, 0, 1], 10003)),
             sent: tokio::sync::Mutex::new(Vec::new()),
             fail_next_send: AtomicUsize::new(0),
+            incoming: StdMutex::new(VecDeque::new()),
+            incoming_notify: tokio::sync::Notify::new(),
         });
         let next_idx = send_symmetric_hole_punch_packet(
             &[10, 11, 12],
@@ -1335,6 +1679,8 @@ mod tests {
             local_addr: SocketAddr::from(([127, 0, 0, 1], 10006)),
             sent: tokio::sync::Mutex::new(Vec::new()),
             fail_next_send: AtomicUsize::new(1),
+            incoming: StdMutex::new(VecDeque::new()),
+            incoming_notify: tokio::sync::Notify::new(),
         });
 
         let err = send_symmetric_hole_punch_packet(

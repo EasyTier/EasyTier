@@ -17,7 +17,10 @@ use crate::{
     peers::PeerConnectionOrigin,
     socket::{
         ListenerConnectionCounter, SocketContext,
-        udp::{UdpBindOptions, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory},
+        udp::{
+            UdpBindOptions, UdpHolePunchObserverRegistry, UdpSession, VirtualUdpSocket,
+            VirtualUdpSocketFactory,
+        },
     },
     tunnel::Tunnel,
 };
@@ -73,6 +76,7 @@ fn udp_url(addr: SocketAddr) -> url::Url {
 
 pub struct UdpPunchListener<S> {
     pub socket: Arc<S>,
+    pub hole_punch_observers: UdpHolePunchObserverRegistry,
     pub mapped_addr: SocketAddr,
     pub conn_counter: Arc<dyn ListenerConnectionCounter>,
     pub acceptor: Box<dyn UdpPunchAcceptor>,
@@ -88,11 +92,13 @@ pub struct UdpResolvedPublicAddr {
 pub struct SelectPunchListener {
     pub force_new: bool,
     pub prefer_port_mapping: bool,
+    pub transaction_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectPunchListenerResponse {
     pub listener_mapped_addr: SocketAddr,
+    pub transaction_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
