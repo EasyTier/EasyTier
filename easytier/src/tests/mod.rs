@@ -161,11 +161,7 @@ pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
     run_network_command("ip", &["link", "set", br_name, "up"]);
 }
 
-fn check_route(
-    ipv4: &str,
-    dst_peer_id: PeerId,
-    routes: Vec<easytier_proto::core::peer::Route>,
-) {
+fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<easytier_proto::core::peer::Route>) {
     let mut found = false;
     for r in routes.iter() {
         if r.ipv4_addr == Some(ipv4.parse().unwrap()) {
