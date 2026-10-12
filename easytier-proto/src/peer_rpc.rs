@@ -7,9 +7,17 @@ use std::collections::BTreeSet;
 
 type PeerId = u32;
 
-include!(concat!(env!("OUT_DIR"), "/peer_rpc.rs"));
-#[cfg(feature = "json-rpc")]
-include!(concat!(env!("OUT_DIR"), "/peer_rpc.serde.rs"));
+#[allow(clippy::all)]
+mod generated {
+    pub use crate::*;
+
+    pub mod peer_rpc {
+        include!(concat!(env!("OUT_DIR"), "/peer_rpc.rs"));
+        #[cfg(feature = "json-rpc")]
+        include!(concat!(env!("OUT_DIR"), "/peer_rpc.serde.rs"));
+    }
+}
+pub use generated::peer_rpc::*;
 
 impl PeerGroupInfo {
     pub fn generate_with_proof(group_name: String, group_secret: String, peer_id: PeerId) -> Self {

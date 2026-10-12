@@ -1,7 +1,37 @@
+#[allow(clippy::all)]
+mod generated {
+    pub use crate::*;
+
+    pub mod api {
+        pub mod config {
+            include!(concat!(env!("OUT_DIR"), "/api.config.rs"));
+            #[cfg(feature = "json-rpc")]
+            include!(concat!(env!("OUT_DIR"), "/api.config.serde.rs"));
+        }
+
+        pub mod instance {
+            include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
+            #[cfg(feature = "json-rpc")]
+            include!(concat!(env!("OUT_DIR"), "/api.instance.serde.rs"));
+        }
+
+        pub mod logger {
+            include!(concat!(env!("OUT_DIR"), "/api.logger.rs"));
+            #[cfg(feature = "json-rpc")]
+            include!(concat!(env!("OUT_DIR"), "/api.logger.serde.rs"));
+        }
+
+        pub mod manage {
+            include!(concat!(env!("OUT_DIR"), "/api.manage.rs"));
+            #[cfg(feature = "json-rpc")]
+            include!(concat!(env!("OUT_DIR"), "/api.manage.serde.rs"));
+        }
+    }
+}
+use generated::api;
+
 pub mod config {
-    include!(concat!(env!("OUT_DIR"), "/api.config.rs"));
-    #[cfg(feature = "json-rpc")]
-    include!(concat!(env!("OUT_DIR"), "/api.config.serde.rs"));
+    pub use super::api::config::*;
 
     pub struct Patchable<T> {
         pub action: Option<ConfigPatchAction>,
@@ -72,9 +102,7 @@ pub mod config {
 pub mod instance {
     use std::fmt::{Display, Formatter};
 
-    include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
-    #[cfg(feature = "json-rpc")]
-    include!(concat!(env!("OUT_DIR"), "/api.instance.serde.rs"));
+    pub use super::api::instance::*;
 
     impl From<crate::core_peer::peer::PeerConnStats> for PeerConnStats {
         fn from(value: crate::core_peer::peer::PeerConnStats) -> Self {
@@ -324,16 +352,10 @@ pub mod instance {
     }
 }
 
-pub mod logger {
-    include!(concat!(env!("OUT_DIR"), "/api.logger.rs"));
-    #[cfg(feature = "json-rpc")]
-    include!(concat!(env!("OUT_DIR"), "/api.logger.serde.rs"));
-}
+pub use api::logger;
 
 pub mod manage {
-    include!(concat!(env!("OUT_DIR"), "/api.manage.rs"));
-    #[cfg(feature = "json-rpc")]
-    include!(concat!(env!("OUT_DIR"), "/api.manage.serde.rs"));
+    pub use super::api::manage::*;
 
     impl std::fmt::Debug for ManagedCredentialConfig {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
