@@ -264,10 +264,7 @@ impl DhcpIpv4Service {
     ) -> Arc<Self> {
         Arc::new(Self {
             operation: tokio::sync::Mutex::new(()),
-            allocator: std::sync::Mutex::new(DhcpIpv4Allocator::new(
-                Ipv4Inet::new(std::net::Ipv4Addr::new(10, 126, 126, 0), 24)
-                    .expect("valid bootstrap subnet"),
-            )),
+            allocator: std::sync::Mutex::new(DhcpIpv4Allocator::default()),
             route_source,
             runtime_config,
             host,
@@ -284,11 +281,21 @@ impl DhcpIpv4Service {
             self.allocator.lock().unwrap().reset();
         }
         let snapshot = self.route_source.dhcp_ipv4_route_snapshot().await;
-        let decision = self
-            .allocator
-            .lock()
-            .unwrap()
-            .evaluate(snapshot.has_routes, &snapshot.used_ipv4);
+        let decision = {
+            let mut allocator = self.allocator.lock().unwrap();
+            allocator.default_subnet = Some(
+                self.runtime_config
+                    .snapshot()
+                    .services
+                    .dhcp_ipv4_cidr
+                    .map(|cidr| cidr.first())
+                    .unwrap_or_else(|| {
+                        Ipv4Inet::new(std::net::Ipv4Addr::new(10, 126, 126, 0), 24)
+                            .expect("valid bootstrap subnet")
+                    }),
+            );
+            allocator.evaluate(snapshot.has_routes, &snapshot.used_ipv4)
+        };
 
         let DhcpIpv4Decision::Change { previous, next } = decision else {
             return snapshot.has_routes;
@@ -632,15 +639,46 @@ mod tests {
 
     #[tokio::test]
     async fn service_bootstraps_ipv4_when_no_peer_has_one() {
-        check_service_bootstrap(true).await;
+        check_service_bootstrap(true, None).await;
     }
 
     #[tokio::test]
     async fn service_bootstraps_ipv4_without_other_peers() {
-        check_service_bootstrap(false).await;
+        check_service_bootstrap(false, None).await;
     }
 
-    async fn check_service_bootstrap(has_routes: bool) {
+    #[tokio::test]
+    async fn service_bootstraps_ipv4_in_configured_subnet() {
+        for cidr in [
+            "192.168.100.0/24",
+            "10.20.0.0/16",
+            "192.168.100.0/30",
+            "0.0.0.0/0",
+        ] {
+            for has_routes in [true, false] {
+                check_service_bootstrap(has_routes, Some(cidr)).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn service_prefers_peer_subnet_over_configured_bootstrap_subnet() {
+        let host = Arc::new(RecordingHost::default());
+        let (service, runtime_config) = service(
+            DhcpIpv4RouteSnapshot {
+                has_routes: true,
+                used_ipv4: HashSet::from(["10.20.0.1/16".parse().unwrap()]),
+            },
+            host,
+        );
+        runtime_config.update_services(|services| {
+            services.dhcp_ipv4_cidr = Some("192.168.100.0/24".parse().unwrap())
+        });
+        service.reconcile_once().await;
+        assert_eq!(service.current(), Some("10.20.0.2/16".parse().unwrap()));
+    }
+
+    async fn check_service_bootstrap(has_routes: bool, cidr: Option<&str>) {
         let host = Arc::new(RecordingHost::default());
         let (service, runtime_config) = service(
             DhcpIpv4RouteSnapshot {
@@ -649,6 +687,9 @@ mod tests {
             },
             host.clone(),
         );
+        runtime_config.update_services(|services| {
+            services.dhcp_ipv4_cidr = cidr.map(|cidr| cidr.parse().unwrap())
+        });
 
         for _ in 0..BOOTSTRAP_WAIT_ROUNDS {
             assert_eq!(service.reconcile_once().await, has_routes);
@@ -672,8 +713,13 @@ mod tests {
         let address = service.current().expect("bootstrap address");
         assert_eq!(
             address.network(),
-            "10.126.126.0/24".parse::<Ipv4Inet>().unwrap().network()
+            cidr.unwrap_or("10.126.126.0/24")
+                .parse::<Ipv4Inet>()
+                .unwrap()
+                .network()
         );
+        assert_ne!(address.address(), address.first_address());
+        assert_ne!(address.address(), address.last_address());
         assert_eq!(*host.changes.lock().unwrap(), [(None, Some(address))]);
         assert_eq!(
             runtime_config.snapshot().peer.runtime.core.routes.ipv4,

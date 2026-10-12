@@ -16,6 +16,8 @@ use super::{
 pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dhcp_ipv4_cidr: Option<Ipv4Cidr>,
     pub gateway: GatewayRuntimeConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_routes: Option<BTreeSet<Ipv4Cidr>>,
@@ -30,6 +32,7 @@ impl Default for CoreRuntimeConfig {
         Self {
             acl: AclRuleConfig::default(),
             dhcp_ipv4: false,
+            dhcp_ipv4_cidr: None,
             gateway: GatewayRuntimeConfig::default(),
             manual_routes: None,
             proxy: ProxyRuntimeConfig::default(),

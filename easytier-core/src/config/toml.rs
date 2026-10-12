@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::normalize_secure_mode_config;
+use super::{DhcpConfig, normalize_secure_mode_config};
 pub use super::{EncryptionAlgorithm, gateway::PortForwardConfig};
 use anyhow::Context;
 #[cfg(feature = "rich-config-errors")]
@@ -53,8 +53,16 @@ pub trait ConfigLoader: Send + Sync {
     fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr>;
     fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>);
 
-    fn get_dhcp(&self) -> bool;
-    fn set_dhcp(&self, dhcp: bool);
+    fn get_dhcp_config(&self) -> DhcpConfig;
+    fn set_dhcp_config(&self, dhcp: DhcpConfig);
+
+    fn get_dhcp(&self) -> bool {
+        self.get_dhcp_config().enabled()
+    }
+
+    fn set_dhcp(&self, dhcp: bool) {
+        self.set_dhcp_config(DhcpConfig::Enabled(dhcp));
+    }
 
     fn add_proxy_cidr(
         &self,
@@ -397,7 +405,7 @@ struct Config {
     ipv6_public_addr_provider: Option<bool>,
     ipv6_public_addr_auto: Option<bool>,
     ipv6_public_addr_prefix: Option<String>,
-    dhcp: Option<bool>,
+    dhcp: Option<DhcpConfig>,
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
@@ -725,11 +733,11 @@ impl ConfigLoader for TomlConfig {
             prefix.map(|prefix| prefix.to_string());
     }
 
-    fn get_dhcp(&self) -> bool {
+    fn get_dhcp_config(&self) -> DhcpConfig {
         self.config.lock().unwrap().dhcp.unwrap_or_default()
     }
 
-    fn set_dhcp(&self, dhcp: bool) {
+    fn set_dhcp_config(&self, dhcp: DhcpConfig) {
         self.config.lock().unwrap().dhcp = Some(dhcp);
     }
 
@@ -1066,6 +1074,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dhcp_accepts_booleans_and_ipv4_subnets() {
+        assert!(!TomlConfig::default().get_dhcp());
+        for (value, expected) in [
+            ("false", DhcpConfig::Enabled(false)),
+            ("true", DhcpConfig::Enabled(true)),
+            (
+                "'192.168.100.0/24'",
+                DhcpConfig::Cidr("192.168.100.0/24".parse().unwrap()),
+            ),
+            (
+                "'192.168.100.0/30'",
+                DhcpConfig::Cidr("192.168.100.0/30".parse().unwrap()),
+            ),
+            (
+                "'0.0.0.0/0'",
+                DhcpConfig::Cidr("0.0.0.0/0".parse().unwrap()),
+            ),
+        ] {
+            let config = TomlConfig::new_from_str(&format!("dhcp = {value}")).unwrap();
+            assert_eq!(config.get_dhcp_config(), expected);
+            assert_eq!(config.get_dhcp(), expected.enabled());
+            #[cfg(feature = "config-write")]
+            assert_eq!(
+                TomlConfig::new_from_str(&config.dump())
+                    .unwrap()
+                    .get_dhcp_config(),
+                expected
+            );
+            config.set_dhcp(false);
+            assert_eq!(config.get_dhcp_config(), DhcpConfig::Enabled(false));
+        }
+    }
+
+    #[test]
+    fn dhcp_rejects_invalid_or_unusable_subnets() {
+        for value in [
+            "'yes'",
+            "'true'",
+            "'::/64'",
+            "'192.168.100.0/31'",
+            "'192.168.100.1/32'",
+            "'192.168.100.1/24'",
+            "'192.168.100.0/33'",
+            "'192.168.100.1'",
+            "123",
+            "{}",
+            "[]",
+        ] {
+            assert!(
+                TomlConfig::new_from_str(&format!("dhcp = {value}")).is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_error_preserves_source_and_location() {
         let error =
             TomlConfig::new_from_str_with_source("fixture.toml", "dhcp = \"yes\"").unwrap_err();
@@ -1073,7 +1137,7 @@ mod tests {
 
         assert!(display.contains("fixture.toml"));
         assert!(display.contains("dhcp = \"yes\""));
-        assert!(display.contains("invalid type: string"));
+        assert!(display.contains("invalid DHCP IPv4 CIDR"));
         assert!(
             error
                 .chain()
@@ -1890,7 +1954,7 @@ mod diagnostic_compatibility_tests {
 
         assert!(error.contains("dhcp = \"yes\""));
         assert!(error.contains('^'));
-        assert!(error.contains("invalid type: string"));
+        assert!(error.contains("invalid DHCP IPv4 CIDR"));
     }
 
     #[cfg(feature = "rich-config-errors")]

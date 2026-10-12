@@ -296,6 +296,7 @@ impl CoreInstanceConfig {
                 whitelist_priority: None,
             },
             dhcp_ipv4: config.get_dhcp(),
+            dhcp_ipv4_cidr: config.get_dhcp_config().cidr(),
             gateway: GatewayRuntimeConfig {
                 socks5_bind,
                 port_forwards: if host.ignore_unsupported_config && !host.gateway_enabled {
