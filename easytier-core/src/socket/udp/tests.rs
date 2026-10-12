@@ -477,6 +477,107 @@ impl AutoSackVirtualUdpSocket {
     }
 }
 
+#[tokio::test]
+async fn hole_punch_observer_matches_socket_transaction_and_packet_shape() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([198, 51, 100, 1], 33140));
+    let other_addr = SocketAddr::from(([198, 51, 100, 1], 33105));
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+    let other_socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+    let layer = UdpSessionLayer::new(socket.clone());
+    let other_layer = UdpSessionLayer::new(other_socket.clone());
+    let mut observer = layer.hole_punch_observers().observe(7).unwrap();
+    let other_observer = other_layer.hole_punch_observers().observe(7).unwrap();
+    let mut concurrent_observer = layer.hole_punch_observers().observe(8).unwrap();
+
+    for (tid, body_len, source) in [
+        (9, crate::packet::HOLE_PUNCH_PACKET_BODY_LEN, other_addr),
+        (7, 32, other_addr),
+        (8, crate::packet::HOLE_PUNCH_PACKET_BODY_LEN, other_addr),
+        (7, crate::packet::HOLE_PUNCH_PACKET_BODY_LEN, peer_addr),
+        (7, crate::packet::HOLE_PUNCH_PACKET_BODY_LEN, other_addr),
+    ] {
+        socket.incoming.lock().unwrap().push_back((
+            crate::packet::new_hole_punch_packet(tid, body_len)
+                .into_bytes()
+                .to_vec(),
+            source,
+        ));
+    }
+    socket.incoming_notify.notify_one();
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), observer.wait_for_source_addr())
+            .await
+            .unwrap()
+            .unwrap(),
+        peer_addr,
+    );
+    assert_eq!(
+        concurrent_observer.wait_for_source_addr().await.unwrap(),
+        other_addr
+    );
+    assert_eq!(observer.source_addr(), Some(peer_addr));
+    assert_eq!(other_observer.source_addr(), None);
+    assert!(socket.sent().is_empty());
+
+    assert_eq!(
+        layer.hole_punch_observers().observe(7).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    drop(observer);
+    assert_eq!(
+        layer
+            .hole_punch_observers()
+            .observe(7)
+            .unwrap()
+            .source_addr(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn dropping_hole_punch_observer_preserves_udp_handshake_receive() {
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(SocketAddr::from((
+        [127, 0, 0, 1],
+        12000,
+    ))));
+    let layer = UdpSessionLayer::new(socket);
+    let observer = layer.hole_punch_observers().observe(7).unwrap();
+    drop(observer);
+    let peer_addr = SocketAddr::from(([198, 51, 100, 1], 33140));
+    let session = layer.connect(peer_addr).await.unwrap();
+    assert_eq!(session.peer_addr().unwrap(), peer_addr);
+}
+
+#[tokio::test]
+async fn hole_punch_observer_registry_does_not_keep_listener_alive() {
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(SocketAddr::from((
+        [127, 0, 0, 1],
+        12000,
+    ))));
+    let layer = UdpSessionLayer::new(socket.clone());
+    let registry = layer.hole_punch_observers();
+    let mut observer = registry.observe(7).unwrap();
+    drop(layer);
+    assert_eq!(
+        registry.observe(8).unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        observer.wait_for_source_addr().await.unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    drop(observer);
+    for _ in 0..10 {
+        if Arc::strong_count(&socket) == 1 {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(Arc::strong_count(&socket), 1);
+}
+
 #[async_trait]
 impl VirtualUdpSocket for AutoSackVirtualUdpSocket {
     fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -1301,6 +1402,7 @@ async fn udp_session_recv_loop_error_closes_registered_sessions() {
         classified_sessions.clone(),
         classified_accepts,
         pending_connects.clone(),
+        Arc::new(DashMap::new()),
         mux_accepted_tx,
         control_tx,
         Arc::new(NoopUdpSessionStunResponder),
@@ -1624,6 +1726,7 @@ async fn udp_session_recv_loop_does_not_wait_for_stun_responder() {
         classified_sessions,
         classified_accepts,
         pending_connects,
+        Arc::new(DashMap::new()),
         mux_accepted_tx,
         control_tx,
         stun_responder.clone(),

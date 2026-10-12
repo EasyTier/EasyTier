@@ -1,7 +1,7 @@
 use std::{
     io,
     net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, Weak},
 };
 
 use async_trait::async_trait;
@@ -201,6 +201,82 @@ pub(super) type ClassifiedUdpSessionRegistry =
 pub(super) type ClassifiedUdpSessionAccepts =
     DashMap<UdpSessionProtocol, Arc<ClassifiedUdpSessionAccept>>;
 pub(super) type PendingUdpSessionConnects = DashMap<u32, PendingUdpSessionConnect>;
+pub(super) type UdpHolePunchObserverMap = DashMap<u32, Arc<watch::Sender<Option<SocketAddr>>>>;
+
+/// Registers observers on an existing UDP session layer without another receive task.
+#[derive(Debug, Clone)]
+pub struct UdpHolePunchObserverRegistry {
+    pub(super) observers: Arc<UdpHolePunchObserverMap>,
+    pub(super) shutdown: watch::Receiver<bool>,
+}
+
+impl UdpHolePunchObserverRegistry {
+    pub fn observe(&self, transaction_id: u32) -> io::Result<UdpHolePunchObserver> {
+        if *self.shutdown.borrow() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "UDP listener closed",
+            ));
+        }
+        let (sender, source) = watch::channel(None);
+        let sender = Arc::new(sender);
+        match self.observers.entry(transaction_id) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(sender.clone());
+            }
+            dashmap::mapref::entry::Entry::Occupied(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "UDP hole-punch transaction already observed",
+                ));
+            }
+        }
+        Ok(UdpHolePunchObserver {
+            transaction_id,
+            observers: self.observers.clone(),
+            sender: Arc::downgrade(&sender),
+            source,
+        })
+    }
+}
+
+/// Observes the first valid source for one active hole-punch transaction.
+/// Dropping the observer unregisters it from the socket's receive loop.
+#[derive(Debug)]
+pub struct UdpHolePunchObserver {
+    pub(super) transaction_id: u32,
+    pub(super) observers: Arc<UdpHolePunchObserverMap>,
+    pub(super) sender: Weak<watch::Sender<Option<SocketAddr>>>,
+    pub(super) source: watch::Receiver<Option<SocketAddr>>,
+}
+
+impl UdpHolePunchObserver {
+    pub fn source_addr(&self) -> Option<SocketAddr> {
+        *self.source.borrow()
+    }
+
+    pub async fn wait_for_source_addr(&mut self) -> io::Result<SocketAddr> {
+        loop {
+            if let Some(addr) = self.source_addr() {
+                return Ok(addr);
+            }
+            self.source.changed().await.map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "UDP hole-punch observer closed",
+                )
+            })?;
+        }
+    }
+}
+
+impl Drop for UdpHolePunchObserver {
+    fn drop(&mut self) {
+        self.observers.remove_if(&self.transaction_id, |_, sender| {
+            self.sender.ptr_eq(&Arc::downgrade(sender))
+        });
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct ClassifiedUdpSessionKey {

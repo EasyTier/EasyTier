@@ -179,6 +179,14 @@ wire codecs. It does not own socket I/O or connection policy.
 - UDP session multiplexing, classification, and lifecycle;
 - in-process Ring sockets.
 
+UDP sessions expose a scoped hole-punch source observer keyed by transaction
+ID. Listeners carry a registration handle for their existing receive loop, which
+reports the first matching source; dropping the observer removes the registration.
+Connectivity owns the active RPC lifetime, candidate selection and bounded
+sending to the signaled and observed addresses.
+Cone clients start the existing UDP handshake without requiring a reverse
+hole-punch packet, and the session layer remains the sole receiver.
+
 `host/` is the single home of Host capability seams:
 
 - DNS and DNS record resolution;
