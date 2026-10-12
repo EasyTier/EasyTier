@@ -10,12 +10,14 @@ pub mod api_input;
     target_os = "unknown"
 ))]
 mod browser;
+mod dhcp;
 mod encryption;
 pub mod gateway;
 pub mod peers;
 pub mod runtime;
 pub mod toml;
 
+pub use dhcp::DhcpConfig;
 pub use encryption::EncryptionAlgorithm;
 
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[

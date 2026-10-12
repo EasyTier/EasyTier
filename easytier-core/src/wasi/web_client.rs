@@ -84,6 +84,7 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
     NetworkConfig {
         instance_id: config.instance_id.clone(),
         dhcp: config.dhcp,
+        dhcp_ipv4_cidr: config.dhcp_ipv4_cidr.clone(),
         virtual_ipv4: config.virtual_ipv4.clone(),
         network_length: config.network_length,
         hostname: config.hostname.clone(),
@@ -403,6 +404,7 @@ mod tests {
         let original = NetworkConfig {
             instance_id: Some(uuid::Uuid::new_v4().to_string()),
             dhcp: Some(true),
+            dhcp_ipv4_cidr: Some("192.168.100.0/24".to_owned()),
             network_name: Some("network".to_owned()),
             network_secret: Some("secret".to_owned()),
             networking_method: Some(NetworkingMethod::Manual as i32),
@@ -452,6 +454,7 @@ mod tests {
 
         let hosted = hosted_network_config(&original);
 
+        assert_eq!(hosted.dhcp_ipv4_cidr, original.dhcp_ipv4_cidr);
         assert_eq!(
             hosted.peer_urls,
             vec!["tcp://peer.example:11010".to_owned()]
