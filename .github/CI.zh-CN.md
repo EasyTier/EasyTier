@@ -11,6 +11,11 @@ Test 运行 CI 脚本测试、fmt、clippy、WASI、Cargo.lock 检查，以及
 `easytier`/`easytier-core` 的 Linux 测试（含 `three_node`）。全量模式还逐个
 检查 `easytier` 的 feature，排除 `macos-ne`。
 
+Linux 测试使用一个 runner，nextest 总并发度为 32。网络集成测试为每个测试
+创建独立的 namespace 和网桥。子网代理用例最多同时运行八个；带宽测试、
+使用宿主机全局网络状态的测试和时间敏感的连通性测试优先独占
+执行，完成后再运行并发测试。
+
 这四个 workflow 的构建和测试任务跳过 draft PR。普通构建和 Rust 任务可因
 无关路径或重复内容而跳过。汇总检查为 `core-result`、`gui-result`、
 `mobile-result` 和 `test`。
@@ -49,6 +54,7 @@ release。
 
 ## 其他 workflow
 
-- OHOS 独立运行，相关 PR 仍可上传 HAR。
+- OHOS 独立运行。相关 PR 运行桥接单测，并检查宿主平台和 ARM64 OHOS 的绑定。
+  非 PR 构建生成并上传 HAR；发布和下游构建仍按原有主线/手动触发条件执行。
 - Go、JavaScript Hosts、Nix 使用各自的路径过滤。
 - Docker 手动触发，下载指定 Core 构建的产物并推送镜像。
