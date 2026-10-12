@@ -14,6 +14,7 @@ use tokio::task::JoinSet;
 
 use crate::{
     foundation::{
+        small_map_shard_amount,
         stats::{ArcRpcMetrics, RpcMetricLabels, RpcMetricsProvider},
         task::reap_joinset_background,
     },
@@ -77,7 +78,7 @@ impl Server {
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             handler_tasks: Arc::new(Mutex::new(JoinSet::new())),
             stopped: Arc::new(AtomicBool::new(false)),
-            packet_mergers: Arc::new(DashMap::new()),
+            packet_mergers: Arc::new(DashMap::with_shard_amount(small_map_shard_amount())),
             metrics: None,
         }
     }

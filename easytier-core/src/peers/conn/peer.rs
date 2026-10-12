@@ -17,6 +17,7 @@ use crate::peers::{
 };
 use crate::{
     config::PeerId,
+    foundation::small_map_shard_amount,
     packet::ZCPacket,
     peers::error::Error,
     proto::{core_peer::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
@@ -57,7 +58,7 @@ impl Peer {
         packet_recv_chan: PacketRecvChan,
         context: ArcPeerContext,
     ) -> Self {
-        let conns: ConnMap = Arc::new(DashMap::new());
+        let conns: ConnMap = Arc::new(DashMap::with_shard_amount(small_map_shard_amount()));
         let (close_event_sender, mut close_event_receiver) = mpsc::channel(10);
         let shutdown_notifier = Arc::new(tokio::sync::Notify::new());
         let peer_identity_type = Arc::new(AtomicCell::new(None));

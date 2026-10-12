@@ -28,6 +28,7 @@ use crate::{
         RouteConfig, TrafficConfig,
     },
     events::{CoreEvent, CoreEventSink},
+    foundation::small_map_shard_amount,
     foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
     foundation::token_bucket::{ArcByteLimiter, BucketConfig, TokenBucketManager},
     peers::{
@@ -438,7 +439,7 @@ pub(crate) struct TrustedKeyMapManager {
 impl TrustedKeyMapManager {
     pub fn new() -> Self {
         Self {
-            network_trusted_keys: DashMap::new(),
+            network_trusted_keys: DashMap::with_shard_amount(small_map_shard_amount()),
         }
     }
 
