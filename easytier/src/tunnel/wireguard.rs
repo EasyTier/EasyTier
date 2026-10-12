@@ -304,6 +304,7 @@ impl WgPeerData {
         }
     }
 
+    #[allow(clippy::double_must_use)]
     #[tracing::instrument]
     #[async_recursion]
     async fn handle_routine_tun_result<'a: 'async_recursion>(&self, result: TunnResult<'a>) -> () {
