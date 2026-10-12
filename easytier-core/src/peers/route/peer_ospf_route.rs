@@ -34,6 +34,7 @@ use tokio::{
 use crate::{
     config::PeerId,
     config::peers::PeerGroupIdentity,
+    foundation::small_map_shard_amount,
     peers::{
         PeerPacketFilter,
         context::{
@@ -200,7 +201,7 @@ impl OspfRouteSnapshotLookup<'_> {
 }
 
 type PeerGraph = Graph<PeerId, usize, Directed>;
-type PeerIdToNodeIdxMap = DashMap<PeerId, NodeIndex>;
+type PeerIdToNodeIdxMap = HashMap<PeerId, NodeIndex>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct OspfNextHopInfo {
@@ -228,11 +229,11 @@ pub struct OspfRouteTable {
 impl OspfRouteTable {
     pub fn new() -> Self {
         OspfRouteTable {
-            peer_infos: DashMap::new(),
-            next_hop_map: DashMap::new(),
-            suppressed_peer_ids: DashMap::new(),
-            ipv4_peer_id_map: DashMap::new(),
-            ipv6_peer_id_map: DashMap::new(),
+            peer_infos: DashMap::with_shard_amount(small_map_shard_amount()),
+            next_hop_map: DashMap::with_shard_amount(small_map_shard_amount()),
+            suppressed_peer_ids: DashMap::with_shard_amount(small_map_shard_amount()),
+            ipv4_peer_id_map: DashMap::with_shard_amount(small_map_shard_amount()),
+            ipv6_peer_id_map: DashMap::with_shard_amount(small_map_shard_amount()),
             cidr_peer_id_map: ArcSwap::new(Arc::new(PrefixMap::new())),
             cidr_v6_peer_id_map: ArcSwap::new(Arc::new(PrefixMap::new())),
             next_hop_map_version: AtomicVersion::new(),
@@ -301,7 +302,7 @@ impl OspfRouteTable {
         let mut graph: PeerGraph = PeerGraph::new();
 
         let mut start_node_idx = None;
-        let peer_id_to_node_index: PeerIdToNodeIdxMap = DashMap::new();
+        let mut peer_id_to_node_index = PeerIdToNodeIdxMap::new();
         for entry in &snapshot.peer_infos {
             let peer_id = entry.peer_id;
 
@@ -321,12 +322,10 @@ impl OspfRouteTable {
             return (graph, NodeIndex::end());
         }
 
-        for item in peer_id_to_node_index.iter() {
-            let src_peer_id = *item.key();
+        for (&src_peer_id, src_node_idx) in &peer_id_to_node_index {
             if src_peer_id != my_peer_id && snapshot.suppressed_peer_ids.contains(&src_peer_id) {
                 continue;
             }
-            let src_node_idx = item.value();
             let connected_peers: BTreeSet<_> =
                 lookup.connected_peers(src_peer_id).unwrap_or_default();
 
@@ -2035,9 +2034,9 @@ impl SyncRouteSession {
         SyncRouteSession {
             my_peer_id,
             dst_peer_id,
-            dst_saved_peer_info_versions: DashMap::new(),
-            dst_saved_conn_info_version: DashMap::new(),
-            dst_saved_foreign_network_versions: DashMap::new(),
+            dst_saved_peer_info_versions: DashMap::with_shard_amount(small_map_shard_amount()),
+            dst_saved_conn_info_version: DashMap::with_shard_amount(small_map_shard_amount()),
+            dst_saved_foreign_network_versions: DashMap::with_shard_amount(small_map_shard_amount()),
 
             unreachable_peers_for_peer_info: parking_lot::Mutex::new(BTreeMap::new()),
             unreachable_peers_for_conn_info: parking_lot::Mutex::new(BTreeMap::new()),
@@ -2412,7 +2411,7 @@ impl PeerRouteServiceImpl {
             my_peer_id,
             my_peer_route_id: rand::random(),
             context: context.clone(),
-            sessions: DashMap::new(),
+            sessions: DashMap::with_shard_amount(small_map_shard_amount()),
             stopped: AtomicBool::new(false),
             session_operation: AsyncRwLock::new(()),
 
@@ -2422,21 +2421,23 @@ impl PeerRouteServiceImpl {
 
             route_table: OspfRouteTable::new(),
             route_table_with_cost: OspfRouteTable::new(),
-            foreign_network_owner_map: DashMap::new(),
-            foreign_network_my_peer_id_map: DashMap::new(),
+            foreign_network_owner_map: DashMap::with_shard_amount(small_map_shard_amount()),
+            foreign_network_my_peer_id_map: DashMap::with_shard_amount(small_map_shard_amount()),
 
             synced_route_info: SyncedRouteInfo {
                 default_easytier_version: context.easytier_version(),
                 peer_infos: RwLock::new(OrderedHashMap::new()),
-                raw_peer_infos: DashMap::new(),
+                raw_peer_infos: DashMap::with_shard_amount(small_map_shard_amount()),
                 conn_map: RwLock::new(OrderedHashMap::new()),
-                foreign_network: DashMap::new(),
-                group_trust_map: DashMap::new(),
-                group_trust_map_cache: DashMap::new(),
+                foreign_network: DashMap::with_shard_amount(small_map_shard_amount()),
+                group_trust_map: DashMap::with_shard_amount(small_map_shard_amount()),
+                group_trust_map_cache: DashMap::with_shard_amount(small_map_shard_amount()),
                 group_trust_update_lock: parking_lot::Mutex::new(()),
                 trusted_credential_pubkeys: RwLock::new(HashMap::new()),
-                non_reusable_credential_owners: DashMap::new(),
-                suppressed_non_reusable_credential_peers: DashMap::new(),
+                non_reusable_credential_owners: DashMap::with_shard_amount(small_map_shard_amount()),
+                suppressed_non_reusable_credential_peers: DashMap::with_shard_amount(
+                    small_map_shard_amount(),
+                ),
                 version: AtomicVersion::new(),
             },
             public_ipv6_service: std::sync::Mutex::new(Weak::new()),

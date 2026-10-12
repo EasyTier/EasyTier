@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
+use crate::foundation::small_map_shard_amount;
 use crate::proto::common::RpcDescriptor;
 use crate::proto::rpc_types;
 #[cfg(all(feature = "management-rpc", any(test, target_os = "wasi")))]
@@ -86,7 +87,7 @@ impl Default for ServiceRegistry {
 impl ServiceRegistry {
     pub fn new() -> Self {
         Self {
-            table: DashMap::new(),
+            table: DashMap::with_shard_amount(small_map_shard_amount()),
         }
     }
 
