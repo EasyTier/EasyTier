@@ -68,9 +68,23 @@ where
             SelectPunchListener {
                 force_new: false,
                 prefer_port_mapping: true,
+                transaction_id: Some(tid),
             },
         )
         .await?;
+    if resp
+        .transaction_id
+        .is_some_and(|registered| registered != tid)
+    {
+        return Err(UdpHolePunchSignalError::RemoteRejected(
+            "listener registered a different hole-punch transaction".into(),
+        )
+        .into());
+    }
+    tracing::debug!(
+        source_observation_registered = resp.transaction_id == Some(tid),
+        "selected hole-punch listener"
+    );
     let remote_mapped_addr = resp.listener_mapped_addr;
 
     let local_socket = UdpHolePunchRuntime::bind_udp(
@@ -346,6 +360,7 @@ where
                 SelectPunchListener {
                     force_new: false,
                     prefer_port_mapping: true,
+                    transaction_id: None,
                 },
             )
             .await?;
@@ -830,6 +845,8 @@ mod tests {
     }
 
     struct RecordingSignaling {
+        listener_requests: tokio::sync::Mutex<Vec<SelectPunchListener>>,
+        confirm_transaction_id: bool,
         easy_requests: tokio::sync::Mutex<Vec<SendPunchPacketEasySym>>,
         hard_requests: tokio::sync::Mutex<Vec<SendPunchPacketHardSym>>,
         both_requests: tokio::sync::Mutex<Vec<SendPunchPacketBothEasySym>>,
@@ -839,14 +856,18 @@ mod tests {
 
     #[tokio::test]
     async fn cone_connects_without_reverse_hole_punch_and_retries_dropped_syn() {
-        for drop_syn_packets in [0, 1] {
+        for (drop_syn_packets, confirm_transaction_id) in
+            [(0, true), (1, true), (0, false), (1, false)]
+        {
             let mut runtime = MockRuntime::new();
             runtime.drop_syn_packets = drop_syn_packets;
             let runtime = Arc::new(runtime);
-            let signaling = Arc::new(RecordingSignaling::new(0));
+            let mut signaling = RecordingSignaling::new(0);
+            signaling.confirm_transaction_id = confirm_transaction_id;
+            let signaling = Arc::new(signaling);
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                punch_cone_to_cone(runtime.clone(), signaling, 2),
+                punch_cone_to_cone(runtime.clone(), signaling.clone(), 2),
             )
             .await
             .unwrap()
@@ -854,6 +875,9 @@ mod tests {
             .unwrap();
             assert_eq!(runtime.bind_count.load(Ordering::Relaxed), 1);
             assert_eq!(runtime.resolve_count.load(Ordering::Relaxed), 1);
+            let tid = signaling.listener_requests.lock().await[0]
+                .transaction_id
+                .unwrap();
             let socket = runtime.sockets.lock().unwrap()[0].upgrade().unwrap();
             let sent = socket.sent.lock().unwrap();
             let syns = sent
@@ -861,6 +885,10 @@ mod tests {
                 .filter(|(packet, _)| packet[4] == crate::packet::UdpPacketType::Syn as u8)
                 .count();
             assert_eq!(syns, drop_syn_packets + 1);
+            assert!(sent.iter().any(|(packet, _)| {
+                crate::packet::hole_punch_packet_tid(packet, HOLE_PUNCH_PACKET_BODY_LEN)
+                    == Some(tid)
+            }));
             assert!(
                 sent.iter()
                     .all(|(_, addr)| *addr == SocketAddr::from(([127, 0, 0, 1], 30000)))
@@ -918,6 +946,8 @@ mod tests {
     impl RecordingSignaling {
         fn new(next_port_index: u32) -> Self {
             Self {
+                listener_requests: tokio::sync::Mutex::new(Vec::new()),
+                confirm_transaction_id: true,
                 easy_requests: tokio::sync::Mutex::new(Vec::new()),
                 hard_requests: tokio::sync::Mutex::new(Vec::new()),
                 both_requests: tokio::sync::Mutex::new(Vec::new()),
@@ -943,10 +973,16 @@ mod tests {
         async fn select_punch_listener(
             &self,
             _dst_peer_id: PeerId,
-            _request: SelectPunchListener,
+            request: SelectPunchListener,
         ) -> Result<super::super::SelectPunchListenerResponse, UdpHolePunchSignalError> {
+            let transaction_id = self
+                .confirm_transaction_id
+                .then_some(request.transaction_id)
+                .flatten();
+            self.listener_requests.lock().await.push(request);
             Ok(super::super::SelectPunchListenerResponse {
                 listener_mapped_addr: SocketAddr::from(([127, 0, 0, 1], 30000)),
+                transaction_id,
             })
         }
 

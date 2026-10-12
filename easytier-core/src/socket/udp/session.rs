@@ -15,6 +15,7 @@ use tokio::{
 };
 
 use crate::{
+    foundation::time::{Duration, Instant},
     packet::{UdpPacketType, ZCPacket, ZCPacketType},
     socket::ring::{RingSocket, RingSocketReceiver, RingSocketSendError, RingSocketSender},
 };
@@ -201,7 +202,15 @@ pub(super) type ClassifiedUdpSessionRegistry =
 pub(super) type ClassifiedUdpSessionAccepts =
     DashMap<UdpSessionProtocol, Arc<ClassifiedUdpSessionAccept>>;
 pub(super) type PendingUdpSessionConnects = DashMap<u32, PendingUdpSessionConnect>;
-pub(super) type UdpHolePunchObserverMap = DashMap<u32, Arc<watch::Sender<Option<SocketAddr>>>>;
+pub(super) type UdpHolePunchObserverMap = DashMap<u32, UdpHolePunchObserverEntry>;
+
+#[derive(Debug)]
+pub(super) struct UdpHolePunchObserverEntry {
+    pub(super) source: Arc<watch::Sender<Option<SocketAddr>>>,
+    // Only unclaimed listener-selection registrations expire here. Once an RPC
+    // takes the observer, its guard owns cleanup through completion/cancellation.
+    expires_at: Option<Instant>,
+}
 
 /// Registers observers on an existing UDP session layer without another receive task.
 #[derive(Debug, Clone)]
@@ -211,31 +220,76 @@ pub struct UdpHolePunchObserverRegistry {
 }
 
 impl UdpHolePunchObserverRegistry {
-    pub fn observe(&self, transaction_id: u32) -> io::Result<UdpHolePunchObserver> {
+    fn ensure_running(&self) -> io::Result<()> {
         if *self.shutdown.borrow() {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "UDP listener closed",
             ));
         }
-        let (sender, source) = watch::channel(None);
-        let sender = Arc::new(sender);
+        Ok(())
+    }
+
+    /// Keep the first source even if the UDP packet arrives before the sending RPC.
+    pub fn prepare(&self, transaction_id: u32, timeout: Duration) -> io::Result<()> {
+        self.ensure_running()?;
         match self.observers.entry(transaction_id) {
             dashmap::mapref::entry::Entry::Vacant(entry) => {
-                entry.insert(sender.clone());
+                let (sender, _) = watch::channel(None);
+                entry.insert(UdpHolePunchObserverEntry {
+                    source: Arc::new(sender),
+                    expires_at: Some(Instant::now() + timeout),
+                });
+                Ok(())
             }
-            dashmap::mapref::entry::Entry::Occupied(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "UDP hole-punch transaction already observed",
-                ));
-            }
+            dashmap::mapref::entry::Entry::Occupied(_) => Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "UDP hole-punch transaction already observed",
+            )),
         }
+    }
+
+    pub fn expire_prepared(&self) {
+        let now = Instant::now();
+        self.observers
+            .retain(|_, entry| entry.expires_at.is_none_or(|deadline| deadline > now));
+    }
+
+    pub fn observe(&self, transaction_id: u32) -> io::Result<UdpHolePunchObserver> {
+        self.ensure_running()?;
+        let sender = match self.observers.entry(transaction_id) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                let Some(deadline) = entry.get_mut().expires_at.take() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "UDP hole-punch transaction already observed",
+                    ));
+                };
+                if deadline <= Instant::now() {
+                    entry.remove();
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "UDP hole-punch registration expired",
+                    ));
+                }
+                entry.get().source.clone()
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                // Older clients select a listener without preparing a transaction.
+                let (sender, _) = watch::channel(None);
+                let sender = Arc::new(sender);
+                entry.insert(UdpHolePunchObserverEntry {
+                    source: sender.clone(),
+                    expires_at: None,
+                });
+                sender
+            }
+        };
         Ok(UdpHolePunchObserver {
             transaction_id,
             observers: self.observers.clone(),
             sender: Arc::downgrade(&sender),
-            source,
+            source: sender.subscribe(),
         })
     }
 }
@@ -272,8 +326,8 @@ impl UdpHolePunchObserver {
 
 impl Drop for UdpHolePunchObserver {
     fn drop(&mut self) {
-        self.observers.remove_if(&self.transaction_id, |_, sender| {
-            self.sender.ptr_eq(&Arc::downgrade(sender))
+        self.observers.remove_if(&self.transaction_id, |_, entry| {
+            self.sender.ptr_eq(&Arc::downgrade(&entry.source))
         });
     }
 }

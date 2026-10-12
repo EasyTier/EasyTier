@@ -621,7 +621,7 @@ where
             if packet.udp_payload().len() == crate::packet::HOLE_PUNCH_PACKET_BODY_LEN as usize
                 && let Some(observer) = hole_punch_observers.get(&conn_id)
             {
-                observer.send_if_modified(|source| {
+                observer.source.send_if_modified(|source| {
                     if source.is_some() {
                         return false;
                     }

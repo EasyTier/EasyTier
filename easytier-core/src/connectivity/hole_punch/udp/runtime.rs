@@ -92,11 +92,13 @@ pub struct UdpResolvedPublicAddr {
 pub struct SelectPunchListener {
     pub force_new: bool,
     pub prefer_port_mapping: bool,
+    pub transaction_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectPunchListenerResponse {
     pub listener_mapped_addr: SocketAddr,
+    pub transaction_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

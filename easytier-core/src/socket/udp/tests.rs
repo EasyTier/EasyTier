@@ -537,6 +537,73 @@ async fn hole_punch_observer_matches_socket_transaction_and_packet_shape() {
 }
 
 #[tokio::test]
+async fn prepared_hole_punch_keeps_source_until_rpc_claims_it() {
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(SocketAddr::from((
+        [127, 0, 0, 1],
+        12000,
+    ))));
+    let layer = UdpSessionLayer::new(socket.clone());
+    let registry = layer.hole_punch_observers();
+    registry.prepare(0, Duration::from_secs(30)).unwrap();
+    let peer_addr = SocketAddr::from(([198, 51, 100, 1], 33140));
+    socket.incoming.lock().unwrap().push_back((
+        crate::packet::new_hole_punch_packet(0, crate::packet::HOLE_PUNCH_PACKET_BODY_LEN)
+            .into_bytes()
+            .to_vec(),
+        peer_addr,
+    ));
+    socket.incoming_notify.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if *registry.observers.get(&0).unwrap().source.borrow() == Some(peer_addr) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let observer = registry.observe(0).unwrap();
+    assert_eq!(observer.source_addr(), Some(peer_addr));
+    assert_eq!(
+        registry.observe(0).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    drop(observer);
+    assert!(registry.observers.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn prepared_hole_punch_expires_without_removing_active_rpc() {
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(SocketAddr::from((
+        [127, 0, 0, 1],
+        12000,
+    ))));
+    let layer = UdpSessionLayer::new(socket);
+    let registry = layer.hole_punch_observers();
+    registry.prepare(7, Duration::from_secs(1)).unwrap();
+    registry.prepare(8, Duration::from_secs(1)).unwrap();
+    registry.prepare(9, Duration::from_secs(1)).unwrap();
+    let observer = registry.observe(8).unwrap();
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(
+        registry.observe(7).unwrap_err().kind(),
+        io::ErrorKind::TimedOut
+    );
+    registry.expire_prepared();
+    assert!(!registry.observers.contains_key(&9));
+    assert_eq!(
+        registry.observe(8).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    registry.prepare(9, Duration::from_secs(1)).unwrap();
+    drop(observer);
+    assert!(!registry.observers.contains_key(&8));
+}
+
+#[tokio::test]
 async fn dropping_hole_punch_observer_preserves_udp_handshake_receive() {
     let socket = Arc::new(AutoSackVirtualUdpSocket::new(SocketAddr::from((
         [127, 0, 0, 1],
@@ -559,9 +626,17 @@ async fn hole_punch_observer_registry_does_not_keep_listener_alive() {
     let layer = UdpSessionLayer::new(socket.clone());
     let registry = layer.hole_punch_observers();
     let mut observer = registry.observe(7).unwrap();
+    registry.prepare(8, Duration::from_secs(30)).unwrap();
     drop(layer);
     assert_eq!(
         registry.observe(8).unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        registry
+            .prepare(9, Duration::from_secs(30))
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::BrokenPipe
     );
     assert_eq!(

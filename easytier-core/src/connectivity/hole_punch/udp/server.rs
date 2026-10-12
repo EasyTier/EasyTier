@@ -35,6 +35,9 @@ use super::{
 };
 
 const MAX_K1_FOR_RANDOM_HARD_SYM: u32 = 180;
+// Selection precedes local socket/STUN preparation. Match the listener's
+// selection lifetime so abandoned preparations expire without per-RPC tasks.
+const PREPARED_CONE_PUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct SelectedUdpPunchListener<S> {
     /// Kept for listener-selection side effects and tests; production callers
@@ -266,8 +269,16 @@ where
                 UdpHolePunchSignalError::RemoteRejected("no listener available".into())
             })?;
 
+        if let Some(transaction_id) = request.transaction_id {
+            self.common
+                .prepare_hole_punch(&selected.mapped_addr, transaction_id)
+                .await
+                .map_err(Self::anyhow_to_signal_error)?;
+        }
+
         Ok(SelectPunchListenerResponse {
             listener_mapped_addr: selected.mapped_addr,
+            transaction_id: request.transaction_id,
         })
     }
 
@@ -381,6 +392,7 @@ where
                     let mut index = 0;
                     while index < listeners.len() {
                         let listener = &listeners[index];
+                        listener.hole_punch_observers.expire_prepared();
                         let active = listener.last_active_time.load().elapsed().as_secs() < 40
                             || listener.last_select_time.load().elapsed().as_secs() < 30;
                         if active {
@@ -466,6 +478,22 @@ where
             .find(|listener| listener.mapped_addr == *addr && listener.running.load())?;
 
         Some(listener.get_socket())
+    }
+
+    async fn prepare_hole_punch(
+        &self,
+        addr: &SocketAddr,
+        transaction_id: u32,
+    ) -> anyhow::Result<()> {
+        let listeners = self.listeners.lock().await;
+        let listener = listeners
+            .iter()
+            .find(|listener| listener.mapped_addr == *addr && listener.running.load())
+            .ok_or_else(|| anyhow::anyhow!("failed to find hole-punch listener"))?;
+        listener
+            .hole_punch_observers
+            .prepare(transaction_id, PREPARED_CONE_PUNCH_TIMEOUT)?;
+        Ok(())
     }
 
     async fn observe_hole_punch(
@@ -1291,6 +1319,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_listener_observes_first_packet_before_cone_rpc_arrives() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener(10002, Vec::new())]));
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            Arc::new(MockSink::default()),
+            UdpSymPunchLock::default(),
+        );
+        server.start().await;
+        let selected = server
+            .select_punch_listener(SelectPunchListener {
+                force_new: false,
+                prefer_port_mapping: false,
+                transaction_id: Some(0),
+            })
+            .await
+            .unwrap();
+        assert_eq!(selected.transaction_id, Some(0));
+        let socket = server
+            .common
+            .find_listener(&selected.listener_mapped_addr)
+            .await
+            .unwrap();
+        let source = SocketAddr::from(([198, 51, 100, 1], 33140));
+        socket.incoming.lock().unwrap().push_back((
+            new_hole_punch_packet(0, HOLE_PUNCH_PACKET_BODY_LEN)
+                .into_bytes()
+                .to_vec(),
+            source,
+        ));
+        socket.incoming_notify.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !socket.incoming.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let dest_addr = SocketAddr::from(([198, 51, 100, 1], 33105));
+        server
+            .send_punch_packet_cone(SendPunchPacketCone {
+                listener_mapped_addr: selected.listener_mapped_addr,
+                dest_addr,
+                transaction_id: 0,
+                packet_count_per_batch: 2,
+                packet_batch_count: 1,
+                packet_interval_ms: 0,
+            })
+            .await
+            .unwrap();
+        let sent = socket.sent.lock().await;
+        assert_eq!(sent.len(), 4);
+        assert_eq!(
+            sent.iter().filter(|(_, addr)| *addr == dest_addr).count(),
+            2
+        );
+        assert_eq!(sent.iter().filter(|(_, addr)| *addr == source).count(), 2);
+        drop(sent);
+        server.stop().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cleanup_expires_abandoned_listener_registration() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener(10002, Vec::new())]));
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            Arc::new(MockSink::default()),
+            UdpSymPunchLock::default(),
+        );
+        server.start().await;
+        let selected = server
+            .select_punch_listener(SelectPunchListener {
+                force_new: false,
+                prefer_port_mapping: false,
+                transaction_id: Some(9),
+            })
+            .await
+            .unwrap();
+        assert!(
+            server
+                .common
+                .prepare_hole_punch(&selected.listener_mapped_addr, 9)
+                .await
+                .is_err()
+        );
+        // Let the existing periodic cleanup run as the paused clock advances.
+        crate::foundation::time::sleep(PREPARED_CONE_PUNCH_TIMEOUT + Duration::from_secs(5)).await;
+        server
+            .common
+            .prepare_hole_punch(&selected.listener_mapped_addr, 9)
+            .await
+            .unwrap();
+        server.stop().await;
+    }
+
+    #[tokio::test]
     async fn cone_sender_adds_observed_source_during_last_batch_and_deduplicates() {
         let runtime = Arc::new(MockRuntime::new(vec![listener(10002, Vec::new())]));
         let server = UdpHolePunchServer::new(
@@ -1304,6 +1429,7 @@ mod tests {
             .select_punch_listener(SelectPunchListener {
                 force_new: false,
                 prefer_port_mapping: false,
+                transaction_id: None,
             })
             .await
             .unwrap();
