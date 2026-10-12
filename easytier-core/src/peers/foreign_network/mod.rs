@@ -32,7 +32,7 @@ use crate::{
     packet::{PacketType, ZCPacket},
     peers::peer_center::instance::{PeerCenterInstance, PeerCenterPeerManagerTrait},
     peers::{PacketRecvChan, PacketRecvChanReceiver, recv_packet_from_chan},
-    proto::core_peer::peer::{PeerConnInfo, Route as CoreRoute},
+    proto::core::peer::{PeerConnInfo, Route as CoreRoute},
     socket::SocketContext,
 };
 

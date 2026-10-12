@@ -110,7 +110,7 @@ where
         snapshot
     }
 
-    pub async fn route_snapshots(&self) -> Vec<crate::proto::core_peer::peer::Route> {
+    pub async fn route_snapshots(&self) -> Vec<crate::proto::core::peer::Route> {
         self.peer_manager.list_route_snapshots().await
     }
 
@@ -120,7 +120,7 @@ where
 
     pub async fn local_public_ipv6_info(
         &self,
-    ) -> crate::proto::core_peer::peer::ListPublicIpv6InfoResponse {
+    ) -> crate::proto::core::peer::ListPublicIpv6InfoResponse {
         self.peer_manager.local_public_ipv6_info().await
     }
 

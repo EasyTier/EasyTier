@@ -141,7 +141,7 @@ impl From<Vec<crate::api::instance::PeerInfo>> for PeerInfoForGlobalMap {
     }
 }
 
-impl From<RoutePeerInfo> for crate::core_peer::peer::Route {
+impl From<RoutePeerInfo> for crate::core::peer::Route {
     fn from(val: RoutePeerInfo) -> Self {
         let network_length = if val.network_length == 0 {
             24
@@ -149,7 +149,7 @@ impl From<RoutePeerInfo> for crate::core_peer::peer::Route {
             val.network_length
         };
 
-        crate::core_peer::peer::Route {
+        crate::core::peer::Route {
             peer_id: val.peer_id,
             ipv4_addr: val.ipv4_addr.map(|ipv4_addr| crate::common::Ipv4Inet {
                 address: Some(ipv4_addr),
