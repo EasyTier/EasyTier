@@ -1,4 +1,5 @@
 mod flags;
+mod flags_patch;
 mod rpc;
 
 use crate::rpc::ServiceGenerator;
@@ -141,57 +142,13 @@ fn main() -> anyhow::Result<()> {
         )
         .field_attribute(".common.CompressionAlgoPb.Invalid", "#[strum(disabled)]");
 
-    let mut descriptor_set = config.load_fds(&proto_files, &["proto/"])?;
+    let descriptor_set = config.load_fds(&proto_files, &["proto/"])?;
     // What protoc wrote (this set carries every file, imports included), read
     // before anything else may touch it: the annotations are extension fields,
     // which a prost-types round-trip drops.
     let annotated = std::fs::read(out.join("descriptors.bin"))?;
 
-    {
-        let common = descriptor_set
-            .file
-            .iter_mut()
-            .find(|file| file.package.as_deref() == Some("common"))
-            .unwrap();
-        let flags = common
-            .message_type
-            .iter()
-            .find(|message| message.name.as_deref() == Some("Flags"))
-            .unwrap();
-        config
-            .type_attribute(".common.Flags", "#[optionize::optionized]")
-            .type_attribute(".common.Flags", "#[optionize(object = FlagsPatch)]");
-
-        let flattened = flags
-            .field
-            .iter()
-            .filter(|field| field.proto3_optional())
-            .map(|field| field.name().to_owned());
-        for name in flattened {
-            config.field_attribute(format!(".common.Flags.{name}"), "#[optionize(flatten)]");
-        }
-
-        let mut patch = flags.clone();
-        patch.name = Some("FlagsPatch".to_owned());
-        // Proto3 spells `optional` as one synthetic one-of per field.
-        let oneofs = patch
-            .field
-            .iter()
-            .map(|field| prost_types::OneofDescriptorProto {
-                name: Some(format!("_{}", field.name())),
-                ..Default::default()
-            })
-            .collect::<Vec<_>>();
-        patch.oneof_decl = oneofs;
-        for (index, field) in patch.field.iter_mut().enumerate() {
-            field.proto3_optional = Some(true);
-            field.label = Some(prost_types::field_descriptor_proto::Label::Optional as i32);
-            field.oneof_index = Some(index as i32);
-        }
-        common.message_type.push(patch);
-
-        config.disable_comments([".common.FlagsPatch"]);
-    }
+    flags_patch::configure(&annotated, &mut config)?;
 
     let descriptors = prost::Message::encode_to_vec(&descriptor_set);
 

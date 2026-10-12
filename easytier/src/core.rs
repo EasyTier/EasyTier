@@ -1764,7 +1764,7 @@ enabled = true
             patch.data_compress_algo,
             Some(CompressionAlgoPb::Zstd as i32)
         );
-        assert_eq!(patch.socket_mark, Some(42));
+        assert_eq!(patch.socket_mark, Some(Some(42)));
         assert_eq!(patch.disable_relay_data, Some(true));
         assert_eq!(patch.enable_ipv6, None);
 
@@ -1862,7 +1862,7 @@ socket_mark = 42
                 enable_encryption: Some(false),
                 data_compress_algo: Some(CompressionAlgoPb::Zstd.into()),
                 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-                socket_mark: Some(0),
+                socket_mark: Some(Some(0)),
                 ..Default::default()
             },
             ..Default::default()

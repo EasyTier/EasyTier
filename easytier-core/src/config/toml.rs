@@ -11,7 +11,7 @@ pub use super::{EncryptionAlgorithm, gateway::PortForwardConfig};
 use anyhow::Context;
 #[cfg(feature = "rich-config-errors")]
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
-use optionize::Optionizable;
+use optionize::{Optionizable, PartialOptionized};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::{acl::Acl, common::SecureModeConfig};
@@ -909,15 +909,7 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn patch_flags(&self, flags: FlagsPatch) {
-        // Protobuf merge: an update overwrites exactly the fields it carries,
-        // and presence is the encoding, so a flag explicitly set to its default
-        // value is applied like any other. Optionize's merge cannot express that
-        // here, because the one flattened nullable field would have to assign
-        // unconditionally.
-        let mut config = self.config.lock().unwrap();
-        let update = prost::Message::encode_to_vec(&flags);
-        prost::Message::merge(&mut config.flags, update.as_slice())
-            .expect("decoding the bytes just encoded cannot fail");
+        self.config.lock().unwrap().flags.merge(flags);
     }
 
     fn get_exit_nodes(&self) -> Vec<IpAddr> {
@@ -1474,6 +1466,38 @@ socket_mark = 66
                 expected.unwrap_or(true)
             );
         }
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn nullable_flag_patch_preserves_omissions_and_applies_clears() {
+        let config = TomlConfig::new_from_str("[flags]\nsocket_mark = 7").unwrap();
+        config.patch_flags(FlagsPatch {
+            latency_first: Some(false),
+            ..Default::default()
+        });
+        assert_eq!(config.get_flags_patch().socket_mark, Some(Some(7)));
+        assert_eq!(config.get_flags().socket_mark, Some(7));
+
+        config.patch_flags(FlagsPatch {
+            socket_mark: Some(None),
+            ..Default::default()
+        });
+        assert_eq!(config.get_flags_patch().socket_mark, Some(None));
+        assert_eq!(config.get_flags().socket_mark, None);
+        let dumped = config.dump();
+        assert!(!dumped.contains("socket_mark"));
+        let restored = TomlConfig::new_from_str(&dumped).unwrap();
+        assert_eq!(restored.get_flags().socket_mark, None);
+        assert_eq!(restored.get_flags_patch().latency_first, Some(false));
+
+        restored.patch_flags(FlagsPatch {
+            socket_mark: Some(Some(0)),
+            ..Default::default()
+        });
+        let restored = TomlConfig::new_from_str(&restored.dump()).unwrap();
+        assert_eq!(restored.get_flags_patch().socket_mark, Some(Some(0)));
+        assert_eq!(restored.get_flags().socket_mark, Some(0));
     }
 
     #[test]

@@ -76,6 +76,7 @@ sea-orm = "1.1.20"
 sea-orm-migration = "1.1.20"
 serde = "1.0.229"
 serde_json = "1.0"
+serde_with = { version = "3.23", default-features = false, features = ["std", "macros"] }
 # See the HMAC constraint above; SHA2 must use the same digest generation.
 sha2 = "0.10.9"
 smoltcp = { version = "0.14.0", default-features = false }

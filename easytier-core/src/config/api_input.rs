@@ -71,7 +71,7 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.p2p_only = flags.p2p_only;
     result.lazy_p2p = flags.lazy_p2p;
     result.bind_device = flags.bind_device;
-    result.socket_mark = flags.socket_mark;
+    result.socket_mark = flags.socket_mark.flatten();
     result.no_tun = flags.no_tun;
     result.enable_exit_node = flags.enable_exit_node;
     result.relay_all_peer_rpc = flags.relay_all_peer_rpc;
@@ -503,7 +503,7 @@ impl NetworkConfigExt for NetworkConfig {
         cfg.patch_flags(FlagsPatch {
             dev_name: self.dev_name.clone(),
             enable_ipv6: self.disable_ipv6.map(|disabled| !disabled),
-            socket_mark: self.socket_mark,
+            socket_mark: self.socket_mark.map(Some),
             enable_encryption: self.disable_encryption.map(|disabled| !disabled),
             relay_network_whitelist: self.enable_relay_network_whitelist.map(|enabled| {
                 if enabled {
@@ -890,6 +890,23 @@ mod tests {
             .gen_config()
             .is_err()
         );
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn api_socket_mark_round_trip_preserves_omissions_and_zero() {
+        for socket_mark in [None, Some(0), Some(7)] {
+            let input = NetworkConfig {
+                socket_mark,
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            assert_eq!(config.get_flags_patch().socket_mark, socket_mark.map(Some));
+            let config = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            let output = NetworkConfig::new_from_config(&config).unwrap();
+            assert_eq!(output.socket_mark, socket_mark);
+            assert_eq!(config.get_flags_patch().socket_mark, socket_mark.map(Some));
+        }
     }
 
     #[test]
