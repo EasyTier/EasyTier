@@ -106,6 +106,7 @@ fn main() -> anyhow::Result<()> {
     for proto_file in proto_files.iter().chain(proto_files_reflect.iter()) {
         println!("cargo:rerun-if-changed={proto_file}");
     }
+    println!("cargo:rerun-if-changed=proto/annotations.proto");
 
     let out = PathBuf::from(env::var("OUT_DIR")?);
 

@@ -22,6 +22,9 @@ message FlagMeta {
   ApiSpelling api = 2;
   bool form = 3;
   bool deprecated = 4;
+  // Rust optionize options forwarded to the generated Flags field. Use
+  // attrs(...) to attach Serde attributes to its generated patch field.
+  repeated string optionize = 5;
 }
 
 extend google.protobuf.FieldOptions {

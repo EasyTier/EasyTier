@@ -10,7 +10,10 @@ message Flags {
   string dev_name = 2 [(easytier.flag) = { default: "", form: true }];
   bool enable_encryption = 3 [(easytier.flag) = { default: "true", api: { field: "disable_encryption", negate: true } }];
   bool enable_ipv6 = 4 [(easytier.flag) = { default: "true", api: { field: "disable_ipv6", negate: true } }];
-  uint32 mtu = 5 [(easytier.flag) = { default: "1380", form: true }];
+  uint32 mtu = 5 [(easytier.flag) = {
+    default: "1380", form: true
+    optionize: 'attrs(serde_as(as = "Option<serde_with::PickFirst<(_, serde_with::DisplayFromStr)>>"))'
+  }];
   bool latency_first = 6 [(easytier.flag) = { default: "false" }];
   bool enable_exit_node = 7 [(easytier.flag) = { default: "false" }];
   bool no_tun = 8 [(easytier.flag) = { default: "false" }];
@@ -22,7 +25,10 @@ message Flags {
   // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345
   // instead
   bool multi_thread = 15 [(easytier.flag) = { default: "true" }];
-  CompressionAlgoPb data_compress_algo = 16 [(easytier.flag) = { default: "None", form: true }];
+  CompressionAlgoPb data_compress_algo = 16 [(easytier.flag) = {
+    default: "None", form: true
+    optionize: 'attrs(serde_as(as = "Option<serde_with::TryFromInto<CompressionAlgoPb>>"))'
+  }];
   bool bind_device = 17 [(easytier.flag) = { default: "true" }];
 
   // should we convert all tcp streams into kcp streams
@@ -46,12 +52,21 @@ message Flags {
   bool disable_relay_quic = 35 [(easytier.flag) = { default: "false" }];
 
   // quic listen port
-  uint32 quic_listen_port = 33 [deprecated = true, (easytier.flag) = { default: "4294967295", deprecated: true }];
+  uint32 quic_listen_port = 33 [deprecated = true, (easytier.flag) = {
+    default: "4294967295", deprecated: true
+    optionize: 'attrs(serde_as(as = "Option<serde_with::PickFirst<(_, serde_with::DisplayFromStr)>>"))'
+  }];
 
   // a global relay limit, only work for foreign network
-  uint64 foreign_relay_bps_limit = 26 [(easytier.flag) = { default: "18446744073709551615" }];
+  uint64 foreign_relay_bps_limit = 26 [(easytier.flag) = {
+    default: "18446744073709551615"
+    optionize: 'attrs(serde_as(as = "Option<serde_with::PickFirst<(serde_with::DisplayFromStr, _)>>"))'
+  }];
 
-  uint32 multi_thread_count = 27 [(easytier.flag) = { default: "2" }];
+  uint32 multi_thread_count = 27 [(easytier.flag) = {
+    default: "2"
+    optionize: 'attrs(serde_as(as = "Option<serde_with::PickFirst<(_, serde_with::DisplayFromStr)>>"))'
+  }];
 
   // enable relay foreign network kcp packets
   bool enable_relay_foreign_network_kcp = 28 [(easytier.flag) = { default: "false" }];
@@ -74,7 +89,10 @@ message Flags {
 
   bool lazy_p2p = 37 [(easytier.flag) = { default: "false" }];
   bool need_p2p = 38 [(easytier.flag) = { default: "false" }];
-  uint64 instance_recv_bps_limit = 39 [(easytier.flag) = { default: "18446744073709551615", form: true }];
+  uint64 instance_recv_bps_limit = 39 [(easytier.flag) = {
+    default: "18446744073709551615", form: true
+    optionize: 'attrs(serde_as(as = "Option<serde_with::PickFirst<(serde_with::DisplayFromStr, _)>>"))'
+  }];
   bool disable_upnp = 40 [(easytier.flag) = { default: "false" }];
   bool disable_relay_data = 41 [(easytier.flag) = { default: "false" }];
   bool enable_udp_broadcast_relay = 42 [(easytier.flag) = { default: "false" }];
@@ -84,7 +102,10 @@ message Flags {
   // SO_MARK untouched (kernel default 0). Any set value (including 0) is
   // applied via setsockopt. Requires CAP_NET_ADMIN; silently ignored on
   // non-Linux platforms.
-  optional uint32 socket_mark = 43 [(easytier.flag) = { form: true }];
+  optional uint32 socket_mark = 43 [(easytier.flag) = {
+    form: true
+    optionize: 'attrs(serde_as(as = "flags::Presence<serde_with::PickFirst<(_, serde_with::DisplayFromStr)>>"))'
+  }];
 
   // Prefer direct credential peers that already relay to a destination over
   // advertising another direct edge to the same destination.
