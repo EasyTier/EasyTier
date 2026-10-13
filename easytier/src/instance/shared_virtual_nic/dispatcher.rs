@@ -1,15 +1,17 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    ops::Bound::{Excluded, Included, Unbounded},
     pin::Pin,
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
     },
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
-use cidr::{Ipv4Inet, Ipv6Inet};
-use futures::{SinkExt, StreamExt};
+use cidr::{Inet, Ipv4Inet, Ipv6Inet};
+use futures::{Sink, SinkExt, Stream, StreamExt, future::poll_fn, task::noop_waker_ref};
 use smoltcp::wire::{
     Icmpv4Message, Icmpv4Packet, Icmpv6Message, Icmpv6Packet, IpAddress, IpProtocol, Ipv4Packet,
     Ipv6Packet, TcpPacket, UdpPacket,
@@ -24,7 +26,10 @@ use crate::common::error::Error;
 use crate::instance::virtual_nic::VirtualNic;
 use easytier_core::{
     packet::ZCPacket,
-    tunnel::{Tunnel, ZCPacketSink, ZCPacketStream},
+    tunnel::{
+        Tunnel, ZCPacketSink, ZCPacketStream,
+        ring::{RingSink, RingStream, RingTunnel, create_ring_socket_pair, split_ring_socket},
+    },
 };
 
 use super::{
@@ -39,11 +44,6 @@ const FLOW_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const DISPATCHER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const DISPATCHER_TUN_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
-struct SharedVirtualNicMemberPacket {
-    member_id: SharedVirtualNicMemberId,
-    packet: ZCPacket,
-}
-
 #[cfg(any(mobile, all(test, unix)))]
 struct SharedVirtualNicMobileTunUpdate {
     tun_fd: std::os::fd::RawFd,
@@ -51,6 +51,8 @@ struct SharedVirtualNicMobileTunUpdate {
 }
 
 enum SharedVirtualNicControl {
+    #[cfg(any(mobile, all(test, unix)))]
+    UpdateMobileTun(SharedVirtualNicMobileTunUpdate),
     Register {
         member_id: SharedVirtualNicMemberId,
         entry: SharedVirtualNicMemberTunnelEntry,
@@ -72,116 +74,46 @@ enum SharedVirtualNicControl {
 
 #[derive(Clone, Default)]
 pub(super) struct SharedVirtualNicMemberTunnelTable {
-    state: Arc<StdMutex<SharedVirtualNicMemberTunnelTableState>>,
-}
-
-#[derive(Default)]
-struct SharedVirtualNicMemberTunnelTableState {
-    to_tun_sender: Option<mpsc::Sender<SharedVirtualNicMemberPacket>>,
-    control_sender: Option<mpsc::UnboundedSender<SharedVirtualNicControl>>,
+    control_sender: Arc<StdMutex<Option<mpsc::UnboundedSender<SharedVirtualNicControl>>>>,
 }
 
 struct SharedVirtualNicMemberTunnelEntry {
     registration_id: SharedVirtualNicMemberRegistrationId,
-    sender: mpsc::Sender<ZCPacket>,
+    stream: RingStream,
+    sink: RingSink,
     close_notifier: Arc<Notify>,
-    _tasks: Vec<AbortOnDropHandle<()>>,
 }
 
 impl SharedVirtualNicMemberTunnelTable {
-    fn attach_dispatcher(
-        &self,
-        to_tun_sender: mpsc::Sender<SharedVirtualNicMemberPacket>,
-        control_sender: mpsc::UnboundedSender<SharedVirtualNicControl>,
-    ) {
-        let mut state = self.state.lock().unwrap();
-        state.to_tun_sender = Some(to_tun_sender);
-        state.control_sender = Some(control_sender);
+    fn attach_dispatcher(&self, control_sender: mpsc::UnboundedSender<SharedVirtualNicControl>) {
+        *self.control_sender.lock().unwrap() = Some(control_sender);
     }
 
     pub(super) fn detach_dispatcher(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.to_tun_sender.take();
-        state.control_sender.take();
+        self.control_sender.lock().unwrap().take();
     }
 
     pub(super) fn register(
         &self,
         member_id: SharedVirtualNicMemberId,
         registration_id: SharedVirtualNicMemberRegistrationId,
-        tunnel: Box<dyn Tunnel>,
         close_notifier: Arc<Notify>,
-    ) -> Result<(), Error> {
-        let channels = self
-            .dispatcher_channels()
+    ) -> Result<Box<dyn Tunnel>, Error> {
+        let control_sender = self
+            .control_sender()
             .ok_or_else(|| anyhow::anyhow!("shared virtual nic dispatcher is not running"))?;
-        let (to_tun_sender, control_sender) = channels;
-        let (mut member_stream, mut member_sink) = tunnel.split();
-        let (to_member_sender, mut to_member_receiver) = mpsc::channel(MEMBER_TUNNEL_BUFFER_SIZE);
-        let (reader_start_sender, reader_start_receiver) = oneshot::channel();
-
-        let reader_control_sender = control_sender.clone();
-        let reader_close_notifier = close_notifier.clone();
-        let reader_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            if reader_start_receiver.await.is_err() {
-                return;
-            }
-
-            while let Some(packet) = member_stream.next().await {
-                let packet = match packet {
-                    Ok(packet) => packet,
-                    Err(err) => {
-                        tracing::error!(?member_id, ?err, "shared member tunnel read failed");
-                        break;
-                    }
-                };
-
-                if to_tun_sender
-                    .send(SharedVirtualNicMemberPacket { member_id, packet })
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-
-            notify_member_tunnel_closed(
-                &reader_control_sender,
-                &reader_close_notifier,
-                member_id,
-                registration_id,
-            );
-        }));
-
-        let writer_control_sender = control_sender.clone();
-        let writer_close_notifier = close_notifier.clone();
-        let writer_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            while let Some(packet) = to_member_receiver.recv().await {
-                if let Err(err) = member_sink.send(packet).await {
-                    tracing::error!(?member_id, ?err, "shared member tunnel write failed");
-                    notify_member_tunnel_closed(
-                        &writer_control_sender,
-                        &writer_close_notifier,
-                        member_id,
-                        registration_id,
-                    );
-                    break;
-                }
-            }
-        }));
-
+        let (member_socket, dispatcher_socket) = create_ring_socket_pair(MEMBER_TUNNEL_BUFFER_SIZE);
+        let (stream, sink) = split_ring_socket(dispatcher_socket);
         let entry = SharedVirtualNicMemberTunnelEntry {
             registration_id,
-            sender: to_member_sender,
+            stream,
+            sink,
             close_notifier,
-            _tasks: vec![reader_task, writer_task],
         };
         control_sender
             .send(SharedVirtualNicControl::Register { member_id, entry })
             .map_err(|_| anyhow::anyhow!("shared virtual nic dispatcher is not running"))?;
-        let _ = reader_start_sender.send(());
-
-        Ok(())
+        Ok(Box::new(RingTunnel::new(member_socket, None)))
     }
 
     pub(super) fn unregister(
@@ -189,41 +121,17 @@ impl SharedVirtualNicMemberTunnelTable {
         member_id: SharedVirtualNicMemberId,
         registration_id: SharedVirtualNicMemberRegistrationId,
     ) {
-        let Some(control_sender) = self.control_sender() else {
-            return;
-        };
-        let _ = control_sender.send(SharedVirtualNicControl::Unregister {
-            member_id,
-            registration_id,
-        });
-    }
-
-    fn dispatcher_channels(
-        &self,
-    ) -> Option<(
-        mpsc::Sender<SharedVirtualNicMemberPacket>,
-        mpsc::UnboundedSender<SharedVirtualNicControl>,
-    )> {
-        let state = self.state.lock().unwrap();
-        Some((state.to_tun_sender.clone()?, state.control_sender.clone()?))
+        if let Some(control_sender) = self.control_sender() {
+            let _ = control_sender.send(SharedVirtualNicControl::Unregister {
+                member_id,
+                registration_id,
+            });
+        }
     }
 
     fn control_sender(&self) -> Option<mpsc::UnboundedSender<SharedVirtualNicControl>> {
-        self.state.lock().unwrap().control_sender.clone()
+        self.control_sender.lock().unwrap().clone()
     }
-}
-
-fn notify_member_tunnel_closed(
-    control_sender: &mpsc::UnboundedSender<SharedVirtualNicControl>,
-    close_notifier: &Notify,
-    member_id: SharedVirtualNicMemberId,
-    registration_id: SharedVirtualNicMemberRegistrationId,
-) {
-    let _ = control_sender.send(SharedVirtualNicControl::Unregister {
-        member_id,
-        registration_id,
-    });
-    close_notifier.notify_one();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -602,8 +510,6 @@ impl SharedVirtualNicNatTable {
 pub(super) struct SharedVirtualNicDispatcher {
     _task: AbortOnDropHandle<()>,
     control_sender: mpsc::UnboundedSender<SharedVirtualNicControl>,
-    #[cfg(mobile)]
-    mobile_tun_update_sender: Option<mpsc::UnboundedSender<SharedVirtualNicMobileTunUpdate>>,
 }
 
 impl SharedVirtualNicDispatcher {
@@ -613,14 +519,14 @@ impl SharedVirtualNicDispatcher {
         valid: Arc<AtomicBool>,
     ) -> Self {
         let (tun_stream, tun_sink) = tunnel.split();
-        let (to_tun_sender, to_tun_receiver) = mpsc::channel(MEMBER_TUNNEL_BUFFER_SIZE);
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
-        member_tunnel_table.attach_dispatcher(to_tun_sender, control_sender.clone());
+        member_tunnel_table.attach_dispatcher(control_sender.clone());
 
         let task = SharedVirtualNicDispatcherTask {
-            tun_stream,
-            tun_sink,
-            to_tun_receiver,
+            tun_stream: Some(tun_stream),
+            tun_sink: Some(tun_sink),
+            #[cfg(any(mobile, all(test, unix)))]
+            mobile: None,
             control_receiver,
             member_tunnel_table,
             valid,
@@ -630,8 +536,6 @@ impl SharedVirtualNicDispatcher {
         Self {
             _task: AbortOnDropHandle::new(SHARED_VIRTUAL_NIC_RUNTIME.spawn(task.run())),
             control_sender,
-            #[cfg(mobile)]
-            mobile_tun_update_sender: None,
         }
     }
 
@@ -642,37 +546,28 @@ impl SharedVirtualNicDispatcher {
         member_tunnel_table: SharedVirtualNicMemberTunnelTable,
         valid: Arc<AtomicBool>,
     ) -> Result<Self, Error> {
-        let (to_tun_sender, to_tun_receiver) = mpsc::channel(MEMBER_TUNNEL_BUFFER_SIZE);
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
-        let (mobile_tun_update_sender, mobile_tun_update_receiver) = mpsc::unbounded_channel();
         let (first_open_sender, first_open_receiver) = oneshot::channel();
         let task_member_tunnel_table = member_tunnel_table.clone();
-        member_tunnel_table.attach_dispatcher(to_tun_sender, control_sender.clone());
+        member_tunnel_table.attach_dispatcher(control_sender.clone());
 
-        let task = SHARED_VIRTUAL_NIC_RUNTIME.spawn(async move {
-            let task = SharedVirtualNicMobileDispatcherTask {
-                nic,
-                tun_stream: None,
-                tun_sink: None,
-                tun_fd,
-                tun_update_receiver: mobile_tun_update_receiver,
-                to_tun_receiver,
-                control_receiver,
-                member_tunnel_table: task_member_tunnel_table,
-                valid,
-                state: SharedVirtualNicDispatcherState {
-                    translate_unknown_sources: true,
-                    ..Default::default()
-                },
-            };
-
-            task.run(first_open_sender).await;
-        });
+        let task = SharedVirtualNicDispatcherTask {
+            tun_stream: None,
+            tun_sink: None,
+            mobile: Some(SharedVirtualNicMobileTun { nic, tun_fd }),
+            control_receiver,
+            member_tunnel_table: task_member_tunnel_table,
+            valid,
+            state: SharedVirtualNicDispatcherState {
+                translate_unknown_sources: true,
+                ..Default::default()
+            },
+        };
+        let task = SHARED_VIRTUAL_NIC_RUNTIME.spawn(task.run_for_mobile(first_open_sender));
 
         let dispatcher = Self {
             _task: AbortOnDropHandle::new(task),
             control_sender,
-            mobile_tun_update_sender: Some(mobile_tun_update_sender),
         };
         await_mobile_open(first_open_receiver)
             .await
@@ -684,14 +579,11 @@ impl SharedVirtualNicDispatcher {
         &self,
         tun_fd: std::os::fd::RawFd,
     ) -> Result<(), Error> {
-        let sender = self.mobile_tun_update_sender.as_ref().ok_or_else(|| {
-            Error::from(anyhow::anyhow!(
-                "shared virtual nic mobile dispatcher is not running"
-            ))
-        })?;
         let (ack, receiver) = oneshot::channel();
-        sender
-            .send(SharedVirtualNicMobileTunUpdate { tun_fd, ack })
+        self.control_sender
+            .send(SharedVirtualNicControl::UpdateMobileTun(
+                SharedVirtualNicMobileTunUpdate { tun_fd, ack },
+            ))
             .map_err(|_| {
                 Error::from(anyhow::anyhow!(
                     "shared virtual nic mobile dispatcher is not running"
@@ -759,145 +651,88 @@ impl SharedVirtualNicDispatcher {
     }
 }
 
-enum DispatcherControlResult {
-    Continue,
-    Stop {
-        invalidate: bool,
-        ack: Option<oneshot::Sender<()>>,
-    },
-}
-
-fn handle_dispatcher_control(
-    state: &mut SharedVirtualNicDispatcherState,
-    control: Option<SharedVirtualNicControl>,
-) -> DispatcherControlResult {
-    let Some(control) = control else {
-        return DispatcherControlResult::Stop {
-            invalidate: true,
-            ack: None,
-        };
-    };
-
-    match control {
-        SharedVirtualNicControl::Shutdown { invalidate, ack } => DispatcherControlResult::Stop {
-            invalidate,
-            ack: Some(ack),
-        },
-        other => {
-            state.handle_control(other);
-            DispatcherControlResult::Continue
-        }
-    }
-}
-
-fn acknowledge_dispatcher_shutdown(ack: Option<oneshot::Sender<()>>) {
-    if let Some(ack) = ack {
-        let _ = ack.send(());
-    }
-}
-
-async fn send_packet_to_tun(
-    tun_sink: &mut Pin<Box<dyn ZCPacketSink>>,
-    packet: ZCPacket,
-) -> Result<(), Error> {
-    tokio::time::timeout(DISPATCHER_TUN_WRITE_TIMEOUT, tun_sink.send(packet)).await??;
-    Ok(())
-}
-
 struct SharedVirtualNicDispatcherTask {
-    tun_stream: Pin<Box<dyn ZCPacketStream>>,
-    tun_sink: Pin<Box<dyn ZCPacketSink>>,
-    to_tun_receiver: mpsc::Receiver<SharedVirtualNicMemberPacket>,
+    tun_stream: Option<Pin<Box<dyn ZCPacketStream>>>,
+    tun_sink: Option<Pin<Box<dyn ZCPacketSink>>>,
+    #[cfg(any(mobile, all(test, unix)))]
+    mobile: Option<SharedVirtualNicMobileTun>,
     control_receiver: mpsc::UnboundedReceiver<SharedVirtualNicControl>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
     valid: Arc<AtomicBool>,
     state: SharedVirtualNicDispatcherState,
+}
+
+#[cfg(any(mobile, all(test, unix)))]
+struct SharedVirtualNicMobileTun {
+    nic: Arc<Mutex<VirtualNic>>,
+    tun_fd: std::os::fd::RawFd,
 }
 
 impl SharedVirtualNicDispatcherTask {
     async fn run(mut self) {
         loop {
+            // Ring polling is synchronous, including packets dropped before TUN I/O.
+            tokio::task::consume_budget().await;
             tokio::select! {
                 control = self.control_receiver.recv() => {
-                    if let DispatcherControlResult::Stop { invalidate, ack } =
-                        handle_dispatcher_control(&mut self.state, control)
-                    {
-                        self.cleanup(invalidate);
-                        acknowledge_dispatcher_shutdown(ack);
-                        return;
+                    match control {
+                        Some(SharedVirtualNicControl::Shutdown { invalidate, ack }) => {
+                            self.cleanup(invalidate);
+                            let _ = ack.send(());
+                            return;
+                        }
+                        #[cfg(any(mobile, all(test, unix)))]
+                        Some(SharedVirtualNicControl::UpdateMobileTun(update)) => {
+                            if !self.apply_tun_update(update).await {
+                                return;
+                            }
+                        }
+                        Some(control) => self.state.handle_control(control),
+                        None => break,
                     }
                 }
-                member_packet = self.to_tun_receiver.recv() => {
-                    let Some(member_packet) = member_packet else {
-                        break;
-                    };
-                    if !self.forward_member_packet_to_tun(member_packet).await {
-                        break;
-                    }
-                }
-                packet = self.tun_stream.next() => {
+                (member_id, packet) = self.state.next_member_packet() => {
                     let Some(packet) = packet else {
+                        self.state.close_member(member_id);
+                        continue;
+                    };
+                    let Some(packet) = self.state.prepare_member_packet_to_tun(member_id, packet) else {
+                        continue;
+                    };
+                    let Some(sink) = self.tun_sink.as_mut() else {
                         break;
                     };
-                    let packet = match packet {
-                        Ok(packet) => packet,
-                        Err(err) => {
+                    if let Err(err) = async {
+                        tokio::time::timeout(DISPATCHER_TUN_WRITE_TIMEOUT, sink.send(packet)).await??;
+                        Ok::<(), Error>(())
+                    }.await {
+                        tracing::error!(?err, "shared virtual nic write to tun failed");
+                        break;
+                    }
+                }
+                packet = async {
+                    match self.tun_stream.as_mut() {
+                        Some(stream) => stream.next().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match packet {
+                        Some(Ok(packet)) => self.state.forward_tun_packet_to_member(packet),
+                        Some(Err(err)) => {
                             tracing::error!(?err, "shared virtual nic read from tun failed");
                             break;
                         }
-                    };
-                    self.state.forward_tun_packet_to_member(packet).await;
+                        None => break,
+                    }
                 }
+
             }
         }
-
         self.cleanup(true);
     }
 
-    fn cleanup(&mut self, invalidate: bool) {
-        if invalidate {
-            self.valid.store(false, Ordering::Release);
-        }
-        self.member_tunnel_table.detach_dispatcher();
-        self.state.close_all();
-    }
-
-    async fn forward_member_packet_to_tun(
-        &mut self,
-        member_packet: SharedVirtualNicMemberPacket,
-    ) -> bool {
-        let Some(packet) = self
-            .state
-            .prepare_member_packet_to_tun(member_packet.member_id, member_packet.packet)
-        else {
-            return true;
-        };
-        if let Err(err) = send_packet_to_tun(&mut self.tun_sink, packet).await {
-            tracing::error!(?err, "shared virtual nic write to tun failed");
-            return false;
-        }
-        true
-    }
-}
-
-#[cfg(any(mobile, all(test, unix)))]
-struct SharedVirtualNicMobileDispatcherTask {
-    nic: Arc<Mutex<VirtualNic>>,
-    tun_stream: Option<Pin<Box<dyn ZCPacketStream>>>,
-    tun_sink: Option<Pin<Box<dyn ZCPacketSink>>>,
-    tun_fd: std::os::fd::RawFd,
-    tun_update_receiver: mpsc::UnboundedReceiver<SharedVirtualNicMobileTunUpdate>,
-    to_tun_receiver: mpsc::Receiver<SharedVirtualNicMemberPacket>,
-    control_receiver: mpsc::UnboundedReceiver<SharedVirtualNicControl>,
-    member_tunnel_table: SharedVirtualNicMemberTunnelTable,
-    valid: Arc<AtomicBool>,
-    state: SharedVirtualNicDispatcherState,
-}
-
-#[cfg(any(mobile, all(test, unix)))]
-impl SharedVirtualNicMobileDispatcherTask {
     #[cfg(mobile)]
-    async fn run(mut self, first_open_sender: oneshot::Sender<Result<(), Error>>) {
+    async fn run_for_mobile(mut self, first_open_sender: oneshot::Sender<Result<(), Error>>) {
         match self.open_tun().await {
             Ok(()) => {
                 if first_open_sender.send(Ok(())).is_err() {
@@ -911,64 +746,19 @@ impl SharedVirtualNicMobileDispatcherTask {
                 return;
             }
         }
-
-        self.run_opened_tun().await;
+        self.run().await;
     }
 
-    async fn run_opened_tun(mut self) {
-        loop {
-            tokio::select! {
-                control = self.control_receiver.recv() => {
-                    if !self.handle_control(control) {
-                        return;
-                    }
-                }
-                member_packet = self.to_tun_receiver.recv() => {
-                    let Some(member_packet) = member_packet else {
-                        self.cleanup(true);
-                        return;
-                    };
-                    if !self.forward_member_packet_to_tun(member_packet).await {
-                        self.cleanup(true);
-                        return;
-                    }
-                }
-                packet = async {
-                    match self.tun_stream.as_mut() {
-                        Some(stream) => stream.next().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    let Some(packet) = packet else {
-                        tracing::error!("shared virtual nic mobile tun stream closed");
-                        self.cleanup(true);
-                        return;
-                    };
-                    match packet {
-                        Ok(packet) => self.state.forward_tun_packet_to_member(packet).await,
-                        Err(err) => {
-                            tracing::error!(?err, "shared virtual nic read from mobile tun failed");
-                            self.cleanup(true);
-                            return;
-                        }
-                    }
-                }
-                update = self.tun_update_receiver.recv() => {
-                    let Some(update) = update else {
-                        self.cleanup(true);
-                        return;
-                    };
-                    if !self.apply_tun_update(update).await {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
+    #[cfg(any(mobile, all(test, unix)))]
     async fn open_tun(&mut self) -> Result<(), Error> {
-        let tun_fd = self.tun_fd;
-        let tunnel = self.nic.lock().await.create_dev_for_mobile(tun_fd).await?;
+        let mobile = self.mobile.as_ref().unwrap();
+        let tun_fd = mobile.tun_fd;
+        let tunnel = mobile
+            .nic
+            .lock()
+            .await
+            .create_dev_for_mobile(tun_fd)
+            .await?;
         let (tun_stream, tun_sink) = tunnel.split();
         self.tun_stream = Some(tun_stream);
         self.tun_sink = Some(tun_sink);
@@ -976,16 +766,25 @@ impl SharedVirtualNicMobileDispatcherTask {
         Ok(())
     }
 
+    #[cfg(any(mobile, all(test, unix)))]
     async fn apply_tun_update(&mut self, update: SharedVirtualNicMobileTunUpdate) -> bool {
-        self.drop_tun();
-        self.tun_fd = update.tun_fd;
+        let Some(mobile) = self.mobile.as_mut() else {
+            let _ = update.ack.send(Err(anyhow::anyhow!(
+                "shared virtual nic mobile dispatcher is not running"
+            )
+            .into()));
+            return true;
+        };
+        mobile.tun_fd = update.tun_fd;
+        self.tun_stream.take();
+        self.tun_sink.take();
         match self.open_tun().await {
             Ok(()) => {
                 let _ = update.ack.send(Ok(()));
                 true
             }
             Err(err) => {
-                tracing::error!(fd = self.tun_fd, ?err, "failed to replace mobile tun");
+                tracing::error!(fd = update.tun_fd, ?err, "failed to replace mobile tun");
                 self.cleanup(true);
                 let _ = update.ack.send(Err(err));
                 false
@@ -993,45 +792,9 @@ impl SharedVirtualNicMobileDispatcherTask {
         }
     }
 
-    async fn forward_member_packet_to_tun(
-        &mut self,
-        member_packet: SharedVirtualNicMemberPacket,
-    ) -> bool {
-        let Some(packet) = self
-            .state
-            .prepare_member_packet_to_tun(member_packet.member_id, member_packet.packet)
-        else {
-            return true;
-        };
-        let Some(tun_sink) = self.tun_sink.as_mut() else {
-            return false;
-        };
-
-        if let Err(err) = send_packet_to_tun(tun_sink, packet).await {
-            tracing::error!(?err, "shared virtual nic write to mobile tun failed");
-            return false;
-        }
-        true
-    }
-
-    fn handle_control(&mut self, control: Option<SharedVirtualNicControl>) -> bool {
-        match handle_dispatcher_control(&mut self.state, control) {
-            DispatcherControlResult::Continue => true,
-            DispatcherControlResult::Stop { invalidate, ack } => {
-                self.cleanup(invalidate);
-                acknowledge_dispatcher_shutdown(ack);
-                false
-            }
-        }
-    }
-
-    fn drop_tun(&mut self) {
+    fn cleanup(&mut self, invalidate: bool) {
         self.tun_stream.take();
         self.tun_sink.take();
-    }
-
-    fn cleanup(&mut self, invalidate: bool) {
-        self.drop_tun();
         if invalidate {
             self.valid.store(false, Ordering::Release);
         }
@@ -1052,6 +815,7 @@ async fn await_mobile_open(receiver: oneshot::Receiver<Result<(), Error>>) -> Re
 #[derive(Default)]
 struct SharedVirtualNicDispatcherState {
     members: BTreeMap<SharedVirtualNicMemberId, SharedVirtualNicMemberTunnelEntry>,
+    last_polled_member: SharedVirtualNicMemberId,
     nat_table: SharedVirtualNicNatTable,
     source_table: SharedVirtualNicSourceTable,
     // Mobile VPNs can supply synthetic sources, unlike desktop subnet forwarding.
@@ -1080,6 +844,10 @@ impl SharedVirtualNicDispatcherState {
                 }
                 self.source_table.update_member_sources(member_id, sources);
                 let _ = ack.send(());
+            }
+            #[cfg(any(mobile, all(test, unix)))]
+            SharedVirtualNicControl::UpdateMobileTun(_) => {
+                unreachable!("mobile updates are handled by the dispatcher task")
             }
             SharedVirtualNicControl::Shutdown { .. } => {
                 unreachable!("dispatcher shutdown is handled by the dispatcher task")
@@ -1119,6 +887,34 @@ impl SharedVirtualNicDispatcherState {
         self.source_table.remove_owner(member_id);
     }
 
+    fn close_member(&mut self, member_id: SharedVirtualNicMemberId) {
+        if let Some(entry) = self.members.get(&member_id) {
+            entry.close_notifier.notify_one();
+            self.unregister(member_id, entry.registration_id);
+        }
+    }
+
+    async fn next_member_packet(&mut self) -> (SharedVirtualNicMemberId, Option<ZCPacket>) {
+        poll_fn(|cx| {
+            // Resume after the last ready member, wrapping once to keep busy members fair.
+            let last = self.last_polled_member;
+            for (member_id, entry) in self.members.range_mut((Excluded(last), Unbounded)) {
+                if let Poll::Ready(packet) = Pin::new(&mut entry.stream).poll_next(cx) {
+                    self.last_polled_member = *member_id;
+                    return Poll::Ready((*member_id, packet.and_then(Result::ok)));
+                }
+            }
+            for (member_id, entry) in self.members.range_mut((Unbounded, Included(last))) {
+                if let Poll::Ready(packet) = Pin::new(&mut entry.stream).poll_next(cx) {
+                    self.last_polled_member = *member_id;
+                    return Poll::Ready((*member_id, packet.and_then(Result::ok)));
+                }
+            }
+            Poll::Pending
+        })
+        .await
+    }
+
     fn close_all(&mut self) {
         let members = std::mem::take(&mut self.members);
         self.nat_table.clear();
@@ -1150,13 +946,13 @@ impl SharedVirtualNicDispatcherState {
         Some(packet)
     }
 
-    async fn forward_tun_packet_to_member(&mut self, packet: ZCPacket) {
-        if !self.send_packet(packet).await {
+    fn forward_tun_packet_to_member(&mut self, packet: ZCPacket) {
+        if !self.send_packet(packet) {
             tracing::trace!("shared virtual nic dropped packet without active member");
         }
     }
 
-    async fn send_packet(&mut self, packet: ZCPacket) -> bool {
+    fn send_packet(&mut self, packet: ZCPacket) -> bool {
         let source_owner = self.source_table.owner_of_source(&packet, &self.members);
         if self.members.len() == 1 {
             let member_id = *self.members.keys().next().unwrap();
@@ -1165,10 +961,12 @@ impl SharedVirtualNicDispatcherState {
             let source_owner = source_owner
                 .active_member()
                 .or_else(|| self.translate_unknown_sources.then_some(member_id));
-            return self
-                .send_packet_to_member_with_translation(member_id, source_owner, packet, false)
-                .await
-                .is_ok();
+            return self.send_packet_to_member_with_translation(
+                member_id,
+                source_owner,
+                packet,
+                false,
+            );
         }
         let preferred_destination_owner = source_owner.active_member();
         let destination_owner = self.source_table.owner_of_destination(
@@ -1182,28 +980,22 @@ impl SharedVirtualNicDispatcherState {
                 member_id,
                 self.translate_unknown_sources,
             );
-            return self
-                .send_packet_to_member_with_translation(
-                    member_id,
-                    source_owner.active_member(),
-                    packet,
-                    translate_source,
-                )
-                .await
-                .is_ok();
+            return self.send_packet_to_member_with_translation(
+                member_id,
+                source_owner.active_member(),
+                packet,
+                translate_source,
+            );
         }
 
         match source_owner {
             SourceOwner::Active(member_id) => {
-                return self
-                    .send_packet_to_member_with_translation(
-                        member_id,
-                        Some(member_id),
-                        packet,
-                        false,
-                    )
-                    .await
-                    .is_ok();
+                return self.send_packet_to_member_with_translation(
+                    member_id,
+                    Some(member_id),
+                    packet,
+                    false,
+                );
             }
             SourceOwner::Inactive => return false,
             SourceOwner::None => {}
@@ -1212,29 +1004,25 @@ impl SharedVirtualNicDispatcherState {
         false
     }
 
-    async fn send_packet_to_member_with_translation(
+    fn send_packet_to_member_with_translation(
         &mut self,
         member_id: SharedVirtualNicMemberId,
         source_owner: Option<SharedVirtualNicMemberId>,
         mut packet: ZCPacket,
         translate_source: bool,
-    ) -> Result<(), ZCPacket> {
-        let Some((registration_id, sender)) = self
-            .members
-            .get(&member_id)
-            .map(|entry| (entry.registration_id, entry.sender.clone()))
-        else {
-            return Err(packet);
+    ) -> bool {
+        let Some(entry) = self.members.get_mut(&member_id) else {
+            return false;
         };
-        // Reserve queue capacity before allocating a flow, and never await a slow member.
-        let permit = match sender.try_reserve() {
-            Ok(permit) => permit,
-            Err(mpsc::error::TrySendError::Full(())) => return Err(packet),
-            Err(mpsc::error::TrySendError::Closed(())) => {
-                self.unregister(member_id, registration_id);
-                return Err(packet);
+        // Check queue capacity before allocating a flow, and never await a slow member.
+        match Pin::new(&mut entry.sink).poll_ready(&mut Context::from_waker(noop_waker_ref())) {
+            Poll::Pending => return false,
+            Poll::Ready(Err(_)) => {
+                self.close_member(member_id);
+                return false;
             }
-        };
+            Poll::Ready(Ok(())) => {}
+        }
         let key = SharedVirtualNicFlowKey::from_packet(&packet);
         // Forwarded subnet sources cannot collide with a member's translated address.
         // Keep applying an existing translation after other members leave.
@@ -1242,11 +1030,10 @@ impl SharedVirtualNicDispatcherState {
             && source_owner.is_none()
             && !key.is_some_and(|key| self.nat_table.entries.contains_key(&(member_id, key)))
         {
-            permit.send(packet);
-            return Ok(());
+            return self.send_to_member(member_id, packet);
         }
         let Some(key) = key else {
-            return Err(packet);
+            return false;
         };
         let translated_src = if translate_source {
             self.source_table
@@ -1260,10 +1047,22 @@ impl SharedVirtualNicDispatcherState {
             .nat_table
             .prepare_packet(member_id, source_owner, key, &mut packet, translated_src)
         {
-            return Err(packet);
+            return false;
         }
-        permit.send(packet);
-        Ok(())
+        self.send_to_member(member_id, packet)
+    }
+
+    fn send_to_member(&mut self, member_id: SharedVirtualNicMemberId, packet: ZCPacket) -> bool {
+        // This is the Ring's only producer, with no await since poll_ready. A consumer
+        // can only free capacity; if it closes, unregister also removes the new flow.
+        if let Err(err) =
+            Pin::new(&mut self.members.get_mut(&member_id).unwrap().sink).start_send(packet)
+        {
+            self.close_member(member_id);
+            tracing::trace!(?err, "shared member tunnel write failed");
+            return false;
+        }
+        true
     }
 }
 
@@ -1609,12 +1408,18 @@ impl SharedVirtualNicSourceTable {
     ) -> Option<SharedVirtualNicFlowAddr> {
         let sources = self.member_sources.get(&member_id)?;
         match dst {
-            SharedVirtualNicFlowAddr::V4(dst) => sources
-                .ipv4_source_for_destination(std::net::Ipv4Addr::from(dst))
-                .map(SharedVirtualNicFlowAddr::from),
-            SharedVirtualNicFlowAddr::V6(dst) => sources
-                .ipv6_source_for_destination(std::net::Ipv6Addr::from(dst))
-                .map(SharedVirtualNicFlowAddr::from),
+            SharedVirtualNicFlowAddr::V4(dst) => source_for_destination(
+                &sources.ipv4_addresses,
+                &sources.ipv4_routes,
+                std::net::Ipv4Addr::from(dst),
+            )
+            .map(SharedVirtualNicFlowAddr::from),
+            SharedVirtualNicFlowAddr::V6(dst) => source_for_destination(
+                &sources.ipv6_addresses,
+                &sources.ipv6_routes,
+                std::net::Ipv6Addr::from(dst),
+            )
+            .map(SharedVirtualNicFlowAddr::from),
         }
     }
 }
@@ -1634,63 +1439,31 @@ impl SharedVirtualNicMemberSources {
             }
         }
     }
+}
 
-    fn ipv4_source_for_destination(&self, dst: std::net::Ipv4Addr) -> Option<std::net::Ipv4Addr> {
-        let mut best = None;
-        for addr in &self.ipv4_addresses {
-            if addr.contains(&dst) {
-                update_best_source(&mut best, addr.network_length(), addr.address());
-            }
+fn source_for_destination<T: Inet + Ord>(
+    addresses: &BTreeSet<T>,
+    routes: &BTreeSet<T>,
+    dst: T::Address,
+) -> Option<T::Address> {
+    let mut best = None;
+    for addr in addresses {
+        if addr.contains(&dst) {
+            update_best_source(&mut best, addr.network_length(), addr.address());
         }
-        for route in &self.ipv4_routes {
-            if route.contains(&dst) {
-                let Some(source) = self.ipv4_source_for_route(route) else {
-                    continue;
-                };
-                update_best_source(&mut best, route.network_length(), source);
-            }
-        }
-        best.map(|(_, source)| source)
     }
-
-    fn ipv4_source_for_route(&self, route: &Ipv4Inet) -> Option<std::net::Ipv4Addr> {
-        let mut default_source = None;
-        for addr in &self.ipv4_addresses {
-            default_source.get_or_insert(addr.address());
-            if route.contains(&addr.address()) {
-                return Some(addr.address());
+    for route in routes {
+        if route.contains(&dst) {
+            let source = addresses
+                .iter()
+                .find(|addr| route.contains(&addr.address()))
+                .or_else(|| addresses.first());
+            if let Some(source) = source {
+                update_best_source(&mut best, route.network_length(), source.address());
             }
         }
-        default_source
     }
-    fn ipv6_source_for_destination(&self, dst: std::net::Ipv6Addr) -> Option<std::net::Ipv6Addr> {
-        let mut best = None;
-        for addr in &self.ipv6_addresses {
-            if addr.contains(&dst) {
-                update_best_source(&mut best, addr.network_length(), addr.address());
-            }
-        }
-        for route in &self.ipv6_routes {
-            if route.contains(&dst) {
-                let Some(source) = self.ipv6_source_for_route(route) else {
-                    continue;
-                };
-                update_best_source(&mut best, route.network_length(), source);
-            }
-        }
-        best.map(|(_, source)| source)
-    }
-
-    fn ipv6_source_for_route(&self, route: &Ipv6Inet) -> Option<std::net::Ipv6Addr> {
-        let mut default_source = None;
-        for addr in &self.ipv6_addresses {
-            default_source.get_or_insert(addr.address());
-            if route.contains(&addr.address()) {
-                return Some(addr.address());
-            }
-        }
-        default_source
-    }
+    best.map(|(_, source)| source)
 }
 
 fn update_best_source<T: Copy>(best: &mut Option<(u8, T)>, prefix: u8, source: T) {
@@ -1745,10 +1518,12 @@ mod tests {
         time::Duration,
     };
 
+    use super::SharedVirtualNicFlowAddr as FlowAddr;
     use super::*;
     use easytier_core::tunnel::{
         TunnelError, ring::create_ring_tunnel_pair, wrapper::TunnelWrapper,
     };
+    use futures::FutureExt;
     const IPV4_HEADER_MIN_LEN: usize = 20;
     const IPV6_HEADER_LEN: usize = 40;
     const TCP_HEADER_MIN_LEN: usize = 20;
@@ -1790,184 +1565,221 @@ mod tests {
         ZCPacket::new_with_payload(&payload)
     }
 
-    fn ipv6_udp_packet_with_ports(
-        src: Ipv6Addr,
-        dst: Ipv6Addr,
+    fn ipv4_udp_packet(src: Ipv4Addr, dst: Ipv4Addr) -> ZCPacket {
+        transport_packet(src, dst, IpProtocol::Udp, 1234, 5678)
+    }
+
+    fn ipv4_icmp_echo_packet(src: Ipv4Addr, dst: Ipv4Addr) -> ZCPacket {
+        echo_packet(src, dst, false, 0, 0)
+    }
+
+    fn ip_packet(src: FlowAddr, dst: FlowAddr, protocol: IpProtocol, payload: &[u8]) -> ZCPacket {
+        let header = if matches!(src, FlowAddr::V4(_)) {
+            IPV4_HEADER_MIN_LEN
+        } else {
+            IPV6_HEADER_LEN
+        };
+        let mut bytes = vec![0; header + payload.len()];
+        bytes[header..].copy_from_slice(payload);
+        let len = bytes.len() as u16;
+        match (src, dst) {
+            (FlowAddr::V4(src), FlowAddr::V4(dst)) => {
+                let mut ip = Ipv4Packet::new_unchecked(&mut bytes);
+                ip.set_version(4);
+                ip.set_header_len(header as u8);
+                ip.set_total_len(len);
+                ip.set_hop_limit(64);
+                ip.set_next_header(protocol);
+                ip.set_src_addr(src.into());
+                ip.set_dst_addr(dst.into());
+                ip.fill_checksum();
+            }
+            (FlowAddr::V6(src), FlowAddr::V6(dst)) => {
+                let mut ip = Ipv6Packet::new_unchecked(&mut bytes);
+                ip.set_version(6);
+                ip.set_payload_len(payload.len() as u16);
+                ip.set_hop_limit(64);
+                ip.set_next_header(protocol);
+                ip.set_src_addr(src.into());
+                ip.set_dst_addr(dst.into());
+            }
+            _ => unreachable!(),
+        }
+        ZCPacket::new_with_payload(&bytes)
+    }
+
+    fn test_addresses(ipv6: bool) -> [FlowAddr; 4] {
+        if ipv6 {
+            [
+                "2001:db8:1::1",
+                "2001:db8:2::1",
+                "2001:db8:3::1",
+                "2001:db8:3::2",
+            ]
+            .map(|ip| ip.parse::<Ipv6Addr>().unwrap().into())
+        } else {
+            [
+                Ipv4Addr::new(10, 231, 1, 1),
+                Ipv4Addr::new(10, 231, 2, 1),
+                Ipv4Addr::new(10, 231, 3, 1),
+                Ipv4Addr::new(10, 231, 3, 2),
+            ]
+            .map(Into::into)
+        }
+    }
+
+    fn address_sources(address: FlowAddr) -> SharedVirtualNicMemberSources {
+        let mut sources = SharedVirtualNicMemberSources::default();
+        match address {
+            FlowAddr::V4(ip) => {
+                sources
+                    .ipv4_addresses
+                    .insert(Ipv4Inet::new(ip.into(), 24).unwrap());
+            }
+            FlowAddr::V6(ip) => {
+                sources
+                    .ipv6_addresses
+                    .insert(Ipv6Inet::new(ip.into(), 64).unwrap());
+            }
+        }
+        sources
+    }
+
+    fn transport_packet<A: Into<FlowAddr>>(
+        src: A,
+        dst: A,
+        protocol: IpProtocol,
         src_port: u16,
         dst_port: u16,
     ) -> ZCPacket {
-        let mut payload = vec![0; IPV6_HEADER_LEN + UDP_HEADER_LEN];
-        {
-            let mut ipv6_packet = Ipv6Packet::new_unchecked(&mut payload);
-            ipv6_packet.set_version(6);
-            ipv6_packet.set_payload_len(UDP_HEADER_LEN as u16);
-            ipv6_packet.set_next_header(IpProtocol::Udp);
-            ipv6_packet.set_hop_limit(64);
-            ipv6_packet.set_src_addr(src);
-            ipv6_packet.set_dst_addr(dst);
+        let (src, dst) = (src.into(), dst.into());
+        let (src_ip, dst_ip) = match (src, dst) {
+            (FlowAddr::V4(src), FlowAddr::V4(dst)) => {
+                (IpAddress::Ipv4(src.into()), IpAddress::Ipv4(dst.into()))
+            }
+            (FlowAddr::V6(src), FlowAddr::V6(dst)) => {
+                (IpAddress::Ipv6(src.into()), IpAddress::Ipv6(dst.into()))
+            }
+            _ => unreachable!(),
+        };
+        let mut payload = vec![
+            0;
+            if protocol == IpProtocol::Tcp {
+                TCP_HEADER_MIN_LEN
+            } else {
+                UDP_HEADER_LEN
+            }
+        ];
+        match protocol {
+            IpProtocol::Tcp => {
+                let mut tcp = TcpPacket::new_unchecked(&mut payload);
+                tcp.set_header_len(TCP_HEADER_MIN_LEN as u8);
+                tcp.set_src_port(src_port);
+                tcp.set_dst_port(dst_port);
+                tcp.fill_checksum(&src_ip, &dst_ip);
+            }
+            IpProtocol::Udp => {
+                let mut udp = UdpPacket::new_unchecked(&mut payload);
+                udp.set_len(UDP_HEADER_LEN as u16);
+                udp.set_src_port(src_port);
+                udp.set_dst_port(dst_port);
+                udp.fill_checksum(&src_ip, &dst_ip);
+            }
+            _ => unreachable!(),
         }
-        {
-            let mut udp_packet = UdpPacket::new_unchecked(&mut payload[IPV6_HEADER_LEN..]);
-            udp_packet.set_src_port(src_port);
-            udp_packet.set_dst_port(dst_port);
-            udp_packet.set_len(UDP_HEADER_LEN as u16);
-            udp_packet.fill_checksum(&IpAddress::Ipv6(src), &IpAddress::Ipv6(dst));
-        }
-        ZCPacket::new_with_payload(&payload)
+        ip_packet(src, dst, protocol, &payload)
     }
 
-    fn ipv6_tcp_packet_with_ports(
-        src: Ipv6Addr,
-        dst: Ipv6Addr,
-        src_port: u16,
-        dst_port: u16,
-    ) -> ZCPacket {
-        let mut payload = vec![0; IPV6_HEADER_LEN + TCP_HEADER_MIN_LEN];
-        {
-            let mut ipv6_packet = Ipv6Packet::new_unchecked(&mut payload);
-            ipv6_packet.set_version(6);
-            ipv6_packet.set_payload_len(TCP_HEADER_MIN_LEN as u16);
-            ipv6_packet.set_next_header(IpProtocol::Tcp);
-            ipv6_packet.set_hop_limit(64);
-            ipv6_packet.set_src_addr(src);
-            ipv6_packet.set_dst_addr(dst);
-        }
-        {
-            let mut tcp_packet = TcpPacket::new_unchecked(&mut payload[IPV6_HEADER_LEN..]);
-            tcp_packet.set_src_port(src_port);
-            tcp_packet.set_dst_port(dst_port);
-            tcp_packet.set_header_len(TCP_HEADER_MIN_LEN as u8);
-            tcp_packet.fill_checksum(&IpAddress::Ipv6(src), &IpAddress::Ipv6(dst));
-        }
-        ZCPacket::new_with_payload(&payload)
-    }
-
-    fn ipv6_icmp_packet_with_id(
-        src: Ipv6Addr,
-        dst: Ipv6Addr,
+    fn echo_packet<A: Into<FlowAddr>>(
+        src: A,
+        dst: A,
         reply: bool,
         identifier: u16,
         sequence: u16,
     ) -> ZCPacket {
-        let mut payload = vec![0; IPV6_HEADER_LEN + ICMP_ECHO_HEADER_LEN];
-        {
-            let mut ipv6_packet = Ipv6Packet::new_unchecked(&mut payload);
-            ipv6_packet.set_version(6);
-            ipv6_packet.set_payload_len(ICMP_ECHO_HEADER_LEN as u16);
-            ipv6_packet.set_next_header(IpProtocol::Icmpv6);
-            ipv6_packet.set_hop_limit(64);
-            ipv6_packet.set_src_addr(src);
-            ipv6_packet.set_dst_addr(dst);
-        }
-        {
-            let mut icmp_packet = Icmpv6Packet::new_unchecked(&mut payload[IPV6_HEADER_LEN..]);
-            icmp_packet.set_msg_type(if reply {
-                Icmpv6Message::EchoReply
-            } else {
-                Icmpv6Message::EchoRequest
-            });
-            icmp_packet.set_echo_ident(identifier);
-            icmp_packet.set_echo_seq_no(sequence);
-            icmp_packet.fill_checksum(&src, &dst);
-        }
-        ZCPacket::new_with_payload(&payload)
+        let (src, dst) = (src.into(), dst.into());
+        let mut payload = vec![0; ICMP_ECHO_HEADER_LEN];
+        let protocol = match (src, dst) {
+            (FlowAddr::V4(_), FlowAddr::V4(_)) => {
+                let mut icmp = Icmpv4Packet::new_unchecked(&mut payload);
+                icmp.set_msg_type(if reply {
+                    Icmpv4Message::EchoReply
+                } else {
+                    Icmpv4Message::EchoRequest
+                });
+                icmp.set_echo_ident(identifier);
+                icmp.set_echo_seq_no(sequence);
+                icmp.fill_checksum();
+                IpProtocol::Icmp
+            }
+            (FlowAddr::V6(src), FlowAddr::V6(dst)) => {
+                let mut icmp = Icmpv6Packet::new_unchecked(&mut payload);
+                icmp.set_msg_type(if reply {
+                    Icmpv6Message::EchoReply
+                } else {
+                    Icmpv6Message::EchoRequest
+                });
+                icmp.set_echo_ident(identifier);
+                icmp.set_echo_seq_no(sequence);
+                icmp.fill_checksum(&src.into(), &dst.into());
+                IpProtocol::Icmpv6
+            }
+            _ => unreachable!(),
+        };
+        ip_packet(src, dst, protocol, &payload)
     }
 
-    fn ipv4_udp_packet(src: Ipv4Addr, dst: Ipv4Addr) -> ZCPacket {
-        ipv4_udp_packet_with_ports(src, dst, 1234, 5678)
-    }
-
-    fn ipv4_icmp_echo_packet(src: Ipv4Addr, dst: Ipv4Addr) -> ZCPacket {
-        ipv4_icmp_packet_with_id(src, dst, Icmpv4Message::EchoRequest, 0, 0)
-    }
-
-    fn ipv4_icmp_packet_with_id(
-        src: Ipv4Addr,
-        dst: Ipv4Addr,
-        icmp_type: Icmpv4Message,
-        identifier: u16,
-        sequence: u16,
-    ) -> ZCPacket {
-        let mut payload = vec![0; IPV4_HEADER_MIN_LEN + 8];
-        let payload_len = payload.len();
-        {
-            let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut payload);
-            ipv4_packet.set_version(4);
-            ipv4_packet.set_header_len(IPV4_HEADER_MIN_LEN as u8);
-            ipv4_packet.set_total_len(payload_len as u16);
-            ipv4_packet.set_hop_limit(64);
-            ipv4_packet.set_next_header(IpProtocol::Icmp);
-            ipv4_packet.set_src_addr(src);
-            ipv4_packet.set_dst_addr(dst);
+    fn assert_checksums(packet: &ZCPacket) {
+        let (src, dst, protocol, payload) = match packet.payload()[0] >> 4 {
+            4 => {
+                let ip = Ipv4Packet::new_checked(packet.payload()).unwrap();
+                assert!(ip.verify_checksum());
+                (
+                    IpAddress::Ipv4(ip.src_addr()),
+                    IpAddress::Ipv4(ip.dst_addr()),
+                    ip.next_header(),
+                    &packet.payload()[ip.header_len() as usize..],
+                )
+            }
+            6 => {
+                let ip = Ipv6Packet::new_checked(packet.payload()).unwrap();
+                (
+                    IpAddress::Ipv6(ip.src_addr()),
+                    IpAddress::Ipv6(ip.dst_addr()),
+                    ip.next_header(),
+                    &packet.payload()[IPV6_HEADER_LEN..],
+                )
+            }
+            _ => unreachable!(),
+        };
+        match protocol {
+            IpProtocol::Tcp => assert!(
+                TcpPacket::new_checked(payload)
+                    .unwrap()
+                    .verify_checksum(&src, &dst)
+            ),
+            IpProtocol::Udp => {
+                let udp = UdpPacket::new_checked(payload).unwrap();
+                assert_ne!(udp.checksum(), 0);
+                assert!(udp.verify_checksum(&src, &dst));
+            }
+            IpProtocol::Icmp => assert!(
+                Icmpv4Packet::new_checked(payload)
+                    .unwrap()
+                    .verify_checksum()
+            ),
+            IpProtocol::Icmpv6 => {
+                let (IpAddress::Ipv6(src), IpAddress::Ipv6(dst)) = (src, dst) else {
+                    unreachable!()
+                };
+                assert!(
+                    Icmpv6Packet::new_checked(payload)
+                        .unwrap()
+                        .verify_checksum(&src, &dst)
+                );
+            }
+            _ => unreachable!(),
         }
-        {
-            let mut icmp_packet = Icmpv4Packet::new_unchecked(&mut payload[IPV4_HEADER_MIN_LEN..]);
-            icmp_packet.set_msg_type(icmp_type);
-            icmp_packet.set_msg_code(0);
-            icmp_packet.set_echo_ident(identifier);
-            icmp_packet.set_echo_seq_no(sequence);
-            icmp_packet.fill_checksum();
-        }
-        {
-            Ipv4Packet::new_unchecked(&mut payload).fill_checksum();
-        }
-        ZCPacket::new_with_payload(&payload)
-    }
-
-    fn ipv4_udp_packet_with_ports(
-        src: Ipv4Addr,
-        dst: Ipv4Addr,
-        src_port: u16,
-        dst_port: u16,
-    ) -> ZCPacket {
-        let mut payload = vec![0; IPV4_HEADER_MIN_LEN + UDP_HEADER_LEN];
-        let payload_len = payload.len();
-        {
-            let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut payload);
-            ipv4_packet.set_version(4);
-            ipv4_packet.set_header_len(IPV4_HEADER_MIN_LEN as u8);
-            ipv4_packet.set_total_len(payload_len as u16);
-            ipv4_packet.set_hop_limit(64);
-            ipv4_packet.set_next_header(IpProtocol::Udp);
-            ipv4_packet.set_src_addr(src);
-            ipv4_packet.set_dst_addr(dst);
-        }
-        {
-            let mut udp_packet = UdpPacket::new_unchecked(&mut payload[IPV4_HEADER_MIN_LEN..]);
-            udp_packet.set_src_port(src_port);
-            udp_packet.set_dst_port(dst_port);
-            udp_packet.set_len(UDP_HEADER_LEN as u16);
-            udp_packet.fill_checksum(&IpAddress::Ipv4(src), &IpAddress::Ipv4(dst));
-        }
-        {
-            Ipv4Packet::new_unchecked(&mut payload).fill_checksum();
-        }
-        ZCPacket::new_with_payload(&payload)
-    }
-
-    fn ipv4_tcp_packet_with_ports(
-        src: Ipv4Addr,
-        dst: Ipv4Addr,
-        src_port: u16,
-        dst_port: u16,
-    ) -> ZCPacket {
-        let mut payload = vec![0; IPV4_HEADER_MIN_LEN + TCP_HEADER_MIN_LEN];
-        let total_len = payload.len() as u16;
-        let mut ipv4 = Ipv4Packet::new_unchecked(&mut payload);
-        ipv4.set_version(4);
-        ipv4.set_header_len(IPV4_HEADER_MIN_LEN as u8);
-        ipv4.set_total_len(total_len);
-        ipv4.set_hop_limit(64);
-        ipv4.set_next_header(IpProtocol::Tcp);
-        ipv4.set_src_addr(src);
-        ipv4.set_dst_addr(dst);
-        let mut tcp = TcpPacket::new_unchecked(ipv4.payload_mut());
-        tcp.set_header_len(TCP_HEADER_MIN_LEN as u8);
-        tcp.set_src_port(src_port);
-        tcp.set_dst_port(dst_port);
-        tcp.fill_checksum(&IpAddress::Ipv4(src), &IpAddress::Ipv4(dst));
-        ipv4.fill_checksum();
-        ZCPacket::new_with_payload(&payload)
     }
 
     fn member_sources(ipv4: &[&str]) -> SharedVirtualNicMemberSources {
@@ -2019,20 +1831,164 @@ mod tests {
         }
     }
 
-    fn member_entry(sender: mpsc::Sender<ZCPacket>) -> SharedVirtualNicMemberTunnelEntry {
-        member_entry_with_registration(sender, uuid::Uuid::from_u128(1))
+    struct TestMember {
+        stream: RingStream,
+        _sink: RingSink,
     }
 
-    fn member_entry_with_registration(
-        sender: mpsc::Sender<ZCPacket>,
-        registration_id: SharedVirtualNicMemberRegistrationId,
-    ) -> SharedVirtualNicMemberTunnelEntry {
-        SharedVirtualNicMemberTunnelEntry {
-            registration_id,
-            sender,
-            close_notifier: Arc::new(Notify::new()),
-            _tasks: Vec::new(),
+    impl TestMember {
+        fn try_recv(&mut self) -> Result<ZCPacket, ()> {
+            self.stream
+                .next()
+                .now_or_never()
+                .flatten()
+                .ok_or(())?
+                .map_err(|_| ())
         }
+    }
+
+    fn member_channel(capacity: usize) -> (SharedVirtualNicMemberTunnelEntry, TestMember) {
+        let (member, dispatcher) = create_ring_socket_pair(capacity);
+        let (stream, sink) = split_ring_socket(dispatcher);
+        let (member_stream, member_sink) = split_ring_socket(member);
+        (
+            SharedVirtualNicMemberTunnelEntry {
+                registration_id: uuid::Uuid::from_u128(1),
+                stream,
+                sink,
+                close_notifier: Arc::new(Notify::new()),
+            },
+            TestMember {
+                stream: member_stream,
+                _sink: member_sink,
+            },
+        )
+    }
+
+    fn test_state<const N: usize>(
+        members: [(SharedVirtualNicMemberId, SharedVirtualNicMemberSources); N],
+    ) -> (SharedVirtualNicDispatcherState, [TestMember; N]) {
+        let mut state = SharedVirtualNicDispatcherState::default();
+        let endpoints = members.map(|(id, sources)| {
+            let (entry, member) = member_channel(8);
+            state.register(id, entry);
+            state.source_table.update_member_sources(id, sources);
+            member
+        });
+        (state, endpoints)
+    }
+
+    #[tokio::test]
+    async fn member_ring_polling_is_fair_and_wakes_after_pending() {
+        let first = uuid::Uuid::from_u128(1);
+        let second = uuid::Uuid::from_u128(2);
+        let (mut state, [mut a, mut b]) = test_state([
+            (first, SharedVirtualNicMemberSources::default()),
+            (second, SharedVirtualNicMemberSources::default()),
+        ]);
+        let receive = tokio::time::timeout(Duration::from_secs(1), state.next_member_packet());
+        let send = async {
+            tokio::task::yield_now().await;
+            a._sink
+                .send(ipv4_udp_packet(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST))
+                .await
+                .unwrap();
+        };
+        let (received, ()) = tokio::join!(receive, send);
+        assert_eq!(received.unwrap().0, first);
+        for _ in 0..2 {
+            a._sink
+                .send(ipv4_udp_packet(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST))
+                .await
+                .unwrap();
+            b._sink
+                .send(ipv4_udp_packet(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST))
+                .await
+                .unwrap();
+        }
+        for expected in [second, first, second, first] {
+            let (id, packet) = state.next_member_packet().await;
+            assert_eq!(id, expected);
+            assert!(packet.is_some());
+        }
+        let closed = state.members[&first].close_notifier.clone();
+        drop(a);
+        let (id, packet) = state.next_member_packet().await;
+        assert_eq!(id, first);
+        assert!(packet.is_none());
+        state.close_member(id);
+        closed.notified().await;
+        b._sink
+            .send(ipv4_udp_packet(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST))
+            .await
+            .unwrap();
+        assert_eq!(state.next_member_packet().await.0, second);
+    }
+
+    #[tokio::test]
+    async fn full_flow_table_drops_yield_to_other_runtime_tasks() {
+        let id = uuid::Uuid::from_u128(1);
+        let local = Ipv4Addr::new(10, 231, 1, 1);
+        let remote = Ipv4Addr::new(10, 231, 1, 2);
+        let (entry, mut member) = member_channel(MEMBER_TUNNEL_BUFFER_SIZE);
+        let mut state = SharedVirtualNicDispatcherState::default();
+        state.register(id, entry);
+        state
+            .source_table
+            .update_member_sources(id, address_sources(local.into()));
+        for port in 1..=FLOW_OWNER_LIMIT as u16 {
+            let packet = transport_packet(remote, local, IpProtocol::Udp, 5678, port);
+            assert!(
+                state
+                    .nat_table
+                    .reserve_reply(id, SharedVirtualNicFlowKey::from_packet(&packet).unwrap())
+            );
+        }
+        let packet = transport_packet(remote, local, IpProtocol::Udp, 5678, 5000);
+        for _ in 0..MEMBER_TUNNEL_BUFFER_SIZE {
+            member
+                ._sink
+                .force_send(ZCPacket::new_with_payload(packet.payload()))
+                .unwrap();
+        }
+        let (_tun, tunnel) = create_ring_tunnel_pair();
+        let (tun_stream, tun_sink) = tunnel.split();
+        let (control_sender, control_receiver) = mpsc::unbounded_channel();
+        let task = SharedVirtualNicDispatcherTask {
+            tun_stream: Some(tun_stream),
+            tun_sink: Some(tun_sink),
+            #[cfg(any(mobile, all(test, unix)))]
+            mobile: None,
+            control_receiver,
+            member_tunnel_table: SharedVirtualNicMemberTunnelTable::default(),
+            valid: Arc::new(AtomicBool::new(true)),
+            state,
+        };
+        let handle = tokio::spawn(task.run());
+        tokio::task::yield_now().await;
+        // Refill freed slots to measure whether the dispatcher yielded before
+        // draining the whole Ring. No timer or unbounded producer is needed.
+        let mut consumed = 0;
+        while member
+            ._sink
+            .force_send(ZCPacket::new_with_payload(packet.payload()))
+            .is_ok()
+        {
+            consumed += 1;
+        }
+        let (ack, rx) = oneshot::channel();
+        control_sender
+            .send(SharedVirtualNicControl::Shutdown {
+                invalidate: false,
+                ack,
+            })
+            .unwrap();
+        rx.await.unwrap();
+        handle.await.unwrap();
+        assert!(
+            consumed > 0 && consumed < MEMBER_TUNNEL_BUFFER_SIZE,
+            "drained {consumed} packets before yielding"
+        );
     }
 
     #[cfg(unix)]
@@ -2042,26 +1998,24 @@ mod tests {
         valid: Arc<AtomicBool>,
     ) -> (
         SharedVirtualNicDispatcher,
-        mpsc::UnboundedSender<SharedVirtualNicMobileTunUpdate>,
+        mpsc::UnboundedSender<SharedVirtualNicControl>,
     ) {
         use crate::{common::netns::NetNS, instance::virtual_nic::VirtualNicConfig};
 
         let (tun_stream, tun_sink) = tunnel.split();
-        let (to_tun_sender, to_tun_receiver) = mpsc::channel(MEMBER_TUNNEL_BUFFER_SIZE);
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
-        let (tun_update_sender, tun_update_receiver) = mpsc::unbounded_channel();
-        member_tunnel_table.attach_dispatcher(to_tun_sender, control_sender.clone());
-        let task = SharedVirtualNicMobileDispatcherTask {
-            nic: Arc::new(Mutex::new(VirtualNic::new(VirtualNicConfig::new(
-                String::new(),
-                1300,
-                NetNS::new(None),
-            )))),
+        member_tunnel_table.attach_dispatcher(control_sender.clone());
+        let task = SharedVirtualNicDispatcherTask {
+            mobile: Some(SharedVirtualNicMobileTun {
+                nic: Arc::new(Mutex::new(VirtualNic::new(VirtualNicConfig::new(
+                    String::new(),
+                    1300,
+                    NetNS::new(None),
+                )))),
+                tun_fd: -1,
+            }),
             tun_stream: Some(tun_stream),
             tun_sink: Some(tun_sink),
-            tun_fd: -1,
-            tun_update_receiver,
-            to_tun_receiver,
             control_receiver,
             member_tunnel_table,
             valid,
@@ -2071,12 +2025,10 @@ mod tests {
             },
         };
         let dispatcher = SharedVirtualNicDispatcher {
-            _task: AbortOnDropHandle::new(tokio::spawn(task.run_opened_tun())),
-            control_sender,
-            #[cfg(mobile)]
-            mobile_tun_update_sender: Some(tun_update_sender.clone()),
+            _task: AbortOnDropHandle::new(tokio::spawn(task.run())),
+            control_sender: control_sender.clone(),
         };
-        (dispatcher, tun_update_sender)
+        (dispatcher, control_sender)
     }
 
     async fn register_dispatcher_test_members(
@@ -2088,14 +2040,8 @@ mod tests {
         for id in 1..=2 {
             let member_id = uuid::Uuid::from_u128(id);
             let close_notifier = Arc::new(Notify::new());
-            let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
-            member_tunnel_table
-                .register(
-                    member_id,
-                    uuid::Uuid::new_v4(),
-                    shared_tunnel,
-                    close_notifier.clone(),
-                )
+            let member_tunnel = member_tunnel_table
+                .register(member_id, uuid::Uuid::new_v4(), close_notifier.clone())
                 .unwrap();
             dispatcher
                 .update_sources(member_id, &SharedIfConfigClaims::default())
@@ -2157,7 +2103,7 @@ mod tests {
                 .unwrap();
         }
         assert!(!valid.load(Ordering::Acquire));
-        assert!(member_tunnel_table.dispatcher_channels().is_none());
+        assert!(member_tunnel_table.control_sender().is_none());
         tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
             .await
             .unwrap()
@@ -2200,7 +2146,9 @@ mod tests {
         let (ack, receiver) = oneshot::channel();
 
         updates
-            .send(SharedVirtualNicMobileTunUpdate { tun_fd: -1, ack })
+            .send(SharedVirtualNicControl::UpdateMobileTun(
+                SharedVirtualNicMobileTunUpdate { tun_fd: -1, ack },
+            ))
             .unwrap();
 
         assert!(
@@ -2215,7 +2163,7 @@ mod tests {
                 .unwrap();
         }
         assert!(!valid.load(Ordering::Acquire));
-        assert!(member_tunnel_table.dispatcher_channels().is_none());
+        assert!(member_tunnel_table.control_sender().is_none());
         assert!(
             dispatcher
                 .remove_sources(uuid::Uuid::from_u128(1))
@@ -2261,7 +2209,7 @@ mod tests {
                     .unwrap();
             }
             assert!(!valid.load(Ordering::Acquire));
-            assert!(member_tunnel_table.dispatcher_channels().is_none());
+            assert!(member_tunnel_table.control_sender().is_none());
             tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
                 .await
                 .unwrap()
@@ -2276,11 +2224,11 @@ mod tests {
         let second_addr = "2001:db8::2".parse::<Ipv6Addr>().unwrap();
         let dst = "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap();
         let mut table = SharedVirtualNicSourceTable::default();
-        let (first_sender, _first_receiver) = mpsc::channel(1);
-        let (second_sender, _second_receiver) = mpsc::channel(1);
+        let (first_sender, _first_receiver) = member_channel(8);
+        let (second_sender, _second_receiver) = member_channel(8);
         let mut members = BTreeMap::new();
-        members.insert(first, member_entry(first_sender));
-        members.insert(second, member_entry(second_sender));
+        members.insert(first, first_sender);
+        members.insert(second, second_sender);
 
         table.update_member_sources(first, member_sources_with_ipv6(&["2001:db8::1/64"]));
         table.update_member_sources(second, member_sources_with_ipv6(&["2001:db8::2/64"]));
@@ -2304,11 +2252,11 @@ mod tests {
         let src = Ipv4Addr::new(100, 64, 0, 1);
         let dst = Ipv4Addr::new(10, 99, 0, 2);
         let mut table = SharedVirtualNicSourceTable::default();
-        let (first_sender, _first_receiver) = mpsc::channel(1);
-        let (second_sender, _second_receiver) = mpsc::channel(1);
+        let (first_sender, _first_receiver) = member_channel(8);
+        let (second_sender, _second_receiver) = member_channel(8);
         let mut members = BTreeMap::new();
-        members.insert(first, member_entry(first_sender));
-        members.insert(second, member_entry(second_sender));
+        members.insert(first, first_sender);
+        members.insert(second, second_sender);
 
         table.update_member_sources(first, member_sources(&["10.231.1.1/24"]));
         table.update_member_sources(
@@ -2322,31 +2270,25 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn dispatcher_prefers_source_owner_for_shared_magic_dns() {
+    #[test]
+    fn dispatcher_prefers_source_owner_for_shared_magic_dns() {
         let first = uuid::Uuid::from_u128(1);
         let source_owner = uuid::Uuid::from_u128(2);
         let first_ip = Ipv4Addr::new(10, 231, 1, 1);
         let source_owner_ip = Ipv4Addr::new(10, 231, 2, 1);
         let remote_ip = Ipv4Addr::new(100, 100, 100, 101);
-        let (first_sender, mut first_receiver) = mpsc::channel(1);
-        let (source_sender, mut source_receiver) = mpsc::channel(1);
-        let mut state = SharedVirtualNicDispatcherState::default();
+        let (mut state, [mut first_receiver, mut source_receiver]) = test_state([
+            (
+                first,
+                member_sources_with_ipv4_routes(&["10.231.1.1/24"], &["100.100.100.101/32"]),
+            ),
+            (
+                source_owner,
+                member_sources_with_ipv4_routes(&["10.231.2.1/24"], &["100.100.100.101/32"]),
+            ),
+        ]);
 
-        state.register(first, member_entry(first_sender));
-        state.register(source_owner, member_entry(source_sender));
-        state.source_table.update_member_sources(
-            first,
-            member_sources_with_ipv4_routes(&["10.231.1.1/24"], &["100.100.100.101/32"]),
-        );
-        state.source_table.update_member_sources(
-            source_owner,
-            member_sources_with_ipv4_routes(&["10.231.2.1/24"], &["100.100.100.101/32"]),
-        );
-
-        state
-            .forward_tun_packet_to_member(ipv4_udp_packet(source_owner_ip, remote_ip))
-            .await;
+        state.forward_tun_packet_to_member(ipv4_udp_packet(source_owner_ip, remote_ip));
 
         assert!(first_receiver.try_recv().is_err());
         let packet = source_receiver.try_recv().unwrap();
@@ -2369,53 +2311,42 @@ mod tests {
 
             assert!(!rewrite_packet_source(
                 &mut packet,
-                SharedVirtualNicFlowAddr::from(src),
-                SharedVirtualNicFlowAddr::from(Ipv4Addr::new(10, 231, 2, 1))
+                FlowAddr::from(src),
+                FlowAddr::from(Ipv4Addr::new(10, 231, 2, 1))
             ));
             assert_eq!(packet.payload(), original);
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_prefers_source_owner_over_first_member() {
+    #[test]
+    fn dispatcher_prefers_source_owner_over_first_member() {
         let first = uuid::Uuid::from_u128(1);
         let owner = uuid::Uuid::from_u128(2);
         let source = "2001:db8::2".parse::<Ipv6Addr>().unwrap();
         let dst = "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap();
-        let (first_sender, mut first_receiver) = mpsc::channel(1);
-        let (owner_sender, mut owner_receiver) = mpsc::channel(1);
-        let mut state = SharedVirtualNicDispatcherState::default();
-
-        state.register(first, member_entry(first_sender));
-        state.register(owner, member_entry(owner_sender));
-        state
-            .source_table
-            .update_member_sources(owner, member_sources_with_ipv6(&["2001:db8::2/64"]));
-        state
-            .forward_tun_packet_to_member(ipv6_packet(source, dst))
-            .await;
+        let (mut state, [mut first_receiver, mut owner_receiver]) = test_state([
+            (first, SharedVirtualNicMemberSources::default()),
+            (owner, member_sources_with_ipv6(&["2001:db8::2/64"])),
+        ]);
+        state.forward_tun_packet_to_member(ipv6_packet(source, dst));
 
         assert!(first_receiver.try_recv().is_err());
         assert!(owner_receiver.try_recv().is_ok());
     }
 
-    #[tokio::test]
-    async fn dispatcher_forwards_external_ipv6_to_route_only_owner() {
+    #[test]
+    fn dispatcher_forwards_external_ipv6_to_route_only_owner() {
         let route_owner = uuid::Uuid::from_u128(1);
         let source = "2001:db8:ffff::2".parse::<Ipv6Addr>().unwrap();
         let destination = "2001:db8:100::2".parse::<Ipv6Addr>().unwrap();
-        let (sender, mut receiver) = mpsc::channel(1);
-        let mut state = SharedVirtualNicDispatcherState::default();
-
-        state.register(route_owner, member_entry(sender));
-        state.source_table.update_member_sources(
+        let (mut state, [mut receiver]) = test_state([(
             route_owner,
             member_sources_with_ipv6_routes(&[], &["2001:db8:100::2/128"]),
-        );
+        )]);
         // An exhausted local-flow table must not throttle kernel subnet forwarding.
         let local = "2001:db8:100::1".parse::<Ipv6Addr>().unwrap();
         for port in 1..=FLOW_OWNER_LIMIT as u16 {
-            let mut packet = ipv6_tcp_packet_with_ports(local, destination, port, 80);
+            let mut packet = transport_packet(local, destination, IpProtocol::Tcp, port, 80);
             assert!(state.nat_table.prepare_packet(
                 route_owner,
                 Some(route_owner),
@@ -2426,98 +2357,84 @@ mod tests {
         }
         for packet in [
             ipv6_packet(source, destination),
-            ipv6_tcp_packet_with_ports(source, destination, 443, 22001),
+            transport_packet(source, destination, IpProtocol::Tcp, 443, 22001),
         ] {
             let unchanged = packet.payload().to_vec();
-            assert!(state.send_packet(packet).await);
+            assert!(state.send_packet(packet));
             assert_eq!(receiver.try_recv().unwrap().payload(), unchanged);
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_drops_inactive_source_owner_without_fallback() {
+    #[test]
+    fn dispatcher_drops_inactive_source_owner_without_fallback() {
         let fallback = uuid::Uuid::from_u128(1);
         let owner = uuid::Uuid::from_u128(2);
         let other = uuid::Uuid::from_u128(3);
         let source = "2001:db8::2".parse::<Ipv6Addr>().unwrap();
         let dst = "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap();
-        let (fallback_sender, mut fallback_receiver) = mpsc::channel(1);
-        let (owner_sender, _owner_receiver) = mpsc::channel(1);
-        let (other_sender, _other_receiver) = mpsc::channel(1);
-        let mut state = SharedVirtualNicDispatcherState::default();
-
-        state.register(fallback, member_entry(fallback_sender));
-        state.register(owner, member_entry(owner_sender));
-        state.register(other, member_entry(other_sender));
-        state
-            .source_table
-            .update_member_sources(owner, member_sources_with_ipv6(&["2001:db8::2/64"]));
+        let (mut state, [mut fallback_receiver, _owner_receiver, _other_receiver]) = test_state([
+            (fallback, SharedVirtualNicMemberSources::default()),
+            (owner, member_sources_with_ipv6(&["2001:db8::2/64"])),
+            (other, SharedVirtualNicMemberSources::default()),
+        ]);
         state.unregister(owner, uuid::Uuid::from_u128(1));
-        state
-            .forward_tun_packet_to_member(ipv6_packet(source, dst))
-            .await;
+        state.forward_tun_packet_to_member(ipv6_packet(source, dst));
 
         assert!(fallback_receiver.try_recv().is_err());
     }
 
-    #[tokio::test]
-    async fn dispatcher_drops_unknown_source_and_destination_without_fallback() {
+    #[test]
+    fn dispatcher_drops_unknown_source_and_destination_without_fallback() {
         let member_id = uuid::Uuid::from_u128(1);
         let other = uuid::Uuid::from_u128(2);
         let unknown_source = Ipv4Addr::new(100, 64, 0, 1);
         let unknown_destination = Ipv4Addr::new(203, 0, 113, 1);
-        let (sender, mut receiver) = mpsc::channel(1);
-        let (other_sender, _other_receiver) = mpsc::channel(1);
-        let mut state = SharedVirtualNicDispatcherState::default();
-
-        state.register(member_id, member_entry(sender));
-        state.register(other, member_entry(other_sender));
-        state
-            .source_table
-            .update_member_sources(member_id, member_sources(&["10.231.1.1/24"]));
-        state
-            .forward_tun_packet_to_member(ipv4_udp_packet(unknown_source, unknown_destination))
-            .await;
+        let (mut state, [mut receiver, _other_receiver]) = test_state([
+            (member_id, member_sources(&["10.231.1.1/24"])),
+            (other, SharedVirtualNicMemberSources::default()),
+        ]);
+        state.forward_tun_packet_to_member(ipv4_udp_packet(unknown_source, unknown_destination));
 
         assert!(receiver.try_recv().is_err());
     }
 
-    #[tokio::test]
-    async fn dispatcher_single_member_forwards_unknown_addresses_unchanged() {
+    #[test]
+    fn dispatcher_single_member_forwards_unknown_addresses_unchanged() {
         let member_id = uuid::Uuid::from_u128(1);
         for translate_unknown_sources in [false, true] {
-            let (sender, mut receiver) = mpsc::channel(1);
+            let (sender, mut receiver) = member_channel(8);
             let mut state = SharedVirtualNicDispatcherState {
                 translate_unknown_sources,
                 ..Default::default()
             };
-            state.register(member_id, member_entry(sender));
+            state.register(member_id, sender);
             for packet in [
                 ipv4_udp_packet(Ipv4Addr::new(100, 64, 0, 1), Ipv4Addr::new(203, 0, 113, 1)),
-                ipv6_udp_packet_with_ports(
-                    "2001:db8::1".parse().unwrap(),
-                    "2001:db8:ffff::1".parse().unwrap(),
+                transport_packet(
+                    "2001:db8::1".parse::<Ipv6Addr>().unwrap(),
+                    "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap(),
+                    IpProtocol::Udp,
                     1234,
                     5678,
                 ),
             ] {
                 let original = packet.payload().to_vec();
-                assert!(state.send_packet(packet).await);
+                assert!(state.send_packet(packet));
                 assert_eq!(receiver.try_recv().unwrap().payload(), original);
             }
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_single_member_preserves_fragmented_packets() {
+    #[test]
+    fn dispatcher_single_member_preserves_fragmented_packets() {
         let member_id = uuid::Uuid::from_u128(1);
         for translate_unknown_sources in [false, true] {
-            let (sender, mut receiver) = mpsc::channel(1);
+            let (sender, mut receiver) = member_channel(8);
             let mut state = SharedVirtualNicDispatcherState {
                 translate_unknown_sources,
                 ..Default::default()
             };
-            state.register(member_id, member_entry(sender));
+            state.register(member_id, sender);
             state.source_table.update_member_sources(
                 member_id,
                 SharedVirtualNicMemberSources::from_claims(&member_claims(
@@ -2535,15 +2452,16 @@ mod tests {
                     ipv4.set_frag_offset(offset);
                     ipv4.fill_checksum();
                     let original = packet.payload().to_vec();
-                    assert!(state.send_packet(packet).await);
+                    assert!(state.send_packet(packet));
                     assert_eq!(receiver.try_recv().unwrap().payload(), original);
                 }
             }
             for source in ["2001:db8:1::1", "2001:db8:ffff::1"] {
                 for fragment_offset in [1u16, 8u16] {
-                    let packet = ipv6_udp_packet_with_ports(
-                        source.parse().unwrap(),
-                        "2001:db8:1::2".parse().unwrap(),
+                    let packet = transport_packet(
+                        source.parse::<Ipv6Addr>().unwrap(),
+                        "2001:db8:1::2".parse::<Ipv6Addr>().unwrap(),
+                        IpProtocol::Udp,
                         1234,
                         5678,
                     );
@@ -2555,35 +2473,31 @@ mod tests {
                     let mut ipv6 = Ipv6Packet::new_unchecked(&mut payload);
                     ipv6.set_next_header(IpProtocol::from(44)); // Fragment header.
                     ipv6.set_payload_len((8 + UDP_HEADER_LEN) as u16);
-                    assert!(
-                        state
-                            .send_packet(ZCPacket::new_with_payload(&payload))
-                            .await
-                    );
+                    assert!(state.send_packet(ZCPacket::new_with_payload(&payload)));
                     assert_eq!(receiver.try_recv().unwrap().payload(), payload);
                 }
             }
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_single_member_reserves_flows_before_another_member_joins() {
+    #[test]
+    fn dispatcher_single_member_reserves_flows_before_another_member_joins() {
         let first = uuid::Uuid::from_u128(1);
         let second = uuid::Uuid::from_u128(2);
         let native = Ipv4Addr::new(10, 231, 1, 1);
         let source = Ipv4Addr::new(10, 231, 2, 1);
         let remote = Ipv4Addr::new(10, 231, 1, 2);
         for incoming_first in [false, true] {
-            let (sender, mut receiver) = mpsc::channel(1);
+            let (sender, mut receiver) = member_channel(8);
             let mut state = SharedVirtualNicDispatcherState::default();
-            state.register(first, member_entry(sender));
+            state.register(first, sender);
             state
                 .source_table
                 .update_member_sources(first, member_sources(&["10.231.1.1/24"]));
             let original = ipv4_udp_packet(native, remote);
             let original = original.payload().to_vec();
             if incoming_first {
-                let packet = ipv4_udp_packet_with_ports(remote, native, 5678, 1234);
+                let packet = transport_packet(remote, native, IpProtocol::Udp, 5678, 1234);
                 let unchanged = packet.payload().to_vec();
                 assert_eq!(
                     state
@@ -2593,20 +2507,16 @@ mod tests {
                     unchanged
                 );
             } else {
-                assert!(
-                    state
-                        .send_packet(ZCPacket::new_with_payload(&original))
-                        .await
-                );
+                assert!(state.send_packet(ZCPacket::new_with_payload(&original)));
                 assert_eq!(receiver.try_recv().unwrap().payload(), original);
             }
 
-            let (sender, _second_receiver) = mpsc::channel(1);
-            state.register(second, member_entry(sender));
+            let (sender, _second_receiver) = member_channel(8);
+            state.register(second, sender);
             state
                 .source_table
                 .update_member_sources(second, member_sources(&["10.231.2.1/24"]));
-            assert!(state.send_packet(ipv4_udp_packet(source, remote)).await);
+            assert!(state.send_packet(ipv4_udp_packet(source, remote)));
             let translated = receiver.try_recv().unwrap();
             let wire = SharedVirtualNicFlowKey::from_packet(&translated).unwrap();
             assert_eq!(wire.src, native.into());
@@ -2617,11 +2527,7 @@ mod tests {
                 if incoming_first { 1234 } else { 1235 }
             );
 
-            assert!(
-                state
-                    .send_packet(ZCPacket::new_with_payload(&original))
-                    .await
-            );
+            assert!(state.send_packet(ZCPacket::new_with_payload(&original)));
             assert_eq!(receiver.try_recv().unwrap().payload(), original);
             for (port, destination) in [
                 (1234, native),
@@ -2633,7 +2539,7 @@ mod tests {
                 let reply = state
                     .prepare_member_packet_to_tun(
                         first,
-                        ipv4_udp_packet_with_ports(remote, native, 5678, port),
+                        transport_packet(remote, native, IpProtocol::Udp, 5678, port),
                     )
                     .unwrap();
                 let key = SharedVirtualNicFlowKey::from_packet(&reply).unwrap();
@@ -2643,25 +2549,25 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_single_member_keeps_existing_translations_after_other_member_leaves() {
+    #[test]
+    fn dispatcher_single_member_keeps_existing_translations_after_other_member_leaves() {
         let member_id = uuid::Uuid::from_u128(1);
         let other = uuid::Uuid::from_u128(2);
         let native = Ipv4Addr::new(10, 231, 1, 1);
         let synthetic = Ipv4Addr::new(100, 64, 0, 1);
         let remote = Ipv4Addr::new(10, 231, 1, 2);
-        let (sender, mut receiver) = mpsc::channel(1);
-        let (other_sender, _other_receiver) = mpsc::channel(1);
+        let (sender, mut receiver) = member_channel(8);
+        let (other_sender, _other_receiver) = member_channel(8);
         let mut state = SharedVirtualNicDispatcherState {
             translate_unknown_sources: true,
             ..Default::default()
         };
-        state.register(member_id, member_entry(sender));
-        state.register(other, member_entry(other_sender));
+        state.register(member_id, sender);
+        state.register(other, other_sender);
         state
             .source_table
             .update_member_sources(member_id, member_sources(&["10.231.1.1/24"]));
-        assert!(state.send_packet(ipv4_udp_packet(synthetic, remote)).await);
+        assert!(state.send_packet(ipv4_udp_packet(synthetic, remote)));
         let translated = receiver.try_recv().unwrap().payload().to_vec();
         assert_eq!(
             Ipv4Packet::new_checked(&translated).unwrap().src_addr(),
@@ -2669,12 +2575,12 @@ mod tests {
         );
 
         state.unregister(other, uuid::Uuid::from_u128(1));
-        assert!(state.send_packet(ipv4_udp_packet(synthetic, remote)).await);
+        assert!(state.send_packet(ipv4_udp_packet(synthetic, remote)));
         assert_eq!(receiver.try_recv().unwrap().payload(), translated);
         let reply = state
             .prepare_member_packet_to_tun(
                 member_id,
-                ipv4_udp_packet_with_ports(remote, native, 5678, 1234),
+                transport_packet(remote, native, IpProtocol::Udp, 5678, 1234),
             )
             .unwrap();
         assert_eq!(
@@ -2682,9 +2588,9 @@ mod tests {
             synthetic
         );
 
-        let packet = ipv4_udp_packet_with_ports(synthetic, remote, 4321, 5678);
+        let packet = transport_packet(synthetic, remote, IpProtocol::Udp, 4321, 5678);
         let original = packet.payload().to_vec();
-        assert!(state.send_packet(packet).await);
+        assert!(state.send_packet(packet));
         assert_eq!(receiver.try_recv().unwrap().payload(), original);
     }
 
@@ -2694,7 +2600,7 @@ mod tests {
         let translated_source = Ipv4Addr::new(10, 231, 2, 1);
         let destination = Ipv4Addr::new(10, 231, 2, 2);
         let request = ipv4_udp_packet(source, destination);
-        let reply = ipv4_udp_packet_with_ports(destination, translated_source, 5678, 4321);
+        let reply = transport_packet(destination, translated_source, IpProtocol::Udp, 5678, 4321);
         let original = SharedVirtualNicFlowKey::from_packet(&request).unwrap();
         let wire = SharedVirtualNicFlowKey::from_packet(&reply)
             .unwrap()
@@ -2723,80 +2629,66 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_ipv4_tcp_flow_updates_checksums_and_restores_ports() {
-        let source = Ipv4Addr::new(10, 231, 1, 1);
-        let translated_source = Ipv4Addr::new(10, 231, 2, 1);
-        let destination = Ipv4Addr::new(10, 231, 2, 2);
-        let request = ipv4_tcp_packet_with_ports(source, destination, 1234, 5678);
-        let reply = ipv4_tcp_packet_with_ports(destination, translated_source, 5678, 4321);
-        let original = SharedVirtualNicFlowKey::from_packet(&request).unwrap();
-        let wire = SharedVirtualNicFlowKey::from_packet(&reply)
-            .unwrap()
-            .reversed();
-        for (mut packet, from, to, direction) in [
-            (request, original, wire, RewriteIpAddr::Source),
-            (
-                reply,
-                wire.reversed(),
-                original.reversed(),
-                RewriteIpAddr::Destination,
-            ),
-        ] {
-            assert!(rewrite_packet_flow(&mut packet, from, to, direction));
-            assert_eq!(SharedVirtualNicFlowKey::from_packet(&packet), Some(to));
-            let ipv4 = Ipv4Packet::new_checked(packet.payload()).unwrap();
-            assert!(ipv4.verify_checksum());
-            let tcp = TcpPacket::new_checked(ipv4.payload()).unwrap();
-            assert!(tcp.verify_checksum(
-                &IpAddress::Ipv4(ipv4.src_addr()),
-                &IpAddress::Ipv4(ipv4.dst_addr())
-            ));
+    fn rewrite_tcp_flow_updates_checksums_and_restores_ports() {
+        for ipv6 in [false, true] {
+            let [source, _, native, remote] = test_addresses(ipv6);
+            let request = transport_packet(source, remote, IpProtocol::Tcp, 1234, 5678);
+            let reply = transport_packet(remote, native, IpProtocol::Tcp, 5678, 4321);
+            let original = SharedVirtualNicFlowKey::from_packet(&request).unwrap();
+            let wire = SharedVirtualNicFlowKey::from_packet(&reply)
+                .unwrap()
+                .reversed();
+            for (mut packet, from, to, direction) in [
+                (request, original, wire, RewriteIpAddr::Source),
+                (
+                    reply,
+                    wire.reversed(),
+                    original.reversed(),
+                    RewriteIpAddr::Destination,
+                ),
+            ] {
+                assert!(rewrite_packet_flow(&mut packet, from, to, direction));
+                assert_eq!(SharedVirtualNicFlowKey::from_packet(&packet), Some(to));
+                assert_checksums(&packet);
+            }
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_translates_wrong_local_ipv6_source_to_destination_member() {
+    #[test]
+    fn dispatcher_translates_wrong_local_ipv6_source_to_destination_member() {
         let source_owner = uuid::Uuid::from_u128(1);
         let destination_owner = uuid::Uuid::from_u128(2);
         let source_owner_ip = "2001:db8:1::1".parse::<Ipv6Addr>().unwrap();
         let destination_owner_ip = "2001:db8:2::1".parse::<Ipv6Addr>().unwrap();
         let remote_ip = "2001:db8:99::2".parse::<Ipv6Addr>().unwrap();
-        let (source_sender, mut source_receiver) = mpsc::channel(1);
-        let (destination_sender, mut destination_receiver) = mpsc::channel(1);
-        let mut state = SharedVirtualNicDispatcherState::default();
-
-        state.register(source_owner, member_entry(source_sender));
-        state.register(destination_owner, member_entry(destination_sender));
-        state.source_table.update_member_sources(
-            source_owner,
-            member_sources_with_ipv6(&["2001:db8:1::1/64"]),
-        );
-        state.source_table.update_member_sources(
-            destination_owner,
-            member_sources_with_ipv6_routes(&["2001:db8:2::1/64"], &["2001:db8:99::/64"]),
-        );
+        let (mut state, [mut source_receiver, mut destination_receiver]) = test_state([
+            (
+                source_owner,
+                member_sources_with_ipv6(&["2001:db8:1::1/64"]),
+            ),
+            (
+                destination_owner,
+                member_sources_with_ipv6_routes(&["2001:db8:2::1/64"], &["2001:db8:99::/64"]),
+            ),
+        ]);
 
         // Reserve the native tuple so the translated request must also change its port.
-        assert!(
-            state
-                .send_packet(ipv6_udp_packet_with_ports(
-                    destination_owner_ip,
-                    remote_ip,
-                    1234,
-                    5678,
-                ))
-                .await
-        );
+        assert!(state.send_packet(transport_packet(
+            destination_owner_ip,
+            remote_ip,
+            IpProtocol::Udp,
+            1234,
+            5678
+        )));
         destination_receiver.try_recv().unwrap();
 
-        state
-            .forward_tun_packet_to_member(ipv6_udp_packet_with_ports(
-                source_owner_ip,
-                remote_ip,
-                1234,
-                5678,
-            ))
-            .await;
+        state.forward_tun_packet_to_member(transport_packet(
+            source_owner_ip,
+            remote_ip,
+            IpProtocol::Udp,
+            1234,
+            5678,
+        ));
 
         assert!(source_receiver.try_recv().is_err());
         let translated = destination_receiver.try_recv().unwrap();
@@ -2814,7 +2706,7 @@ mod tests {
         let reply = state
             .prepare_member_packet_to_tun(
                 destination_owner,
-                ipv6_udp_packet_with_ports(remote_ip, destination_owner_ip, 5678, 1235),
+                transport_packet(remote_ip, destination_owner_ip, IpProtocol::Udp, 5678, 1235),
             )
             .unwrap();
         let reply_ipv6 = Ipv6Packet::new_checked(reply.payload()).unwrap();
@@ -2830,86 +2722,48 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_ipv6_tcp_flow_updates_checksums_and_restores_ports() {
-        let source = "2001:db8:1::1".parse::<Ipv6Addr>().unwrap();
-        let translated_source = "2001:db8:2::1".parse::<Ipv6Addr>().unwrap();
-        let destination = "2001:db8:99::2".parse::<Ipv6Addr>().unwrap();
-        let request = ipv6_tcp_packet_with_ports(source, destination, 1234, 5678);
-        let reply = ipv6_tcp_packet_with_ports(destination, translated_source, 5678, 4321);
-        let original = SharedVirtualNicFlowKey::from_packet(&request).unwrap();
-        let wire = SharedVirtualNicFlowKey::from_packet(&reply)
-            .unwrap()
-            .reversed();
-        for (mut packet, from, to, direction) in [
-            (request, original, wire, RewriteIpAddr::Source),
-            (
-                reply,
-                wire.reversed(),
-                original.reversed(),
-                RewriteIpAddr::Destination,
-            ),
-        ] {
-            assert!(rewrite_packet_flow(&mut packet, from, to, direction));
-            assert_eq!(SharedVirtualNicFlowKey::from_packet(&packet), Some(to));
-            let ipv6 = Ipv6Packet::new_checked(packet.payload()).unwrap();
-            let tcp = TcpPacket::new_checked(ipv6.payload()).unwrap();
-            assert!(tcp.verify_checksum(
-                &IpAddress::Ipv6(ipv6.src_addr()),
-                &IpAddress::Ipv6(ipv6.dst_addr())
-            ));
-        }
-    }
-
-    #[test]
-    fn icmpv6_nat_replies_keep_distinct_source_networks() {
+    fn icmp_nat_replies_keep_distinct_source_networks() {
         let member_id = uuid::Uuid::from_u128(1);
-        let first_source = "2001:db8:1::1".parse::<Ipv6Addr>().unwrap();
-        let second_source = "2001:db8:2::1".parse::<Ipv6Addr>().unwrap();
-        let translated_source = "2001:db8:3::1".parse::<Ipv6Addr>().unwrap();
-        let destination = "2001:db8:3::2".parse::<Ipv6Addr>().unwrap();
-        let mut nat = SharedVirtualNicNatTable::default();
-
-        for (identifier, source, wire_identifier, sequence) in [
-            (100, first_source, 100, 1),
-            (200, second_source, 200, 1),
-            (100, second_source, 101, 1),
-            (100, second_source, 101, 2),
-            (100, second_source, 101, u16::MAX),
-            (100, second_source, 101, 0),
-        ] {
-            let mut packet =
-                ipv6_icmp_packet_with_id(source, destination, false, identifier, sequence);
-            let original = SharedVirtualNicFlowKey::from_packet(&packet).unwrap();
-            assert!(nat.prepare_packet(
-                member_id,
-                None,
-                original,
-                &mut packet,
-                translated_source.into(),
-            ));
-            let ipv6 = Ipv6Packet::new_checked(packet.payload()).unwrap();
-            assert_eq!(ipv6.src_addr(), translated_source);
-            let icmp = Icmpv6Packet::new_checked(ipv6.payload()).unwrap();
-            assert_eq!(icmp.echo_ident(), wire_identifier);
-            assert_eq!(icmp.echo_seq_no(), sequence);
-            assert!(icmp.verify_checksum(&translated_source, &destination));
-
-            let mut reply = ipv6_icmp_packet_with_id(
-                destination,
-                translated_source,
-                true,
-                wire_identifier,
-                sequence,
-            );
-            assert!(nat.translate_reply(member_id, &mut reply));
-            assert_eq!(
-                SharedVirtualNicFlowKey::from_packet(&reply),
-                Some(original.reversed())
-            );
-            let ipv6 = Ipv6Packet::new_checked(reply.payload()).unwrap();
-            let icmp = Icmpv6Packet::new_checked(ipv6.payload()).unwrap();
-            assert_eq!(icmp.echo_seq_no(), sequence);
-            assert!(icmp.verify_checksum(&destination, &source));
+        for ipv6 in [false, true] {
+            let [first_source, second_source, native, remote] = test_addresses(ipv6);
+            let mut nat = SharedVirtualNicNatTable::default();
+            for (identifier, source, wire_identifier, sequence) in [
+                (100, first_source, 100, 1),
+                (200, second_source, 200, 1),
+                (100, second_source, 101, 1),
+                (100, second_source, 101, 2),
+                (100, second_source, 101, u16::MAX),
+                (100, second_source, 101, 0),
+            ] {
+                let mut packet = echo_packet(source, remote, false, identifier, sequence);
+                let original = SharedVirtualNicFlowKey::from_packet(&packet).unwrap();
+                assert!(nat.prepare_packet(member_id, None, original, &mut packet, native));
+                let wire = SharedVirtualNicFlowKey::from_packet(&packet).unwrap();
+                assert_eq!(wire.src, native);
+                assert_eq!(wire.ports.unwrap().src, wire_identifier);
+                assert_checksums(&packet);
+                let mut reply = echo_packet(remote, native, true, wire_identifier, sequence);
+                assert!(nat.translate_reply(member_id, &mut reply));
+                assert_eq!(
+                    SharedVirtualNicFlowKey::from_packet(&reply),
+                    Some(original.reversed())
+                );
+                // Sequence numbers are payload, not part of the flow key.
+                let header = if ipv6 {
+                    IPV6_HEADER_LEN
+                } else {
+                    IPV4_HEADER_MIN_LEN
+                };
+                assert_eq!(
+                    &packet.payload()[header + 6..header + 8],
+                    &sequence.to_be_bytes()
+                );
+                assert_eq!(
+                    &reply.payload()[header + 6..header + 8],
+                    &sequence.to_be_bytes()
+                );
+                assert_checksums(&reply);
+            }
         }
     }
 
@@ -2923,14 +2777,14 @@ mod tests {
 
         assert!(!rewrite_packet_source(
             &mut packet,
-            SharedVirtualNicFlowAddr::from(source),
-            SharedVirtualNicFlowAddr::from("2001:db8:2::1".parse::<Ipv6Addr>().unwrap()),
+            FlowAddr::from(source),
+            FlowAddr::from("2001:db8:2::1".parse::<Ipv6Addr>().unwrap()),
         ));
         assert_eq!(packet.payload(), original);
     }
 
-    #[tokio::test]
-    async fn dispatcher_changed_members_clear_nat_translation() {
+    #[test]
+    fn dispatcher_changed_members_clear_nat_translation() {
         let source_owner = uuid::Uuid::from_u128(1);
         let destination_owner = uuid::Uuid::from_u128(2);
         let source_owner_ip = Ipv4Addr::new(10, 231, 1, 1);
@@ -2942,22 +2796,11 @@ mod tests {
             (source_owner, false),
             (destination_owner, false),
         ] {
-            let (source_sender, _source_receiver) = mpsc::channel(1);
-            let (destination_sender, mut destination_receiver) = mpsc::channel(1);
-            let mut state = SharedVirtualNicDispatcherState::default();
-            state.register(source_owner, member_entry(source_sender));
-            state.register(destination_owner, member_entry(destination_sender));
-            state
-                .source_table
-                .update_member_sources(source_owner, member_sources(&["10.231.1.1/24"]));
-            state
-                .source_table
-                .update_member_sources(destination_owner, member_sources(&["10.231.2.1/24"]));
-            assert!(
-                state
-                    .send_packet(ipv4_udp_packet(source_owner_ip, remote_ip))
-                    .await
-            );
+            let (mut state, [_source_receiver, mut destination_receiver]) = test_state([
+                (source_owner, member_sources(&["10.231.1.1/24"])),
+                (destination_owner, member_sources(&["10.231.2.1/24"])),
+            ]);
+            assert!(state.send_packet(ipv4_udp_packet(source_owner_ip, remote_ip)));
             destination_receiver.try_recv().unwrap();
 
             if unregister {
@@ -2973,7 +2816,7 @@ mod tests {
             let reply = state
                 .prepare_member_packet_to_tun(
                     destination_owner,
-                    ipv4_udp_packet_with_ports(remote_ip, destination_owner_ip, 5678, 1234),
+                    transport_packet(remote_ip, destination_owner_ip, IpProtocol::Udp, 5678, 1234),
                 )
                 .unwrap();
             let reply_ipv4 = Ipv4Packet::new_checked(reply.payload()).unwrap();
@@ -2982,45 +2825,41 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_preserves_external_ipv4_source_to_route_owner() {
+    #[test]
+    fn dispatcher_preserves_external_ipv4_source_to_route_owner() {
         let first = uuid::Uuid::from_u128(1);
         let route_owner = uuid::Uuid::from_u128(2);
         let synthetic_source = Ipv4Addr::new(100, 64, 0, 1);
         let remote_ip = Ipv4Addr::new(10, 99, 0, 2);
-        let (first_sender, mut first_receiver) = mpsc::channel(1);
-        let (route_sender, mut route_receiver) = mpsc::channel(1);
-        let mut state = SharedVirtualNicDispatcherState::default();
-
-        state.register(first, member_entry(first_sender));
-        state.register(route_owner, member_entry(route_sender));
-        state
-            .source_table
-            .update_member_sources(first, member_sources(&["10.231.1.1/24"]));
-        state.source_table.update_member_sources(
-            route_owner,
-            member_sources_with_ipv4_routes(&["10.231.2.1/24"], &["10.99.0.0/24"]),
-        );
+        let (mut state, [mut first_receiver, mut route_receiver]) = test_state([
+            (first, member_sources(&["10.231.1.1/24"])),
+            (
+                route_owner,
+                member_sources_with_ipv4_routes(&["10.231.2.1/24"], &["10.99.0.0/24"]),
+            ),
+        ]);
 
         // An exhausted local-flow table must not throttle kernel subnet forwarding.
         let local = Ipv4Addr::new(10, 231, 2, 1);
         for port in 1..=FLOW_OWNER_LIMIT as u16 {
-            assert!(
-                state
-                    .send_packet(ipv4_tcp_packet_with_ports(local, remote_ip, port, 80))
-                    .await
-            );
+            assert!(state.send_packet(transport_packet(
+                local,
+                remote_ip,
+                IpProtocol::Tcp,
+                port,
+                80
+            )));
             route_receiver.try_recv().unwrap();
         }
         for packet in [
             ipv4_udp_packet(synthetic_source, remote_ip),
-            ipv4_tcp_packet_with_ports(synthetic_source, remote_ip, 443, 22001),
+            transport_packet(synthetic_source, remote_ip, IpProtocol::Tcp, 443, 22001),
         ] {
             let unchanged = packet.payload().to_vec();
-            assert!(state.send_packet(packet).await);
+            assert!(state.send_packet(packet));
             assert_eq!(route_receiver.try_recv().unwrap().payload(), unchanged);
         }
-        let incoming = ipv4_udp_packet_with_ports(remote_ip, synthetic_source, 5678, 1234);
+        let incoming = transport_packet(remote_ip, synthetic_source, IpProtocol::Udp, 5678, 1234);
         let unchanged = incoming.payload().to_vec();
         assert_eq!(
             state
@@ -3032,22 +2871,22 @@ mod tests {
         assert!(first_receiver.try_recv().is_err());
     }
 
-    #[tokio::test]
-    async fn dispatcher_translates_android_synthetic_icmp_source_to_destination_member() {
+    #[test]
+    fn dispatcher_translates_android_synthetic_icmp_source_to_destination_member() {
         let first = uuid::Uuid::from_u128(1);
         let destination_owner = uuid::Uuid::from_u128(2);
         let synthetic_source = Ipv4Addr::new(100, 64, 0, 1);
         let destination_owner_ip = Ipv4Addr::new(10, 231, 1, 1);
         let remote_ip = Ipv4Addr::new(10, 231, 1, 2);
-        let (first_sender, mut first_receiver) = mpsc::channel(1);
-        let (destination_sender, mut destination_receiver) = mpsc::channel(1);
+        let (first_sender, mut first_receiver) = member_channel(8);
+        let (destination_sender, mut destination_receiver) = member_channel(8);
         let mut state = SharedVirtualNicDispatcherState {
             translate_unknown_sources: true,
             ..Default::default()
         };
 
-        state.register(first, member_entry(first_sender));
-        state.register(destination_owner, member_entry(destination_sender));
+        state.register(first, first_sender);
+        state.register(destination_owner, destination_sender);
         state
             .source_table
             .update_member_sources(first, member_sources(&["10.231.2.1/24"]));
@@ -3055,9 +2894,7 @@ mod tests {
             .source_table
             .update_member_sources(destination_owner, member_sources(&["10.231.1.1/24"]));
 
-        state
-            .forward_tun_packet_to_member(ipv4_icmp_echo_packet(synthetic_source, remote_ip))
-            .await;
+        state.forward_tun_packet_to_member(ipv4_icmp_echo_packet(synthetic_source, remote_ip));
 
         assert!(first_receiver.try_recv().is_err());
         let translated = destination_receiver.try_recv().unwrap();
@@ -3076,134 +2913,63 @@ mod tests {
         assert_eq!(reply_ipv4.dst_addr(), synthetic_source);
     }
 
-    #[tokio::test]
-    async fn dispatcher_icmp_sequences_preserve_other_members_flow_capacity() {
+    #[test]
+    fn dispatcher_icmp_sequences_preserve_other_members_flow_capacity() {
         let first = uuid::Uuid::from_u128(1);
         let second = uuid::Uuid::from_u128(2);
         for ipv6 in [false, true] {
-            let (first_sender, mut first_receiver) = mpsc::channel(1);
-            let (second_sender, mut second_receiver) = mpsc::channel(1);
-            let mut state = SharedVirtualNicDispatcherState::default();
-            state.register(first, member_entry(first_sender));
-            state.register(second, member_entry(second_sender));
-            state.source_table.update_member_sources(
-                first,
-                SharedVirtualNicMemberSources::from_claims(&member_claims(
-                    &["10.231.1.1/24"],
-                    &["2001:db8:1::1/64"],
-                    &[],
-                    &[],
-                )),
-            );
-            state
-                .source_table
-                .update_member_sources(second, member_sources(&["10.231.2.1/24"]));
+            let (mut state, [mut first_receiver, mut second_receiver]) = test_state([
+                (
+                    first,
+                    SharedVirtualNicMemberSources::from_claims(&member_claims(
+                        &["10.231.1.1/24"],
+                        &["2001:db8:1::1/64"],
+                        &[],
+                        &[],
+                    )),
+                ),
+                (second, member_sources(&["10.231.2.1/24"])),
+            ]);
 
             for sequence in 0..=FLOW_OWNER_LIMIT as u16 {
                 let packet = if ipv6 {
-                    ipv6_icmp_packet_with_id(
-                        "2001:db8:1::1".parse().unwrap(),
-                        "2001:db8:1::2".parse().unwrap(),
+                    echo_packet(
+                        "2001:db8:1::1".parse::<Ipv6Addr>().unwrap(),
+                        "2001:db8:1::2".parse::<Ipv6Addr>().unwrap(),
                         false,
                         100,
                         sequence,
                     )
                 } else {
-                    ipv4_icmp_packet_with_id(
+                    echo_packet(
                         Ipv4Addr::new(10, 231, 1, 1),
                         Ipv4Addr::new(10, 231, 1, 2),
-                        Icmpv4Message::EchoRequest,
+                        false,
                         100,
                         sequence,
                     )
                 };
                 let original = packet.payload().to_vec();
-                assert!(state.send_packet(packet).await);
+                assert!(state.send_packet(packet));
                 assert_eq!(first_receiver.try_recv().unwrap().payload(), original);
             }
 
             let packet =
                 ipv4_udp_packet(Ipv4Addr::new(10, 231, 2, 1), Ipv4Addr::new(10, 231, 2, 2));
             let original = packet.payload().to_vec();
-            assert!(state.send_packet(packet).await);
+            assert!(state.send_packet(packet));
             assert_eq!(second_receiver.try_recv().unwrap().payload(), original);
         }
     }
 
     #[test]
-    fn icmpv4_nat_replies_keep_distinct_source_networks() {
-        let member_id = uuid::Uuid::from_u128(1);
-        let first_source = Ipv4Addr::new(10, 231, 1, 1);
-        let second_source = Ipv4Addr::new(10, 231, 2, 1);
-        let translated_source = Ipv4Addr::new(10, 231, 3, 1);
-        let destination = Ipv4Addr::new(10, 231, 3, 2);
-        let mut nat = SharedVirtualNicNatTable::default();
-        for (identifier, source, wire_identifier, sequence) in [
-            (100, first_source, 100, 1),
-            (200, second_source, 200, 1),
-            (100, second_source, 101, 1),
-            (100, second_source, 101, 2),
-            (100, second_source, 101, u16::MAX),
-            (100, second_source, 101, 0),
-        ] {
-            let mut packet = ipv4_icmp_packet_with_id(
-                source,
-                destination,
-                Icmpv4Message::EchoRequest,
-                identifier,
-                sequence,
-            );
-            let original = SharedVirtualNicFlowKey::from_packet(&packet).unwrap();
-            assert!(nat.prepare_packet(
-                member_id,
-                None,
-                original,
-                &mut packet,
-                translated_source.into(),
-            ));
-            let ipv4 = Ipv4Packet::new_checked(packet.payload()).unwrap();
-            assert_eq!(ipv4.src_addr(), translated_source);
-            assert!(ipv4.verify_checksum());
-            let icmp = Icmpv4Packet::new_checked(ipv4.payload()).unwrap();
-            assert_eq!(icmp.echo_ident(), wire_identifier);
-            assert_eq!(icmp.echo_seq_no(), sequence);
-            assert!(icmp.verify_checksum());
-
-            let mut reply = ipv4_icmp_packet_with_id(
-                destination,
-                translated_source,
-                Icmpv4Message::EchoReply,
-                wire_identifier,
-                sequence,
-            );
-            assert!(nat.translate_reply(member_id, &mut reply));
-            assert_eq!(
-                SharedVirtualNicFlowKey::from_packet(&reply),
-                Some(original.reversed())
-            );
-            let ipv4 = Ipv4Packet::new_checked(reply.payload()).unwrap();
-            assert!(ipv4.verify_checksum());
-            let icmp = Icmpv4Packet::new_checked(ipv4.payload()).unwrap();
-            assert_eq!(icmp.echo_seq_no(), sequence);
-            assert!(icmp.verify_checksum());
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatcher_preserves_owned_ipv4_source_with_unspecified_placeholder() {
+    fn dispatcher_preserves_owned_ipv4_source_with_unspecified_placeholder() {
         let member_id = uuid::Uuid::from_u128(1);
         let local_ip = Ipv4Addr::new(10, 231, 1, 1);
         let remote_ip = Ipv4Addr::new(10, 231, 1, 2);
-        let (sender, mut receiver) = mpsc::channel(1);
-        let mut state = SharedVirtualNicDispatcherState::default();
-
-        state.register(member_id, member_entry(sender));
-        state
-            .source_table
-            .update_member_sources(member_id, member_sources(&["0.0.0.0/0", "10.231.1.1/24"]));
-        state
-            .forward_tun_packet_to_member(ipv4_udp_packet(local_ip, remote_ip))
-            .await;
+        let (mut state, [mut receiver]) =
+            test_state([(member_id, member_sources(&["0.0.0.0/0", "10.231.1.1/24"]))]);
+        state.forward_tun_packet_to_member(ipv4_udp_packet(local_ip, remote_ip));
 
         let packet = receiver.try_recv().unwrap();
         let ipv4 = Ipv4Packet::new_checked(packet.payload()).unwrap();
@@ -3211,27 +2977,28 @@ mod tests {
         assert_eq!(ipv4.dst_addr(), remote_ip);
     }
 
-    #[tokio::test]
-    async fn dispatcher_ignores_stale_member_unregister() {
+    #[test]
+    fn dispatcher_ignores_stale_member_unregister() {
         let member_id = uuid::Uuid::from_u128(1);
         let stale_registration = uuid::Uuid::from_u128(10);
         let current_registration = uuid::Uuid::from_u128(11);
         let src = "2001:db8::1".parse::<Ipv6Addr>().unwrap();
         let dst = "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap();
-        let (sender, mut receiver) = mpsc::channel(1);
+        let (sender, mut receiver) = member_channel(8);
         let mut state = SharedVirtualNicDispatcherState::default();
 
         state.register(
             member_id,
-            member_entry_with_registration(sender, current_registration),
+            SharedVirtualNicMemberTunnelEntry {
+                registration_id: current_registration,
+                ..sender
+            },
         );
         state
             .source_table
             .update_member_sources(member_id, member_sources_with_ipv6(&["2001:db8::1/64"]));
         state.unregister(member_id, stale_registration);
-        state
-            .forward_tun_packet_to_member(ipv6_packet(src, dst))
-            .await;
+        state.forward_tun_packet_to_member(ipv6_packet(src, dst));
 
         assert!(receiver.try_recv().is_ok());
     }
@@ -3255,15 +3022,8 @@ mod tests {
             valid.clone(),
         );
         let close_notifier = Arc::new(Notify::new());
-        let (_member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
-
-        member_tunnel_table
-            .register(
-                member_id,
-                uuid::Uuid::from_u128(1),
-                shared_tunnel,
-                close_notifier.clone(),
-            )
+        let _member_tunnel = member_tunnel_table
+            .register(member_id, uuid::Uuid::from_u128(1), close_notifier.clone())
             .unwrap();
         let empty_claims = SharedIfConfigClaims::default();
         dispatcher
@@ -3277,7 +3037,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!valid.load(Ordering::Acquire));
-        assert!(member_tunnel_table.dispatcher_channels().is_none());
+        assert!(member_tunnel_table.control_sender().is_none());
     }
 
     #[tokio::test]
@@ -3299,15 +3059,8 @@ mod tests {
             valid.clone(),
         );
         let close_notifier = Arc::new(Notify::new());
-        let (_member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
-
-        member_tunnel_table
-            .register(
-                member_id,
-                uuid::Uuid::from_u128(1),
-                shared_tunnel,
-                close_notifier.clone(),
-            )
+        let _member_tunnel = member_tunnel_table
+            .register(member_id, uuid::Uuid::from_u128(1), close_notifier.clone())
             .unwrap();
         let empty_claims = SharedIfConfigClaims::default();
         dispatcher
@@ -3321,7 +3074,7 @@ mod tests {
             .await
             .unwrap();
         assert!(valid.load(Ordering::Acquire));
-        assert!(member_tunnel_table.dispatcher_channels().is_none());
+        assert!(member_tunnel_table.control_sender().is_none());
     }
 
     #[tokio::test]
@@ -3471,8 +3224,6 @@ mod tests {
                 shared_nic.dispatcher = Some(SharedVirtualNicDispatcher {
                     _task: AbortOnDropHandle::new(task),
                     control_sender,
-                    #[cfg(mobile)]
-                    mobile_tun_update_sender: None,
                 });
                 let table = shared_nic.member_tunnel_table.clone();
                 let shared_nic = Arc::new(tokio::sync::Mutex::new(shared_nic));
@@ -3529,50 +3280,20 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_preserves_incoming_udp_reply_ports_with_wrong_source() {
+    #[test]
+    fn dispatcher_preserves_incoming_udp_reply_ports_with_wrong_source() {
         let source_owner = uuid::Uuid::from_u128(1);
         let destination_owner = uuid::Uuid::from_u128(2);
-        for (source_sources, native_sources, incoming, outgoing) in [
-            (
-                member_sources(&["10.231.1.1/24"]),
-                member_sources(&["10.231.2.1/24"]),
-                ipv4_udp_packet_with_ports(
-                    Ipv4Addr::new(10, 231, 2, 2),
-                    Ipv4Addr::new(10, 231, 2, 1),
-                    5678,
-                    1234,
-                ),
-                ipv4_udp_packet(Ipv4Addr::new(10, 231, 1, 1), Ipv4Addr::new(10, 231, 2, 2)),
-            ),
-            (
-                member_sources_with_ipv6(&["2001:db8:1::1/64"]),
-                member_sources_with_ipv6(&["2001:db8:2::1/64"]),
-                ipv6_udp_packet_with_ports(
-                    "2001:db8:2::2".parse().unwrap(),
-                    "2001:db8:2::1".parse().unwrap(),
-                    5678,
-                    1234,
-                ),
-                ipv6_udp_packet_with_ports(
-                    "2001:db8:1::1".parse().unwrap(),
-                    "2001:db8:2::2".parse().unwrap(),
-                    1234,
-                    5678,
-                ),
-            ),
-        ] {
-            let (source_sender, mut source_receiver) = mpsc::channel(1);
-            let (sender, mut receiver) = mpsc::channel(1);
-            let mut state = SharedVirtualNicDispatcherState::default();
-            state.register(source_owner, member_entry(source_sender));
-            state.register(destination_owner, member_entry(sender));
-            state
-                .source_table
-                .update_member_sources(source_owner, source_sources);
-            state
-                .source_table
-                .update_member_sources(destination_owner, native_sources);
+        for ipv6 in [false, true] {
+            let [source, _, native, remote] = test_addresses(ipv6);
+            let source_sources = address_sources(source);
+            let native_sources = address_sources(native);
+            let incoming = transport_packet(remote, native, IpProtocol::Udp, 5678, 1234);
+            let outgoing = transport_packet(source, remote, IpProtocol::Udp, 1234, 5678);
+            let (mut state, [mut source_receiver, mut receiver]) = test_state([
+                (source_owner, source_sources),
+                (destination_owner, native_sources),
+            ]);
 
             let incoming_payload = incoming.payload().to_vec();
             let expected_reply = SharedVirtualNicFlowKey::from_packet(&incoming)
@@ -3587,95 +3308,32 @@ mod tests {
                     )
                     .unwrap();
                 assert_eq!(received.payload(), incoming_payload);
-                assert!(
-                    state
-                        .send_packet(ZCPacket::new_with_payload(outgoing.payload()))
-                        .await
-                );
+                assert!(state.send_packet(ZCPacket::new_with_payload(outgoing.payload())));
                 let reply = receiver.try_recv().unwrap();
                 assert_eq!(
                     SharedVirtualNicFlowKey::from_packet(&reply),
                     Some(expected_reply)
                 );
-                match expected_reply.src {
-                    SharedVirtualNicFlowAddr::V4(_) => {
-                        let ipv4 = Ipv4Packet::new_checked(reply.payload()).unwrap();
-                        assert!(ipv4.verify_checksum());
-                        assert!(
-                            UdpPacket::new_checked(ipv4.payload())
-                                .unwrap()
-                                .verify_checksum(
-                                    &IpAddress::Ipv4(ipv4.src_addr()),
-                                    &IpAddress::Ipv4(ipv4.dst_addr())
-                                )
-                        );
-                    }
-                    SharedVirtualNicFlowAddr::V6(_) => {
-                        let ipv6 = Ipv6Packet::new_checked(reply.payload()).unwrap();
-                        assert!(
-                            UdpPacket::new_checked(ipv6.payload())
-                                .unwrap()
-                                .verify_checksum(
-                                    &IpAddress::Ipv6(ipv6.src_addr()),
-                                    &IpAddress::Ipv6(ipv6.dst_addr())
-                                )
-                        );
-                    }
-                }
+                assert_checksums(&reply);
                 assert!(source_receiver.try_recv().is_err());
             }
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_reserves_native_incoming_tcp_flows_before_translation() {
+    #[test]
+    fn dispatcher_reserves_native_incoming_tcp_flows_before_translation() {
         let source_owner = uuid::Uuid::from_u128(1);
         let destination_owner = uuid::Uuid::from_u128(2);
-        for (source_sources, native_sources, incoming, outgoing) in [
-            (
-                member_sources(&["10.231.1.1/24"]),
-                member_sources(&["10.231.2.1/24"]),
-                ipv4_tcp_packet_with_ports(
-                    Ipv4Addr::new(10, 231, 2, 2),
-                    Ipv4Addr::new(10, 231, 2, 1),
-                    5678,
-                    1234,
-                ),
-                ipv4_tcp_packet_with_ports(
-                    Ipv4Addr::new(10, 231, 1, 1),
-                    Ipv4Addr::new(10, 231, 2, 2),
-                    1234,
-                    5678,
-                ),
-            ),
-            (
-                member_sources_with_ipv6(&["2001:db8:1::1/64"]),
-                member_sources_with_ipv6(&["2001:db8:2::1/64"]),
-                ipv6_tcp_packet_with_ports(
-                    "2001:db8:2::2".parse().unwrap(),
-                    "2001:db8:2::1".parse().unwrap(),
-                    5678,
-                    1234,
-                ),
-                ipv6_tcp_packet_with_ports(
-                    "2001:db8:1::1".parse().unwrap(),
-                    "2001:db8:2::2".parse().unwrap(),
-                    1234,
-                    5678,
-                ),
-            ),
-        ] {
-            let (source_sender, _source_receiver) = mpsc::channel(1);
-            let (sender, mut receiver) = mpsc::channel(1);
-            let mut state = SharedVirtualNicDispatcherState::default();
-            state.register(source_owner, member_entry(source_sender));
-            state.register(destination_owner, member_entry(sender));
-            state
-                .source_table
-                .update_member_sources(source_owner, source_sources);
-            state
-                .source_table
-                .update_member_sources(destination_owner, native_sources);
+        for ipv6 in [false, true] {
+            let [source, _, native, remote] = test_addresses(ipv6);
+            let source_sources = address_sources(source);
+            let native_sources = address_sources(native);
+            let incoming = transport_packet(remote, native, IpProtocol::Tcp, 5678, 1234);
+            let outgoing = transport_packet(source, remote, IpProtocol::Tcp, 1234, 5678);
+            let (mut state, [_source_receiver, mut receiver]) = test_state([
+                (source_owner, source_sources),
+                (destination_owner, native_sources),
+            ]);
 
             let incoming_payload = incoming.payload().to_vec();
             let native_reply = state
@@ -3685,7 +3343,7 @@ mod tests {
 
             // The native socket has not replied when another member starts a flow.
             let original = SharedVirtualNicFlowKey::from_packet(&outgoing).unwrap();
-            assert!(state.send_packet(outgoing).await);
+            assert!(state.send_packet(outgoing));
             let translated = receiver.try_recv().unwrap();
             let wire = SharedVirtualNicFlowKey::from_packet(&translated).unwrap();
             assert_ne!(wire.ports.unwrap().src, original.ports.unwrap().src);
@@ -3698,25 +3356,14 @@ mod tests {
                 .unwrap();
             assert_eq!(native_reply.payload(), incoming_payload);
 
-            let translated_reply = match (wire.dst, wire.src) {
-                (SharedVirtualNicFlowAddr::V4(src), SharedVirtualNicFlowAddr::V4(dst)) => {
-                    ipv4_tcp_packet_with_ports(
-                        src.into(),
-                        dst.into(),
-                        5678,
-                        wire.ports.unwrap().src,
-                    )
-                }
-                (SharedVirtualNicFlowAddr::V6(src), SharedVirtualNicFlowAddr::V6(dst)) => {
-                    ipv6_tcp_packet_with_ports(
-                        src.into(),
-                        dst.into(),
-                        5678,
-                        wire.ports.unwrap().src,
-                    )
-                }
-                _ => unreachable!(),
-            };
+            assert_checksums(&translated);
+            let translated_reply = transport_packet(
+                wire.dst,
+                wire.src,
+                IpProtocol::Tcp,
+                5678,
+                wire.ports.unwrap().src,
+            );
             let reply = state
                 .prepare_member_packet_to_tun(destination_owner, translated_reply)
                 .unwrap();
@@ -3740,7 +3387,7 @@ mod tests {
         assert!(nat.prepare_packet(member_id, None, original, &mut outgoing, native.into()));
         let wire = SharedVirtualNicFlowKey::from_packet(&outgoing).unwrap();
 
-        let incoming = ipv4_udp_packet_with_ports(remote, other_native, 5678, 1234);
+        let incoming = transport_packet(remote, other_native, IpProtocol::Udp, 5678, 1234);
         assert!(nat.reserve_reply(
             member_id,
             SharedVirtualNicFlowKey::from_packet(&incoming).unwrap()
@@ -3754,7 +3401,7 @@ mod tests {
             other_native.into()
         ));
         assert_eq!(SharedVirtualNicFlowKey::from_packet(&outgoing), Some(wire));
-        let mut reply = ipv4_udp_packet_with_ports(remote, native, 5678, 1234);
+        let mut reply = transport_packet(remote, native, IpProtocol::Udp, 5678, 1234);
         assert!(nat.translate_reply(member_id, &mut reply));
         assert_eq!(
             SharedVirtualNicFlowKey::from_packet(&reply),
@@ -3762,8 +3409,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn dispatcher_incoming_flow_pressure_keeps_active_reservations() {
+    #[test]
+    fn dispatcher_incoming_flow_pressure_keeps_active_reservations() {
         let member_id = uuid::Uuid::from_u128(1);
         let native = Ipv4Addr::new(10, 231, 1, 1);
         let remote = Ipv4Addr::new(10, 231, 1, 2);
@@ -3777,7 +3424,7 @@ mod tests {
                 state
                     .prepare_member_packet_to_tun(
                         member_id,
-                        ipv4_udp_packet_with_ports(remote, native, 5678, port),
+                        transport_packet(remote, native, IpProtocol::Udp, 5678, port),
                     )
                     .is_some()
             );
@@ -3787,7 +3434,7 @@ mod tests {
             state
                 .prepare_member_packet_to_tun(
                     member_id,
-                    ipv4_udp_packet_with_ports(remote, native, 5678, new_port),
+                    transport_packet(remote, native, IpProtocol::Udp, 5678, new_port),
                 )
                 .is_none()
         );
@@ -3798,7 +3445,7 @@ mod tests {
         }
         // Refresh a receive-only socket before pressure reclaims the idle entries.
         for port in [1, new_port] {
-            let incoming = ipv4_udp_packet_with_ports(remote, native, 5678, port);
+            let incoming = transport_packet(remote, native, IpProtocol::Udp, 5678, port);
             let unchanged = incoming.payload().to_vec();
             assert_eq!(
                 state
@@ -3809,32 +3456,29 @@ mod tests {
             );
         }
         assert_eq!(state.nat_table.entries.len(), 2);
-        let active = SharedVirtualNicFlowKey::from_packet(&ipv4_udp_packet_with_ports(
-            native, remote, 1, 5678,
+        let active = SharedVirtualNicFlowKey::from_packet(&transport_packet(
+            native,
+            remote,
+            IpProtocol::Udp,
+            1,
+            5678,
         ))
         .unwrap();
         assert!(state.nat_table.entries.contains_key(&(member_id, active)));
     }
 
-    #[tokio::test]
-    async fn dispatcher_colliding_native_and_translated_flows_remain_distinct() {
+    #[test]
+    fn dispatcher_colliding_native_and_translated_flows_remain_distinct() {
         let source_owner = uuid::Uuid::from_u128(1);
         let destination_owner = uuid::Uuid::from_u128(2);
         let source = Ipv4Addr::new(10, 231, 1, 1);
         let native = Ipv4Addr::new(10, 231, 2, 1);
         let destination = Ipv4Addr::new(10, 231, 2, 2);
         for native_first in [false, true] {
-            let (source_sender, mut source_receiver) = mpsc::channel(1);
-            let (sender, mut receiver) = mpsc::channel(1);
-            let mut state = SharedVirtualNicDispatcherState::default();
-            state.register(source_owner, member_entry(source_sender));
-            state.register(destination_owner, member_entry(sender));
-            state
-                .source_table
-                .update_member_sources(source_owner, member_sources(&["10.231.1.1/24"]));
-            state
-                .source_table
-                .update_member_sources(destination_owner, member_sources(&["10.231.2.1/24"]));
+            let (mut state, [mut source_receiver, mut receiver]) = test_state([
+                (source_owner, member_sources(&["10.231.1.1/24"])),
+                (destination_owner, member_sources(&["10.231.2.1/24"])),
+            ]);
             let mut wire_keys = Vec::new();
             for src in if native_first {
                 [native, source]
@@ -3843,7 +3487,7 @@ mod tests {
             } {
                 let packet = ipv4_udp_packet(src, destination);
                 let original = SharedVirtualNicFlowKey::from_packet(&packet).unwrap();
-                assert!(state.send_packet(packet).await);
+                assert!(state.send_packet(packet));
                 let sent = receiver.try_recv().unwrap();
                 let wire = SharedVirtualNicFlowKey::from_packet(&sent).unwrap();
                 assert_eq!(wire.src, native.into());
@@ -3861,11 +3505,7 @@ mod tests {
             assert_ne!(wire_keys[0].1, wire_keys[1].1);
             for (original, wire) in wire_keys {
                 let source = original.src.as_ipv4().unwrap();
-                assert!(
-                    state
-                        .send_packet(ipv4_udp_packet(source, destination))
-                        .await
-                );
+                assert!(state.send_packet(ipv4_udp_packet(source, destination)));
                 assert_eq!(
                     SharedVirtualNicFlowKey::from_packet(&receiver.try_recv().unwrap()),
                     Some(wire)
@@ -3877,9 +3517,10 @@ mod tests {
                     let reply = state
                         .prepare_member_packet_to_tun(
                             member_id,
-                            ipv4_udp_packet_with_ports(
+                            transport_packet(
                                 destination,
                                 native,
+                                IpProtocol::Udp,
                                 5678,
                                 wire.ports.unwrap().src,
                             ),
@@ -3899,8 +3540,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_unrelated_claims_and_unregister_preserve_replies() {
+    #[test]
+    fn dispatcher_unrelated_claims_and_unregister_preserve_replies() {
         let source_owner = uuid::Uuid::from_u128(1);
         let destination_owner = uuid::Uuid::from_u128(2);
         let unrelated = uuid::Uuid::from_u128(3);
@@ -3908,21 +3549,19 @@ mod tests {
         let native = Ipv4Addr::new(10, 231, 2, 1);
         let remote = Ipv4Addr::new(10, 231, 2, 2);
         let mut state = SharedVirtualNicDispatcherState::default();
-        let (sender, _source_receiver) = mpsc::channel(1);
-        state.register(source_owner, member_entry(sender));
-        let (sender, mut receiver) = mpsc::channel(1);
-        state.register(destination_owner, member_entry(sender));
-        let (sender, _unrelated_receiver) = mpsc::channel(1);
-        state.register(unrelated, member_entry(sender));
+        let (sender, _source_receiver) = member_channel(8);
+        state.register(source_owner, sender);
+        let (sender, mut receiver) = member_channel(8);
+        state.register(destination_owner, sender);
+        let (sender, _unrelated_receiver) = member_channel(8);
+        state.register(unrelated, sender);
         state
             .source_table
             .update_member_sources(source_owner, member_sources(&["10.231.1.1/24"]));
         state
             .source_table
             .update_member_sources(destination_owner, member_sources(&["10.231.2.1/24"]));
-        state
-            .forward_tun_packet_to_member(ipv4_udp_packet(source, remote))
-            .await;
+        state.forward_tun_packet_to_member(ipv4_udp_packet(source, remote));
         receiver.try_recv().unwrap();
 
         for (member_id, sources) in [
@@ -3952,7 +3591,7 @@ mod tests {
             let reply = state
                 .prepare_member_packet_to_tun(
                     destination_owner,
-                    ipv4_udp_packet_with_ports(remote, native, 5678, 1234),
+                    transport_packet(remote, native, IpProtocol::Udp, 5678, 1234),
                 )
                 .unwrap();
             assert_eq!(
@@ -3964,7 +3603,7 @@ mod tests {
         let reply = state
             .prepare_member_packet_to_tun(
                 destination_owner,
-                ipv4_udp_packet_with_ports(remote, native, 5678, 1234),
+                transport_packet(remote, native, IpProtocol::Udp, 5678, 1234),
             )
             .unwrap();
         assert_eq!(
@@ -3973,33 +3612,35 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn dispatcher_full_member_queue_drops_only_packet_without_reserving_flow() {
+    #[test]
+    fn dispatcher_full_member_queue_drops_only_packet_without_reserving_flow() {
         let slow = uuid::Uuid::from_u128(1);
         let active = uuid::Uuid::from_u128(2);
         let slow_ip = Ipv4Addr::new(10, 231, 1, 1);
         let active_ip = Ipv4Addr::new(10, 231, 2, 1);
         let remote = Ipv4Addr::new(10, 231, 1, 2);
         let mut state = SharedVirtualNicDispatcherState::default();
-        let (sender, mut slow_receiver) = mpsc::channel(1);
-        state.register(slow, member_entry(sender));
-        let (sender, mut active_receiver) = mpsc::channel(1);
-        state.register(active, member_entry(sender));
+        let (sender, mut slow_receiver) = member_channel(8);
+        state.register(slow, sender);
+        let (sender, mut active_receiver) = member_channel(8);
+        state.register(active, sender);
         state
             .source_table
             .update_member_sources(slow, member_sources(&["10.231.1.1/24"]));
         state
             .source_table
             .update_member_sources(active, member_sources(&["10.231.2.1/24"]));
-        state
-            .forward_tun_packet_to_member(ipv4_udp_packet_with_ports(slow_ip, remote, 1000, 5678))
-            .await;
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            state.forward_tun_packet_to_member(ipv4_udp_packet(active_ip, remote)),
-        )
-        .await
-        .unwrap();
+        for _ in 0..8 {
+            assert!(state.send_packet(transport_packet(
+                slow_ip,
+                remote,
+                IpProtocol::Udp,
+                1000,
+                5678
+            )));
+        }
+        assert!(!state.send_packet(ipv4_udp_packet(active_ip, remote)));
+        assert_eq!(state.nat_table.entries.len(), 1);
         let (ack, mut receiver) = oneshot::channel();
         state.handle_control(SharedVirtualNicControl::UpdateSources {
             member_id: active,
@@ -4008,15 +3649,14 @@ mod tests {
         });
         receiver.try_recv().unwrap();
         state
-            .forward_tun_packet_to_member(ipv4_udp_packet(active_ip, Ipv4Addr::new(10, 231, 2, 2)))
-            .await;
+            .forward_tun_packet_to_member(ipv4_udp_packet(active_ip, Ipv4Addr::new(10, 231, 2, 2)));
         active_receiver.try_recv().unwrap();
-        slow_receiver.try_recv().unwrap();
+        for _ in 0..8 {
+            slow_receiver.try_recv().unwrap();
+        }
 
         // The dropped translated flow must not steal this native flow's port.
-        state
-            .forward_tun_packet_to_member(ipv4_udp_packet(slow_ip, remote))
-            .await;
+        state.forward_tun_packet_to_member(ipv4_udp_packet(slow_ip, remote));
         let packet = slow_receiver.try_recv().unwrap();
         assert_eq!(
             SharedVirtualNicFlowKey::from_packet(&packet)
@@ -4029,7 +3669,7 @@ mod tests {
         let reply = state
             .prepare_member_packet_to_tun(
                 slow,
-                ipv4_udp_packet_with_ports(remote, slow_ip, 5678, 1234),
+                transport_packet(remote, slow_ip, IpProtocol::Udp, 5678, 1234),
             )
             .unwrap();
         assert_eq!(
@@ -4037,9 +3677,7 @@ mod tests {
             slow_ip
         );
         drop(slow_receiver);
-        state
-            .forward_tun_packet_to_member(ipv4_udp_packet(slow_ip, remote))
-            .await;
+        state.forward_tun_packet_to_member(ipv4_udp_packet(slow_ip, remote));
         assert!(!state.members.contains_key(&slow));
     }
 
@@ -4051,7 +3689,7 @@ mod tests {
         let remote = Ipv4Addr::new(10, 231, 2, 2);
         let mut nat = SharedVirtualNicNatTable::default();
         for port in 1..=FLOW_OWNER_LIMIT as u16 {
-            let mut packet = ipv4_udp_packet_with_ports(source, remote, port, 5678);
+            let mut packet = transport_packet(source, remote, IpProtocol::Udp, port, 5678);
             assert!(nat.prepare_packet(
                 member_id,
                 None,
@@ -4060,8 +3698,13 @@ mod tests {
                 native.into()
             ));
         }
-        let mut new_flow =
-            ipv4_udp_packet_with_ports(source, remote, FLOW_OWNER_LIMIT as u16 + 1, 5678);
+        let mut new_flow = transport_packet(
+            source,
+            remote,
+            IpProtocol::Udp,
+            FLOW_OWNER_LIMIT as u16 + 1,
+            5678,
+        );
         let new_key = SharedVirtualNicFlowKey::from_packet(&new_flow).unwrap();
         assert!(!nat.prepare_packet(member_id, None, new_key, &mut new_flow, native.into()));
         let mut unsupported = ipv4_udp_packet(native, remote);
@@ -4083,7 +3726,7 @@ mod tests {
             entry.last_active = Instant::now() - FLOW_IDLE_TIMEOUT - Duration::from_secs(1);
         }
         // Activity in either direction protects the reservation during lazy reclamation.
-        let mut active = ipv4_udp_packet_with_ports(source, remote, 1, 5678);
+        let mut active = transport_packet(source, remote, IpProtocol::Udp, 1, 5678);
         assert!(nat.prepare_packet(
             member_id,
             None,
@@ -4093,11 +3736,11 @@ mod tests {
         ));
         assert!(nat.translate_reply(
             member_id,
-            &mut ipv4_udp_packet_with_ports(remote, native, 5678, 2)
+            &mut transport_packet(remote, native, IpProtocol::Udp, 5678, 2)
         ));
         assert!(nat.prepare_packet(member_id, None, new_key, &mut new_flow, native.into()));
         for port in [1, 2] {
-            let mut native_packet = ipv4_udp_packet_with_ports(native, remote, port, 5678);
+            let mut native_packet = transport_packet(native, remote, IpProtocol::Udp, port, 5678);
             assert!(nat.prepare_packet(
                 member_id,
                 None,
@@ -4107,8 +3750,13 @@ mod tests {
             ));
             let wire = SharedVirtualNicFlowKey::from_packet(&native_packet).unwrap();
             assert_ne!(wire.ports.unwrap().src, port);
-            let mut reply =
-                ipv4_udp_packet_with_ports(remote, native, 5678, wire.ports.unwrap().src);
+            let mut reply = transport_packet(
+                remote,
+                native,
+                IpProtocol::Udp,
+                5678,
+                wire.ports.unwrap().src,
+            );
             assert!(nat.translate_reply(member_id, &mut reply));
             assert_eq!(
                 SharedVirtualNicFlowKey::from_packet(&reply)
@@ -4149,7 +3797,7 @@ mod tests {
             );
         }
         for (member_id, source) in [(first, first_source), (second, second_source)] {
-            let mut reply = ipv4_udp_packet_with_ports(remote, wire_source, 5678, 1234);
+            let mut reply = transport_packet(remote, wire_source, IpProtocol::Udp, 5678, 1234);
             assert!(nat.translate_reply(member_id, &mut reply));
             assert_eq!(
                 Ipv4Packet::new_checked(reply.payload()).unwrap().dst_addr(),
