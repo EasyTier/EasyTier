@@ -1803,10 +1803,12 @@ mod tests {
                 .status();
         }
         let net_ns = NetNS::new(Some(namespace.clone()));
-        // Avoid DAD timing and use an unowned source to test destination claims.
+        // Avoid DAD probes and use an unowned source to test destination claims.
         {
             let _guard = net_ns.guard();
             std::fs::write("/proc/sys/net/ipv6/conf/default/accept_dad", "0").unwrap();
+            // Keep automatic link-local traffic out of the member packet streams.
+            std::fs::write("/proc/sys/net/ipv6/conf/default/addr_gen_mode", "1").unwrap();
             let ifcfg = IfConfiger::default();
             ifcfg.set_link_status("lo", true).await.unwrap();
             ifcfg
@@ -1847,8 +1849,28 @@ mod tests {
         );
 
         nic.configure_mobile_tun().await.unwrap();
-        // Configuration is usable before start_tunnel_forwarding is called.
-        net_ns.run(|| UdpSocket::bind("[fd00::1]:0")).unwrap();
+        // Claims are installed before start_tunnel_forwarding is called.
+        let ifname = nic.tun_ifname().await.unwrap();
+        assert!(
+            net_ns
+                .run(|| IfConfiger::list_addresses(&ifname))
+                .unwrap()
+                .contains(&"fd00::1/64".parse().unwrap())
+        );
+        // Linux completes IPv6 address activation asynchronously, even without DAD probes.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match net_ns.run(|| UdpSocket::bind("[fd00::1]:0")) {
+                    Ok(_) => break,
+                    Err(err) if err.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(err) => panic!("failed to bind the configured IPv6 address: {err}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
         let route = "2001:db8:1::/64".parse().unwrap();
         let public_addr = "2001:db8:2::1/128".parse().unwrap();
         for (event, source, destination) in [
