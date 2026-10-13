@@ -14,28 +14,37 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{MagicDnsRuntime, tun_common::TunNicState};
+use super::{
+    MagicDnsRuntime,
+    tun_common::{TunNicState, create_nic_ctx},
+};
 use crate::{
     common::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
-    instance::virtual_nic::NicCtx,
+    instance::shared_virtual_nic::ArcSharedVirtualNicRegistry,
 };
 
 pub(super) struct NativeTunRuntime {
     global_ctx: ArcGlobalCtx,
     cancel: CancellationToken,
     nic: TunNicState,
+    shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     static_ip_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl NativeTunRuntime {
-    pub(super) fn new(global_ctx: ArcGlobalCtx, cancel: CancellationToken) -> Self {
+    pub(super) fn new(
+        global_ctx: ArcGlobalCtx,
+        cancel: CancellationToken,
+        shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
+    ) -> Self {
         Self {
             global_ctx,
             cancel,
             nic: TunNicState::empty(),
+            shared_virtual_nic_registry,
             static_ip_task: Mutex::new(None),
         }
     }
@@ -67,6 +76,7 @@ impl NativeTunRuntime {
         let cancel = self.cancel.clone();
         let global_ctx = self.global_ctx.clone();
         let receiver = self.nic.receiver();
+        let shared_virtual_nic_registry = self.shared_virtual_nic_registry.clone();
         let (output, first_round) = oneshot::channel();
         let task = tokio::spawn(async move {
             let mut output = Some(output);
@@ -76,12 +86,29 @@ impl NativeTunRuntime {
                     return;
                 }
                 let closed = Arc::new(Notify::new());
-                let mut nic = NicCtx::new(
+                let mut nic = match create_nic_ctx(
                     global_ctx.clone(),
                     packet_plane.clone(),
                     receiver.clone(),
                     closed.clone(),
-                );
+                    shared_virtual_nic_registry.clone(),
+                )
+                .await
+                {
+                    Ok(nic) => nic,
+                    Err(error) => {
+                        if let Some(output) = output.take() {
+                            let _ = output.send(Err(error));
+                            return;
+                        }
+                        tracing::error!(?error, "failed to create native interface context");
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        }
+                        continue;
+                    }
+                };
                 let result = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
@@ -104,11 +131,13 @@ impl NativeTunRuntime {
                 }
 
                 let magic_dns = if let Some(ip) = ipv4 {
+                    let shared_route_backend = nic.shared_route_backend_for_dns();
                     MagicDnsRuntime::start(
                         global_ctx.clone(),
                         packet_plane.clone(),
                         nic.ifname().await,
                         ip,
+                        shared_route_backend,
                     )
                 } else {
                     MagicDnsRuntime::default()
@@ -161,6 +190,7 @@ impl NativeTunRuntime {
             nic: self.nic.clone(),
             closed: Arc::new(Notify::new()),
             packet_plane,
+            shared_virtual_nic_registry: self.shared_virtual_nic_registry.clone(),
         })
     }
 }
@@ -172,6 +202,7 @@ struct NativeDhcpIpv4Host {
     nic: TunNicState,
     closed: Arc<Notify>,
     packet_plane: Arc<CorePacketPlane>,
+    shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
 }
 
 impl NativeDhcpIpv4Host {
@@ -199,21 +230,25 @@ impl NativeDhcpIpv4Host {
             return Ok(Some(ip));
         }
 
-        let mut nic = NicCtx::new(
+        let mut nic = create_nic_ctx(
             self.global_ctx.clone(),
             self.packet_plane.clone(),
             self.nic.receiver(),
             self.closed.clone(),
-        );
+            self.shared_virtual_nic_registry.clone(),
+        )
+        .await?;
         tokio::select! {
             _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
             result = nic.run(Some(ip), self.global_ctx.get_ipv6()) => result?,
         }
+        let shared_route_backend = nic.shared_route_backend_for_dns();
         let magic_dns = MagicDnsRuntime::start(
             self.global_ctx.clone(),
             self.packet_plane.clone(),
             nic.ifname().await,
             ip,
+            shared_route_backend,
         );
         self.nic.install(nic, magic_dns).await;
         self.global_ctx.set_ipv4(Some(ip));

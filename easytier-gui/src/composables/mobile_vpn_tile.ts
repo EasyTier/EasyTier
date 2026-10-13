@@ -10,6 +10,8 @@ export interface VpnTileActionResult {
 
 export interface VpnTileActionOptions {
   lastInstanceId?: string | null
+  stoppedInstanceIds?: string[]
+  saveStoppedInstanceIds?: (instanceIds: string[]) => void
   syncVpnService: () => Promise<void>
 }
 
@@ -31,22 +33,39 @@ export async function executeVpnTileAction(
     })),
   )
   const candidates = candidateIds.filter(instanceId => !candidateConfigs.get(instanceId)?.no_tun)
-  const instanceId = options.lastInstanceId && candidates.includes(options.lastInstanceId)
+  const stoppedCandidates = [...new Set(options.stoppedInstanceIds ?? [])]
+    .filter(instanceId => candidates.includes(instanceId))
+  const restoringStoppedGroup = action === 'start' && !!options.stoppedInstanceIds?.length
+  const selectedCandidates = restoringStoppedGroup
+    ? stoppedCandidates
+    : candidates
+  const instanceId = options.lastInstanceId && selectedCandidates.includes(options.lastInstanceId)
     ? options.lastInstanceId
-    : candidates[0]
+    : selectedCandidates[0]
 
   if (!instanceId) {
+    if (restoringStoppedGroup)
+      options.saveStoppedInstanceIds?.([])
     return { action, changed: false }
   }
 
   let changed = false
-  if (action === 'start' && !runningIds.includes(instanceId)) {
-    const config = candidateConfigs.get(instanceId)!
-    await api.run_network(config, true)
-    changed = true
+  if (action === 'start') {
+    const startIds = restoringStoppedGroup ? stoppedCandidates : [instanceId]
+    for (const candidateId of startIds) {
+      if (!runningIds.includes(candidateId)) {
+        await api.run_network(candidateConfigs.get(candidateId)!, true)
+        changed = true
+      }
+    }
+    options.saveStoppedInstanceIds?.([])
   }
   else if (action === 'stop') {
-    await api.update_network_instance_state(instanceId, true)
+    // Save before stopping so a partially completed action can also be resumed.
+    options.saveStoppedInstanceIds?.([...candidates])
+    for (const candidateId of candidates) {
+      await api.update_network_instance_state(candidateId, true)
+    }
     changed = true
   }
 
