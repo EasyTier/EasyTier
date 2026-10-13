@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use futures::future::BoxFuture;
 
 use crate::config::PeerId;
+use crate::foundation::small_map_shard_amount;
 use crate::foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
 use crate::packet::{PacketType, ZCPacket};
 use crate::peers::util::shrink_dashmap;
@@ -88,7 +89,7 @@ impl LogicalTrafficMetrics {
             instance_bytes_metric,
             instance_packets_metric,
             label_kind,
-            per_peer: DashMap::new(),
+            per_peer: DashMap::with_shard_amount(small_map_shard_amount()),
         }
     }
 

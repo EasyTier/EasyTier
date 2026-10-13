@@ -179,6 +179,21 @@ wire codecs. It does not own socket I/O or connection policy.
 - UDP session multiplexing, classification, and lifecycle;
 - in-process Ring sockets.
 
+UDP sessions expose a scoped hole-punch source observer keyed by transaction
+ID. Listeners carry a registration handle for their existing receive loop, which
+reports the first matching source; dropping the observer removes the registration.
+Cone clients optionally prepare that transaction in the listener-selection RPC;
+the response echoes its ID only after registration. The registration retains
+early UDP sources until the cone-sending RPC claims it. Unclaimed registrations
+expire after 30 seconds through the existing listener cleanup loop, covering
+local socket and STUN preparation without a separate receive or sending task.
+Clients omitting the optional transaction retain registration at the sending RPC;
+older servers omit the echoed ID and do not confirm early registration.
+Connectivity owns preparation expiry, the active RPC lifetime, candidate selection
+and bounded sending to the signaled and observed addresses.
+Cone clients start the existing UDP handshake without requiring a reverse
+hole-punch packet, and the session layer remains the sole receiver.
+
 `host/` is the single home of Host capability seams:
 
 - DNS and DNS record resolution;

@@ -25,12 +25,13 @@ use super::{
     session::{
         ClassifiedUdpSessionAccept, ClassifiedUdpSessionAccepts, ClassifiedUdpSessionKey,
         ClassifiedUdpSessionRegistry, PendingUdpSessionConnect, PendingUdpSessionConnects,
-        UdpConnectControl, UdpSession, UdpSessionClose, UdpSessionCodec, UdpSessionConnectError,
-        UdpSessionConnectRequest, UdpSessionConnector, UdpSessionDatagram, UdpSessionEnqueuePolicy,
-        UdpSessionKey, UdpSessionKind, UdpSessionLayerControl, UdpSessionProtocol,
-        UdpSessionRegistry, close_all_classified_udp_sessions, close_all_udp_sessions,
-        close_classified_udp_session, close_udp_session, create_udp_session_rings,
-        dispatch_payload_to_session, udp_session_registry_entry,
+        UdpConnectControl, UdpHolePunchObserverMap, UdpHolePunchObserverRegistry, UdpSession,
+        UdpSessionClose, UdpSessionCodec, UdpSessionConnectError, UdpSessionConnectRequest,
+        UdpSessionConnector, UdpSessionDatagram, UdpSessionEnqueuePolicy, UdpSessionKey,
+        UdpSessionKind, UdpSessionLayerControl, UdpSessionProtocol, UdpSessionRegistry,
+        close_all_classified_udp_sessions, close_all_udp_sessions, close_classified_udp_session,
+        close_udp_session, create_udp_session_rings, dispatch_payload_to_session,
+        udp_session_registry_entry,
     },
     virtual_socket::{
         MAX_UDP_SESSION_DATAGRAM_SIZE, NoopUdpSessionStunResponder, PreferredIpv6Source,
@@ -49,6 +50,7 @@ pub struct UdpSessionLayer<S, R = NoopUdpSessionStunResponder> {
     classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
     pub(super) classified_accepts: Arc<ClassifiedUdpSessionAccepts>,
     pub(super) pending_connects: Arc<PendingUdpSessionConnects>,
+    hole_punch_observers: UdpHolePunchObserverRegistry,
     mux_accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
     _control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
     session_shutdown_tx: watch::Sender<bool>,
@@ -90,15 +92,17 @@ where
         let classified_sessions = Arc::new(DashMap::new());
         let classified_accepts = create_classified_udp_session_accepts();
         let pending_connects = Arc::new(DashMap::new());
+        let hole_punch_observers = Arc::new(DashMap::new());
         let (mux_accepted_tx, mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let (session_shutdown_tx, _) = watch::channel(false);
+        let (session_shutdown_tx, session_shutdown_rx) = watch::channel(false);
         let recv_task = tokio::spawn(udp_session_layer_recv_task(
             socket.clone(),
             sessions.clone(),
             classified_sessions.clone(),
             classified_accepts.clone(),
             pending_connects.clone(),
+            hole_punch_observers.clone(),
             mux_accepted_tx,
             control_tx,
             stun_responder.clone(),
@@ -112,6 +116,10 @@ where
             classified_sessions,
             classified_accepts,
             pending_connects,
+            hole_punch_observers: UdpHolePunchObserverRegistry {
+                observers: hole_punch_observers,
+                shutdown: session_shutdown_rx,
+            },
             mux_accepted_rx: TokioMutex::new(mux_accepted_rx),
             _control_rx: TokioMutex::new(control_rx),
             session_shutdown_tx,
@@ -121,6 +129,10 @@ where
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
+    }
+
+    pub fn hole_punch_observers(&self) -> UdpHolePunchObserverRegistry {
+        self.hole_punch_observers.clone()
     }
 
     pub fn active_session_count(&self) -> usize {
@@ -355,6 +367,7 @@ impl<S, R> Drop for UdpSessionLayer<S, R> {
     fn drop(&mut self) {
         let _ = self.session_shutdown_tx.send(true);
         self.pending_connects.clear();
+        self.hole_punch_observers.observers.clear();
         close_all_udp_sessions(&self.sessions);
         close_all_classified_udp_sessions(&self.classified_sessions);
         self.recv_task.abort();
@@ -437,6 +450,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
     classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
     classified_accepts: Arc<ClassifiedUdpSessionAccepts>,
     pending_connects: Arc<PendingUdpSessionConnects>,
+    hole_punch_observers: Arc<UdpHolePunchObserverMap>,
     mux_accepted: mpsc::Sender<UdpSession>,
     control: mpsc::Sender<UdpSessionLayerControl>,
     stun_responder: Arc<R>,
@@ -453,6 +467,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                 tracing::debug!(?err, "udp session recv loop stopped");
                 let _ = session_shutdown_tx.send(true);
                 pending_connects.clear();
+                hole_punch_observers.clear();
                 close_all_udp_sessions(&sessions);
                 close_all_classified_udp_sessions(&classified_sessions);
                 break;
@@ -519,6 +534,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                     &socket,
                     &sessions,
                     &pending_connects,
+                    &hole_punch_observers,
                     &mux_accepted,
                     &control,
                     &control_permits,
@@ -570,6 +586,7 @@ fn dispatch_easy_tier_udp_datagram<S>(
     socket: &Arc<S>,
     sessions: &Arc<UdpSessionRegistry>,
     pending_connects: &Arc<PendingUdpSessionConnects>,
+    hole_punch_observers: &Arc<UdpHolePunchObserverMap>,
     mux_accepted: &mpsc::Sender<UdpSession>,
     control: &mpsc::Sender<UdpSessionLayerControl>,
     control_permits: &Arc<Semaphore>,
@@ -600,7 +617,20 @@ where
             dispatch_sack_packet(sessions, pending_connects, remote_addr, conn_id, &packet)
         }
         EasyTierUdpPacketKind::HolePunch => {
-            dispatch_hole_punch_packet(pending_connects, remote_addr)
+            let mut observed = false;
+            if packet.udp_payload().len() == crate::packet::HOLE_PUNCH_PACKET_BODY_LEN as usize
+                && let Some(observer) = hole_punch_observers.get(&conn_id)
+            {
+                observer.source.send_if_modified(|source| {
+                    if source.is_some() {
+                        return false;
+                    }
+                    *source = Some(remote_addr);
+                    true
+                });
+                observed = true;
+            }
+            dispatch_hole_punch_packet(pending_connects, remote_addr) || observed
         }
         EasyTierUdpPacketKind::V4HolePunch => dispatch_v4_hole_punch_control(
             socket.clone(),
