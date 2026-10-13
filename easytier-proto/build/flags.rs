@@ -7,12 +7,16 @@
 //! presence are the schema's, and an unannotated field fails the build.
 
 use std::{
+    collections::BTreeMap,
     fmt::Write as _,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context as _, bail, ensure};
-use prost_reflect::{DescriptorPool, DynamicMessage, Kind, Value};
+use heck::ToLowerCamelCase as _;
+use prost_reflect::{
+    DescriptorPool, DynamicMessage, ExtensionDescriptor, Kind, MessageDescriptor, Value,
+};
 
 pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
     let pool = DescriptorPool::decode(descriptor_set)?;
@@ -22,6 +26,7 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
     let extension = pool
         .get_extension_by_name("easytier.flag")
         .context("annotations.proto declares no easytier.flag")?;
+    let names = field_names(&message, &extension)?;
     // A form reads and writes the management API, so a flag it manages has to
     // be one the API carries.
     let api = pool
@@ -31,6 +36,7 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
 
     let mut defaults: Vec<String> = Vec::new();
     let mut form = String::new();
+    let mut aliases = String::new();
 
     for field in message.fields() {
         let name = field.name();
@@ -75,6 +81,12 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
         }
 
         let deprecated = is_set(&meta, "deprecated");
+
+        if !deprecated {
+            for alias in names[name].iter().filter(|alias| *alias != name) {
+                writeln!(aliases, "    ({alias:?}, {name:?}),")?;
+            }
+        }
 
         ensure!(
             deprecated
@@ -121,12 +133,63 @@ pub const DEFAULTS: &str = r##\"{{
 /// The schema field names of flags managed by the config form.
 pub const FORM: &[&str] = &[
 {form}];
+
+/// Alternate input names paired with their canonical schema field names.
+pub const ALIASES: &[(&str, &str)] = &[
+{aliases}];
 "
     );
 
     let path = out.join("flags.rs");
     std::fs::write(&path, generated)?;
     Ok(path)
+}
+
+/// Collect each field's name, JSON name and declared aliases, including the
+/// camelCase spelling of every name. Aliases need not be protobuf fields.
+pub(super) fn field_names(
+    message: &MessageDescriptor,
+    extension: &ExtensionDescriptor,
+) -> anyhow::Result<BTreeMap<String, Vec<String>>> {
+    let mut names = BTreeMap::<String, Vec<String>>::new();
+    let mut owners = BTreeMap::<String, String>::new();
+    for field in message.fields() {
+        let name = field.name();
+        let Value::Message(meta) = field.options().get_extension(extension).into_owned() else {
+            bail!("easytier.flag on common.Flags.{name} is not a message");
+        };
+        let mut declared = vec![name.to_owned(), field.json_name().to_owned()];
+        if let Some(Value::List(aliases)) = meta.get_field_by_name("alias").as_deref() {
+            for alias in aliases {
+                let Value::String(alias) = alias else {
+                    bail!("common.Flags.{name}: alias is not text");
+                };
+                ensure!(!alias.is_empty(), "common.Flags.{name}: alias is empty");
+                declared.push(alias.clone());
+            }
+        }
+        let spellings = names.entry(name.to_owned()).or_default();
+        for spelling in declared
+            .iter()
+            .flat_map(|name| [name.clone(), name.to_lower_camel_case()])
+        {
+            // Deprecated fields can retain their wire slot while a live
+            // field accepts their old name. The old field explicitly skips
+            // configuration input in its optionize annotation.
+            if !is_set(&meta, "deprecated")
+                && let Some(owner) = owners.insert(spelling.clone(), name.to_owned())
+            {
+                ensure!(
+                    owner == name,
+                    "flag name {spelling} refers to both {owner} and {name}"
+                );
+            }
+            if !spellings.contains(&spelling) {
+                spellings.push(spelling);
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// A text field of the annotation, absent when the annotation leaves it out.

@@ -25,6 +25,9 @@ message FlagMeta {
   // Rust optionize options forwarded to the generated Flags field. Use
   // attrs(...) to attach Serde attributes to its generated patch field.
   repeated string optionize = 5;
+  // Alternate input names for this field. They need not name protobuf fields;
+  // each alias and its camelCase spelling refer to this field.
+  repeated string alias = 6;
 }
 
 extend google.protobuf.FieldOptions {

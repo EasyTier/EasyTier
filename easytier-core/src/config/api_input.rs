@@ -170,15 +170,11 @@ pub(crate) fn merge_network_config_toml(
         .and_then(|value| value.try_into().ok())
         .unwrap_or_default();
 
-    // Normalize any camelCase aliases in original [flags] to their canonical field names
-    // so each field appears at most once in the merged table.
-    for field in Flags::flags() {
-        if let (Some(name), Some(json_name)) = (field.name.as_deref(), field.json_name.as_deref()) {
-            if name != json_name
-                && let Some(val) = merged_flags.remove(json_name)
-            {
-                merged_flags.entry(name.to_owned()).or_insert(val);
-            }
+    // Normalize all schema aliases, including camelCase, before the form
+    // replaces or removes the canonical keys it manages.
+    for &(alias, canonical) in Flags::aliases() {
+        if let Some(value) = merged_flags.remove(alias) {
+            merged_flags.entry(canonical.to_owned()).or_insert(value);
         }
     }
 

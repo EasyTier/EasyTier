@@ -15,8 +15,7 @@ include!(concat!(env!("OUT_DIR"), "/common.rs"));
 include!(concat!(env!("OUT_DIR"), "/common.serde.rs"));
 
 impl Flags {
-    /// The flags the message declares, in declaration order, less the ones it
-    /// has deprecated: what a user can still set.
+    /// Canonical flags in declaration order, excluding deprecated fields.
     ///
     /// Read back from the descriptor set this crate embeds, so a flag added to
     /// the message shows up here without a second list to keep in step.
@@ -75,6 +74,12 @@ impl Flags {
     /// a merge drops a key the form produces nothing for.
     pub fn form() -> &'static [&'static str] {
         flags::FORM
+    }
+
+    /// Alternate input names, including camelCase, and the canonical flag
+    /// each names. Generated from the same schema declarations as Serde.
+    pub fn aliases() -> &'static [(&'static str, &'static str)] {
+        flags::ALIASES
     }
 }
 
@@ -715,6 +720,21 @@ mod tests {
             assert!(
                 serde_json::from_str::<FlagsPatch>(invalid).is_err(),
                 "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_flag_aliases_match_the_serde_input_names() {
+        let defaults = serde_json::to_value(Flags::defaults().downgrade()).unwrap();
+        for &(alias, canonical) in Flags::aliases() {
+            let value = &defaults[canonical];
+            let patch: FlagsPatch =
+                serde_json::from_value(serde_json::json!({alias: value})).unwrap();
+            assert_eq!(
+                serde_json::to_value(patch).unwrap(),
+                serde_json::json!({canonical: value}),
+                "{alias} should name {canonical}"
             );
         }
     }

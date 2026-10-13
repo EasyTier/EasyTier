@@ -2843,6 +2843,7 @@ dependencies = [
  "bytes",
  "chrono",
  "cidr",
+ "heck 0.5.0",
  "hmac 0.12.1",
  "indoc",
  "optionize",

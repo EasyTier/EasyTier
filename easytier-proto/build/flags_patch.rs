@@ -16,6 +16,7 @@ pub fn configure(descriptor_set: &[u8], config: &mut prost_build::Config) -> any
     let extension = pool
         .get_extension_by_name("easytier.flag")
         .context("annotations.proto declares no easytier.flag")?;
+    let names = crate::flags::field_names(&message, &extension)?;
     config
         .type_attribute(".common.Flags", "#[optionize::optionized]")
         .type_attribute(
@@ -31,8 +32,10 @@ pub fn configure(descriptor_set: &[u8], config: &mut prost_build::Config) -> any
             bail!("easytier.flag on {} is not a message", field.name());
         };
         let mut serde = "default, skip_serializing_if = \"Option::is_none\"".to_owned();
-        if field.json_name() != field.name() {
-            write!(serde, ", alias = {:?}", field.json_name())?;
+        if let Some(names) = names.get(field.name()) {
+            for alias in names.iter().filter(|name| *name != field.name()) {
+                write!(serde, ", alias = {alias:?}")?;
+            }
         }
         let path = format!(".common.Flags.{}", field.name());
         config.field_attribute(
