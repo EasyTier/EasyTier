@@ -18,7 +18,7 @@
 <img src="assets/running-page.png" width="300" alt="running page">
 </p>
 
-📚 **[Full Documentation](https://easytier.cn/en/)** | 🖥️ **[Web Console](https://easytier.cn/web)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | 🧩 **[Third Party Tools](https://easytier.cn/en/guide/installation_gui.html#third-party-graphical-interfaces)** | ❤️ **[Sponsor](#sponsor)**
+📚 **[Full Documentation](https://easytier.cn/en/)** | 🖥️ **[Web Console](https://easytier.cn/web)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | **[Nightly](https://github.com/EasyTier/EasyTier/releases/tag/nightly)** | 🧩 **[Third Party Tools](https://easytier.cn/en/guide/installation_gui.html#third-party-graphical-interfaces)** | ❤️ **[Sponsor](#sponsor)**
 
 ## Features
 
@@ -77,12 +77,6 @@ cargo binstall --git https://github.com/EasyTier/EasyTier.git --version 2.6.4 ea
 This installs `easytier-core` and `easytier-cli` using the repository's metadata, independently of crates.io publication. On Windows, also copy the DLL and driver files from the matching release ZIP beside the installed binaries; binstall only installs executables.
 
 [Install pre-built binary](https://github.com/EasyTier/EasyTier/releases) (Recommended, All platforms supported)
-
-[Download Nightly builds](https://github.com/EasyTier/EasyTier/releases/tag/nightly) from `main`.
-The same prerelease is updated after complete builds and tests pass, with stable ZIP download URLs
-and dated changes since the last published version. These are development builds.
-Scheduled and manual [Nightly runs](https://github.com/EasyTier/EasyTier/actions/workflows/nightly.yml)
-skip components already built successfully at the current `main` commit and publish when all builds and tests pass.
 
 For a smaller executable, try [easytier-mini](https://github.com/EasyTier/easytier-mini), which supports basic TCP/UDP networking. See its documentation for supported features and usage.
 

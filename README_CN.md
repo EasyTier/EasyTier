@@ -18,7 +18,7 @@
 <img src="assets/running-page.png" width="300" alt="运行页面">
 </p>
 
-📚 **[完整文档](https://easytier.cn)** | 🖥️ **[Web 控制台](https://easytier.cn/web)** | 📝 **[下载发布版本](https://github.com/EasyTier/EasyTier/releases)** | 🧩 **[第三方工具](https://easytier.cn/guide/installation_gui.html#%E7%AC%AC%E4%B8%89%E6%96%B9%E5%9B%BE%E5%BD%A2%E7%95%8C%E9%9D%A2)** | ❤️ **[赞助](#赞助)**
+📚 **[完整文档](https://easytier.cn)** | 🖥️ **[Web 控制台](https://easytier.cn/web)** | 📝 **[下载发布版本](https://github.com/EasyTier/EasyTier/releases)** | **[Nightly](https://github.com/EasyTier/EasyTier/releases/tag/nightly)** | 🧩 **[第三方工具](https://easytier.cn/guide/installation_gui.html#%E7%AC%AC%E4%B8%89%E6%96%B9%E5%9B%BE%E5%BD%A2%E7%95%8C%E9%9D%A2)** | ❤️ **[赞助](#赞助)**
 
 ## 特性
 
@@ -77,10 +77,6 @@ cargo binstall --git https://github.com/EasyTier/EasyTier.git --version 2.6.4 ea
 此方式使用仓库中的 metadata 安装 `easytier-core` 和 `easytier-cli`，不依赖 crates.io 发布。在 Windows 上，还需将对应 release ZIP 中的 DLL 和驱动文件复制到安装后的程序旁；binstall 只安装可执行文件。
 
 [下载预编译文件](https://github.com/EasyTier/EasyTier/releases)（推荐，支持所有平台）
-
-[下载 Nightly 开发版](https://github.com/EasyTier/EasyTier/releases/tag/nightly)：来自 `main` 分支，完整构建和测试通过后更新同一个预发布。
-各平台 ZIP 下载地址保持不变，更新说明列出相对最近人工发布版本的变更，并按日期从新到老排列。
-定时和手动运行 [Nightly](https://github.com/EasyTier/EasyTier/actions/workflows/nightly.yml) 都会跳过当前 `main` 提交已成功构建的组件，全部构建和测试通过后发布。
 
 需要更小的可执行文件，可使用 [easytier-mini](https://github.com/EasyTier/easytier-mini)：支持基础 TCP/UDP 组网，功能范围与使用方式见其文档。
 
