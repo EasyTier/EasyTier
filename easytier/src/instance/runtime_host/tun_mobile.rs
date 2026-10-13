@@ -1,23 +1,19 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use cidr::Ipv4Inet;
 use easytier_core::{
-    gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host},
-    host::packet::HostPacketReceiver,
-    instance::CorePacketPlane,
+    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
-use futures::FutureExt as _;
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{
     MagicDnsRuntime,
-    tun_common::{TunNicState, create_nic_ctx},
+    tun_common::{NativeDhcpIpv4Host, TunNicState},
 };
 use crate::{
-    common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    instance::shared_virtual_nic::ArcSharedVirtualNicRegistry,
+    common::global_ctx::ArcGlobalCtx,
+    instance::{shared_virtual_nic::ArcSharedVirtualNicRegistry, virtual_nic::NicCtx},
 };
 
 struct MobileTunAttachment {
@@ -76,20 +72,17 @@ impl NativeTunRuntime {
             return Ok(());
         }
         let closed = Arc::new(Notify::new());
-        let mut nic = create_nic_ctx(
+        let mut nic = NicCtx::new(
             global_ctx.clone(),
             packet_plane.clone(),
             nic_state.receiver(),
             closed,
             shared_virtual_nic_registry,
         )
-        .await?;
+        .await;
         let claims = match claims {
             Some(claims) => claims,
-            None => {
-                crate::instance::virtual_nic::NicCtx::mobile_tun_claims(&global_ctx, &packet_plane)
-                    .await
-            }
+            None => NicCtx::mobile_tun_claims(&global_ctx, &packet_plane).await,
         };
         nic.run_for_mobile(fd, replace_tun_fd, claims)
             .await
@@ -122,21 +115,16 @@ impl NativeTunRuntime {
                         None => return,
                     },
                 };
-                let result = if attachment.fd <= 0 {
-                    nic_state.drain().await;
-                    Ok(())
-                } else {
-                    Self::install_mobile_tun(
-                        nic_state.clone(),
-                        global_ctx.clone(),
-                        packet_plane.clone(),
-                        attachment.fd,
-                        attachment.replace_tun_fd,
-                        shared_virtual_nic_registry.clone(),
-                        attachment.claims,
-                    )
-                    .await
-                };
+                let result = Self::install_mobile_tun(
+                    nic_state.clone(),
+                    global_ctx.clone(),
+                    packet_plane.clone(),
+                    attachment.fd,
+                    attachment.replace_tun_fd,
+                    shared_virtual_nic_registry.clone(),
+                    attachment.claims,
+                )
+                .await;
                 if let Err(error) = &result {
                     tracing::error!(?error, "failed to attach mobile TUN fd");
                 }
@@ -213,72 +201,5 @@ impl NativeTunRuntime {
         &self,
     ) -> Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims> {
         self.nic.mobile_tun_claims().await
-    }
-}
-
-struct NativeDhcpIpv4Host {
-    global_ctx: ArcGlobalCtx,
-    operation: Arc<Mutex<()>>,
-    cancel: CancellationToken,
-    nic: TunNicState,
-    closed: Arc<Notify>,
-}
-
-impl NativeDhcpIpv4Host {
-    fn ensure_open(&self) -> anyhow::Result<()> {
-        if self.cancel.is_cancelled() {
-            anyhow::bail!("instance is closing; DHCP update cancelled");
-        }
-        Ok(())
-    }
-
-    async fn apply(&self, next: Option<Ipv4Inet>) -> anyhow::Result<Option<Ipv4Inet>> {
-        self.ensure_open()?;
-        tokio::select! {
-            _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
-            _ = self.nic.drain() => {}
-        }
-        self.ensure_open()?;
-
-        let Some(ip) = next else {
-            self.global_ctx.set_ipv4(None);
-            return Ok(None);
-        };
-        self.global_ctx.set_ipv4(Some(ip));
-        Ok(Some(ip))
-    }
-}
-
-#[async_trait::async_trait]
-impl DhcpIpv4Host for NativeDhcpIpv4Host {
-    fn take_interface_closed(&self) -> bool {
-        self.closed.notified().now_or_never().is_some()
-    }
-
-    async fn apply_dhcp_ipv4(
-        &self,
-        _previous: Option<Ipv4Inet>,
-        next: Option<Ipv4Inet>,
-    ) -> DhcpIpv4ApplyOutcome {
-        let permit = self.operation.clone().lock_owned().await;
-        let outcome = match self.apply(next).await {
-            Ok(actual) => DhcpIpv4ApplyOutcome::applied(actual),
-            Err(error) => DhcpIpv4ApplyOutcome::failed(self.global_ctx.get_ipv4(), error),
-        };
-        outcome.with_permit(DhcpIpv4ApplyPermit::new(permit))
-    }
-
-    fn publish_dhcp_ipv4(
-        &self,
-        previous: Option<Ipv4Inet>,
-        requested: Option<Ipv4Inet>,
-        actual: Option<Ipv4Inet>,
-    ) {
-        let event = if requested.is_none() {
-            GlobalCtxEvent::DhcpIpv4Conflicted(previous)
-        } else {
-            GlobalCtxEvent::DhcpIpv4Changed(previous, actual)
-        };
-        self.global_ctx.issue_event(event);
     }
 }
