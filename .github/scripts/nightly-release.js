@@ -155,6 +155,7 @@ async function publish({ github, context, core, build, directory }) {
   }
   await github.rest.repos.updateRelease({
     ...repository, release_id: release.id, name: 'Nightly', body: build.body,
+    target_commitish: build.sha,
     draft: false, prerelease: true, make_latest: 'false',
   });
   core.info(`Updated nightly at ${build.sha}: ${release.html_url}`);

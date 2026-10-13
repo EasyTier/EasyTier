@@ -210,7 +210,7 @@ test('first publication creates one draft, uploads assets and then publishes a p
 
 test('updates keep the release ID and remove obsolete assets only after uploads finish', async t => {
   const f = fixture();
-  f.state.release = { id: 99, draft: false };
+  f.state.release = { id: 99, draft: false, target_commitish: 'first-build' };
   f.state.tagExists = true;
   f.state.assets = [
     { id: 50, name: 'easytier-linux-x86_64.zip' },
@@ -219,6 +219,7 @@ test('updates keep the release ID and remove obsolete assets only after uploads 
   await publish(await packageFiles(t, f));
   assert.ok(!f.calls.some(call => call[0] === 'create' || call[0] === 'createTag'));
   assert.equal(f.calls.at(-1)[1].release_id, 99);
+  assert.equal(f.state.release.target_commitish, 'built');
   const lastUpload = f.calls.findLastIndex(call => call[0] === 'upload');
   assert.ok(f.calls.findIndex(call => call[0] === 'delete' && call[1] === 51) > lastUpload);
 });
