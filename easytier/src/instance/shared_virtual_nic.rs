@@ -15,7 +15,7 @@ use tokio::{
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::common::error::Error;
-use easytier_core::tunnel::{Tunnel, ring::create_ring_tunnel_pair};
+use easytier_core::tunnel::Tunnel;
 
 use super::virtual_nic::{VirtualNic, VirtualNicConfig};
 
@@ -838,17 +838,9 @@ struct SharedVirtualNicMemberRegistration {
 }
 
 impl SharedVirtualNicMemberRegistration {
-    fn register_tunnel(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        close_notifier: Arc<Notify>,
-    ) -> Result<(), Error> {
-        self.member_tunnel_table.register(
-            self.member_id,
-            self.registration_id,
-            tunnel,
-            close_notifier,
-        )
+    fn register_tunnel(&self, close_notifier: Arc<Notify>) -> Result<Box<dyn Tunnel>, Error> {
+        self.member_tunnel_table
+            .register(self.member_id, self.registration_id, close_notifier)
     }
 }
 
@@ -959,7 +951,6 @@ impl SharedVirtualNicMember {
     }
 
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
-        let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
         let member = self.clone();
         SHARED_VIRTUAL_NIC_RUNTIME
             .spawn(async move {
@@ -982,8 +973,7 @@ impl SharedVirtualNicMember {
             .await
             .map_err(anyhow::Error::from)??;
         self.registration
-            .register_tunnel(shared_tunnel, self.close_notifier.clone())?;
-        Ok(member_tunnel)
+            .register_tunnel(self.close_notifier.clone())
     }
 
     #[cfg(mobile)]
@@ -992,7 +982,6 @@ impl SharedVirtualNicMember {
         tun_fd: std::os::fd::RawFd,
         replace_tun_fd: bool,
     ) -> Result<Box<dyn Tunnel>, Error> {
-        let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
         let member = self.clone();
         SHARED_VIRTUAL_NIC_RUNTIME
             .spawn(async move {
@@ -1017,8 +1006,7 @@ impl SharedVirtualNicMember {
             .await
             .map_err(anyhow::Error::from)??;
         self.registration
-            .register_tunnel(shared_tunnel, self.close_notifier.clone())?;
-        Ok(member_tunnel)
+            .register_tunnel(self.close_notifier.clone())
     }
 
     #[cfg(not(target_os = "linux"))]
