@@ -1,13 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context as _;
-use cidr::Ipv4Inet;
 use easytier_core::{
-    gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host},
-    host::packet::HostPacketReceiver,
-    instance::CorePacketPlane,
+    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
-use futures::FutureExt as _;
 use tokio::{
     sync::{Mutex, Notify, oneshot},
     task::JoinHandle,
@@ -16,14 +12,11 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     MagicDnsRuntime,
-    tun_common::{TunNicState, create_nic_ctx},
+    tun_common::{NativeDhcpIpv4Host, TunNicState},
 };
 use crate::{
-    common::{
-        error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    },
-    instance::shared_virtual_nic::ArcSharedVirtualNicRegistry,
+    common::{error::Error, global_ctx::ArcGlobalCtx},
+    instance::{shared_virtual_nic::ArcSharedVirtualNicRegistry, virtual_nic::NicCtx},
 };
 
 pub(super) struct NativeTunRuntime {
@@ -86,29 +79,14 @@ impl NativeTunRuntime {
                     return;
                 }
                 let closed = Arc::new(Notify::new());
-                let mut nic = match create_nic_ctx(
+                let mut nic = NicCtx::new(
                     global_ctx.clone(),
                     packet_plane.clone(),
                     receiver.clone(),
                     closed.clone(),
                     shared_virtual_nic_registry.clone(),
                 )
-                .await
-                {
-                    Ok(nic) => nic,
-                    Err(error) => {
-                        if let Some(output) = output.take() {
-                            let _ = output.send(Err(error));
-                            return;
-                        }
-                        tracing::error!(?error, "failed to create native interface context");
-                        tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-                        }
-                        continue;
-                    }
-                };
+                .await;
                 let result = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
@@ -192,100 +170,5 @@ impl NativeTunRuntime {
             packet_plane,
             shared_virtual_nic_registry: self.shared_virtual_nic_registry.clone(),
         })
-    }
-}
-
-struct NativeDhcpIpv4Host {
-    global_ctx: ArcGlobalCtx,
-    operation: Arc<Mutex<()>>,
-    cancel: CancellationToken,
-    nic: TunNicState,
-    closed: Arc<Notify>,
-    packet_plane: Arc<CorePacketPlane>,
-    shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
-}
-
-impl NativeDhcpIpv4Host {
-    fn ensure_open(&self) -> anyhow::Result<()> {
-        if self.cancel.is_cancelled() {
-            anyhow::bail!("instance is closing; DHCP update cancelled");
-        }
-        Ok(())
-    }
-
-    async fn apply(&self, next: Option<Ipv4Inet>) -> anyhow::Result<Option<Ipv4Inet>> {
-        self.ensure_open()?;
-        tokio::select! {
-            _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
-            _ = self.nic.drain() => {}
-        }
-        self.ensure_open()?;
-
-        let Some(ip) = next else {
-            self.global_ctx.set_ipv4(None);
-            return Ok(None);
-        };
-        if self.global_ctx.no_tun() {
-            self.global_ctx.set_ipv4(Some(ip));
-            return Ok(Some(ip));
-        }
-
-        let mut nic = create_nic_ctx(
-            self.global_ctx.clone(),
-            self.packet_plane.clone(),
-            self.nic.receiver(),
-            self.closed.clone(),
-            self.shared_virtual_nic_registry.clone(),
-        )
-        .await?;
-        tokio::select! {
-            _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
-            result = nic.run(Some(ip), self.global_ctx.get_ipv6()) => result?,
-        }
-        let shared_route_backend = nic.shared_route_backend_for_dns();
-        let magic_dns = MagicDnsRuntime::start(
-            self.global_ctx.clone(),
-            self.packet_plane.clone(),
-            nic.ifname().await,
-            ip,
-            shared_route_backend,
-        );
-        self.nic.install(nic, magic_dns).await;
-        self.global_ctx.set_ipv4(Some(ip));
-        Ok(Some(ip))
-    }
-}
-
-#[async_trait::async_trait]
-impl DhcpIpv4Host for NativeDhcpIpv4Host {
-    fn take_interface_closed(&self) -> bool {
-        self.closed.notified().now_or_never().is_some()
-    }
-
-    async fn apply_dhcp_ipv4(
-        &self,
-        _previous: Option<Ipv4Inet>,
-        next: Option<Ipv4Inet>,
-    ) -> DhcpIpv4ApplyOutcome {
-        let permit = self.operation.clone().lock_owned().await;
-        let outcome = match self.apply(next).await {
-            Ok(actual) => DhcpIpv4ApplyOutcome::applied(actual),
-            Err(error) => DhcpIpv4ApplyOutcome::failed(self.global_ctx.get_ipv4(), error),
-        };
-        outcome.with_permit(DhcpIpv4ApplyPermit::new(permit))
-    }
-
-    fn publish_dhcp_ipv4(
-        &self,
-        previous: Option<Ipv4Inet>,
-        requested: Option<Ipv4Inet>,
-        actual: Option<Ipv4Inet>,
-    ) {
-        let event = if requested.is_none() {
-            GlobalCtxEvent::DhcpIpv4Conflicted(previous)
-        } else {
-            GlobalCtxEvent::DhcpIpv4Changed(previous, actual)
-        };
-        self.global_ctx.issue_event(event);
     }
 }

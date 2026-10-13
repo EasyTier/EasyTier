@@ -44,9 +44,7 @@ use zerocopy::{NativeEndian, NetworkEndian};
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
 
-use super::shared_virtual_nic::{
-    ArcSharedVirtualNicRegistry, SharedVirtualNicMember, SharedVirtualNicMemberId,
-};
+use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicMember};
 
 pin_project! {
     pub struct TunStream {
@@ -905,14 +903,6 @@ pub enum NicBackend {
 }
 
 impl NicBackend {
-    pub fn dedicated(nic: Arc<Mutex<VirtualNic>>) -> Self {
-        Self::Dedicated(nic)
-    }
-
-    pub fn shared(member: SharedVirtualNicMember) -> Self {
-        Self::Shared(member)
-    }
-
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.create_dev().await,
@@ -1083,27 +1073,14 @@ pub struct NicCtx {
 }
 
 impl NicCtx {
-    fn virtual_nic_config_from_parts(
-        dev_name: String,
-        mut mtu: u32,
-        enable_encryption: bool,
-        net_ns: NetNS,
-    ) -> VirtualNicConfig {
-        if enable_encryption {
+    fn virtual_nic_config(global_ctx: &ArcGlobalCtx) -> VirtualNicConfig {
+        let flags = global_ctx.get_flags();
+        let mut mtu = flags.mtu;
+        if flags.enable_encryption {
             mtu -= 20;
         }
 
-        VirtualNicConfig::new(dev_name, mtu, net_ns)
-    }
-
-    fn virtual_nic_config(global_ctx: &ArcGlobalCtx) -> VirtualNicConfig {
-        let flags = global_ctx.get_flags();
-        Self::virtual_nic_config_from_parts(
-            flags.dev_name,
-            flags.mtu,
-            flags.enable_encryption,
-            global_ctx.net_ns.clone(),
-        )
+        VirtualNicConfig::new(flags.dev_name, mtu, global_ctx.net_ns.clone())
     }
 
     pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
@@ -1111,11 +1088,6 @@ impl NicCtx {
             NicBackend::Dedicated(_) => None,
             NicBackend::Shared(_) => Some(self.backend.clone()),
         }
-    }
-
-    fn dedicated_backend(global_ctx: &ArcGlobalCtx) -> NicBackend {
-        let nic_config = Self::virtual_nic_config(global_ctx);
-        NicBackend::dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config))))
     }
 
     fn new_with_backend(
@@ -1140,13 +1112,30 @@ impl NicCtx {
         }
     }
 
-    pub(crate) fn new(
+    pub(crate) async fn new(
         global_ctx: ArcGlobalCtx,
         packet_plane: Arc<CorePacketPlane>,
         peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         close_notifier: Arc<Notify>,
+        registry: ArcSharedVirtualNicRegistry,
     ) -> Self {
-        let backend = Self::dedicated_backend(&global_ctx);
+        let nic_config = Self::virtual_nic_config(&global_ctx);
+        #[cfg(mobile)]
+        let nic_config = VirtualNicConfig {
+            dev_name: String::new(),
+            net_ns: NetNS::new(None),
+            ..nic_config
+        };
+        let backend = if cfg!(mobile) || !nic_config.dev_name.is_empty() {
+            NicBackend::Shared(registry.lock().await.create_member(
+                nic_config.dev_name.clone(),
+                nic_config,
+                global_ctx.get_id(),
+                close_notifier.clone(),
+            ))
+        } else {
+            NicBackend::Dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config))))
+        };
 
         Self::new_with_backend(
             global_ctx,
@@ -1155,51 +1144,6 @@ impl NicCtx {
             close_notifier,
             backend,
         )
-    }
-
-    pub(crate) async fn new_shared(
-        global_ctx: ArcGlobalCtx,
-        packet_plane: Arc<CorePacketPlane>,
-        peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
-        close_notifier: Arc<Notify>,
-        registry: ArcSharedVirtualNicRegistry,
-        member_id: SharedVirtualNicMemberId,
-    ) -> Result<Self, Error> {
-        let flags = global_ctx.get_flags();
-        #[cfg(mobile)]
-        let dev_name = String::new();
-        #[cfg(not(mobile))]
-        let dev_name = flags.dev_name.clone();
-        #[cfg(not(mobile))]
-        if dev_name.is_empty() {
-            return Err(anyhow::anyhow!("shared virtual nic requires dev_name").into());
-        }
-        #[cfg(mobile)]
-        let net_ns = NetNS::new(None);
-        #[cfg(not(mobile))]
-        let net_ns = global_ctx.net_ns.clone();
-        let nic_config = Self::virtual_nic_config_from_parts(
-            dev_name.clone(),
-            flags.mtu,
-            flags.enable_encryption,
-            net_ns,
-        );
-
-        let member = registry.lock().await.create_member(
-            dev_name,
-            nic_config,
-            member_id,
-            close_notifier.clone(),
-        );
-        let backend = NicBackend::shared(member);
-
-        Ok(Self::new_with_backend(
-            global_ctx,
-            packet_plane,
-            peer_packet_receiver,
-            close_notifier,
-            backend,
-        ))
     }
 
     pub async fn ifname(&self) -> Option<String> {
@@ -1845,7 +1789,7 @@ mod tests {
             core.packet_plane(),
             Arc::new(Mutex::new(HostPacketReceiver::new(packet_receiver))),
             Arc::new(Notify::new()),
-            NicBackend::shared(members[1].clone()),
+            NicBackend::Shared(members[1].clone()),
         );
 
         nic.configure_mobile_tun().await.unwrap();

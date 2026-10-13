@@ -58,7 +58,7 @@ fn comparable_claims(mut claims: SharedIfConfigClaims) -> SharedIfConfigClaims {
 fn select_members(
     mut members: Vec<MobileTunMember>,
     mut rejected: Vec<MobileTunMemberError>,
-) -> (Vec<MobileTunMember>, MobileTunConfig) {
+) -> (Vec<MobileTunMember>, Vec<MobileTunMemberError>) {
     // Keep unchanged attached members ahead of new or reconfigured members.
     members.sort_by_key(|member| {
         !member.current_claims.as_ref().is_some_and(|current| {
@@ -82,8 +82,7 @@ fn select_members(
         ifcfg.apply_member_claims(member.instance_id, claims);
         accepted.push(member);
     }
-    let config = config_for_members(&accepted, rejected);
-    (accepted, config)
+    (accepted, rejected)
 }
 
 #[cfg(any(mobile, test))]
@@ -100,45 +99,21 @@ fn config_for_members(
     for member in members {
         config.instance_ids.push(member.instance_id);
         for address in &member.claims.ipv4_addresses {
-            addresses.insert(format!(
-                "{}/{}",
-                address.address(),
-                address.network_length()
-            ));
-            routes.insert(format!(
-                "{}/{}",
-                address.network().first_address(),
-                address.network_length()
-            ));
+            addresses.insert(format!("{address:#}"));
+            routes.insert(format!("{:#}", address.network()));
         }
         for address in &member.claims.ipv6_addresses {
-            addresses.insert(format!(
-                "{}/{}",
-                address.address(),
-                address.network_length()
-            ));
-            routes.insert(format!(
-                "{}/{}",
-                address.network().first_address(),
-                address.network_length()
-            ));
+            addresses.insert(format!("{address:#}"));
+            routes.insert(format!("{:#}", address.network()));
         }
         for route in &member.claims.ipv4_routes {
             if let Ok(route) = cidr::Ipv4Inet::new(route.address, route.prefix) {
-                routes.insert(format!(
-                    "{}/{}",
-                    route.network().first_address(),
-                    route.network_length()
-                ));
+                routes.insert(format!("{:#}", route.network()));
             }
         }
         for route in &member.claims.ipv6_routes {
             if let Ok(route) = cidr::Ipv6Inet::new(route.address, route.prefix) {
-                routes.insert(format!(
-                    "{}/{}",
-                    route.network().first_address(),
-                    route.network_length()
-                ));
+                routes.insert(format!("{:#}", route.network()));
             }
         }
         if member.dns {
@@ -199,7 +174,8 @@ pub async fn get_mobile_tun_config(
     instance_ids: &[uuid::Uuid],
 ) -> MobileTunConfig {
     let (members, rejected) = collect_members(manager, instance_ids).await;
-    select_members(members, rejected).1
+    let (members, rejected) = select_members(members, rejected);
+    config_for_members(&members, rejected)
 }
 
 #[cfg(any(mobile, test))]
@@ -243,7 +219,7 @@ pub async fn attach_mobile_tun_fd(
         return Ok(MobileTunConfig::default());
     }
     let (members, rejected) = collect_members(manager, instance_ids.unwrap_or(&all_ids)).await;
-    let (members, mut config) = select_members(members, rejected);
+    let (members, mut rejected) = select_members(members, rejected);
     let mut attached = Vec::new();
     // Open once; a rejected member never replaces or tears down this shared fd.
     for member in members {
@@ -259,7 +235,7 @@ pub async fn attach_mobile_tun_fd(
             Ok(()) => attached.push(member),
             Err(error) if is_claim_conflict(&error) => {
                 attach_member(manager, member.instance_id, 0, false, None).await?;
-                config.rejected.push(MobileTunMemberError {
+                rejected.push(MobileTunMemberError {
                     instance_id: member.instance_id,
                     error: error.to_string(),
                 });
@@ -272,7 +248,7 @@ pub async fn attach_mobile_tun_fd(
             }
         }
     }
-    Ok(config_for_members(&attached, config.rejected))
+    Ok(config_for_members(&attached, rejected))
 }
 
 #[cfg(mobile)]
@@ -315,7 +291,9 @@ mod tests {
     fn keeps_attached_member_when_bootstrap_subnets_overlap() {
         let mut existing = member(2, "10.126.126.2/24");
         existing.current_claims = Some(existing.claims.clone());
-        let (_, config) = select_members(vec![member(1, "10.126.126.1/24"), existing], Vec::new());
+        let (members, rejected) =
+            select_members(vec![member(1, "10.126.126.1/24"), existing], Vec::new());
+        let config = config_for_members(&members, rejected);
         assert_eq!(config.instance_ids, vec![uuid::Uuid::from_u128(2)]);
         assert_eq!(config.addresses, vec!["10.126.126.2/24"]);
         assert_eq!(config.routes, vec!["10.126.126.0/24"]);
@@ -329,7 +307,8 @@ mod tests {
         let mut unchanged = member(2, "10.0.2.2/24");
         unchanged.current_claims = Some(unchanged.claims.clone());
         unchanged.current_claims.as_mut().unwrap().mtu = Some(1300);
-        let (_, config) = select_members(vec![changed, unchanged], Vec::new());
+        let (members, rejected) = select_members(vec![changed, unchanged], Vec::new());
+        let config = config_for_members(&members, rejected);
         assert_eq!(config.instance_ids, vec![uuid::Uuid::from_u128(2)]);
         assert_eq!(config.rejected[0].instance_id, uuid::Uuid::from_u128(1));
     }
@@ -340,6 +319,10 @@ mod tests {
         first.dns = true;
         first
             .claims
+            .ipv4_addresses
+            .insert("10.0.4.1/32".parse().unwrap());
+        first
+            .claims
             .ipv6_addresses
             .insert("2001:db8::1/128".parse().unwrap());
         first
@@ -348,12 +331,16 @@ mod tests {
             .insert(SharedIpv6Route::new("::".parse().unwrap(), 0, Some(5)));
         let mut second = member(2, "10.0.2.1/24");
         second.dns = true;
-        let (_, config) = select_members(
+        let (members, rejected) = select_members(
             vec![first, second, member(3, "100.100.100.101/32")],
             Vec::new(),
         );
+        let config = config_for_members(&members, rejected);
         assert_eq!(config.instance_ids.len(), 2);
+        assert!(config.addresses.contains(&"10.0.4.1/32".to_owned()));
+        assert!(config.routes.contains(&"10.0.4.1/32".to_owned()));
         assert!(config.addresses.contains(&"2001:db8::1/128".to_owned()));
+        assert!(config.routes.contains(&"2001:db8::1/128".to_owned()));
         assert!(config.routes.contains(&"::/0".to_owned()));
         assert_eq!(
             config
@@ -371,7 +358,9 @@ mod tests {
             24,
             None,
         ));
-        let (_, config) = select_members(vec![member(1, "10.0.1.1/24"), route_owner], Vec::new());
+        let (members, rejected) =
+            select_members(vec![member(1, "10.0.1.1/24"), route_owner], Vec::new());
+        let config = config_for_members(&members, rejected);
         assert_eq!(config.instance_ids.len(), 1);
         assert_eq!(config.rejected[0].instance_id, uuid::Uuid::from_u128(2));
     }
