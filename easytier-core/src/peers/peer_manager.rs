@@ -2390,6 +2390,7 @@ impl PeerMaintenanceTasks {
     }
 }
 
+#[easytier_profiling::instrument("try_compress_and_encrypt")]
 pub(crate) async fn try_compress_and_encrypt(
     compress_algo: CompressorAlgo,
     encryptor: &Arc<dyn Encryptor + 'static>,
@@ -2502,6 +2503,7 @@ impl PeerOutboundPacketRouter {
         );
     }
 
+    #[easytier_profiling::instrument("run_nic_packet_process_pipeline")]
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) -> bool {
         // Enforce ACL for outbound (NIC-originated) packets. If ACL denies, stop processing.
         if !self.acl_filter.process_packet_with_acl(
@@ -3441,6 +3443,7 @@ impl RouteInterface for PeerManagerRouteInterface {
     }
 }
 
+#[easytier_profiling::instrument("send_msg_internal")]
 pub(crate) async fn send_msg_internal(
     peers: &PeerMap,
     foreign_network_client: &Arc<ForeignNetworkClient>,

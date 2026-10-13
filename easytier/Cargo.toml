@@ -35,6 +35,7 @@ name = "packet_bytes_extraction"
 harness = false
 
 [dependencies]
+easytier-profiling.workspace = true
 easytier-core.workspace = true
 easytier-proto = { workspace = true, features = ["api", "core"] }
 git-version = "0.3.9"
@@ -444,12 +445,12 @@ management = [
 management-rpc = ["easytier-core/management-rpc"]
 web-client = ["management-rpc", "easytier-core/web-client"]
 tcp-hole-punch = ["easytier-core/tcp-hole-punch"]
-# Deprecated: hotpath profiling has been removed. These feature aliases are
-# retained as no-ops so existing build scripts using `--features hotpath*`
-# continue to work without pulling in any dependencies.
-hotpath = []
-hotpath-cpu = ["hotpath"]
-hotpath-alloc = ["hotpath"]
+# Independent of `tracing`, which enables tokio-console.
+profiling = ["easytier-profiling/tracing", "easytier-core/profiling", "dep:tracing-subscriber"]
+lttng = ["profiling", "easytier-profiling/lttng", "easytier-core/lttng"]
+hotpath = ["easytier-profiling/hotpath", "easytier-core/hotpath"]
+hotpath-cpu = ["hotpath", "easytier-profiling/hotpath-cpu", "easytier-core/hotpath-cpu"]
+hotpath-alloc = ["hotpath", "easytier-profiling/hotpath-alloc", "easytier-core/hotpath-alloc"]
 # For Network Extension on macOS
 macos-ne = []
 

@@ -1,0 +1,31 @@
+[package]
+name = "easytier-profiling"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../LICENSE"
+description = "Compile-time profiling facade for EasyTier"
+
+[dependencies]
+easytier-profiling-macros = { version = "0.1.0", path = "macros" }
+hotpath = { version = "0.21", default-features = false, features = ["hotpath", "tokio", "parking_lot"], optional = true }
+parking_lot.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, features = ["registry"], optional = true }
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
+lttng-ust-generate = { git = "https://github.com/EasyTier/lttng-ust-rs.git", rev = "fb3a7a86e9c3d8edad34cc70fd48f908b745f8d9", optional = true }
+
+[features]
+default = []
+hotpath = ["dep:hotpath", "easytier-profiling-macros/enabled"]
+hotpath-cpu = ["hotpath", "hotpath/hotpath-cpu", "easytier-profiling-macros/cpu"]
+hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
+tracing = ["dep:tracing", "easytier-profiling-macros/enabled"]
+lttng = ["tracing", "dep:tracing-subscriber", "dep:lttng-ust-generate"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry"] }

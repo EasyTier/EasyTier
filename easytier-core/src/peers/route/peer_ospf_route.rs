@@ -240,6 +240,7 @@ impl OspfRouteTable {
         }
     }
 
+    #[easytier_profiling::instrument("RouteTable::get_next_hop")]
     pub fn get_next_hop(&self, dst_peer_id: PeerId) -> Option<OspfNextHopInfo> {
         if self.suppressed_peer_ids.contains_key(&dst_peer_id) {
             return None;
@@ -247,6 +248,7 @@ impl OspfRouteTable {
         self.get_topology_next_hop(dst_peer_id)
     }
 
+    #[easytier_profiling::instrument("RouteTable::get_topology_next_hop")]
     pub fn get_topology_next_hop(&self, dst_peer_id: PeerId) -> Option<OspfNextHopInfo> {
         let cur_version = self.next_hop_map_version.get();
         self.next_hop_map.get(&dst_peer_id).and_then(|x| {

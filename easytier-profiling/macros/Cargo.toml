@@ -1,0 +1,17 @@
+[package]
+name = "easytier-profiling-macros"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+
+[features]
+enabled = []
+cpu = ["enabled"]

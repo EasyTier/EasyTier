@@ -103,6 +103,7 @@ impl FileSink {
             .unwrap_or_else(|| level_rank(LevelFilter::Off))
     }
 
+    #[cfg(not(any(feature = "tracing", feature = "profiling")))]
     pub(super) fn dynamic(&self) -> bool {
         self.reload && self.output.is_some()
     }
@@ -189,6 +190,7 @@ impl FileSink {
         level_rank(LevelFilter::Off)
     }
 
+    #[cfg(not(any(feature = "tracing", feature = "profiling")))]
     pub(super) fn dynamic(&self) -> bool {
         false
     }
