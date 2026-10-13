@@ -445,6 +445,12 @@ and the last member's cleanup stops the dispatcher and releases the desktop
 device. A process-lifetime runtime does not extend the device's lifetime.
 Unnamed desktop TUNs and instance-local work retain their existing executors.
 
+Each member connects through one bounded Ring Tunnel. The shared dispatcher
+polls member streams in rotation and writes directly to their sinks, with no
+per-member forwarding tasks or intermediate packet queues. Desktop and mobile
+use one dispatch loop; mobile descriptor replacement is a control message.
+The loop consumes Tokio's cooperative budget even when packets are dropped.
+
 Only the member running the Magic DNS resolver claims its shared fake-IP
 route. The claim is removed before resolver shutdown and acquired by the next
 serving member after takeover. Client-only runners do not claim that route.

@@ -1381,13 +1381,14 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_budget_reports_the_active_stage() {
-        let error =
-            with_timeout_budget("connect", Instant::now(), Duration::from_millis(1), async {
-                crate::foundation::time::sleep(Duration::from_millis(20)).await;
-                Ok::<(), anyhow::Error>(())
-            })
-            .await
-            .unwrap_err();
+        let error = with_timeout_budget(
+            "connect",
+            Instant::now(),
+            Duration::from_millis(1),
+            std::future::pending::<anyhow::Result<()>>(),
+        )
+        .await
+        .unwrap_err();
 
         assert!(error.to_string().contains("connect timeout after"));
     }
