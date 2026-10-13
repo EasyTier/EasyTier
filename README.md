@@ -78,6 +78,10 @@ This installs `easytier-core` and `easytier-cli` using the repository's metadata
 
 [Install pre-built binary](https://github.com/EasyTier/EasyTier/releases) (Recommended, All platforms supported)
 
+[Download Nightly builds](https://github.com/EasyTier/EasyTier/releases/tag/nightly) from `main`.
+The same prerelease is updated after complete builds and tests pass, with stable ZIP download URLs
+and dated changes since the last published version. These are development builds.
+
 For a smaller executable, try [easytier-mini](https://github.com/EasyTier/easytier-mini), which supports basic TCP/UDP networking. See its documentation for supported features and usage.
 
 [Install via Docker](https://easytier.cn/en/guide/installation.html#installation-methods)

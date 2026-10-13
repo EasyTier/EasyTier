@@ -78,6 +78,9 @@ cargo binstall --git https://github.com/EasyTier/EasyTier.git --version 2.6.4 ea
 
 [下载预编译文件](https://github.com/EasyTier/EasyTier/releases)（推荐，支持所有平台）
 
+[下载 Nightly 开发版](https://github.com/EasyTier/EasyTier/releases/tag/nightly)：来自 `main` 分支，完整构建和测试通过后更新同一个预发布。
+各平台 ZIP 下载地址保持不变，更新说明列出相对最近人工发布版本的变更，并按日期从新到老排列。
+
 需要更小的可执行文件，可使用 [easytier-mini](https://github.com/EasyTier/easytier-mini)：支持基础 TCP/UDP 组网，功能范围与使用方式见其文档。
 
 [通过 Docker 安装](https://easytier.cn/guide/installation.html#%E5%AE%89%E8%A3%85%E6%96%B9%E5%BC%8F)

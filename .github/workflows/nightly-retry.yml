@@ -1,0 +1,28 @@
+name: EasyTier Nightly Retry
+
+on:
+  workflow_run:
+    workflows: [EasyTier Core, EasyTier GUI, EasyTier Mobile, EasyTier Test]
+    branches: [main, develop]
+    types: [completed]
+
+permissions:
+  actions: write
+
+jobs:
+  retry:
+    if: >-
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retry failed jobs once
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.actions.reRunWorkflowFailedJobs({
+              ...context.repo,
+              run_id: context.payload.workflow_run.id,
+            });
