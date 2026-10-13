@@ -1090,7 +1090,9 @@ mod manager {
                             loop {
                                 match event_receiver.recv().await {
                                     Ok(easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _)
-                                        | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Conflicted(_)) => {
+                                        | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Conflicted(_)
+                                        | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv6Changed(_, _)
+                                        | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv6Conflicted(_)) => {
                                         let _ = app_clone.emit("dhcp_ip_changed", &instance_id_str);
                                     }
                                     Ok(easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated(_, _)

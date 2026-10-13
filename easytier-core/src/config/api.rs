@@ -17,6 +17,11 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
         instance_id: Some(config.get_id().to_string()),
         dhcp: Some(config.get_dhcp()),
         dhcp_ipv4_cidr: config.get_dhcp_config().cidr().map(|cidr| cidr.to_string()),
+        dhcpv6: Some(config.get_dhcpv6()),
+        dhcp_ipv6_cidr: config
+            .get_dhcpv6_config()
+            .cidr()
+            .map(|cidr| cidr.to_string()),
         ..Default::default()
     };
 

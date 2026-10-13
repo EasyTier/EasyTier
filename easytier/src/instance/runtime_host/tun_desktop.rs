@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context as _;
 use easytier_core::{
-    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
+    gateway::dhcp::DhcpHost, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
 use tokio::{
     sync::{Mutex, Notify, oneshot},
@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     MagicDnsRuntime,
-    tun_common::{NativeDhcpIpv4Host, TunNicState},
+    tun_common::{NativeDhcpHost, TunNicState},
 };
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
@@ -139,7 +139,10 @@ impl NativeTunRuntime {
 
     pub(super) async fn prepare(&self, packet_plane: Arc<CorePacketPlane>) -> anyhow::Result<()> {
         self.nic.drain().await;
-        if !self.global_ctx.get_flags().no_tun {
+        if !self.global_ctx.get_flags().no_tun
+            && !self.global_ctx.config.get_dhcp()
+            && !self.global_ctx.config.get_dhcpv6()
+        {
             self.start_static_ip(packet_plane).await?;
         }
         Ok(())
@@ -160,8 +163,8 @@ impl NativeTunRuntime {
         &self,
         operation: Arc<Mutex<()>>,
         packet_plane: Arc<CorePacketPlane>,
-    ) -> Arc<dyn DhcpIpv4Host> {
-        Arc::new(NativeDhcpIpv4Host {
+    ) -> Arc<dyn DhcpHost> {
+        Arc::new(NativeDhcpHost {
             global_ctx: self.global_ctx.clone(),
             operation,
             cancel: self.cancel.clone(),

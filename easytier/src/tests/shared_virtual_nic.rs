@@ -178,8 +178,13 @@ fn ipv4_route_exists_in_ns(ns: &str, needle: &str) -> bool {
 }
 
 fn tun_ifindex(ns: &str, dev_name: &str) -> Option<u64> {
-    let output = Command::new("ip")
-        .args(["-n", ns, "-j", "link", "show", "dev", dev_name])
+    let _root = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let mut command = Command::new("ip");
+    if ns != ROOT_NETNS_NAME {
+        command.args(["-n", ns]);
+    }
+    let output = command
+        .args(["-j", "link", "show", "dev", dev_name])
         .output()
         .unwrap();
     if !output.status.success() {
@@ -545,46 +550,69 @@ fn shared_tun_claim_cleanup_outlives_member_runtime() {
     ));
 }
 
+#[rstest::rstest]
+#[case::static_ipv4(false)]
+#[case::with_dhcpv6(true)]
 #[tokio::test]
 #[serial_test::serial]
-async fn same_namespace_members_share_tun_across_independent_networks() {
+async fn same_namespace_members_share_tun_across_independent_networks(#[case] dhcpv6: bool) {
     let dev_name = test_dev_name();
     let first_peer_ns = TestNetnsGuard::new(short_name("sva"), "10.231.1.2/24", "fd31::2/64");
     let second_peer_ns = TestNetnsGuard::new(short_name("svb"), "10.231.2.2/24", "fd32::2/64");
     let runtime = SharedTestRuntime::new();
 
-    let mut first = runtime.instance(test_config(
+    let first_config = test_config(
         "shared_tun_first",
         "shared_tun_network_a",
         "shared_tun_secret_a",
         None,
         Some(&dev_name),
         "10.144.250.1/24",
-    ));
-    let mut second = runtime.instance(test_config(
+    );
+    if dhcpv6 {
+        first_config.set_dhcpv6_config(easytier_core::config::DhcpConfig::Cidr(
+            "fd42:a::/64".parse().unwrap(),
+        ));
+    }
+    let mut first = runtime.instance(first_config);
+    let second_config = test_config(
         "shared_tun_second",
         "shared_tun_network_b",
         "shared_tun_secret_b",
         None,
         Some(&dev_name),
         "10.144.251.1/24",
-    ));
-    let mut first_peer = runtime.instance(test_config(
+    );
+    if dhcpv6 {
+        second_config.set_dhcpv6_config(easytier_core::config::DhcpConfig::Cidr(
+            "fd42:b::/64".parse().unwrap(),
+        ));
+    }
+    let mut second = runtime.instance(second_config);
+    let first_peer_config = test_config(
         "shared_tun_first_peer",
         "shared_tun_network_a",
         "shared_tun_secret_a",
         Some(&first_peer_ns.name),
         None,
         "10.144.250.2/24",
-    ));
-    let mut second_peer = runtime.instance(test_config(
+    );
+    if dhcpv6 {
+        first_peer_config.set_ipv6(Some("fd42:a::2/64".parse().unwrap()));
+    }
+    let mut first_peer = runtime.instance(first_peer_config);
+    let second_peer_config = test_config(
         "shared_tun_second_peer",
         "shared_tun_network_b",
         "shared_tun_secret_b",
         Some(&second_peer_ns.name),
         None,
         "10.144.251.2/24",
-    ));
+    );
+    if dhcpv6 {
+        second_peer_config.set_ipv6(Some("fd42:b::2/64".parse().unwrap()));
+    }
+    let mut second_peer = runtime.instance(second_peer_config);
 
     first.run().await.unwrap();
     second.run().await.unwrap();
@@ -630,7 +658,45 @@ async fn same_namespace_members_share_tun_across_independent_networks() {
     )
     .await;
 
-    drop_insts(vec![first, second, first_peer, second_peer]).await;
+    if dhcpv6 {
+        for (instance, ns) in [
+            (&first, &first_peer_ns.name),
+            (&second, &second_peer_ns.name),
+        ] {
+            wait_for_condition(
+                || async { instance.get_global_ctx().get_ipv6().is_some() },
+                WAIT,
+            )
+            .await;
+            let address = instance
+                .get_global_ctx()
+                .get_ipv6()
+                .unwrap()
+                .address()
+                .to_string();
+            wait_for_condition(|| async { ping_test(ns, &address, None).await }, WAIT).await;
+        }
+        // Removing one DHCP member must leave the other member's addresses
+        // and the physical TUN intact.
+        let original_index = tun_ifindex(ROOT_NETNS_NAME, &dev_name);
+        assert!(original_index.is_some());
+        drop_insts(vec![first]).await;
+        assert_eq!(tun_ifindex(ROOT_NETNS_NAME, &dev_name), original_index);
+        let address = second
+            .get_global_ctx()
+            .get_ipv6()
+            .unwrap()
+            .address()
+            .to_string();
+        wait_for_condition(
+            || async { ping_test(&second_peer_ns.name, &address, None).await },
+            WAIT,
+        )
+        .await;
+        drop_insts(vec![second, first_peer, second_peer]).await;
+    } else {
+        drop_insts(vec![first, second, first_peer, second_peer]).await;
+    }
 }
 
 #[cfg(feature = "proxy-cidr-monitor")]

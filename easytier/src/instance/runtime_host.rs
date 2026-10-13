@@ -3,7 +3,7 @@ use std::sync::Arc;
 #[cfg(feature = "web-client")]
 use easytier_core::config::runtime::CoreInstanceRuntimeConfig;
 use easytier_core::{
-    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
+    gateway::dhcp::DhcpHost, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -12,6 +12,7 @@ use crate::common::global_ctx::ArcGlobalCtx;
 #[cfg(feature = "tun")]
 use crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry;
 
+mod dhcp;
 mod event_journal;
 mod implementation;
 #[cfg(feature = "tun")]
@@ -83,7 +84,7 @@ impl NativeInstanceRuntimeHost {
     async fn prepare_runtime(
         &self,
         packet_plane: Arc<CorePacketPlane>,
-    ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+    ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         self.event_journal.start(self.cancel.clone()).await;
         self.tun.prepare(packet_plane.clone()).await?;
         Ok(Some(
@@ -130,7 +131,7 @@ impl NativeInstanceRuntimeHost {
                     &config.peer,
                 ));
         }
-        if patch.ipv6.is_some() {
+        if patch.ipv6.is_some() && !config.services.dhcp_ipv6 {
             self.global_ctx
                 .set_ipv6(crate::common::global_ctx::GlobalCtx::runtime_ipv6(
                     &config.peer,

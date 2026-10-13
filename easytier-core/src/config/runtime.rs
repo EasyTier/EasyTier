@@ -3,7 +3,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arc_swap::ArcSwap;
-use cidr::Ipv4Cidr;
+use cidr::{Ipv4Cidr, Ipv6Cidr};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,10 @@ pub struct CoreRuntimeConfig {
     pub dhcp_ipv4: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dhcp_ipv4_cidr: Option<Ipv4Cidr>,
+    #[serde(default)]
+    pub dhcp_ipv6: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dhcp_ipv6_cidr: Option<Ipv6Cidr>,
     pub gateway: GatewayRuntimeConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_routes: Option<BTreeSet<Ipv4Cidr>>,
@@ -33,6 +37,8 @@ impl Default for CoreRuntimeConfig {
             acl: AclRuleConfig::default(),
             dhcp_ipv4: false,
             dhcp_ipv4_cidr: None,
+            dhcp_ipv6: false,
+            dhcp_ipv6_cidr: None,
             gateway: GatewayRuntimeConfig::default(),
             manual_routes: None,
             proxy: ProxyRuntimeConfig::default(),

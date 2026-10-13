@@ -628,6 +628,57 @@ mod portable_runtime {
         );
     }
 
+    #[cfg(feature = "dhcp-ipv6")]
+    #[tokio::test]
+    async fn runtime_update_preserves_dhcp_owned_ipv6() {
+        let mut initial = test_config("dhcp-runtime-update");
+        initial.connectivity.runtime.dhcp_ipv6 = true;
+        let instance = build_instance(initial).unwrap();
+        let lease = IpPrefix {
+            address: "fd12::7".parse().unwrap(),
+            prefix_len: 64,
+        };
+        instance.runtime_config.update_peer_with(|peer| {
+            peer.runtime.core.routes.ipv6 = Some(lease.clone());
+        });
+
+        let mut replacement = test_config("dhcp-runtime-update");
+        replacement.connectivity.runtime.dhcp_ipv6 = true;
+        instance
+            .update_runtime_config(runtime_snapshot(&replacement))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv6,
+            Some(lease)
+        );
+
+        let static_replacement = test_config("dhcp-runtime-update");
+        instance
+            .update_runtime_config(runtime_snapshot(&static_replacement))
+            .await
+            .unwrap();
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv6,
+            None
+        );
+    }
+
     #[tokio::test]
     async fn core_instance_is_a_direct_managed_record() {
         let instance = build_instance(test_config("managed-directly")).unwrap();
@@ -1332,7 +1383,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
 
@@ -1366,7 +1417,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 anyhow::bail!("host prepare failed")
             }
 
@@ -1477,7 +1528,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 self.prepare_started.notify_one();
                 self.prepare_release.notified().await;
                 Ok(None)
@@ -1531,7 +1582,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 assert_eq!(tokio::runtime::Handle::current().id(), self.handle.id());
                 self.prepare_started.notify_one();
                 if self.block_prepare {
@@ -1616,7 +1667,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
 
@@ -1698,7 +1749,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
 
@@ -1988,7 +2039,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
 

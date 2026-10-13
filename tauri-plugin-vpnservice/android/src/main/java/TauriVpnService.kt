@@ -40,9 +40,15 @@ class TauriVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         println("vpn on start command ${intent?.getExtras()} $intent")
-        startVpnForegroundService()
         var args = intent?.getExtras()
         ipv4Addrs = getIpv4Addrs(args)
+        // A sticky restart can have no Intent after process death. The VPN
+        // owner must supply the active addresses before creating an interface.
+        if (ipv4Addrs.isEmpty()) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        startVpnForegroundService()
         ipv4Addr = ipv4Addrs.firstOrNull()
         routes = args?.getStringArray(ROUTES) ?: emptyArray()
         dns = args?.getString(DNS)
@@ -174,7 +180,7 @@ class TauriVpnService : VpnService() {
             return ipv4Addrs
         }
 
-        return arrayOf(args?.getString(IPV4_ADDR) ?: "10.126.126.1/24")
+        return listOfNotNull(args?.getString(IPV4_ADDR)?.takeIf { it.isNotBlank() }).toTypedArray()
     }
 
     private fun createVpnInterface(args: Bundle?): ParcelFileDescriptor {

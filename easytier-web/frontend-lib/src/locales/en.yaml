@@ -342,6 +342,8 @@ event:
   VpnPortalStarted: VpnPortalStarted
   VpnPortalClientConnected: VpnPortalClientConnected
   VpnPortalClientDisconnected: VpnPortalClientDisconnected
+  DhcpIpv6Changed: DHCP IPv6 address changed
+  DhcpIpv6Conflicted: DHCP IPv6 address conflict
   DhcpIpv4Changed: DhcpIpv4Changed
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
   PortForwardAdded: PortForwardAdded

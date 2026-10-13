@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { IPv4CidrRange } from 'ip-num/IPRange'
+import { IPv4CidrRange, IPv6CidrRange } from 'ip-num/IPRange'
 import type { MobileTunConfig } from './backend'
 
 const mocks = vi.hoisted(() => {
@@ -72,17 +72,26 @@ function makeMobileTunConfig(instanceIds: string[]): MobileTunConfig {
     const config = mocks.configs.get(id)!
     const info = mocks.networkInfo.get(id) as any
     const ipv4 = info?.my_node_info?.virtual_ipv4
-    if (!ipv4?.address?.addr || info.error_msg)
+    const ipv6 = info?.my_node_info?.virtual_ipv6
+    if ((!ipv4?.address?.addr && !ipv6?.address?.addr) || info.error_msg)
       continue
-    const address = `${ipv4.address.addr}/${ipv4.network_length || 24}`
-    addresses.push(address)
-    const range = IPv4CidrRange.fromCidr(address)
-    routes.add(`${range.getFirst()}/${range.getPrefix()}`)
+    if (ipv4?.address?.addr) {
+      const address = `${ipv4.address.addr}/${ipv4.network_length || 24}`
+      addresses.push(address)
+      const range = IPv4CidrRange.fromCidr(address)
+      routes.add(`${range.getFirst()}/${range.getPrefix()}`)
+    }
+    if (ipv6?.address?.addr) {
+      const address = `${ipv6.address.addr}/${ipv6.network_length || 64}`
+      addresses.push(address)
+      const range = IPv6CidrRange.fromCidr(address)
+      routes.add(`${range.getFirst()}/${range.getPrefix()}`)
+    }
     const configuredRoutes = config.enable_manual_routes
       ? config.routes as string[]
       : (info.routes ?? []).flatMap((route: any) => route.proxy_cidrs ?? [])
     configuredRoutes.forEach((route: string) => routes.add(route.includes('/') ? route : `${route}/32`))
-    if (config.enable_magic_dns) {
+    if (config.enable_magic_dns && ipv4?.address?.addr) {
       routes.add('100.100.100.101/32')
       dns = '100.100.100.101'
     }
@@ -111,6 +120,12 @@ function setReady(instanceId: string, ipv4: string) {
     },
     routes: [],
   })
+}
+
+function setReadyIpv6(instanceId: string, ipv6: string) {
+  const info = mocks.networkInfo.get(instanceId) as any ?? { my_node_info: {}, routes: [] }
+  info.my_node_info.virtual_ipv6 = { address: { addr: ipv6 }, network_length: 64 }
+  mocks.networkInfo.set(instanceId, info)
 }
 
 async function loadVpnModule() {
@@ -147,6 +162,92 @@ beforeEach(() => {
 })
 
 describe('mobile VPN reconciliation', () => {
+  it('starts an IPv6-only VPN after DHCPv6 becomes ready', async () => {
+    setConfig('A')
+    mocks.configs.get('A')!.dhcpv6 = true
+    mocks.configs.get('A')!.enable_magic_dns = true
+    mocks.networkInfo.set('A', { my_node_info: {}, routes: [] })
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    expect(mocks.startVpn).not.toHaveBeenCalled()
+
+    setReadyIpv6('A', 'fd12::7')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mocks.startVpn).toHaveBeenCalledOnce()
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      ipv4Addrs: ['fd12::7/64'],
+      routes: ['fd12:0:0:0:0:0:0:0/64'],
+      dns: undefined,
+    }))
+    expect(mocks.setTunFd).toHaveBeenCalledWith(1, ['A'])
+  })
+
+  it('preserves IPv4 when the DHCPv6 address changes or is withdrawn', async () => {
+    setConfig('A')
+    mocks.configs.get('A')!.dhcpv6 = true
+    setReady('A', '10.0.0.1')
+    setReadyIpv6('A', 'fd12::7')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+
+    setReadyIpv6('A', 'fd13::8')
+    await vpn.onNetworkInstanceUpdate('A')
+    expect(mocks.stopVpn).toHaveBeenCalledOnce()
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', 'fd13::8/64'],
+      routes: ['10.0.0.0/24', 'fd13:0:0:0:0:0:0:0/64'],
+    }))
+
+    setReady('A', '10.0.0.1')
+    await vpn.onNetworkInstanceUpdate('A')
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24'],
+      routes: ['10.0.0.0/24'],
+    }))
+  })
+
+  it('keeps IPv6 active after IPv4 is withdrawn and stops after both are lost', async () => {
+    setConfig('A')
+    mocks.configs.get('A')!.dhcp = true
+    mocks.configs.get('A')!.dhcpv6 = true
+    setReady('A', '10.0.0.1')
+    setReadyIpv6('A', 'fd12::7')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+
+    mocks.networkInfo.set('A', { my_node_info: {}, routes: [] })
+    setReadyIpv6('A', 'fd12::7')
+    await vpn.onNetworkInstanceUpdate('A')
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['fd12::7/64'],
+    }))
+    expect(mocks.setTunFd).toHaveBeenLastCalledWith(1, ['A'])
+
+    mocks.networkInfo.set('A', { my_node_info: {}, routes: [] })
+    await vpn.onNetworkInstanceUpdate('A')
+    expect(mocks.setTunFd).toHaveBeenLastCalledWith(0)
+  })
+
+  it('adds a DHCPv6 member to the shared VPN without blocking a ready IPv4 member', async () => {
+    setConfig('A')
+    setConfig('B')
+    setReady('A', '10.0.0.1')
+    mocks.configs.get('B')!.dhcpv6 = true
+    mocks.networkInfo.set('B', { my_node_info: {}, routes: [] })
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24'],
+    }))
+
+    setReadyIpv6('B', 'fd12::7')
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', 'fd12::7/64'],
+    }))
+    expect(mocks.setTunFd).toHaveBeenLastCalledWith(1, ['A', 'B'])
+  })
+
   it('preserves healthy members and reports a rejected bootstrap member', async () => {
     setConfig('A')
     setReady('A', '10.126.126.1')

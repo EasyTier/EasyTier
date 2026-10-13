@@ -378,12 +378,13 @@ async function reconcileNetworkInstance(generation: number) {
     }
 
     const virtualIpv4 = curNetworkInfo.my_node_info?.virtual_ipv4
-    const virtualIp = virtualIpv4?.address?.addr ? Utils.ipv4ToString(virtualIpv4.address) : undefined
-    if (!virtualIp) {
-      if (!config.dhcp && !config.virtual_ipv4 && curNetworkInfo.my_node_info)
+    const virtualIpv6 = curNetworkInfo.my_node_info?.virtual_ipv6
+    const dhcp = config.dhcp || config.dhcpv6
+    if (!virtualIpv4?.address?.addr && !virtualIpv6?.address) {
+      if (!dhcp && !config.virtual_ipv4 && curNetworkInfo.my_node_info)
         continue
-      retryReason ??= config.dhcp ? 'dhcp_ipv4_unavailable' : 'static_ipv4_unavailable'
-      if (!config.dhcp)
+      retryReason ??= dhcp ? 'dhcp_address_unavailable' : 'static_address_unavailable'
+      if (!dhcp)
         networkInfoUnavailable = true
       continue
     }

@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use easytier_core::{
-    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
+    gateway::dhcp::DhcpHost, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{
     MagicDnsRuntime,
-    tun_common::{NativeDhcpIpv4Host, TunNicState},
+    tun_common::{NativeDhcpHost, TunNicState},
 };
 use crate::{
     common::global_ctx::ArcGlobalCtx,
@@ -187,13 +187,12 @@ impl NativeTunRuntime {
         &self,
         operation: Arc<Mutex<()>>,
         _packet_plane: Arc<CorePacketPlane>,
-    ) -> Arc<dyn DhcpIpv4Host> {
-        Arc::new(NativeDhcpIpv4Host {
+    ) -> Arc<dyn DhcpHost> {
+        Arc::new(NativeDhcpHost {
             global_ctx: self.global_ctx.clone(),
             operation,
             cancel: self.cancel.clone(),
             nic: self.nic.clone(),
-            closed: Arc::new(Notify::new()),
         })
     }
 

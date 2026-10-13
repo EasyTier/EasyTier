@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    gateway::dhcp::DhcpIpv4Host,
+    gateway::dhcp::DhcpHost,
     host::packet::HostPacketReceiver,
     instance::{CorePacketPlane, InstanceRuntimeHost, PacketEgressHost},
 };
@@ -17,7 +17,7 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,
-    ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+    ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         self.prepare_runtime(packet_plane).await
     }
 
