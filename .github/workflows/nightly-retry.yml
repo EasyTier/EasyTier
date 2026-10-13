@@ -2,7 +2,7 @@ name: EasyTier Nightly Retry
 
 on:
   workflow_run:
-    workflows: [EasyTier Nightly]
+    workflows: [EasyTier Core, EasyTier GUI, EasyTier Mobile, EasyTier Test]
     branches: [main]
     types: [completed]
 
@@ -12,8 +12,7 @@ permissions:
 jobs:
   retry:
     if: >-
-      (github.event.workflow_run.event == 'workflow_dispatch' ||
-       github.event.workflow_run.event == 'schedule') &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.run_attempt == 1 &&
       github.event.workflow_run.head_repository.full_name == github.repository

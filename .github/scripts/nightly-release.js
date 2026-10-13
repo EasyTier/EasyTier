@@ -1,7 +1,9 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-function releaseNotes(repository, baseline, sha, commits, runId) {
+const workflows = ['core', 'gui', 'mobile', 'test'];
+
+function releaseNotes(repository, baseline, sha, commits, runs) {
   const url = `https://github.com/${repository.owner}/${repository.repo}`;
   const changes = [...commits]
     .sort((a, b) => Date.parse(b.commit.committer.date) - Date.parse(a.commit.committer.date))
@@ -16,7 +18,7 @@ function releaseNotes(repository, baseline, sha, commits, runId) {
     'Development builds from `main`. This prerelease and its download URLs are updated in place.',
     '',
     `Commit: [${sha}](${url}/commit/${sha})`,
-    `Build: [EasyTier Nightly](${url}/actions/runs/${runId})`,
+    `Builds: ${runs.map(run => `[${run.name}](${run.html_url})`).join(' · ')}`,
     '',
     `## Changes since [${baseline.tag_name}](${baseline.html_url})`,
     '',
@@ -32,10 +34,8 @@ function releaseNotes(repository, baseline, sha, commits, runId) {
 
 async function prepare({ github, context, core }) {
   const repository = context.repo;
-  if (context.ref !== 'refs/heads/main') throw new Error('Nightly must run on main.');
   const { data: branch } = await github.rest.repos.getBranch({ ...repository, branch: 'main' });
-  // Every reusable build checks out this run's SHA, even if main advances.
-  const sha = context.sha;
+  const sha = context.payload.workflow_run?.head_sha || branch.commit.sha;
   const { data: ancestry } = await github.rest.repos.compareCommitsWithBasehead({
     ...repository, basehead: `${sha}...${branch.commit.sha}`, per_page: 1,
   });
@@ -58,27 +58,49 @@ async function prepare({ github, context, core }) {
       core.info('A newer nightly is already available; skipping this older build.');
       return null;
     }
-  }
-
-  // The release job depends on all four successful reusable builds. Their
-  // artifacts belong to this run; no historical build lookup is needed.
-  const uploaded = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
-    ...repository, run_id: context.runId, per_page: 100,
-  });
-  // Reruns can retain same-name artifacts from earlier attempts. Select the
-  // newest ID, matching download-artifact's latest:true lookup.
-  const byName = new Map();
-  for (const artifact of uploaded) {
-    if (!/^(easytier-[\w.-]+|Easytier-Magisk)$/.test(artifact.name)) continue;
-    if (!byName.has(artifact.name) || artifact.id > byName.get(artifact.name).id) {
-      byName.set(artifact.name, artifact);
+    if (comparison.status === 'identical' && release.body?.includes(`Commit: [${sha}]`)) {
+      core.info(`${sha} is already published.`);
+      return null;
     }
   }
-  const artifacts = [...byName.values()];
-  const components = [/^easytier-(?!gui-|mobile-)/, /^easytier-gui-/, /^easytier-mobile-/];
-  if (components.some(pattern => !artifacts.some(a => pattern.test(a.name))) ||
-      artifacts.some(artifact => artifact.expired)) {
-    throw new Error('Nightly build artifacts are missing or expired.');
+
+  const runs = [];
+  const artifacts = {};
+  for (const workflow of workflows) {
+    const { data } = await github.rest.actions.listWorkflowRuns({
+      ...repository,
+      workflow_id: `${workflow}.yml`,
+      branch: 'main',
+      head_sha: sha,
+      event: 'workflow_dispatch',
+      status: 'success',
+      per_page: 1,
+    });
+    const run = data.workflow_runs[0];
+    if (!run || run.head_sha !== sha || run.head_branch !== 'main' ||
+        run.event !== 'workflow_dispatch' || run.conclusion !== 'success') {
+      core.info(`Waiting for a successful full ${workflow} build at ${sha}.`);
+      return null;
+    }
+    runs.push(run);
+    if (workflow === 'test') continue;
+    const uploaded = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+      ...repository, run_id: run.id, per_page: 100,
+    });
+    // Reruns can retain same-name artifacts from earlier attempts. Select the
+    // newest ID, matching download-artifact's latest:true lookup.
+    const byName = new Map();
+    for (const artifact of uploaded) {
+      if (!/^(easytier-[\w.-]+|Easytier-Magisk)$/.test(artifact.name)) continue;
+      if (!byName.has(artifact.name) || artifact.id > byName.get(artifact.name).id) {
+        byName.set(artifact.name, artifact);
+      }
+    }
+    const files = [...byName.values()];
+    if (!files.length || files.some(artifact => artifact.expired)) {
+      throw new Error(`${workflow}: build artifacts are missing or expired.`);
+    }
+    artifacts[workflow] = files.map(artifact => ({ id: artifact.id, name: artifact.name }));
   }
 
   // Version releases may be published by a maintainer from a bot-created draft,
@@ -94,14 +116,15 @@ async function prepare({ github, context, core }) {
   return {
     sha,
     release_id: release?.id,
-    artifacts: artifacts.map(artifact => ({ id: artifact.id, name: artifact.name })),
-    body: releaseNotes(repository, baseline, sha, commits, context.runId),
+    runs: Object.fromEntries(workflows.map((workflow, index) => [workflow, runs[index].id])),
+    artifacts,
+    body: releaseNotes(repository, baseline, sha, commits, runs),
   };
 }
 
 async function publish({ github, context, core, build, directory }) {
   const repository = context.repo;
-  const names = build.artifacts.map(artifact => `${artifact.name}.zip`).sort();
+  const names = Object.values(build.artifacts).flat().map(artifact => `${artifact.name}.zip`).sort();
   const files = (await fs.readdir(directory)).sort();
   if (!names.length || JSON.stringify(files) !== JSON.stringify(names)) {
     throw new Error('Packaged files do not match the selected nightly artifacts.');

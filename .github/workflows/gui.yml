@@ -1,11 +1,6 @@
 name: EasyTier GUI
 
 on:
-  workflow_call:
-    inputs:
-      nightly:
-        type: boolean
-        default: false
   workflow_dispatch:
   push:
     branches: ["develop", "main", "releases/**"]
@@ -15,8 +10,8 @@ on:
 
 concurrency:
   # A new PR or branch push must not cancel a full build.
-  group: easytier-gui-${{ inputs.nightly && 'nightly' || (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ !inputs.nightly }}
+  group: ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,7 +34,7 @@ jobs:
         "easytier-web/frontend-lib/**", ".github/workflows/gui.yml",
         ".github/actions/**"]
     outputs:
-      full_build: ${{ inputs.nightly || github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
+      full_build: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
       # Release builds must run even if they only change release metadata.
       should_skip: >-
         ${{
@@ -50,13 +45,12 @@ jobs:
               steps.path_filter.outputs.relevant != 'true'
             )
           ) &&
-          !inputs.nightly &&
           github.event_name != 'workflow_dispatch' &&
           !startsWith(github.ref_name, 'releases/')
         }}
     steps:
       - id: skip_check
-        if: ${{ !inputs.nightly && github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/') }}
+        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/')
         uses: fkirc/skip-duplicate-actions@v5
         with:
           concurrent_skipping: 'same_content_newer'
@@ -97,7 +91,7 @@ jobs:
 
   build-gui:
     strategy:
-      fail-fast: ${{ !inputs.nightly }}
+      fail-fast: true
       matrix:
         include:
           - TARGET: x86_64-unknown-linux-musl
@@ -289,7 +283,6 @@ jobs:
       - name: Archive artifact
         uses: actions/upload-artifact@v5
         with:
-          if-no-files-found: error
           name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*

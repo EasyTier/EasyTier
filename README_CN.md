@@ -80,8 +80,7 @@ cargo binstall --git https://github.com/EasyTier/EasyTier.git --version 2.6.4 ea
 
 [下载 Nightly 开发版](https://github.com/EasyTier/EasyTier/releases/tag/nightly)：来自 `main` 分支，完整构建和测试通过后更新同一个预发布。
 各平台 ZIP 下载地址保持不变，更新说明列出相对最近人工发布版本的变更，并按日期从新到老排列。
-需要手动更新时，在 `main` 上运行 [EasyTier Nightly](https://github.com/EasyTier/EasyTier/actions/workflows/nightly.yml)。
-定时和手动触发都会重新完整构建，失败的任务会自动重试一次。
+定时和手动运行 [Nightly](https://github.com/EasyTier/EasyTier/actions/workflows/nightly.yml) 都会跳过当前 `main` 提交已成功构建的组件，全部构建和测试通过后发布。
 
 需要更小的可执行文件，可使用 [easytier-mini](https://github.com/EasyTier/easytier-mini)：支持基础 TCP/UDP 组网，功能范围与使用方式见其文档。
 

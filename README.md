@@ -81,8 +81,8 @@ This installs `easytier-core` and `easytier-cli` using the repository's metadata
 [Download Nightly builds](https://github.com/EasyTier/EasyTier/releases/tag/nightly) from `main`.
 The same prerelease is updated after complete builds and tests pass, with stable ZIP download URLs
 and dated changes since the last published version. These are development builds.
-To refresh it manually, run [EasyTier Nightly](https://github.com/EasyTier/EasyTier/actions/workflows/nightly.yml)
-on `main`; both scheduled and manual runs rebuild all components and retry failed jobs once.
+Scheduled and manual [Nightly runs](https://github.com/EasyTier/EasyTier/actions/workflows/nightly.yml)
+skip components already built successfully at the current `main` commit and publish when all builds and tests pass.
 
 For a smaller executable, try [easytier-mini](https://github.com/EasyTier/easytier-mini), which supports basic TCP/UDP networking. See its documentation for supported features and usage.
 

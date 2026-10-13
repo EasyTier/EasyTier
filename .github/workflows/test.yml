@@ -1,11 +1,6 @@
 name: EasyTier Test
 
 on:
-  workflow_call:
-    inputs:
-      nightly:
-        type: boolean
-        default: false
   workflow_dispatch:
   push:
     branches: [ "develop", "main", "releases/**" ]
@@ -15,8 +10,8 @@ on:
 
 concurrency:
   # A new PR or branch push must not cancel a full build.
-  group: easytier-test-${{ inputs.nightly && 'nightly' || (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ !inputs.nightly }}
+  group: ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -55,7 +50,7 @@ jobs:
         "tauri-plugin-vpnservice/**", "easytier-contrib/**",
         ".github/workflows/test.yml", ".github/actions/**"]
     outputs:
-      full_build: ${{ inputs.nightly || github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
+      full_build: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
       should_skip: >-
         ${{
           (
@@ -65,13 +60,12 @@ jobs:
               steps.path_filter.outputs.relevant != 'true'
             )
           ) &&
-          !inputs.nightly &&
           github.event_name != 'workflow_dispatch' &&
           !startsWith(github.ref_name, 'releases/')
         }}
     steps:
       - id: skip_check
-        if: ${{ !inputs.nightly && github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/') }}
+        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/')
         uses: fkirc/skip-duplicate-actions@v5
         with:
           concurrent_skipping: 'never'

@@ -13,10 +13,7 @@ module.exports = async ({ github, context, core }) => {
     });
     const fullBuild = run.event === 'workflow_dispatch' ||
       (run.event === 'push' && run.head_branch.startsWith('releases/'));
-    const nightly = run.path === '.github/workflows/nightly.yml' &&
-      run.head_branch === 'main' && ['schedule', 'workflow_dispatch'].includes(run.event);
-    if (run.conclusion !== 'success' ||
-        !(nightly || (run.path === `.github/workflows/${workflow}` && fullBuild))) {
+    if (run.path !== `.github/workflows/${workflow}` || run.conclusion !== 'success' || !fullBuild) {
       throw new Error(`${workflow}: run ${runId} must be a successful full build.`);
     }
     if (commit && run.head_sha !== commit) {
