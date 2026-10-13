@@ -436,6 +436,7 @@ struct SharedVirtualNicNatEntry {
     original: SharedVirtualNicFlowKey,
     wire: SharedVirtualNicFlowKey,
     source_owner: Option<SharedVirtualNicMemberId>,
+    incoming: bool,
     last_active: Instant,
 }
 
@@ -462,12 +463,23 @@ impl SharedVirtualNicNatTable {
             entry.last_active = now;
             return rewrite_packet_flow(packet, original, entry.wire, RewriteIpAddr::Source);
         }
+        let mut wire = original;
+        wire.src = translated_src;
+        // Wildcard UDP sockets may reply with another member's source address.
+        // Prefer an incoming reservation after source correction, preserving its
+        // service port and incoming destination. Exact outgoing mappings win above;
+        // packet tuples cannot distinguish a new client with the same endpoints.
+        if IpProtocol::from(original.protocol) == IpProtocol::Udp
+            && let Some(entry) = self.entries.get_mut(&(member_id, wire))
+            && entry.incoming
+        {
+            entry.last_active = now;
+            return rewrite_packet_flow(packet, original, entry.wire, RewriteIpAddr::Source);
+        }
         if !self.ensure_capacity(now) {
             return false;
         }
 
-        let mut wire = original;
-        wire.src = translated_src;
         while self.replies.contains_key(&(member_id, wire.reversed())) {
             let Some(ports) = wire.ports.as_mut() else {
                 return false;
@@ -486,6 +498,7 @@ impl SharedVirtualNicNatTable {
                 original,
                 wire,
                 source_owner,
+                incoming: false,
                 last_active: now,
             },
         );
@@ -516,6 +529,7 @@ impl SharedVirtualNicNatTable {
                 original,
                 wire: original,
                 source_owner: Some(member_id),
+                incoming: true,
                 last_active: now,
             },
         );
@@ -2596,7 +2610,12 @@ mod tests {
             let translated = receiver.try_recv().unwrap();
             let wire = SharedVirtualNicFlowKey::from_packet(&translated).unwrap();
             assert_eq!(wire.src, native.into());
-            assert_eq!(wire.ports.unwrap().src, 1235);
+            // Keep incoming UDP replies on their service port after a member joins.
+            // A native outgoing flow still reserves its port against new clients.
+            assert_eq!(
+                wire.ports.unwrap().src,
+                if incoming_first { 1234 } else { 1235 }
+            );
 
             assert!(
                 state
@@ -2604,7 +2623,13 @@ mod tests {
                     .await
             );
             assert_eq!(receiver.try_recv().unwrap().payload(), original);
-            for (port, destination) in [(1234, native), (1235, source)] {
+            for (port, destination) in [
+                (1234, native),
+                (
+                    wire.ports.unwrap().src,
+                    if incoming_first { native } else { source },
+                ),
+            ] {
                 let reply = state
                     .prepare_member_packet_to_tun(
                         first,
@@ -3505,7 +3530,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatcher_reserves_native_incoming_flows_before_translation() {
+    async fn dispatcher_preserves_incoming_udp_reply_ports_with_wrong_source() {
         let source_owner = uuid::Uuid::from_u128(1);
         let destination_owner = uuid::Uuid::from_u128(2);
         for (source_sources, native_sources, incoming, outgoing) in [
@@ -3530,6 +3555,109 @@ mod tests {
                     1234,
                 ),
                 ipv6_udp_packet_with_ports(
+                    "2001:db8:1::1".parse().unwrap(),
+                    "2001:db8:2::2".parse().unwrap(),
+                    1234,
+                    5678,
+                ),
+            ),
+        ] {
+            let (source_sender, mut source_receiver) = mpsc::channel(1);
+            let (sender, mut receiver) = mpsc::channel(1);
+            let mut state = SharedVirtualNicDispatcherState::default();
+            state.register(source_owner, member_entry(source_sender));
+            state.register(destination_owner, member_entry(sender));
+            state
+                .source_table
+                .update_member_sources(source_owner, source_sources);
+            state
+                .source_table
+                .update_member_sources(destination_owner, native_sources);
+
+            let incoming_payload = incoming.payload().to_vec();
+            let expected_reply = SharedVirtualNicFlowKey::from_packet(&incoming)
+                .unwrap()
+                .reversed();
+            for _ in 0..3 {
+                // A wildcard UDP socket receives on B but replies with A's source IP.
+                let received = state
+                    .prepare_member_packet_to_tun(
+                        destination_owner,
+                        ZCPacket::new_with_payload(&incoming_payload),
+                    )
+                    .unwrap();
+                assert_eq!(received.payload(), incoming_payload);
+                assert!(
+                    state
+                        .send_packet(ZCPacket::new_with_payload(outgoing.payload()))
+                        .await
+                );
+                let reply = receiver.try_recv().unwrap();
+                assert_eq!(
+                    SharedVirtualNicFlowKey::from_packet(&reply),
+                    Some(expected_reply)
+                );
+                match expected_reply.src {
+                    SharedVirtualNicFlowAddr::V4(_) => {
+                        let ipv4 = Ipv4Packet::new_checked(reply.payload()).unwrap();
+                        assert!(ipv4.verify_checksum());
+                        assert!(
+                            UdpPacket::new_checked(ipv4.payload())
+                                .unwrap()
+                                .verify_checksum(
+                                    &IpAddress::Ipv4(ipv4.src_addr()),
+                                    &IpAddress::Ipv4(ipv4.dst_addr())
+                                )
+                        );
+                    }
+                    SharedVirtualNicFlowAddr::V6(_) => {
+                        let ipv6 = Ipv6Packet::new_checked(reply.payload()).unwrap();
+                        assert!(
+                            UdpPacket::new_checked(ipv6.payload())
+                                .unwrap()
+                                .verify_checksum(
+                                    &IpAddress::Ipv6(ipv6.src_addr()),
+                                    &IpAddress::Ipv6(ipv6.dst_addr())
+                                )
+                        );
+                    }
+                }
+                assert!(source_receiver.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_reserves_native_incoming_tcp_flows_before_translation() {
+        let source_owner = uuid::Uuid::from_u128(1);
+        let destination_owner = uuid::Uuid::from_u128(2);
+        for (source_sources, native_sources, incoming, outgoing) in [
+            (
+                member_sources(&["10.231.1.1/24"]),
+                member_sources(&["10.231.2.1/24"]),
+                ipv4_tcp_packet_with_ports(
+                    Ipv4Addr::new(10, 231, 2, 2),
+                    Ipv4Addr::new(10, 231, 2, 1),
+                    5678,
+                    1234,
+                ),
+                ipv4_tcp_packet_with_ports(
+                    Ipv4Addr::new(10, 231, 1, 1),
+                    Ipv4Addr::new(10, 231, 2, 2),
+                    1234,
+                    5678,
+                ),
+            ),
+            (
+                member_sources_with_ipv6(&["2001:db8:1::1/64"]),
+                member_sources_with_ipv6(&["2001:db8:2::1/64"]),
+                ipv6_tcp_packet_with_ports(
+                    "2001:db8:2::2".parse().unwrap(),
+                    "2001:db8:2::1".parse().unwrap(),
+                    5678,
+                    1234,
+                ),
+                ipv6_tcp_packet_with_ports(
                     "2001:db8:1::1".parse().unwrap(),
                     "2001:db8:2::2".parse().unwrap(),
                     1234,
@@ -3572,7 +3700,7 @@ mod tests {
 
             let translated_reply = match (wire.dst, wire.src) {
                 (SharedVirtualNicFlowAddr::V4(src), SharedVirtualNicFlowAddr::V4(dst)) => {
-                    ipv4_udp_packet_with_ports(
+                    ipv4_tcp_packet_with_ports(
                         src.into(),
                         dst.into(),
                         5678,
@@ -3580,7 +3708,7 @@ mod tests {
                     )
                 }
                 (SharedVirtualNicFlowAddr::V6(src), SharedVirtualNicFlowAddr::V6(dst)) => {
-                    ipv6_udp_packet_with_ports(
+                    ipv6_tcp_packet_with_ports(
                         src.into(),
                         dst.into(),
                         5678,
@@ -3597,6 +3725,41 @@ mod tests {
                 Some(original.reversed())
             );
         }
+    }
+
+    #[test]
+    fn nat_existing_outgoing_udp_mapping_precedes_incoming_reservation() {
+        let member_id = uuid::Uuid::from_u128(1);
+        let source = Ipv4Addr::new(10, 231, 1, 1);
+        let native = Ipv4Addr::new(10, 231, 2, 1);
+        let other_native = Ipv4Addr::new(10, 231, 2, 3);
+        let remote = Ipv4Addr::new(10, 231, 2, 2);
+        let mut nat = SharedVirtualNicNatTable::default();
+        let mut outgoing = ipv4_udp_packet(source, remote);
+        let original = SharedVirtualNicFlowKey::from_packet(&outgoing).unwrap();
+        assert!(nat.prepare_packet(member_id, None, original, &mut outgoing, native.into()));
+        let wire = SharedVirtualNicFlowKey::from_packet(&outgoing).unwrap();
+
+        let incoming = ipv4_udp_packet_with_ports(remote, other_native, 5678, 1234);
+        assert!(nat.reserve_reply(
+            member_id,
+            SharedVirtualNicFlowKey::from_packet(&incoming).unwrap()
+        ));
+        let mut outgoing = ipv4_udp_packet(source, remote);
+        assert!(nat.prepare_packet(
+            member_id,
+            None,
+            original,
+            &mut outgoing,
+            other_native.into()
+        ));
+        assert_eq!(SharedVirtualNicFlowKey::from_packet(&outgoing), Some(wire));
+        let mut reply = ipv4_udp_packet_with_ports(remote, native, 5678, 1234);
+        assert!(nat.translate_reply(member_id, &mut reply));
+        assert_eq!(
+            SharedVirtualNicFlowKey::from_packet(&reply),
+            Some(original.reversed())
+        );
     }
 
     #[tokio::test]
