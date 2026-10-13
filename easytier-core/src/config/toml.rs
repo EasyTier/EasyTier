@@ -1381,7 +1381,6 @@ source = "web"
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
-    use crate::proto::common::CompressionAlgoPb;
     use base64::{Engine as _, prelude::BASE64_STANDARD};
 
     #[test]
@@ -1516,7 +1515,7 @@ socketMark = "0"
         assert!(!flags.enable_encryption);
         assert_eq!(flags.mtu, 1420);
         assert_eq!(flags.foreign_relay_bps_limit, u64::MAX);
-        assert_eq!(flags.data_compress_algo, CompressionAlgoPb::Zstd as i32);
+        assert_eq!(flags.compression_algorithm, "Zstd");
         assert_eq!(flags.socket_mark, Some(0));
         for fields in [
             "enableEncryption = true\nenable_encryption = false",
@@ -1562,7 +1561,7 @@ socketMark = "0"
         flags.mtu = 0;
         flags.foreign_relay_bps_limit = u64::MAX - 1;
         flags.instance_recv_bps_limit = u64::MAX - 2;
-        flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+        flags.compression_algorithm = "zstd".to_owned();
         flags.socket_mark = Some(0);
         cfg.set_flags(flags);
 
@@ -1579,7 +1578,8 @@ socketMark = "0"
         assert!(dumped.contains("mtu = 0"));
         assert!(dumped.contains("foreign_relay_bps_limit = \"18446744073709551614\""));
         assert!(dumped.contains("instance_recv_bps_limit = \"18446744073709551613\""));
-        assert!(dumped.contains("data_compress_algo = \"Zstd\""));
+        assert!(dumped.contains("compression_algorithm = \"zstd\""));
+        assert!(!dumped.contains("data_compress_algo"));
         assert!(dumped.contains("socket_mark = 0"));
 
         let reloaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
@@ -1596,10 +1596,7 @@ socketMark = "0"
         assert_eq!(reloaded_flags.mtu, 0);
         assert_eq!(reloaded_flags.foreign_relay_bps_limit, u64::MAX - 1);
         assert_eq!(reloaded_flags.instance_recv_bps_limit, u64::MAX - 2);
-        assert_eq!(
-            reloaded_flags.data_compress_algo,
-            i32::from(CompressionAlgoPb::Zstd)
-        );
+        assert_eq!(reloaded_flags.compression_algorithm, "zstd");
         assert_eq!(reloaded_flags.socket_mark, Some(0));
     }
 

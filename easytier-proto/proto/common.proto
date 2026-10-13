@@ -18,16 +18,20 @@ message Flags {
   bool enable_exit_node = 7 [(easytier.flag) = { default: "false" }];
   bool no_tun = 8 [(easytier.flag) = { default: "false" }];
   bool use_smoltcp = 9 [(easytier.flag) = { default: "false" }];
-  string relay_network_whitelist = 10 [(easytier.flag) = { default: "*", form: true }];
+  string relay_network_whitelist = 10 [(easytier.flag) = {
+    default: "*", form: true, alias: "foreign_network_whitelist"
+  }];
   bool disable_p2p = 11 [(easytier.flag) = { default: "false" }];
   bool relay_all_peer_rpc = 12 [(easytier.flag) = { default: "false" }];
   bool disable_udp_hole_punching = 13 [(easytier.flag) = { default: "false" }];
   // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345
   // instead
   bool multi_thread = 15 [(easytier.flag) = { default: "true" }];
-  CompressionAlgoPb data_compress_algo = 16 [(easytier.flag) = {
-    default: "None", form: true
-    optionize: 'attrs(serde_as(as = "Option<serde_with::TryFromInto<CompressionAlgoPb>>"))'
+  // Legacy protobuf field. Configuration input uses compression_algorithm,
+  // including the old data_compress_algo spelling as an alias.
+  CompressionAlgoPb data_compress_algo = 16 [deprecated = true, (easytier.flag) = {
+    default: "None", deprecated: true
+    optionize: 'attrs(serde(skip))'
   }];
   bool bind_device = 17 [(easytier.flag) = { default: "true" }];
 
@@ -110,6 +114,12 @@ message Flags {
   // Prefer direct credential peers that already relay to a destination over
   // advertising another direct edge to the same destination.
   bool prefer_peer_relay = 44 [(easytier.flag) = { default: "false" }];
+
+  // Compression algorithm name; empty string means the default (none).
+  string compression_algorithm = 45 [(easytier.flag) = {
+    default: "none", form: true, api: { field: "data_compress_algo" }
+    alias: "data_compress_algo"
+  }];
 }
 
 

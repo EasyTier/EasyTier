@@ -34,7 +34,7 @@ use crate::{
     instance::test_instance::TestInstance as Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
-        common::{CompressionAlgoPb, SecureModeConfig},
+        common::SecureModeConfig,
         rpc::standalone::{
             RuntimeRpcDialer, RuntimeRpcListener, runtime_rpc_dialer, runtime_rpc_listener,
             runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener,
@@ -1740,13 +1740,13 @@ pub async fn data_compress(
         |cfg| {
             if cfg.get_inst_name() == "inst1" && inst1_compress {
                 let mut flags = cfg.get_flags();
-                flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+                flags.compression_algorithm = "zstd".to_owned();
                 cfg.set_flags(flags);
             }
 
             if cfg.get_inst_name() == "inst3" && inst2_compress {
                 let mut flags = cfg.get_flags();
-                flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+                flags.compression_algorithm = "zstd".to_owned();
                 cfg.set_flags(flags);
             }
 

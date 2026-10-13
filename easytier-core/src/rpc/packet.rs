@@ -2,7 +2,7 @@ use prost::{Message as _, length_delimiter_len};
 
 use crate::{
     config::PeerId,
-    packet::{CompressorAlgo, PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
+    packet::{CompressionAlgorithm, PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     proto::{
         common::{CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket},
         rpc_types::error::Error,
@@ -13,8 +13,8 @@ use super::RpcTransactId;
 
 const RPC_PACKET_UDP_PAYLOAD_BUDGET: usize = 1300;
 
-pub(crate) fn accepted_compression_algo() -> CompressionAlgoPb {
-    if CompressorAlgo::ZstdDefault.is_available() {
+pub(crate) fn accepted_compression_algorithm() -> CompressionAlgoPb {
+    if CompressionAlgorithm::Zstd.is_available() {
         CompressionAlgoPb::Zstd
     } else {
         CompressionAlgoPb::None
@@ -22,13 +22,13 @@ pub(crate) fn accepted_compression_algo() -> CompressionAlgoPb {
 }
 
 pub async fn compress_packet(
-    accepted_compression_algo: CompressionAlgoPb,
+    accepted_compression_algorithm: CompressionAlgoPb,
     content: &[u8],
 ) -> Result<(Vec<u8>, CompressionAlgoPb), Error> {
-    let algo = CompressorAlgo::try_from(accepted_compression_algo)
+    let algo = CompressionAlgorithm::try_from(accepted_compression_algorithm)
         .ok()
         .filter(|algo| algo.is_available())
-        .unwrap_or(CompressorAlgo::None);
+        .unwrap_or(CompressionAlgorithm::None);
     let compressed = crate::packet::compressor::DefaultCompressor::new()
         .compress_raw(content, algo)
         .await
@@ -38,16 +38,17 @@ pub async fn compress_packet(
     } else {
         Ok((
             compressed,
-            CompressionAlgoPb::try_from(algo).expect("CompressorAlgo should map to protobuf"),
+            CompressionAlgoPb::try_from(algo).expect("CompressionAlgorithm should map to protobuf"),
         ))
     }
 }
 
 pub async fn decompress_packet(
-    compression_algo: CompressionAlgoPb,
+    compression_algorithm: CompressionAlgoPb,
     content: &[u8],
 ) -> Result<Vec<u8>, Error> {
-    let algo = CompressorAlgo::try_from(compression_algo).map_err(anyhow::Error::from)?;
+    let algo =
+        CompressionAlgorithm::try_from(compression_algorithm).map_err(anyhow::Error::from)?;
     crate::packet::compressor::DefaultCompressor::new()
         .decompress_raw(content, algo)
         .await
@@ -281,23 +282,23 @@ pub fn build_rpc_packet(args: BuildRpcPacketArgs<'_>) -> Vec<ZCPacket> {
 mod tests {
     use crate::proto::common::CompressionAlgoPb;
 
-    use super::accepted_compression_algo;
+    use super::accepted_compression_algorithm;
     #[cfg(not(feature = "zstd"))]
     use super::compress_packet;
 
     #[test]
     fn accepted_compression_matches_build_capabilities() {
         #[cfg(feature = "zstd")]
-        assert_eq!(accepted_compression_algo(), CompressionAlgoPb::Zstd);
+        assert_eq!(accepted_compression_algorithm(), CompressionAlgoPb::Zstd);
 
         #[cfg(not(feature = "zstd"))]
-        assert_eq!(accepted_compression_algo(), CompressionAlgoPb::None);
+        assert_eq!(accepted_compression_algorithm(), CompressionAlgoPb::None);
     }
 
     #[cfg(not(feature = "zstd"))]
     #[tokio::test]
     async fn compression_negotiation_falls_back_when_zstd_is_unavailable() {
-        assert_eq!(accepted_compression_algo(), CompressionAlgoPb::None);
+        assert_eq!(accepted_compression_algorithm(), CompressionAlgoPb::None);
 
         let (content, algorithm) = compress_packet(CompressionAlgoPb::Zstd, b"rpc body")
             .await
