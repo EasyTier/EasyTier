@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   dispatch:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -26,3 +27,10 @@ jobs:
           script: |
             const dispatch = require('./.github/scripts/nightly-build.js');
             await dispatch({ github, context, core });
+
+  release:
+    needs: dispatch
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/nightly-release.yml

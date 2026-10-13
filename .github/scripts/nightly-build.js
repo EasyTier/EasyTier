@@ -5,7 +5,7 @@ module.exports = async ({ github, context, core }) => {
     per_page: 100,
   });
 
-  for (const branch of branches.filter(({ name }) => ['main', 'develop'].includes(name))) {
+  for (const branch of branches.filter(({ name }) => name === 'main')) {
     for (const workflow of ['core.yml', 'gui.yml', 'mobile.yml', 'test.yml']) {
       const { data } = await github.rest.actions.listWorkflowRuns({
         ...repository,

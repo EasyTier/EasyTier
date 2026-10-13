@@ -54,14 +54,14 @@ test('nightly retries a failed component using its last successful commit', asyn
   assert.deepEqual(runs.map(run => run.workflow_id), ['gui.yml']);
 });
 
-test('main and develop are checked independently', async () => {
-  const successfulRuns = Object.fromEntries(workflows.map(workflow => [`main/${workflow}`, 'same']));
+test('nightly only builds main even when other branches exist', async () => {
   const runs = await nightly([
-    { name: 'main', commit: { sha: 'same' } },
+    { name: 'main', commit: { sha: 'new' } },
     { name: 'develop', commit: { sha: 'new' } },
-  ], successfulRuns);
+    { name: 'feature', commit: { sha: 'new' } },
+  ]);
   assert.deepEqual(runs.map(run => run.workflow_id), workflows);
-  assert.ok(runs.every(run => run.ref === 'develop'));
+  assert.ok(runs.every(run => run.ref === 'main'));
 });
 
 process.env.CORE_RUN_ID = '1';
