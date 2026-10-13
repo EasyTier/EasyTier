@@ -1,6 +1,11 @@
 name: EasyTier Core
 
 on:
+  workflow_call:
+    inputs:
+      nightly:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       sign_windows:
@@ -15,8 +20,8 @@ on:
 
 concurrency:
   # A new PR or branch push must not cancel a full build.
-  group: ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: easytier-core-${{ inputs.nightly && 'nightly' || (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !inputs.nightly }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -46,7 +51,7 @@ jobs:
         "easytier-core/Cargo.toml", "easytier-proto/Cargo.toml",
         ".github/workflows/core.yml", ".github/actions/prepare-pnpm/**"]
     outputs:
-      full_build: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
+      full_build: ${{ inputs.nightly || github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
       frontend_changed: ${{ steps.path_filter.outputs.frontend }}
       # Release builds must run even if they only change release metadata.
       should_skip: >-
@@ -58,12 +63,13 @@ jobs:
               steps.path_filter.outputs.relevant != 'true'
             )
           ) &&
+          !inputs.nightly &&
           github.event_name != 'workflow_dispatch' &&
           !startsWith(github.ref_name, 'releases/')
         }}
     steps:
       - id: skip_check
-        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/')
+        if: ${{ !inputs.nightly && github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/') }}
         uses: fkirc/skip-duplicate-actions@v5
         with:
           concurrent_skipping: 'same_content_newer'
@@ -139,6 +145,7 @@ jobs:
         if: needs.pre_job.outputs.full_build == 'true'
         uses: actions/upload-artifact@v5
         with:
+          if-no-files-found: error
           name: easytier-web-dashboard
           path: |
             easytier-web/frontend/dist/*
@@ -343,6 +350,7 @@ jobs:
       - name: Archive artifact
         uses: actions/upload-artifact@v5
         with:
+          if-no-files-found: error
           name: easytier-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*

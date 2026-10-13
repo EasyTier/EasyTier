@@ -1,69 +1,9 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const dispatch = require('./nightly-build.js');
 const validate = require('./validate-release-builds.js');
 
 const context = { repo: { owner: 'EasyTier', repo: 'EasyTier' } };
 const core = { info() {} };
-const workflows = ['core.yml', 'gui.yml', 'mobile.yml', 'test.yml'];
-
-async function nightly(branches, successfulRuns = {}) {
-  const dispatched = [];
-  const github = {
-    paginate: async () => branches,
-    rest: {
-      repos: { listBranches() {} },
-      actions: {
-        async listWorkflowRuns(request) {
-          assert.equal(request.event, 'workflow_dispatch');
-          assert.equal(request.status, 'success');
-          const sha = successfulRuns[`${request.branch}/${request.workflow_id}`];
-          return { data: { workflow_runs: sha ? [{ head_sha: sha }] : [] } };
-        },
-        async createWorkflowDispatch(request) {
-          dispatched.push(request);
-        },
-      },
-    },
-  };
-  await dispatch({ github, context, core });
-  return dispatched;
-}
-
-test('first nightly builds every workflow on an existing main branch', async () => {
-  const runs = await nightly([{ name: 'main', commit: { sha: 'new' } }]);
-  assert.deepEqual(runs.map(run => run.workflow_id), workflows);
-  assert.ok(runs.every(run => run.ref === 'main'));
-  assert.deepEqual(runs[0].inputs, { sign_windows: false });
-  assert.ok(runs.slice(1).every(run => !run.inputs));
-});
-
-test('unchanged branches skip builds and unmonitored branches are ignored', async () => {
-  const successfulRuns = Object.fromEntries(workflows.map(workflow => [`main/${workflow}`, 'same']));
-  const runs = await nightly([
-    { name: 'main', commit: { sha: 'same' } },
-    { name: 'feature', commit: { sha: 'new' } },
-  ], successfulRuns);
-  assert.deepEqual(runs, []);
-});
-
-test('nightly retries a failed component using its last successful commit', async () => {
-  const successfulRuns = Object.fromEntries(workflows.map(workflow => [`main/${workflow}`, 'new']));
-  successfulRuns['main/gui.yml'] = 'old';
-  const runs = await nightly([{ name: 'main', commit: { sha: 'new' } }], successfulRuns);
-  assert.deepEqual(runs.map(run => run.workflow_id), ['gui.yml']);
-});
-
-test('main and develop are checked independently', async () => {
-  const successfulRuns = Object.fromEntries(workflows.map(workflow => [`main/${workflow}`, 'same']));
-  const runs = await nightly([
-    { name: 'main', commit: { sha: 'same' } },
-    { name: 'develop', commit: { sha: 'new' } },
-  ], successfulRuns);
-  assert.deepEqual(runs.map(run => run.workflow_id), workflows);
-  assert.ok(runs.every(run => run.ref === 'develop'));
-});
-
 process.env.CORE_RUN_ID = '1';
 process.env.GUI_RUN_ID = '2';
 process.env.MOBILE_RUN_ID = '3';
@@ -130,4 +70,23 @@ test('release rejects builds from different commits', async () => {
   const runs = releaseRuns();
   runs[2].head_sha = 'different';
   await assert.rejects(release(runs), /same commit/);
+});
+
+test('release accepts the same successful main nightly for all components', async () => {
+  for (const event of ['schedule', 'workflow_dispatch']) {
+    const runs = releaseRuns();
+    for (const run of runs) {
+      run.path = '.github/workflows/nightly.yml';
+      run.event = event;
+    }
+    await release(runs);
+  }
+});
+
+test('release rejects nightly builds from another branch or event', async () => {
+  for (const changes of [{ head_branch: 'feature' }, { event: 'pull_request' }]) {
+    const runs = releaseRuns();
+    Object.assign(runs[0], { path: '.github/workflows/nightly.yml' }, changes);
+    await assert.rejects(release(runs), /successful full build/);
+  }
 });

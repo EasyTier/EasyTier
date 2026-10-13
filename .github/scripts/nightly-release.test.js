@@ -21,16 +21,13 @@ function fixture() {
       { tag_name: 'v2.7.0', published_at: '2026-10-06', prerelease: true, html_url: 'version' },
       { tag_name: 'v2.8.0', published_at: '2026-10-12', draft: true },
     ],
-    runs: Object.fromEntries(['core', 'gui', 'mobile', 'test'].map((name, index) => [name, {
-      id: index + 1, name, head_sha: 'built', head_branch: 'main',
-      event: 'workflow_dispatch', conclusion: 'success', html_url: `run/${index + 1}`,
-    }])),
-    artifacts: {
-      1: [{ id: 10, name: 'easytier-linux-x86_64' }, { id: 11, name: 'Easytier-Magisk' },
-        { id: 12, name: 'signpath-unsigned-windows-x86_64' }],
-      2: [{ id: 20, name: 'easytier-gui-windows-x86_64' }],
-      3: [{ id: 30, name: 'easytier-mobile-android-aarch64' }],
-    },
+    artifacts: [
+      { id: 10, name: 'easytier-linux-x86_64' }, { id: 11, name: 'Easytier-Magisk' },
+      { id: 12, name: 'signpath-unsigned-windows-x86_64' },
+      { id: 20, name: 'easytier-gui-windows-x86_64' },
+      { id: 30, name: 'easytier-mobile-android-aarch64' },
+      { id: 40, name: 'tests' },
+    ],
     assets: [],
   };
   const repos = {
@@ -57,13 +54,6 @@ function fixture() {
     },
   };
   const actions = {
-    async listWorkflowRuns(request) {
-      assert.equal(request.branch, 'main');
-      assert.equal(request.event, 'workflow_dispatch');
-      assert.equal(request.status, 'success');
-      const run = state.runs[request.workflow_id.replace('.yml', '')];
-      return { data: { workflow_runs: run ? [run] : [] } };
-    },
     listWorkflowRunArtifacts() {},
   };
   const github = {
@@ -80,7 +70,10 @@ function fixture() {
         return state.releases.concat(state.release ? [{ tag_name: 'nightly', ...state.release }] : []);
       }
       if (method === repos.listReleaseAssets) return state.assets;
-      if (method === actions.listWorkflowRunArtifacts) return state.artifacts[request.run_id];
+      if (method === actions.listWorkflowRunArtifacts) {
+        assert.equal(request.run_id, 123);
+        return state.artifacts;
+      }
       if (method === repos.compareCommitsWithBasehead) {
         calls.push(['changelog', request.basehead]);
         assert.equal(request.per_page, 100);
@@ -91,7 +84,7 @@ function fixture() {
       throw new Error('Unexpected API call');
     },
   };
-  const context = { repo: repository, payload: { workflow_run: { head_sha: 'built' } } };
+  const context = { repo: repository, ref: 'refs/heads/main', sha: 'built', runId: 123 };
   return { state, calls, github, context, core };
 }
 
@@ -99,46 +92,27 @@ function commit(sha, date) {
   return { sha, html_url: `commit/${sha}`, commit: { committer: { date }, message: `${sha} change\n\nDetails` } };
 }
 
-test('nightly selects one main commit and uses the last published version, including prereleases', async () => {
+test('nightly uses its build SHA after main advances and the last published version, including prereleases', async () => {
   const f = fixture();
   f.state.release = { id: 99, published_at: '2026-10-13' };
   const build = await prepare(f);
   assert.equal(build.sha, 'built');
-  assert.deepEqual(build.runs, { core: 1, gui: 2, mobile: 3, test: 4 });
-  assert.deepEqual(build.artifacts.core.map(a => a.id), [10, 11]);
+  assert.deepEqual(build.artifacts.map(a => a.id), [10, 11, 20, 30]);
+  assert.match(build.body, /actions\/runs\/123/);
   assert.ok(f.calls.some(call => call[0] === 'changelog' && call[1] === 'v2.7.0...built'));
   assert.match(build.body, /Changes since \[v2.7.0\]/);
   assert.ok(build.body.indexOf('2026-10-12') < build.body.indexOf('2026-10-10'));
 });
 
-test('nightly waits for every component and the full test run', async () => {
-  for (const workflow of ['core', 'gui', 'mobile', 'test']) {
+test('nightly refuses missing components and expired artifacts before changing a release', async () => {
+  for (const name of ['easytier-linux-x86_64', 'easytier-gui-windows-x86_64', 'easytier-mobile-android-aarch64']) {
     const f = fixture();
-    delete f.state.runs[workflow];
-    assert.equal(await prepare(f), null);
-  }
-});
-
-test('nightly rejects a mismatched commit, branch, event or failed result', async () => {
-  for (const field of ['head_sha', 'head_branch', 'event', 'conclusion']) {
-    const f = fixture();
-    f.state.runs.gui[field] = 'different';
-    assert.equal(await prepare(f), null);
-  }
-});
-
-test('nightly accepts successful failed-job reruns without requiring a new run ID', async () => {
-  const f = fixture();
-  f.state.runs.gui.run_attempt = 2;
-  assert.equal((await prepare(f)).runs.gui, 2);
-});
-
-test('nightly refuses missing or expired artifacts before changing a release', async () => {
-  for (const artifacts of [[], [{ id: 20, name: 'easytier-gui-windows-x86_64', expired: true }]]) {
-    const f = fixture();
-    f.state.artifacts[2] = artifacts;
+    f.state.artifacts = f.state.artifacts.filter(artifact => artifact.name !== name);
     await assert.rejects(prepare(f), /missing or expired/);
   }
+  const f = fixture();
+  f.state.artifacts[0].expired = true;
+  await assert.rejects(prepare(f), /missing or expired/);
 });
 
 test('an older completed run cannot replace a newer nightly or a removed main commit', async () => {
@@ -153,11 +127,11 @@ test('an older completed run cannot replace a newer nightly or a removed main co
   }
 });
 
-test('duplicate completion events skip a fully published commit', async () => {
+test('rebuilding an already published commit refreshes the assets and build link', async () => {
   const f = fixture();
   f.state.release = { id: 100, body: 'Commit: [built](url)' };
   f.state.publishedComparison = 'identical';
-  assert.equal(await prepare(f), null);
+  assert.match((await prepare(f)).body, /actions\/runs\/123/);
 });
 
 test('nightly can resume an initial draft or an interrupted release-note update', async () => {
@@ -171,11 +145,10 @@ test('nightly can resume an initial draft or an interrupted release-note update'
   assert.ok(await prepare(f));
 });
 
-test('manual publication checks the current main commit', async () => {
+test('nightly refuses publication from another branch', async () => {
   const f = fixture();
-  f.context.payload = {};
-  for (const run of Object.values(f.state.runs)) run.head_sha = 'main-head';
-  assert.equal((await prepare(f)).sha, 'main-head');
+  f.context.ref = 'refs/heads/feature';
+  await assert.rejects(prepare(f), /must run on main/);
 });
 
 test('nightly requires a published version baseline and a mutable release', async () => {
@@ -191,7 +164,7 @@ test('notes date every entry in UTC and sort by timestamp, not input order', () 
     commit('middle', '2026-10-12T15:00:00Z'),
     commit('oldest', '2026-10-12T01:00:00+08:00'),
     commit('newest', '2026-10-12T19:00:00Z'),
-  ], []);
+  ], 123);
   assert.match(notes, /2026-10-11 — oldest change/);
   assert.ok(notes.indexOf('newest change') < notes.indexOf('middle change'));
   assert.ok(notes.indexOf('middle change') < notes.indexOf('oldest change'));
@@ -202,7 +175,7 @@ async function packageFiles(t, f) {
   const build = await prepare(f);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'easytier-nightly-test-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  for (const artifact of Object.values(build.artifacts).flat()) {
+  for (const artifact of build.artifacts) {
     await fs.writeFile(path.join(directory, `${artifact.name}.zip`), 'test archive');
   }
   return { ...f, build, directory };
@@ -210,12 +183,12 @@ async function packageFiles(t, f) {
 
 test('reruns publish only the newest artifact for each name, ignoring expired older attempts', async t => {
   const f = fixture();
-  f.state.artifacts[1].push(
+  f.state.artifacts.push(
     { id: 13, name: 'easytier-linux-x86_64' },
     { id: 9, name: 'easytier-linux-x86_64', expired: true },
   );
   const args = await packageFiles(t, f);
-  assert.deepEqual(args.build.artifacts.core.map(a => a.id), [13, 11]);
+  assert.deepEqual(args.build.artifacts.map(a => a.id), [13, 11, 20, 30]);
   await publish(args);
   assert.equal(f.calls.filter(call => call[0] === 'upload' && call[1] === 'easytier-linux-x86_64.zip').length, 1);
 });

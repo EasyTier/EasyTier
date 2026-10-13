@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       core_run_id:
-        description: 'The run id of EasyTier-Core Action in EasyTier repo'
+        description: 'Run ID of EasyTier Core or a successful EasyTier Nightly'
         type: number
         required: true
       gui_run_id:
-        description: 'The run id of EasyTier-GUI Action in EasyTier repo'
+        description: 'Run ID of EasyTier GUI (use the same ID for Nightly)'
         type: number
         required: true
       mobile_run_id:
-        description: 'The run id of EasyTier-Mobile Action in EasyTier repo'
+        description: 'Run ID of EasyTier Mobile (use the same ID for Nightly)'
         type: number
         required: true
       version:
@@ -54,6 +54,8 @@ jobs:
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.core_run_id }}
+          name: '^(easytier-(?!gui-|mobile-)[\w.-]+|Easytier-Magisk)$'
+          name_is_regexp: true
           repo: ${{ github.repository }}
           path: release_assets
 
@@ -62,6 +64,8 @@ jobs:
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.gui_run_id }}
+          name: '^easytier-gui-[\w.-]+$'
+          name_is_regexp: true
           repo: ${{ github.repository }}
           path: release_assets_nozip
 
@@ -70,6 +74,8 @@ jobs:
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.mobile_run_id }}
+          name: '^easytier-mobile-[\w.-]+$'
+          name_is_regexp: true
           repo: ${{ github.repository }}
           path: release_assets_nozip
 

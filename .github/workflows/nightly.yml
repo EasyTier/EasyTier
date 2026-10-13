@@ -11,18 +11,83 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  actions: write
+  actions: read
   contents: read
 
 jobs:
-  dispatch:
+  core:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/core.yml
+    with:
+      nightly: true
+    secrets: inherit
+
+  gui:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/gui.yml
+    with:
+      nightly: true
+    secrets: inherit
+
+  mobile:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/mobile.yml
+    with:
+      nightly: true
+    secrets: inherit
+
+  test:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/test.yml
+    with:
+      nightly: true
+    secrets: inherit
+
+  release:
+    needs: [core, gui, mobile, test]
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build branches with new commits
+      - name: Prepare release notes and artifacts from this build
+        id: prepare
         uses: actions/github-script@v8
         with:
           script: |
-            const dispatch = require('./.github/scripts/nightly-build.js');
-            await dispatch({ github, context, core });
+            const fs = require('node:fs');
+            const { prepare } = require('./.github/scripts/nightly-release.js');
+            const build = await prepare({ github, context, core });
+            if (!build) return;
+            fs.writeFileSync('nightly-release.json', JSON.stringify(build));
+            core.setOutput('artifact_ids', build.artifacts.map(a => a.id).join(','));
+            core.setOutput('ready', 'true');
+
+      - name: Download this build's artifacts
+        if: steps.prepare.outputs.ready == 'true'
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: ${{ steps.prepare.outputs.artifact_ids }}
+          path: nightly-artifacts
+
+      - name: Package assets with stable names
+        if: steps.prepare.outputs.ready == 'true'
+        shell: bash
+        run: |
+          mkdir nightly-assets
+          chmod -R 755 nightly-artifacts
+          for artifact in nightly-artifacts/*; do
+            name=$(basename "$artifact")
+            (cd "$artifact" && zip -qr "$GITHUB_WORKSPACE/nightly-assets/$name.zip" .)
+          done
+
+      - name: Update the fixed nightly prerelease
+        if: steps.prepare.outputs.ready == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { publish } = require('./.github/scripts/nightly-release.js');
+            const build = require(`${process.env.GITHUB_WORKSPACE}/nightly-release.json`);
+            await publish({ github, context, core, build, directory: 'nightly-assets' });
