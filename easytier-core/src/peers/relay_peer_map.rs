@@ -8,6 +8,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
 
 use crate::{
     config::PeerId,
+    foundation::small_map_shard_amount,
     foundation::time::{Duration, timeout},
     packet::{PacketType, ZCPacket},
     peers::{
@@ -146,10 +147,10 @@ impl RelayPeerMap {
             metric_network_name,
             my_peer_id,
             peer_session_store,
-            states: DashMap::new(),
-            pending_handshakes: DashMap::new(),
-            handshake_locks: DashMap::new(),
-            pending_packets: DashMap::new(),
+            states: DashMap::with_shard_amount(small_map_shard_amount()),
+            pending_handshakes: DashMap::with_shard_amount(small_map_shard_amount()),
+            handshake_locks: DashMap::with_shard_amount(small_map_shard_amount()),
+            pending_packets: DashMap::with_shard_amount(small_map_shard_amount()),
             is_secure_mode_enabled,
         })
     }
@@ -774,13 +775,13 @@ mod tests {
     use super::*;
     use crate::{
         peers::context::{ArcPeerContext, NetworkIdentity, PeerContext},
-        proto::common::{FlagsInConfig, SecureModeConfig},
+        proto::common::{Flags, SecureModeConfig},
     };
 
     struct RelayTestContext {
         network_identity: NetworkIdentity,
         secure_mode: SecureModeConfig,
-        flags: FlagsInConfig,
+        flags: Flags,
     }
 
     impl PeerContext for RelayTestContext {
@@ -792,7 +793,7 @@ mod tests {
             Some(self.secure_mode.clone())
         }
 
-        fn flags(&self) -> FlagsInConfig {
+        fn flags(&self) -> Flags {
             self.flags.clone()
         }
     }
@@ -866,7 +867,7 @@ mod tests {
                 local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
                 local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
             },
-            flags: FlagsInConfig {
+            flags: Flags {
                 encryption_algorithm: "aes-gcm".to_owned(),
                 ..Default::default()
             },

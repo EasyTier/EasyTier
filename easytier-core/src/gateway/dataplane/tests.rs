@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket};
+use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
@@ -36,6 +36,7 @@ fn test_gateway() -> Arc<DataPlaneRuntime<TestHost>> {
         packet_recv: Arc::new(Mutex::new(packet_recv)),
         net: Arc::new(Mutex::new(None)),
         entries: Arc::new(FlowTable::default()),
+        udp_fragments: Arc::new(std::sync::Mutex::new(UdpFragments::default())),
         data_plane_consumers: Arc::new(DataPlaneConsumers::new()),
         data_plane_net_ready: tokio::sync::watch::channel(false).0,
         pipeline_guard: Mutex::new(None),
@@ -196,26 +197,45 @@ fn build_tcp_packet(src: SocketAddr, dst: SocketAddr) -> Vec<u8> {
     buf
 }
 
-fn build_udp_followup_fragment(src: Ipv4Addr, dst: Ipv4Addr) -> Vec<u8> {
-    let mut buf = vec![0u8; 28];
-    {
-        let mut ip_packet = Ipv4Packet::new_unchecked(&mut buf);
-        ip_packet.set_version(4);
-        ip_packet.set_header_len(20);
-        ip_packet.set_total_len(28);
-        ip_packet.set_hop_limit(64);
-        ip_packet.set_next_header(IpProtocol::Udp);
-        ip_packet.set_frag_offset(8);
-        ip_packet.set_src_addr(src);
-        ip_packet.set_dst_addr(dst);
-        ip_packet
-            .payload_mut()
-            .copy_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]);
+pub(super) const UDP_LOCAL_IP: Ipv4Addr = Ipv4Addr::new(10, 144, 144, 1);
+const UDP_LOCAL: SocketAddr = SocketAddr::new(IpAddr::V4(UDP_LOCAL_IP), 40000);
+const UDP_REMOTE: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 53);
 
-        ip_packet.fill_checksum();
+pub(super) fn build_udp_fragments() -> [ZCPacket; 2] {
+    let src_ip = Ipv4Addr::new(10, 144, 144, 3);
+    let dst_ip = UDP_LOCAL_IP;
+    let mut udp = [0; 24];
+    {
+        let mut packet = UdpPacket::new_unchecked(&mut udp[..]);
+        packet.set_src_port(UDP_REMOTE.port());
+        packet.set_dst_port(UDP_LOCAL.port());
+        packet.set_len(24);
+        packet.payload_mut().copy_from_slice(b"fragmented-first");
+        packet.fill_checksum(&IpAddress::Ipv4(src_ip), &IpAddress::Ipv4(dst_ip));
     }
 
-    buf
+    [(&udp[..16], 0, true), (&udp[16..], 16, false)].map(|(payload, offset, more_fragments)| {
+        let mut buf = vec![0; 20 + payload.len()];
+        let mut ip = Ipv4Packet::new_unchecked(&mut buf);
+        ip.set_version(4);
+        ip.set_header_len(20);
+        ip.set_total_len((20 + payload.len()) as u16);
+        ip.set_ident(42);
+        ip.set_hop_limit(64);
+        ip.set_next_header(IpProtocol::Udp);
+        ip.set_src_addr(src_ip);
+        ip.set_dst_addr(dst_ip);
+        ip.set_frag_offset(offset);
+        ip.set_more_frags(more_fragments);
+        ip.payload_mut().copy_from_slice(payload);
+        ip.fill_checksum();
+        let mut packet = ZCPacket::new_with_payload(&buf);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        let header = packet.mut_peer_manager_header().unwrap();
+        header.set_latency_first(true).set_no_proxy(true);
+        header.forward_counter = 3;
+        packet
+    })
 }
 
 #[tokio::test]
@@ -440,18 +460,6 @@ async fn data_plane_sessions_report_udp_truncation() {
         .unwrap()
         .unwrap();
 
-    let warmup = session_b
-        .submit_udp_send(socket_b, addr_a, b"warmup".to_vec())
-        .unwrap();
-    wait_for_session_completion(&session_b).await;
-    session_b
-        .take_result_with(warmup, |outcome| match outcome {
-            Ok(DataPlaneOperationResult::UdpSent { len }) => Some(*len),
-            _ => None,
-        })
-        .unwrap()
-        .unwrap();
-
     let receive = session_b.submit_udp_receive(socket_b, 2).unwrap();
     let send = session_a
         .submit_udp_send(socket_a, addr_b, b"ping".to_vec())
@@ -541,37 +549,39 @@ async fn listener_and_accepted_stream_own_independent_flow_lifetimes() {
     stop_data_plane_pair(&a, &b).await;
 }
 
+async fn send_udp(sender: &DataPlaneUdpSocket, receiver: &DataPlaneUdpSocket, data: &[u8]) {
+    sender.send_to(data, receiver.local_addr()).await.unwrap();
+    let mut buf = vec![0; data.len()];
+    let (len, from) = tokio::time::timeout(Duration::from_secs(10), receiver.recv_from(&mut buf))
+        .await
+        .expect("UDP receive timed out")
+        .unwrap();
+    assert_eq!(&buf[..len], data);
+    assert_eq!(from, sender.local_addr());
+}
+
 #[tokio::test]
 async fn data_plane_udp_pingpong() {
     let (a, b) = setup_data_plane_pair().await;
     let timeout = Duration::from_secs(10);
-    let socket_a = a.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
-    let socket_b = b.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
-    let addr_a = SocketAddr::new(a.ip.address().into(), socket_a.local_addr().port());
-    let addr_b = SocketAddr::new(b.ip.address().into(), socket_b.local_addr().port());
-
-    socket_b.send_to(b"warmup", addr_a).await.unwrap();
-    socket_a.send_to(b"ping", addr_b).await.unwrap();
-    let mut buf = [0u8; 16];
-    let (len, from) = tokio::time::timeout(timeout, socket_b.recv_from(&mut buf))
-        .await
-        .expect("receive ping timed out")
-        .unwrap();
-    assert_eq!(&buf[..len], b"ping");
-    assert_eq!(from, addr_a);
-
-    socket_b.send_to(b"pong", addr_a).await.unwrap();
-    loop {
-        let (len, from) = tokio::time::timeout(timeout, socket_a.recv_from(&mut buf))
-            .await
-            .expect("receive pong timed out")
-            .unwrap();
-        if &buf[..len] == b"pong" {
-            assert_eq!(from, addr_b);
-            break;
-        }
+    let first = a.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+    let second = a.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+    let receiver = b.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+    assert_ne!(first.local_addr(), second.local_addr());
+    for sender in [&first, &second] {
+        assert_ne!(sender.local_addr().port(), 0);
+        assert_eq!(sender.local_addr().ip(), IpAddr::V4(a.ip.address()));
+        send_udp(sender, &receiver, b"ping").await;
+        send_udp(&receiver, sender, b"pong").await;
     }
-
+    // Sending to different destinations must not create per-remote flows.
+    assert_eq!(a.gateway.entries.count(), 2);
+    assert_eq!(b.gateway.entries.count(), 1);
+    assert_eq!(a.gateway.host.udp_binds.load(Ordering::Relaxed), 0);
+    assert_eq!(b.gateway.host.udp_binds.load(Ordering::Relaxed), 0);
+    drop((first, second, receiver));
+    assert_eq!(a.gateway.entries.count(), 0);
+    assert_eq!(b.gateway.entries.count(), 0);
     stop_data_plane_pair(&a, &b).await;
 }
 
@@ -581,60 +591,125 @@ async fn data_plane_udp_carries_maximum_ipv4_payload() {
     let timeout = Duration::from_secs(10);
     let socket_a = a.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
     let socket_b = b.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
-    let addr_a = SocketAddr::new(a.ip.address().into(), socket_a.local_addr().port());
-    let addr_b = SocketAddr::new(b.ip.address().into(), socket_b.local_addr().port());
-
-    socket_b.send_to(b"warmup", addr_a).await.unwrap();
-    let payload = vec![0x5a; 65_507];
-    socket_a.send_to(&payload, addr_b).await.unwrap();
-    let mut received = vec![0; payload.len()];
-    let (len, from) = tokio::time::timeout(timeout, socket_b.recv_from(&mut received))
-        .await
-        .expect("receive maximum UDP payload timed out")
-        .unwrap();
-    assert_eq!(from, addr_a);
-    assert_eq!(len, payload.len());
-    assert_eq!(received, payload);
-
+    send_udp(&socket_a, &socket_b, &vec![0x5a; 65_507]).await;
     stop_data_plane_pair(&a, &b).await;
 }
 
 #[tokio::test]
-async fn udp_socket_drop_releases_every_destination_flow() {
+async fn udp_fixed_ports_are_owned_by_each_instance_until_socket_drop() {
     let (a, b) = setup_data_plane_pair().await;
     let timeout = Duration::from_secs(10);
-    let socket = a.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
-    let first = SocketAddr::new(b.ip.address().into(), 31001);
-    let second = SocketAddr::new(b.ip.address().into(), 31002);
-
-    socket.send_to(b"one", first).await.unwrap();
-    socket.send_to(b"two", second).await.unwrap();
-    assert_eq!(a.gateway.entries.count(), 2);
-
-    drop(socket);
+    let first = a.gateway.data_plane_udp_bind(48000, timeout).await.unwrap();
+    let second = b.gateway.data_plane_udp_bind(48000, timeout).await.unwrap();
+    let error = a
+        .gateway
+        .data_plane_udp_bind(48000, timeout)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), DataPlaneErrorKind::AddressInUse);
+    assert_eq!(a.gateway.entries.count(), 1);
+    send_udp(&first, &second, b"same-port").await;
+    let addr = first.local_addr();
+    drop(first);
     assert_eq!(a.gateway.entries.count(), 0);
-
+    let rebound = a.gateway.data_plane_udp_bind(48000, timeout).await.unwrap();
+    assert_eq!(rebound.local_addr(), addr);
+    send_udp(&second, &rebound, b"rebound").await;
     stop_data_plane_pair(&a, &b).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_udp_binds_have_exactly_one_owner() {
+    let host = Arc::new(TestHost::default());
+    let endpoint = data_plane_endpoint(host, "10.126.132.1/24".parse().unwrap());
+    endpoint.peer_manager.run().await.unwrap();
+    endpoint.gateway.start_runtime().await.unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut tasks = JoinSet::new();
+    for _ in 0..8 {
+        let gateway = endpoint.gateway.clone();
+        let barrier = barrier.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            gateway
+                .data_plane_udp_bind(48000, Duration::from_secs(10))
+                .await
+        });
+    }
+    let mut sockets = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        match result.unwrap() {
+            Ok(socket) => sockets.push(socket),
+            Err(error) => assert_eq!(error.kind(), DataPlaneErrorKind::AddressInUse),
+        }
+    }
+    assert_eq!(sockets.len(), 1);
+    assert_eq!(endpoint.gateway.entries.count(), 1);
+    assert_eq!(endpoint.gateway.host.udp_binds.load(Ordering::Relaxed), 0);
+    drop(sockets);
+    assert_eq!(endpoint.gateway.entries.count(), 0);
+    endpoint.gateway.stop_runtime().await;
+    endpoint.peer_manager.clear_resources().await;
+}
+
 #[tokio::test]
-async fn udp_socket_owns_a_host_port_reservation() {
+async fn udp_ephemeral_allocation_advances_past_collisions() {
+    let endpoint = data_plane_endpoint(
+        Arc::new(TestHost::default()),
+        "10.126.132.1/24".parse().unwrap(),
+    );
+    endpoint.peer_manager.run().await.unwrap();
+    endpoint.gateway.start_runtime().await.unwrap();
+    let gateway = &endpoint.gateway;
+    let timeout = Duration::from_secs(10);
+    let fixed = gateway.data_plane_udp_bind(11000, timeout).await.unwrap();
+    for port in 10001..11000 {
+        let addr = SocketAddr::new(endpoint.ip.address().into(), port);
+        gateway
+            .entries
+            .insert(FlowKey::udp_bind(addr), FlowData::Udp);
+    }
+    let socket = gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+    assert_eq!(socket.local_addr().port(), 11001);
+    let net = gateway.net.lock().await.as_ref().unwrap().net.clone();
+    assert_eq!(net.get_port(), 11002);
+    let next = gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+    assert_eq!(next.local_addr().port(), 11003);
+
+    let mut slow = net.ephemeral_ports();
+    let last = net.ephemeral_ports().nth(10).unwrap();
+    slow.nth(2);
+    assert_eq!(net.get_port(), last + 1);
+    drop((fixed, socket, next));
+    gateway.stop_runtime().await;
+    endpoint.peer_manager.clear_resources().await;
+}
+
+#[tokio::test]
+async fn udp_ephemeral_bind_wraps_and_reports_exhaustion() {
     let host = Arc::new(TestHost::default());
     let endpoint = data_plane_endpoint(host.clone(), "10.126.132.1/24".parse().unwrap());
     endpoint.peer_manager.run().await.unwrap();
     endpoint.gateway.start_runtime().await.unwrap();
+    let gateway = &endpoint.gateway;
+    let timeout = Duration::from_secs(10);
+    let fixed = gateway.data_plane_udp_bind(60001, timeout).await.unwrap();
+    // Leave only the port reached after wrapping past the end of the range.
+    for port in 10001..60001 {
+        let addr = SocketAddr::new(endpoint.ip.address().into(), port);
+        gateway
+            .entries
+            .insert(FlowKey::udp_bind(addr), FlowData::Udp);
+    }
+    let socket = gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+    assert_eq!(socket.local_addr().port(), 10000);
+    let error = gateway.data_plane_udp_bind(0, timeout).await.err().unwrap();
+    assert_eq!(error.kind(), DataPlaneErrorKind::ResourceLimit);
+    assert_eq!(host.udp_binds.load(Ordering::Relaxed), 0);
 
-    let socket = endpoint
-        .gateway
-        .data_plane_udp_bind(0, Duration::from_secs(1))
-        .await
-        .unwrap();
-
-    assert_eq!(socket.local_addr().port(), 20002);
-    assert_eq!(host.udp_binds.load(Ordering::Relaxed), 1);
-
-    drop(socket);
-    endpoint.gateway.stop_runtime().await;
+    drop((fixed, socket));
+    gateway.stop_runtime().await;
     endpoint.peer_manager.clear_resources().await;
 }
 
@@ -833,7 +908,7 @@ async fn data_plane_consumes_modified_data_when_entry_matches() {
         packet.fill_peer_manager_hdr(1, 1, packet_type as u8);
 
         let result = gateway.try_process_packet_from_peer(packet).await;
-        assert!(result.is_none());
+        assert!(matches!(result, PeerPacketFilterResult::Consumed));
 
         let mut receiver = gateway.packet_recv.lock().await;
         let received = receiver.try_recv().unwrap();
@@ -864,12 +939,12 @@ async fn data_plane_passes_through_unmatched_or_malformed_modified_data() {
         ZCPacket::new_with_payload(&build_tcp_packet(remote, unmatched_local));
     unmatched_packet.fill_peer_manager_hdr(1, 2, PacketType::DataWithKcpSrcModified as u8);
     let result = gateway.try_process_packet_from_peer(unmatched_packet).await;
-    assert!(result.is_some());
+    assert!(matches!(result, PeerPacketFilterResult::Pass(_)));
 
     let mut malformed_packet = ZCPacket::new_with_payload(&[0u8; 8]);
     malformed_packet.fill_peer_manager_hdr(1, 2, PacketType::DataWithQuicSrcModified as u8);
     let result = gateway.try_process_packet_from_peer(malformed_packet).await;
-    assert!(result.is_some());
+    assert!(matches!(result, PeerPacketFilterResult::Pass(_)));
 
     let mut receiver = gateway.packet_recv.lock().await;
     assert!(receiver.try_recv().is_err());
@@ -897,47 +972,204 @@ async fn data_plane_passes_through_non_loopback_modified_data_when_entry_matches
     packet.fill_peer_manager_hdr(1, 2, PacketType::DataWithKcpSrcModified as u8);
 
     let result = gateway.try_process_packet_from_peer(packet).await;
-    assert!(result.is_some());
+    assert!(matches!(result, PeerPacketFilterResult::Pass(_)));
 
     let mut receiver = gateway.packet_recv.lock().await;
     assert!(receiver.try_recv().is_err());
 }
 
 #[tokio::test]
-async fn data_plane_mirrors_fragmented_udp_when_entry_matches() {
+async fn data_plane_routes_udp_fragments_together() {
+    for port in [None, Some(UDP_LOCAL.port() + 1), Some(UDP_LOCAL.port())] {
+        for reverse in [false, true] {
+            let gateway = test_gateway();
+            gateway.runtime_config.update_peer_with(|peer| {
+                peer.runtime.core.routes.ipv4 =
+                    Some(IpPrefix::new(UDP_LOCAL_IP.into(), 24).unwrap());
+            });
+            if let Some(port) = port {
+                gateway.entries.insert(
+                    FlowKey::udp_bind(SocketAddr::new(UDP_LOCAL_IP.into(), port)),
+                    FlowData::Udp,
+                );
+            }
+            let mut downstream = Vec::new();
+            let mut delivered = Vec::new();
+            let mut expected = Vec::new();
+            // More than smoltcp's 16 slots, with every tail arriving before any first.
+            for index in if reverse { [1, 0] } else { [0, 1] } {
+                for id in 0..32 {
+                    let mut packet = build_udp_fragments().into_iter().nth(index).unwrap();
+                    let mut ip = Ipv4Packet::new_unchecked(packet.mut_payload());
+                    ip.set_ident(id);
+                    ip.fill_checksum();
+                    expected.push(packet.clone().into_bytes());
+                    match gateway.try_process_packet_from_peer(packet).await {
+                        PeerPacketFilterResult::Consumed => {}
+                        PeerPacketFilterResult::Pass(packet) => {
+                            downstream.push(packet.into_bytes())
+                        }
+                        PeerPacketFilterResult::PassBatch(packets) => {
+                            downstream.extend(packets.into_iter().map(ZCPacket::into_bytes))
+                        }
+                    }
+                    let mut receiver = gateway.packet_recv.lock().await;
+                    while let Ok(packet) = receiver.try_recv() {
+                        delivered.push(packet.into_bytes());
+                    }
+                }
+            }
+            expected.sort();
+            downstream.sort();
+            delivered.sort();
+            if port == Some(UDP_LOCAL.port()) {
+                assert_eq!(delivered, expected);
+                assert!(downstream.is_empty());
+            } else {
+                assert_eq!(downstream, expected);
+                assert!(delivered.is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn data_plane_only_buffers_eligible_local_udp_fragments() {
     let gateway = test_gateway();
+    gateway.runtime_config.update_peer_with(|peer| {
+        peer.runtime.core.routes.ipv4 = Some(IpPrefix::new(UDP_LOCAL_IP.into(), 24).unwrap());
+    });
+    gateway
+        .entries
+        .insert(FlowKey::udp_bind(UDP_LOCAL), FlowData::Udp);
+    for (destination, packet_type, to_peer, buffered) in [
+        (UDP_LOCAL_IP, PacketType::Data, 2, true),
+        (Ipv4Addr::new(10, 144, 144, 9), PacketType::Data, 2, false),
+        (UDP_LOCAL_IP, PacketType::DataWithKcpSrcModified, 1, true),
+        (UDP_LOCAL_IP, PacketType::DataWithKcpSrcModified, 2, false),
+        (UDP_LOCAL_IP, PacketType::DataWithQuicSrcModified, 1, true),
+        (UDP_LOCAL_IP, PacketType::DataWithQuicSrcModified, 2, false),
+    ] {
+        let [_, mut tail] = build_udp_fragments();
+        let mut ip = Ipv4Packet::new_unchecked(tail.mut_payload());
+        ip.set_dst_addr(destination);
+        ip.fill_checksum();
+        tail.fill_peer_manager_hdr(1, to_peer, packet_type as u8);
+        let expected = tail.clone().into_bytes();
+        let result = gateway.try_process_packet_from_peer(tail).await;
+        if buffered {
+            assert!(matches!(result, PeerPacketFilterResult::Consumed));
+        } else {
+            let PeerPacketFilterResult::Pass(packet) = result else {
+                panic!("unrelated fragment buffered")
+            };
+            assert_eq!(packet.into_bytes(), expected);
+        }
+        assert!(gateway.packet_recv.lock().await.try_recv().is_err());
+    }
+}
 
-    let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000);
-    let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 53);
-    gateway.entries.insert(
-        FlowKey {
-            src: local,
-            dst: remote,
-            kind: UDP_ENTRY,
-        },
-        FlowData::Udp,
+#[tokio::test]
+async fn data_plane_udp_receives_fragments_after_unbound_datagrams() {
+    let endpoint = data_plane_endpoint(
+        Arc::new(TestHost::default()),
+        "10.144.144.1/24".parse().unwrap(),
     );
-    assert_eq!(gateway.entries.count(), 1);
-
-    let mut packet = ZCPacket::new_with_payload(&build_udp_followup_fragment(
-        match remote.ip() {
-            IpAddr::V4(ip) => ip,
-            IpAddr::V6(_) => unreachable!(),
-        },
-        match local.ip() {
-            IpAddr::V4(ip) => ip,
-            IpAddr::V6(_) => unreachable!(),
-        },
-    ));
-    packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
-
-    let result = gateway.try_process_packet_from_peer(packet).await;
-    assert!(result.is_some());
-
-    let mut receiver = gateway.packet_recv.lock().await;
-    let received = receiver.try_recv().unwrap();
-    assert_eq!(
-        received.peer_manager_header().unwrap().packet_type,
-        PacketType::Data as u8
-    );
+    endpoint.peer_manager.run().await.unwrap();
+    endpoint.gateway.start_runtime().await.unwrap();
+    let timeout = Duration::from_secs(10);
+    let socket = endpoint
+        .gateway
+        .data_plane_udp_bind(UDP_LOCAL.port(), timeout)
+        .await
+        .unwrap();
+    // Unrelated complete datagrams must never leave orphan tails in smoltcp.
+    for id in 0..32 {
+        for mut packet in build_udp_fragments() {
+            let mut ip = Ipv4Packet::new_unchecked(packet.mut_payload());
+            ip.set_ident(id);
+            if ip.frag_offset() == 0 {
+                let mut udp = UdpPacket::new_unchecked(ip.payload_mut());
+                udp.set_dst_port(UDP_LOCAL.port() + 1);
+                udp.set_checksum(0);
+            }
+            ip.fill_checksum();
+            assert!(matches!(
+                endpoint.gateway.try_process_packet_from_peer(packet).await,
+                PeerPacketFilterResult::Pass(_)
+            ));
+        }
+    }
+    let [first, tail] = build_udp_fragments();
+    for packet in [tail, first] {
+        assert!(matches!(
+            endpoint.gateway.try_process_packet_from_peer(packet).await,
+            PeerPacketFilterResult::Consumed
+        ));
+    }
+    let mut data = [0; 32];
+    let (len, from) = tokio::time::timeout(timeout, socket.recv_from(&mut data))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&data[..len], b"fragmented-first");
+    assert_eq!(from, UDP_REMOTE);
+    // A datagram larger than either MTU remains a set of original small packets.
+    for port in [UDP_LOCAL.port(), UDP_LOCAL.port() + 1] {
+        let mut udp = vec![0; 8 + 4096];
+        let mut udp_packet = UdpPacket::new_unchecked(&mut udp);
+        udp_packet.set_src_port(UDP_REMOTE.port());
+        udp_packet.set_dst_port(port);
+        udp_packet.set_len(4104);
+        udp_packet.payload_mut().fill(0xab);
+        udp_packet.fill_checksum(&UDP_REMOTE.ip().into(), &UDP_LOCAL.ip().into());
+        let [template, _] = build_udp_fragments();
+        let mut fragments = Vec::new();
+        for (index, payload) in udp.chunks(1200).enumerate() {
+            let mut bytes = template.payload()[..20].to_vec();
+            bytes.extend_from_slice(payload);
+            let mut ip = Ipv4Packet::new_unchecked(&mut bytes);
+            ip.set_ident(port);
+            ip.set_total_len((20 + payload.len()) as u16);
+            ip.set_frag_offset((index * 1200) as u16);
+            ip.set_more_frags((index + 1) * 1200 < udp.len());
+            ip.fill_checksum();
+            let mut packet = ZCPacket::new_with_payload(&bytes);
+            packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+            fragments.push(packet);
+        }
+        let mut expected = fragments
+            .iter()
+            .map(|p| p.clone().into_bytes())
+            .collect::<Vec<_>>();
+        let mut passed = Vec::new();
+        for packet in fragments.into_iter().rev() {
+            match endpoint.gateway.try_process_packet_from_peer(packet).await {
+                PeerPacketFilterResult::Consumed => {}
+                PeerPacketFilterResult::Pass(_) => panic!("tails should wait for the first"),
+                PeerPacketFilterResult::PassBatch(packets) => {
+                    assert!(packets.iter().all(|packet| packet.payload_len() <= 1280));
+                    passed.extend(packets.into_iter().map(ZCPacket::into_bytes));
+                }
+            }
+        }
+        if port == UDP_LOCAL.port() {
+            assert!(passed.is_empty());
+            let mut data = vec![0; 4096];
+            let (len, from) = tokio::time::timeout(timeout, socket.recv_from(&mut data))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(len, 4096);
+            assert_eq!(data, vec![0xab; 4096]);
+            assert_eq!(from, UDP_REMOTE);
+        } else {
+            expected.sort();
+            passed.sort();
+            assert_eq!(passed, expected);
+        }
+    }
+    drop(socket);
+    endpoint.gateway.stop_runtime().await;
+    endpoint.peer_manager.clear_resources().await;
 }

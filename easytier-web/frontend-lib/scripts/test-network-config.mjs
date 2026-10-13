@@ -26,6 +26,7 @@ const {
 
 const BOOLEAN_CONFIG_FIELDS = [
   'dhcp',
+  'dhcpv6',
   'advanced_settings',
   'latency_first',
   'use_smoltcp',
@@ -113,6 +114,9 @@ function allFieldFixture() {
     ...DEFAULT_NETWORK_CONFIG(),
     instance_id: '11111111-2222-3333-4444-555555555555',
     dhcp: false,
+    dhcp_ipv4_cidr: '10.9.8.0/25',
+    dhcpv6: true,
+    dhcp_ipv6_cidr: 'fd12::/64',
     virtual_ipv4: '10.9.8.7',
     network_length: 25,
     hostname: 'frontend-e2e',

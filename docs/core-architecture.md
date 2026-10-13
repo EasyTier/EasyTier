@@ -179,6 +179,21 @@ wire codecs. It does not own socket I/O or connection policy.
 - UDP session multiplexing, classification, and lifecycle;
 - in-process Ring sockets.
 
+UDP sessions expose a scoped hole-punch source observer keyed by transaction
+ID. Listeners carry a registration handle for their existing receive loop, which
+reports the first matching source; dropping the observer removes the registration.
+Cone clients optionally prepare that transaction in the listener-selection RPC;
+the response echoes its ID only after registration. The registration retains
+early UDP sources until the cone-sending RPC claims it. Unclaimed registrations
+expire after 30 seconds through the existing listener cleanup loop, covering
+local socket and STUN preparation without a separate receive or sending task.
+Clients omitting the optional transaction retain registration at the sending RPC;
+older servers omit the echoed ID and do not confirm early registration.
+Connectivity owns preparation expiry, the active RPC lifetime, candidate selection
+and bounded sending to the signaled and observed addresses.
+Cone clients start the existing UDP handshake without requiring a reverse
+hole-punch packet, and the session layer remains the sole receiver.
+
 `host/` is the single home of Host capability seams:
 
 - DNS and DNS record resolution;
@@ -349,6 +364,14 @@ A core instance:
 `CoreProcessRuntime`, plus optional protocol and platform capabilities. The
 bundle carries capabilities, not preconstructed portable managers.
 
+The standard native factory owns one continuously driven Tokio executor per
+instance. `multi_thread` selects a multi-thread or current-thread runtime;
+`multi_thread_count` sets the worker count with the historical minimum of two.
+Construction, start/stop, and FFI data-plane tasks use that executor, independent
+of the process management runtime. Dropping its Host owner shuts down the
+executor without blocking a worker on its own termination. Compact and WASI
+Hosts retain their externally supplied execution model.
+
 Each Module owns partial-start cleanup for its internal resources.
 `CoreInstance` has one outer cancellation and recovery path for the complete
 serial startup. `Running` therefore means the Host runtime and every enabled
@@ -389,6 +412,79 @@ second protected-port registry.
 Process-global capability objects may contain stateless or shared platform
 mechanisms. They must not contain instance-specific peer, route,
 configuration, or connectivity state.
+
+### Native shared TUN ownership
+
+The native composition owns `SharedVirtualNicRegistry`. Named desktop TUNs
+are shared within a network namespace; mobile instances attach to one supplied
+TUN descriptor. Members own address, route, and MTU claims, not the physical
+device. Bootstrap route cleanup runs only when that device is created. Mobile
+IPv6 claims are initialized before forwarding and follow public IPv6 updates.
+Mobile VPN configuration is projected from admitted members' native claims.
+Admission keeps unchanged attached members ahead of conflicting newcomers or
+reconfigured members. Rejected members are reported individually, while the
+remaining members stay attached. Each member's initial claims are applied as
+one batch before it can open or replace the shared descriptor.
+Mobile claims update dispatcher tables without configuring the OS interface;
+the platform VPN owns its addresses, routes, and MTU.
+If applying native claims fails, the shared NIC is invalidated and its
+dispatcher is stopped so every member can recreate the device. Restoring only
+the recorded claims would leave partially applied OS configuration in use.
+TUN replacement and I/O failures also invalidate the shared NIC. TUN writes
+have bounded waits so a stalled device cannot indefinitely block claim updates
+or member cleanup.
+
+Desktop and mobile shared TUNs use the same lazily initialized native Tokio
+runtime, independent of every member's executor. It creates the device's async
+I/O registration, drives dispatchers, and completes member claim cleanup even
+after the member executor stops or the registration is dropped outside Tokio.
+The runtime has two workers on desktop to allow independent TUN dispatchers
+to run concurrently, and retains one worker on mobile. It owns no registry or
+member claims; those remain with each shared NIC. Cleanup remains asynchronous,
+and the last member's cleanup stops the dispatcher and releases the desktop
+device. A process-lifetime runtime does not extend the device's lifetime.
+Unnamed desktop TUNs and instance-local work retain their existing executors.
+
+Each member connects through one bounded Ring Tunnel. The shared dispatcher
+polls member streams in rotation and writes directly to their sinks, with no
+per-member forwarding tasks or intermediate packet queues. Desktop and mobile
+use one dispatch loop; mobile descriptor replacement is a control message.
+The loop consumes Tokio's cooperative budget even when packets are dropped.
+
+Only the member running the Magic DNS resolver claims its shared fake-IP
+route. The claim is removed before resolver shutdown and acquired by the next
+serving member after takeover. Client-only runners do not claim that route.
+
+The dispatcher preserves desktop kernel-forwarded subnet sources. It corrects
+wrong-member local sources and, on mobile, synthetic sources. Native local
+flows and translated flows reserve member-scoped transport tuples so address
+translation cannot merge sockets using the same port and remote endpoint.
+Collisions remap the source port or ICMP Echo identifier; replies restore the
+original tuple. Unrelated route updates and member removals retain mappings.
+All Echo sequence numbers for one identifier share a reservation; translation
+preserves the sequence field in each request and reply.
+Removing an involved address or member releases its mappings. A full member
+queue drops that packet without blocking other members or control messages.
+
+With one attached member, packets go directly to that member without destination
+matching or new source translations. Native flow reservations remain active so
+later members cannot reuse their tuples. Existing translations continue in both
+directions after other members leave. Unmodified IPv4 fragments and IPv6
+extension headers pass through the single-member path unchanged.
+
+Reservations are bounded at 4096 flows. Activity in either direction refreshes
+them; table pressure reclaims reservations idle for at least 180 seconds. If
+all slots remain active, new tracked flows are dropped rather than evicting a
+live mapping. Desktop external-source forwarding bypasses this table. As with
+other idle-expiring NAT state, very late replies after tuple reuse cannot be
+distinguished from replies to the new flow.
+
+Translation supports unfragmented IPv4 and ordinary IPv6 TCP, UDP, and ICMP
+Echo traffic. IPv4 fragment and IPv6 extension-header translation remain
+unsupported. ICMP errors quoting a translated flow are not reverse-translated;
+in particular, a smaller downstream MTU can prevent PMTU discovery for such
+flows. This limitation does not affect unmodified flows and is intentionally
+retained rather than extending the dispatcher into a full ICMP/fragment NAT.
 
 ## Runtime configuration authority
 

@@ -11,6 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     config::PeerId,
+    foundation::small_map_shard_amount,
     packet::ZCPacket,
     peers::{
         context::{ArcPeerContext, NetworkIdentity, PeerEvent},
@@ -53,7 +54,7 @@ impl PeerMap {
         PeerMap {
             context,
             my_peer_id,
-            peer_map: DashMap::new(),
+            peer_map: DashMap::with_shard_amount(small_map_shard_amount()),
             packet_send,
             routes: RwLock::new(Vec::new()),
             alive_client_urls: Arc::new(Mutex::new(HashMap::new())),

@@ -204,10 +204,14 @@ service DirectConnectorRpc {
 message SelectPunchListenerRequest {
   bool force_new = 1;
   bool prefer_port_mapping = 2;
+  // Register source observation before returning the listener address.
+  optional uint32 transaction_id = 3;
 }
 
 message SelectPunchListenerResponse {
   common.SocketAddr listener_mapped_addr = 1;
+  // Echoed only after source observation is registered; absent on older peers.
+  optional uint32 transaction_id = 2;
 }
 
 message SendPunchPacketConeRequest {

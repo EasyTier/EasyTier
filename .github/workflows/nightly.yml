@@ -1,0 +1,36 @@
+name: EasyTier Nightly
+
+on:
+  schedule:
+    # 03:17 Asia/Shanghai; avoid the busy start of the hour.
+    - cron: '17 19 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: easytier-nightly
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build branches with new commits
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const dispatch = require('./.github/scripts/nightly-build.js');
+            await dispatch({ github, context, core });
+
+  release:
+    needs: dispatch
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/nightly-release.yml

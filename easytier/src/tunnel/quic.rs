@@ -673,7 +673,7 @@ mod tests {
         socket::SocketListener,
         socket::udp::{
             UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
-            VirtualUdpSocket,
+            UdpSessionSocket, VirtualUdpSocket,
         },
     };
     use futures::{SinkExt, StreamExt};
@@ -692,7 +692,9 @@ mod tests {
             let mut listener = new_runtime_udp_session_listener(
                 format!("quic://{bind_addr}").parse().unwrap(),
                 UdpSessionListenRequest::new(
-                    UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(false),
+                    // Port-bound listeners enable address reuse on Unix. This test
+                    // needs an exclusive ephemeral port across parallel processes.
+                    UdpBindOptions::direct_connect().with_local_addr(Some(bind_addr)),
                 ),
                 UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
                 NetNS::new(None),
@@ -716,7 +718,9 @@ mod tests {
                 Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)
                     .unwrap();
             endpoint.set_default_client_config(client_config());
+            let client_addr = endpoint.local_addr().unwrap();
 
+            let (first_accepted_tx, first_accepted_rx) = tokio::sync::oneshot::channel();
             let server_task = tokio::spawn(async move {
                 let session = listener.accept().await.unwrap();
                 let admission = ServerProtocolAdmissionController::new(1, 2)
@@ -724,12 +728,17 @@ mod tests {
                     .unwrap();
                 let mut accepted = QuicAcceptedSession::new(session, local_url, admission).unwrap();
                 let first = accepted.accept().await.unwrap();
+                first_accepted_tx.send(()).unwrap();
                 let second = accepted.accept().await.unwrap();
+                let extra_session =
+                    tokio::time::timeout(Duration::from_millis(50), listener.accept()).await;
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(50), listener.accept())
-                        .await
-                        .is_err(),
-                    "both QUIC connections must use the first accepted UDP session"
+                    extra_session.is_err(),
+                    "both QUIC connections must use the first accepted UDP session; \
+                     server={remote_addr}, client={client_addr}, extra_peer={:?}",
+                    extra_session
+                        .as_ref()
+                        .map(|result| result.as_ref().map(|session| session.peer_addr()))
                 );
                 (first, second)
             });
@@ -745,6 +754,9 @@ mod tests {
                 .send(ZCPacket::new_with_payload(b"first QUIC connection"))
                 .await
                 .unwrap();
+            // Keep both connections alive, but establish their server-side identity
+            // before starting the second handshake, which may complete out of order.
+            first_accepted_rx.await.unwrap();
             let second_connection = endpoint
                 .connect(remote_addr, "localhost")
                 .unwrap()

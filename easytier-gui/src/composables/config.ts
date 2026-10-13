@@ -18,3 +18,17 @@ export function saveLastNetworkInstanceId(instanceId: string) {
 export function loadLastNetworkInstanceId(): string | null {
     return localStorage.getItem('last_network_instance_id')
 }
+
+export function saveVpnTileStoppedInstanceIds(instanceIds: string[]) {
+    localStorage.setItem('vpn_tile_stopped_instance_ids', JSON.stringify(instanceIds))
+}
+
+export function loadVpnTileStoppedInstanceIds(): string[] {
+    try {
+        const value: unknown = JSON.parse(localStorage.getItem('vpn_tile_stopped_instance_ids') || '[]')
+        return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
+    }
+    catch {
+        return []
+    }
+}

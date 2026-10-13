@@ -55,6 +55,8 @@ pub enum GlobalCtxEvent {
     VpnPortalClientDisconnected(String, String), // (portal, client ip)
 
     DhcpIpv4Changed(Option<cidr::Ipv4Inet>, Option<cidr::Ipv4Inet>), // (old, new)
+    DhcpIpv6Changed(Option<cidr::Ipv6Inet>, Option<cidr::Ipv6Inet>), // (old, new)
+    DhcpIpv6Conflicted(Option<cidr::Ipv6Inet>),
     DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
     PublicIpv6Changed(Option<cidr::Ipv6Inet>, Option<cidr::Ipv6Inet>), // (old, new)
     PublicIpv6RoutesUpdated(Vec<cidr::Ipv6Inet>, Vec<cidr::Ipv6Inet>), // (added, removed)
@@ -183,10 +185,10 @@ impl GlobalCtx {
             .unwrap_or_else(|| config_fs.get_flags());
         let ipv4 = runtime
             .map(|runtime| Self::runtime_ipv4(&runtime.peer))
-            .unwrap_or_else(|| config_fs.get_ipv4());
+            .unwrap_or_else(|| config_fs.get_ipv4().filter(|_| !config_fs.get_dhcp()));
         let ipv6 = runtime
             .map(|runtime| Self::runtime_ipv6(&runtime.peer))
-            .unwrap_or_else(|| config_fs.get_ipv6());
+            .unwrap_or_else(|| config_fs.get_ipv6().filter(|_| !config_fs.get_dhcpv6()));
         if flags.enable_encryption && effective_encryption_uses_xor(&flags.encryption_algorithm) {
             tracing::warn!("using insecure XOR because no AEAD encryption is configured");
         }
@@ -439,6 +441,33 @@ pub mod tests {
         config.set_ipv4(None);
 
         assert_eq!(global_ctx.get_ipv4(), Some(lease));
+    }
+
+    #[test]
+    fn dhcp_initial_addresses_match_normalized_runtime() {
+        for dhcp_ipv4 in [false, true] {
+            for dhcp_ipv6 in [false, true] {
+                let config =
+                    TomlConfigLoader::new_from_str("ipv4 = '10.20.0.7/24'\nipv6 = 'fd12::7/64'")
+                        .unwrap();
+                config.set_dhcp(dhcp_ipv4);
+                config.set_dhcpv6(dhcp_ipv6);
+                let global_ctx = GlobalCtx::new(config.clone());
+                let normalized =
+                    easytier_core::instance::CoreInstanceConfig::from_toml(&config).unwrap();
+                let routes = &normalized.peer.snapshot.runtime.core.routes;
+                assert_eq!(global_ctx.get_ipv4().is_some(), !dhcp_ipv4);
+                assert_eq!(global_ctx.get_ipv6().is_some(), !dhcp_ipv6);
+                assert_eq!(
+                    global_ctx.get_ipv4().map(|ip| ip.address().to_string()),
+                    routes.ipv4.as_ref().map(|ip| ip.address.to_string())
+                );
+                assert_eq!(
+                    global_ctx.get_ipv6().map(|ip| ip.address().to_string()),
+                    routes.ipv6.as_ref().map(|ip| ip.address.to_string())
+                );
+            }
+        }
     }
 
     #[test]

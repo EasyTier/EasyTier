@@ -6,6 +6,10 @@ mod elevate;
 use anyhow::Context;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use easytier::instance::factory::{
+    attach_mobile_tun_fd, get_mobile_tun_config as native_mobile_tun_config,
+};
 use easytier::proto::api::config::{
     ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, VpnPortalClientPatch,
 };
@@ -25,7 +29,7 @@ use easytier::{
         config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
         log,
     },
-    instance::factory::{NativeInstanceManager, native_instance_manager},
+    instance::factory::{MobileTunConfig, NativeInstanceManager, native_instance_manager},
     proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -235,19 +239,45 @@ async fn set_logging_level(level: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn set_tun_fd(fd: i32) -> Result<(), String> {
+async fn set_tun_fd(fd: i32, instance_ids: Option<Vec<Uuid>>) -> Result<MobileTunConfig, String> {
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
-    if let Some(uuid) = get_client_manager!()?
-        .get_enabled_instances_with_tun_ids()
-        .next()
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return attach_mobile_tun_fd(instance_manager.as_ref(), fd, instance_ids.as_deref())
+        .await
+        .map_err(|error| error.to_string());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        instance_manager
-            .attach_tun_fd(uuid, fd)
-            .map_err(|e| e.to_string())?;
+        let _ = instance_ids;
+        if let Some(instance_id) = get_client_manager!()?
+            .get_enabled_instances_with_tun_ids()
+            .next()
+        {
+            instance_manager
+                .attach_tun_fd(instance_id, fd)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(MobileTunConfig::default())
     }
-    Ok(())
+}
+
+#[tauri::command]
+async fn get_mobile_tun_config(instance_ids: Vec<Uuid>) -> Result<MobileTunConfig, String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let Some(manager) = INSTANCE_MANAGER.read().await.clone() else {
+            return Err("mobile TUN configuration is not supported in remote mode".to_owned());
+        };
+        Ok(native_mobile_tun_config(manager.as_ref(), &instance_ids).await)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = instance_ids;
+        Err("mobile TUN configuration is unavailable on this platform".to_owned())
+    }
 }
 
 #[tauri::command]
@@ -783,11 +813,6 @@ mod manager {
                 Self::Web => ConfigSource::Web,
             }
         }
-
-        #[cfg(any(test, target_os = "android"))]
-        fn is_web_like(self) -> bool {
-            matches!(self, Self::Web)
-        }
     }
 
     #[derive(Clone)]
@@ -1008,44 +1033,21 @@ mod manager {
                 .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
         }
 
-        #[cfg(target_os = "android")]
-        pub fn get_enabled_instances_with_web_like_tun_ids(
-            &self,
-        ) -> impl Iterator<Item = uuid::Uuid> + '_ {
-            self.storage
-                .network_configs
-                .iter()
-                .filter(|v| self.storage.enabled_networks.contains(v.key()))
-                .filter(|v| !v.config.no_tun())
-                .filter(|v| v.source.is_web_like())
-                .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
-        }
-
-        #[cfg(target_os = "android")]
-        pub(super) async fn disable_instances_with_tun(
-            &self,
-            app: &AppHandle,
-            web_only: bool,
-        ) -> Result<(), easytier_core::management::remote_client::RemoteClientError<anyhow::Error>>
-        {
-            let inst_ids: Vec<uuid::Uuid> = if web_only {
-                self.get_enabled_instances_with_web_like_tun_ids().collect()
-            } else {
-                self.get_enabled_instances_with_tun_ids().collect()
-            };
-            for inst_id in inst_ids {
-                self.handle_update_network_state(app.clone(), inst_id, true)
-                    .await?;
-            }
-            Ok(())
-        }
-
         pub(super) fn notify_vpn_stop_if_no_tun(&self, app: &AppHandle) -> Result<(), String> {
-            let has_tun = self.get_enabled_instances_with_tun_ids().any(|_| true);
-            if !has_tun {
-                app.emit("vpn_service_stop", "")
+            #[cfg(target_os = "android")]
+            if self.get_enabled_instances_with_tun_ids().next().is_some() {
+                app.emit("vpn_service_config_changed", "")
                     .map_err(|e| e.to_string())?;
+                return Ok(());
             }
+
+            #[cfg(not(target_os = "android"))]
+            if self.get_enabled_instances_with_tun_ids().next().is_some() {
+                return Ok(());
+            }
+
+            app.emit("vpn_service_stop", "")
+                .map_err(|e| e.to_string())?;
             Ok(())
         }
 
@@ -1058,28 +1060,6 @@ mod manager {
             let instance_id = cfg.get_id();
             app.emit("pre_run_network_instance", instance_id.to_string())
                 .map_err(|e| e.to_string())?;
-
-            #[cfg(target_os = "android")]
-            if !cfg.get_flags().no_tun {
-                match source {
-                    PersistedConfigSource::User | PersistedConfigSource::Legacy => {
-                        self.disable_instances_with_tun(app, false)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                    }
-                    PersistedConfigSource::Web => {
-                        self.disable_instances_with_tun(app, true)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        if self.get_enabled_instances_with_tun_ids().next().is_some() {
-                            return Err(
-                                "Android only supports one active TUN network; user-managed VPN remains active"
-                                    .to_string(),
-                            );
-                        }
-                    }
-                }
-            }
 
             self.storage
                 .save_config(
@@ -1109,10 +1089,15 @@ mod manager {
                             let instance_id_str = instance_id_clone.to_string();
                             loop {
                                 match event_receiver.recv().await {
-                                    Ok(easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _)) => {
+                                    Ok(easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _)
+                                        | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Conflicted(_)
+                                        | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv6Changed(_, _)
+                                        | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv6Conflicted(_)) => {
                                         let _ = app_clone.emit("dhcp_ip_changed", &instance_id_str);
                                     }
-                                    Ok(easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => {
+                                    Ok(easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated(_, _)
+                                        | easytier::common::global_ctx::GlobalCtxEvent::PublicIpv6Changed(_, _)
+                                        | easytier::common::global_ctx::GlobalCtxEvent::PublicIpv6RoutesUpdated(_, _)) => {
                                         let _ = app_clone.emit("proxy_cidrs_updated", &instance_id_str);
                                     }
                                     Ok(_) => {}
@@ -1192,10 +1177,11 @@ mod manager {
         ) -> anyhow::Result<()> {
             self.storage.network_configs.clear();
             for stored in configs {
-                let instance_id = stored.config.instance_id();
+                let config = stored.config;
+                let instance_id = config.instance_id();
                 self.storage.network_configs.insert(
                     instance_id.parse()?,
-                    GUIConfig::new(instance_id.to_string(), stored.config, stored.source),
+                    GUIConfig::new(instance_id.to_string(), config, stored.source),
                 );
             }
 
@@ -1318,13 +1304,6 @@ mod manager {
                 PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::Web),
                 PersistedConfigSource::Web
             );
-        }
-
-        #[test]
-        fn only_web_configs_are_web_like() {
-            assert!(!PersistedConfigSource::Legacy.is_web_like());
-            assert!(!PersistedConfigSource::User.is_web_like());
-            assert!(PersistedConfigSource::Web.is_web_like());
         }
     }
 }
@@ -1517,6 +1496,7 @@ pub fn run_gui() -> std::process::ExitCode {
             patch_vpn_portal_clients,
             set_logging_level,
             set_tun_fd,
+            get_mobile_tun_config,
             easytier_version,
             set_dock_visibility,
             list_network_instance_ids,
