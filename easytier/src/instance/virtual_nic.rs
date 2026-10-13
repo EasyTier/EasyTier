@@ -560,30 +560,14 @@ impl VirtualNic {
                 }
             }
 
-            match RegistryManager::reg_delete_obsoleted_items(&dev_name) {
-                Ok(_) => tracing::trace!("delete successful!"),
-                Err(e) => tracing::error!("An error occurred: {}", e),
-            }
-
-            if !dev_name.is_empty() {
-                config.tun_name(&dev_name);
-            } else {
-                use rand::distributions::Distribution as _;
-                let c = crate::arch::windows::interface_count()?;
-                let mut rng = rand::thread_rng();
-                let s: String = rand::distributions::Alphanumeric
-                    .sample_iter(&mut rng)
-                    .take(4)
-                    .map(char::from)
-                    .collect::<String>()
-                    .to_lowercase();
-
-                let random_dev_name = format!("et_{}_{}", c, s);
-                config.tun_name(random_dev_name.clone());
-                self.config.dev_name = random_dev_name;
-            }
-
+            config.tun_name(&dev_name);
             config.platform_config(|config| {
+                // Wintun uses the GUID for Windows network profile identity.
+                // Include the name so explicitly shared NICs use the same GUID.
+                let identity = format!("https://easytier.rs/wintun/{}", dev_name.to_lowercase());
+                config.device_guid(
+                    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).as_u128(),
+                );
                 config.skip_config(true);
                 config.ring_cap(Some(std::cmp::min(
                     config.min_ring_cap() * 32,
@@ -1080,7 +1064,15 @@ impl NicCtx {
             mtu -= 20;
         }
 
-        VirtualNicConfig::new(flags.dev_name, mtu, global_ctx.net_ns.clone())
+        let dev_name = flags.dev_name;
+        #[cfg(target_os = "windows")]
+        let dev_name = if dev_name.is_empty() {
+            format!("et_{}", global_ctx.get_id().simple())
+        } else {
+            dev_name
+        };
+
+        VirtualNicConfig::new(dev_name, mtu, global_ctx.net_ns.clone())
     }
 
     pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
@@ -1126,7 +1118,9 @@ impl NicCtx {
             net_ns: NetNS::new(None),
             ..nic_config
         };
-        let backend = if cfg!(mobile) || !nic_config.dev_name.is_empty() {
+        // Only an explicitly configured name opts into sharing. Windows also
+        // assigns a stable name to each dedicated NIC.
+        let backend = if cfg!(mobile) || !global_ctx.get_flags().dev_name.is_empty() {
             NicBackend::Shared(registry.lock().await.create_member(
                 nic_config.dev_name.clone(),
                 nic_config,
@@ -1148,6 +1142,12 @@ impl NicCtx {
 
     pub async fn ifname(&self) -> Option<String> {
         self.backend.ifname().await
+    }
+
+    pub(crate) async fn shutdown(&mut self) {
+        // The forwarding tasks own the TUN stream and sink. Wait until both
+        // release the device before another NIC with the same name is created.
+        self.tasks.shutdown().await;
     }
 
     async fn tun_ifname(&self) -> Result<String, Error> {
@@ -1561,11 +1561,6 @@ impl NicCtx {
 
                 #[cfg(target_os = "windows")]
                 {
-                    let mut flags = self.global_ctx.get_flags();
-                    if flags.dev_name.is_empty() {
-                        flags.dev_name = ifname.clone();
-                        self.global_ctx.set_flags(flags);
-                    }
                     let _ = RegistryManager::reg_change_catrgory_in_profile(&ifname);
                 }
 
@@ -1709,6 +1704,92 @@ mod tests {
     use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
 
     use super::{NicCtx, VirtualNic};
+
+    #[cfg(target_os = "windows")]
+    #[rstest::rstest]
+    #[case(None)]
+    #[case(Some("et_test_restart"))]
+    #[tokio::test]
+    #[ignore = "requires Administrator privileges and wintun.dll"]
+    async fn windows_device_identity_survives_recreation(#[case] dev_name: Option<&str>) {
+        use crate::{
+            common::{
+                config::{ConfigLoader, TomlConfigLoader},
+                ifcfg::RegistryManager,
+            },
+            instance::test_instance::TestInstance,
+        };
+        use easytier_core::process_runtime::CoreProcessRuntime;
+
+        let process = CoreProcessRuntime::new();
+        let registry = TestInstance::new_shared_virtual_nic_registry();
+        let new_instance = |config: TomlConfigLoader| {
+            if let Some(dev_name) = dev_name {
+                let mut flags = config.get_flags();
+                flags.dev_name = dev_name.to_owned();
+                config.set_flags(flags);
+            }
+            TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
+                config,
+                process.clone(),
+                registry.clone(),
+            )
+        };
+        let config =
+            TomlConfigLoader::new_from_str("ipv4 = \"198.18.26.1/30\"\nlisteners = []").unwrap();
+        let mut first = new_instance(config);
+        let saved_config = first.get_global_ctx().config.dump();
+        first.run().await.unwrap();
+        let name = first.get_global_ctx().get_tun_device_name().unwrap();
+        let guid = RegistryManager::find_interface_guid(&name).unwrap();
+        // The resolved name is runtime state, not an explicit request to share
+        // the device when this GlobalCtx next recreates its NIC.
+        assert_eq!(
+            first.get_global_ctx().get_flags().dev_name,
+            dev_name.unwrap_or_default(),
+        );
+        assert_eq!(
+            registry
+                .lock()
+                .await
+                .get_by_dev_name_for_test(&name)
+                .is_some(),
+            dev_name.is_some(),
+        );
+
+        // Keep B running while A is stopped and recreated, as in issue #110.
+        let other_config =
+            TomlConfigLoader::new_from_str("ipv4 = \"198.18.27.1/30\"\nlisteners = []").unwrap();
+        let mut other = new_instance(other_config);
+        other.run().await.unwrap();
+        let other_name = other.get_global_ctx().get_tun_device_name().unwrap();
+        let other_guid = RegistryManager::find_interface_guid(&other_name).unwrap();
+        if dev_name.is_some() {
+            assert_eq!(name, other_name);
+            assert_eq!(guid, other_guid);
+        } else {
+            assert_ne!(name, other_name);
+            assert_ne!(guid, other_guid);
+        }
+        first.clear_resources().await;
+
+        for _ in 0..10 {
+            let config = TomlConfigLoader::new_from_str(&saved_config).unwrap();
+            let mut restarted = new_instance(config);
+            restarted.run().await.unwrap();
+            assert_eq!(
+                restarted.get_global_ctx().get_tun_device_name().unwrap(),
+                name
+            );
+            assert_eq!(RegistryManager::find_interface_guid(&name).unwrap(), guid);
+            assert_eq!(
+                RegistryManager::find_interface_guid(&other_name).unwrap(),
+                other_guid,
+            );
+            restarted.clear_resources().await;
+        }
+        other.clear_resources().await;
+    }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]

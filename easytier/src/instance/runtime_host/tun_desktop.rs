@@ -78,6 +78,7 @@ impl NativeTunRuntime {
                     Self::report_static_ip_cancelled(&mut output);
                     return;
                 }
+                nic_state.stop().await;
                 let closed = Arc::new(Notify::new());
                 let mut nic = NicCtx::new(
                     global_ctx.clone(),

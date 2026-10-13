@@ -113,7 +113,7 @@ rcgen = { version = "0.14.10", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 
 # for tap device
-tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", features = [
+tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", rev = "06daae16fc2e0506dd23ffce290542b2ca9dcade", features = [
     "async",
 ], optional = true }
 # for net ns
@@ -127,6 +127,7 @@ nix = { version = "0.31.3", features = [
 
 uuid = { workspace = true, features = [
     "v4",
+    "v5",
     "fast-rng",
     "macro-diagnostics",
     "serde",
