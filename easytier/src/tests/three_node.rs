@@ -5350,3 +5350,134 @@ pub async fn relay_peer_session_cleanup() {
     drop(core_1);
     drop_insts(insts).await;
 }
+
+#[rstest::rstest]
+#[case::ipv6_only(false, false)]
+#[case::dual_stack(true, false)]
+#[case::static_ipv4(false, true)]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn dhcpv6_three_node_connectivity(#[case] dhcp_ipv4: bool, #[case] static_ipv4: bool) {
+    let network = prepare_linux_namespaces();
+    let insts = init_three_node_ex(
+        &network,
+        "udp",
+        |cfg| {
+            if !static_ipv4 {
+                cfg.set_ipv4(None);
+            }
+            cfg.set_ipv6(None);
+            cfg.set_dhcp(dhcp_ipv4);
+            cfg.set_dhcpv6_config(easytier_core::config::DhcpConfig::Cidr(
+                "fd42:1234::/64".parse().unwrap(),
+            ));
+            cfg
+        },
+        false,
+    )
+    .await;
+    wait_for_condition(
+        || async {
+            insts.iter().all(|inst| {
+                inst.get_global_ctx().get_ipv6().is_some()
+                    && (!dhcp_ipv4 || inst.get_global_ctx().get_ipv4().is_some())
+            })
+        },
+        Duration::from_secs(30),
+    )
+    .await;
+    let addresses = insts
+        .iter()
+        .map(|inst| inst.get_global_ctx().get_ipv6().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        addresses
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
+    for address in &addresses {
+        assert_eq!(address.network(), "fd42:1234::/64".parse().unwrap());
+    }
+    wait_for_condition(
+        || async {
+            insts[0]
+                .get_core_instance()
+                .route_snapshots()
+                .await
+                .iter()
+                .all(|route| route.ipv6_addr.is_some())
+        },
+        Duration::from_secs(15),
+    )
+    .await;
+    for (index, inst) in insts.iter().enumerate() {
+        let info = easytier_core::management::network_instance_running_info(
+            inst.get_core_instance().as_ref(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            info.my_node_info.unwrap().virtual_ipv6,
+            Some(addresses[index].into())
+        );
+        easytier_core::management::apply_config_patch(
+            &inst.get_core_instance(),
+            easytier_proto::api::config::InstanceConfigPatch {
+                ipv6: Some("fd55::1/64".parse::<cidr::Ipv6Inet>().unwrap().into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(inst.get_global_ctx().get_ipv6(), Some(addresses[index]));
+        if static_ipv4 {
+            assert_eq!(
+                inst.get_global_ctx()
+                    .get_ipv4()
+                    .unwrap()
+                    .address()
+                    .to_string(),
+                format!("10.144.144.{}", index + 1)
+            );
+        } else if !dhcp_ipv4 {
+            assert!(inst.get_global_ctx().get_ipv4().is_none());
+        }
+    }
+    _tunnel_pingpong_netns_with_timeout(
+        core_tcp_listener("tcp://[::]:23461".parse().unwrap()),
+        core_tcp_dialer(
+            format!("tcp://[{}]:23461", addresses[2].address())
+                .parse()
+                .unwrap(),
+        ),
+        NetNS::new(Some(network.namespace("net_c").into())),
+        NetNS::new(Some(network.namespace("net_a").into())),
+        vec![0x6; 256],
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    if dhcp_ipv4 || static_ipv4 {
+        _tunnel_pingpong_netns_with_timeout(
+            core_tcp_listener("tcp://0.0.0.0:23462".parse().unwrap()),
+            core_tcp_dialer(
+                format!(
+                    "tcp://{}:23462",
+                    insts[2].get_global_ctx().get_ipv4().unwrap().address()
+                )
+                .parse()
+                .unwrap(),
+            ),
+            NetNS::new(Some(network.namespace("net_c").into())),
+            NetNS::new(Some(network.namespace("net_a").into())),
+            vec![0x4; 256],
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+    }
+    drop_insts(insts).await;
+}

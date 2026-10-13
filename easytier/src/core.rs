@@ -222,6 +222,15 @@ struct NetworkOptions {
     dhcp: Option<DhcpConfig>,
 
     #[arg(
+        long,
+        env = "ET_DHCPV6",
+        help = t!("core_clap.dhcpv6").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    dhcpv6: Option<DhcpConfig<cidr::Ipv6Cidr>>,
+
+    #[arg(
         short,
         long,
         env = "ET_PEERS",
@@ -690,6 +699,9 @@ impl NetworkOptions {
 
         if let Some(dhcp) = self.dhcp {
             cfg.set_dhcp_config(dhcp);
+        }
+        if let Some(dhcp) = self.dhcpv6 {
+            cfg.set_dhcpv6_config(dhcp);
         }
 
         if let Some(ipv4) = &self.ipv4 {
@@ -1641,6 +1653,43 @@ mod tests {
                 normalized.connectivity.runtime.dhcp_ipv4_cidr,
                 expected.cidr()
             );
+        }
+    }
+
+    #[test]
+    fn dhcpv6_cli_accepts_optional_bool_or_cidr() {
+        for (args, expected) in [
+            (vec!["--dhcpv6"], DhcpConfig::Enabled(true)),
+            (vec!["--dhcpv6=false"], DhcpConfig::Enabled(false)),
+            (
+                vec!["--dhcpv6", "fd12::/64"],
+                DhcpConfig::Cidr("fd12::/64".parse().unwrap()),
+            ),
+        ] {
+            let config = TomlConfigLoader::new_from_str("dhcp = true").unwrap();
+            let cli = Cli::try_parse_from(std::iter::once("easytier-core").chain(args)).unwrap();
+            cli.network_options.merge_into(&config).unwrap();
+            assert_eq!(config.get_dhcpv6_config(), expected);
+            assert!(config.get_dhcp());
+            let normalized =
+                easytier_core::instance::CoreInstanceConfig::from_toml(&config).unwrap();
+            assert_eq!(
+                normalized.connectivity.runtime.dhcp_ipv6,
+                expected.enabled()
+            );
+            assert_eq!(
+                normalized.connectivity.runtime.dhcp_ipv6_cidr,
+                expected.cidr()
+            );
+        }
+        for value in [
+            "yes",
+            "10.0.0.0/24",
+            "fd12::1/64",
+            "fe80::/64",
+            "fd12::/127",
+        ] {
+            assert!(Cli::try_parse_from(["easytier-core", "--dhcpv6", value]).is_err());
         }
     }
 

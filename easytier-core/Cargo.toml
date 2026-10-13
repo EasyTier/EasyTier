@@ -122,11 +122,13 @@ endpoint-discovery = [
     "dep:webpki-roots",
 ]
 dhcp-ipv4 = []
+dhcp-ipv6 = []
 public-ipv6-provider = []
 vpn-portal = []
 wrapped-transport = []
 extended-services = [
     "dhcp-ipv4",
+    "dhcp-ipv6",
     "public-ipv6-provider",
     "vpn-portal",
     "wrapped-transport",

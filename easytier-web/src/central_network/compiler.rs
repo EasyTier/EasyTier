@@ -194,6 +194,8 @@ fn apply_member_override(
     merged.instance_id = base.instance_id;
     merged.dhcp = base.dhcp;
     merged.dhcp_ipv4_cidr = base.dhcp_ipv4_cidr;
+    merged.dhcpv6 = base.dhcpv6;
+    merged.dhcp_ipv6_cidr = base.dhcp_ipv6_cidr;
     merged.virtual_ipv4 = base.virtual_ipv4;
     merged.network_length = base.network_length;
     merged.hostname = base.hostname;
@@ -1256,6 +1258,8 @@ mod tests {
             hostname: Some("tampered".to_owned()),
             virtual_ipv4: Some("192.168.1.1".to_owned()),
             dhcp_ipv4_cidr: Some("192.168.100.0/24".to_owned()),
+            dhcpv6: Some(true),
+            dhcp_ipv6_cidr: Some("fd12::/64".to_owned()),
             managed_credentials: Vec::new(),
             acl: None,
             ..Default::default()
@@ -1287,6 +1291,8 @@ mod tests {
         );
         assert_eq!(permanent.network_config.managed_credentials.len(), 2);
         assert_eq!(permanent.network_config.dhcp_ipv4_cidr, None);
+        assert_eq!(permanent.network_config.dhcpv6, None);
+        assert_eq!(permanent.network_config.dhcp_ipv6_cidr, None);
         assert!(permanent.network_config.acl.is_some());
     }
 }

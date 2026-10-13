@@ -210,14 +210,20 @@ impl CoreInstanceConfig {
                     network_name: network_name.clone(),
                 },
                 routes: RouteConfig {
-                    ipv4: config.get_ipv4().map(|value| IpPrefix {
-                        address: value.address().into(),
-                        prefix_len: value.network_length(),
-                    }),
-                    ipv6: config.get_ipv6().map(|value| IpPrefix {
-                        address: value.address().into(),
-                        prefix_len: value.network_length(),
-                    }),
+                    ipv4: config
+                        .get_ipv4()
+                        .filter(|_| !config.get_dhcp())
+                        .map(|value| IpPrefix {
+                            address: value.address().into(),
+                            prefix_len: value.network_length(),
+                        }),
+                    ipv6: config
+                        .get_ipv6()
+                        .filter(|_| !config.get_dhcpv6())
+                        .map(|value| IpPrefix {
+                            address: value.address().into(),
+                            prefix_len: value.network_length(),
+                        }),
                     proxy_networks: proxy_networks
                         .into_iter()
                         .map(|proxy| ProxyNetworkConfig {
@@ -297,6 +303,8 @@ impl CoreInstanceConfig {
             },
             dhcp_ipv4: config.get_dhcp(),
             dhcp_ipv4_cidr: config.get_dhcp_config().cidr(),
+            dhcp_ipv6: config.get_dhcpv6(),
+            dhcp_ipv6_cidr: config.get_dhcpv6_config().cidr(),
             gateway: GatewayRuntimeConfig {
                 socks5_bind,
                 port_forwards: if host.ignore_unsupported_config && !host.gateway_enabled {
@@ -407,6 +415,24 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     use super::*;
+
+    #[test]
+    fn dhcp_initial_routes_ignore_static_addresses_of_managed_families() {
+        for dhcp_ipv4 in [false, true] {
+            for dhcp_ipv6 in [false, true] {
+                let config =
+                    TomlConfig::new_from_str("ipv4 = '10.20.0.7/24'\nipv6 = 'fd12::7/64'").unwrap();
+                config.set_dhcp(dhcp_ipv4);
+                config.set_dhcpv6(dhcp_ipv6);
+                let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+                let routes = &normalized.peer.snapshot.runtime.core.routes;
+                assert_eq!(routes.ipv4.is_some(), !dhcp_ipv4);
+                assert_eq!(routes.ipv6.is_some(), !dhcp_ipv6);
+                assert_eq!(config.get_ipv4().unwrap(), "10.20.0.7/24".parse().unwrap());
+                assert_eq!(config.get_ipv6().unwrap(), "fd12::7/64".parse().unwrap());
+            }
+        }
+    }
 
     #[test]
     fn tcp_stun_servers_follow_toml_override_rules() {

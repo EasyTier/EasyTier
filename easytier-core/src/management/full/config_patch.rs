@@ -91,7 +91,9 @@ where
         {
             candidate.set_ipv4(Some(ipv4.into()));
         }
-        if let Some(ipv6) = patch.ipv6 {
+        if let Some(ipv6) = patch.ipv6
+            && !candidate.get_dhcpv6()
+        {
             candidate.set_ipv6(Some(ipv6.into()));
         }
         candidate.patch_flags(FlagsPatch {

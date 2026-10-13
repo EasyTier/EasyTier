@@ -32,6 +32,7 @@ import {
   Flags as FlagsPb,
   NatType,
   type PeerFeatureFlag,
+  type Ipv6Inet,
   type SecureModeConfig,
 } from '../generated/proto/common'
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
@@ -452,6 +453,7 @@ export interface Url {
 
 export interface NodeInfo {
   virtual_ipv4: Ipv4Inet,
+  virtual_ipv6?: Ipv6Inet,
   hostname: string
   version: string
   ips: {
@@ -581,6 +583,8 @@ export enum EventType {
   VpnPortalClientConnected = 'VpnPortalClientConnected', // string, string
   VpnPortalClientDisconnected = 'VpnPortalClientDisconnected', // string, string, string
 
+  DhcpIpv6Changed = 'DhcpIpv6Changed',
+  DhcpIpv6Conflicted = 'DhcpIpv6Conflicted',
   DhcpIpv4Changed = 'DhcpIpv4Changed', // ipv4 | null, ipv4 | null
   DhcpIpv4Conflicted = 'DhcpIpv4Conflicted', // ipv4 | null
 

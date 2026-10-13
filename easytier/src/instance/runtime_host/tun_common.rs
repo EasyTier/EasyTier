@@ -3,27 +3,20 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use cidr::Ipv4Inet;
 #[cfg(not(mobile))]
 use easytier_core::instance::CorePacketPlane;
-use easytier_core::{
-    gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host},
-    host::packet::HostPacketReceiver,
-};
+use easytier_core::{gateway::dhcp::DhcpAddresses, host::packet::HostPacketReceiver};
+#[cfg(not(mobile))]
 use futures::FutureExt as _;
-use tokio::{
-    sync::{Mutex, Notify},
-    task::JoinSet,
-};
+#[cfg(not(mobile))]
+use tokio::sync::Notify;
+use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use super::MagicDnsRuntime;
 #[cfg(not(mobile))]
 use crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry;
-use crate::{
-    common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    instance::virtual_nic::NicCtx,
-};
+use crate::{common::global_ctx::ArcGlobalCtx, instance::virtual_nic::NicCtx};
 
 struct NicCtxContainer {
     _nic_ctx: Option<Box<dyn Any + Send>>,
@@ -115,11 +108,12 @@ impl TunNicState {
     }
 }
 
-pub(super) struct NativeDhcpIpv4Host {
+pub(super) struct NativeDhcpHost {
     pub(super) global_ctx: ArcGlobalCtx,
     pub(super) operation: Arc<Mutex<()>>,
     pub(super) cancel: CancellationToken,
     pub(super) nic: TunNicState,
+    #[cfg(not(mobile))]
     pub(super) closed: Arc<Notify>,
     #[cfg(not(mobile))]
     pub(super) packet_plane: Arc<CorePacketPlane>,
@@ -127,84 +121,69 @@ pub(super) struct NativeDhcpIpv4Host {
     pub(super) shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
 }
 
-impl NativeDhcpIpv4Host {
-    fn ensure_open(&self) -> anyhow::Result<()> {
-        if self.cancel.is_cancelled() {
-            anyhow::bail!("instance is closing; DHCP update cancelled");
+impl NativeDhcpHost {
+    pub(super) fn take_closed(&self) -> bool {
+        #[cfg(not(mobile))]
+        {
+            self.closed.notified().now_or_never().is_some()
         }
-        Ok(())
+        #[cfg(mobile)]
+        {
+            // The mobile VPN owner recreates and attaches its interface in response
+            // to address events; desktop interface notifications do not apply here.
+            false
+        }
     }
 
-    async fn apply(&self, next: Option<Ipv4Inet>) -> anyhow::Result<Option<Ipv4Inet>> {
+    pub(super) async fn apply(&self, next: DhcpAddresses) -> anyhow::Result<()> {
         self.ensure_open()?;
+        // The static family may already have an attached VPN interface before
+        // DHCP's first round. No address event will rebuild it if nothing changed.
+        #[cfg(mobile)]
+        if next == self.current() {
+            return Ok(());
+        }
         tokio::select! {
             _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
             _ = self.nic.drain() => {}
         }
+        #[cfg(not(mobile))]
+        self.set_addresses(DhcpAddresses::default());
         self.ensure_open()?;
 
         #[cfg(not(mobile))]
-        if let Some(ip) = next
-            && !self.global_ctx.no_tun()
         {
-            let mut nic = NicCtx::new(
-                self.global_ctx.clone(),
-                self.packet_plane.clone(),
-                self.nic.receiver(),
-                self.closed.clone(),
-                self.shared_virtual_nic_registry.clone(),
-            )
-            .await;
-            tokio::select! {
-                _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
-                result = nic.run(Some(ip), self.global_ctx.get_ipv6()) => result?,
+            let addresses = self.with_static_addresses(next);
+            if !self.global_ctx.no_tun() && (addresses.ipv4.is_some() || addresses.ipv6.is_some()) {
+                let mut nic = NicCtx::new(
+                    self.global_ctx.clone(),
+                    self.packet_plane.clone(),
+                    self.nic.receiver(),
+                    self.closed.clone(),
+                    self.shared_virtual_nic_registry.clone(),
+                )
+                .await;
+                tokio::select! {
+                    _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
+                    result = nic.run(addresses.ipv4, addresses.ipv6) => result?,
+                }
+                let magic_dns = if let Some(ip) = addresses.ipv4 {
+                    let shared_route_backend = nic.shared_route_backend_for_dns();
+                    MagicDnsRuntime::start(
+                        self.global_ctx.clone(),
+                        self.packet_plane.clone(),
+                        nic.ifname().await,
+                        ip,
+                        shared_route_backend,
+                    )
+                } else {
+                    MagicDnsRuntime::default()
+                };
+                self.nic.install(nic, magic_dns).await;
             }
-            let shared_route_backend = nic.shared_route_backend_for_dns();
-            let magic_dns = MagicDnsRuntime::start(
-                self.global_ctx.clone(),
-                self.packet_plane.clone(),
-                nic.ifname().await,
-                ip,
-                shared_route_backend,
-            );
-            self.nic.install(nic, magic_dns).await;
         }
-        self.global_ctx.set_ipv4(next);
-        Ok(next)
-    }
-}
-
-#[async_trait::async_trait]
-impl DhcpIpv4Host for NativeDhcpIpv4Host {
-    fn take_interface_closed(&self) -> bool {
-        self.closed.notified().now_or_never().is_some()
-    }
-
-    async fn apply_dhcp_ipv4(
-        &self,
-        _previous: Option<Ipv4Inet>,
-        next: Option<Ipv4Inet>,
-    ) -> DhcpIpv4ApplyOutcome {
-        let permit = self.operation.clone().lock_owned().await;
-        let outcome = match self.apply(next).await {
-            Ok(actual) => DhcpIpv4ApplyOutcome::applied(actual),
-            Err(error) => DhcpIpv4ApplyOutcome::failed(self.global_ctx.get_ipv4(), error),
-        };
-        outcome.with_permit(DhcpIpv4ApplyPermit::new(permit))
-    }
-
-    fn publish_dhcp_ipv4(
-        &self,
-        previous: Option<Ipv4Inet>,
-        requested: Option<Ipv4Inet>,
-        actual: Option<Ipv4Inet>,
-    ) {
-        let event = if requested.is_none() {
-            GlobalCtxEvent::DhcpIpv4Conflicted(previous)
-        } else {
-            GlobalCtxEvent::DhcpIpv4Changed(previous, actual)
-        };
-        self.global_ctx.issue_event(event);
+        self.set_addresses(next);
+        Ok(())
     }
 }
 
@@ -213,12 +192,12 @@ mod tests {
     use easytier_core::{config::toml::TomlConfig, process_runtime::CoreProcessRuntime};
 
     use super::*;
-    use crate::instance::test_instance::TestInstance;
+    use crate::{common::global_ctx::GlobalCtxEvent, instance::test_instance::TestInstance};
 
     #[tokio::test]
     async fn dhcp_preserves_publication_permit_and_cancelled_address() {
         let instance = TestInstance::new_with_process_runtime(
-            TomlConfig::default(),
+            TomlConfig::new_from_str("dhcp = true\ndhcpv6 = true").unwrap(),
             CoreProcessRuntime::new(),
         );
         let global_ctx = instance.get_global_ctx();
@@ -241,21 +220,33 @@ mod tests {
             instance.get_core_instance().packet_plane(),
         );
         let mut events = global_ctx.subscribe();
-        let address = "10.20.0.7/24".parse().unwrap();
-        let mut previous = None;
-        for next in [Some(address), None] {
-            let outcome = host.apply_dhcp_ipv4(previous, next).await;
+        let addresses = DhcpAddresses {
+            ipv4: Some("10.20.0.7/24".parse().unwrap()),
+            ipv6: Some("fd12::7/64".parse().unwrap()),
+        };
+        let mut previous = DhcpAddresses::default();
+        for next in [addresses, DhcpAddresses::default()] {
+            let outcome = host.apply_dhcp(next).await;
             assert!(outcome.result.is_ok());
             assert_eq!(outcome.actual, next);
-            assert_eq!(global_ctx.get_ipv4(), next);
+            assert_eq!(global_ctx.get_ipv4(), next.ipv4);
+            assert_eq!(global_ctx.get_ipv6(), next.ipv6);
             assert!(operation.try_lock().is_err());
-            host.publish_dhcp_ipv4(previous, next, outcome.actual);
+            host.publish_dhcp(previous, outcome.actual);
             assert_eq!(
                 events.try_recv().unwrap(),
-                if next.is_none() {
-                    GlobalCtxEvent::DhcpIpv4Conflicted(previous)
+                if next.ipv4.is_none() {
+                    GlobalCtxEvent::DhcpIpv4Conflicted(previous.ipv4)
                 } else {
-                    GlobalCtxEvent::DhcpIpv4Changed(previous, next)
+                    GlobalCtxEvent::DhcpIpv4Changed(previous.ipv4, next.ipv4)
+                }
+            );
+            assert_eq!(
+                events.try_recv().unwrap(),
+                if next.ipv6.is_none() {
+                    GlobalCtxEvent::DhcpIpv6Conflicted(previous.ipv6)
+                } else {
+                    GlobalCtxEvent::DhcpIpv6Changed(previous.ipv6, next.ipv6)
                 }
             );
             drop(outcome);
@@ -263,12 +254,14 @@ mod tests {
             previous = next;
         }
 
-        global_ctx.set_ipv4(Some(address));
+        global_ctx.set_ipv4(addresses.ipv4);
+        global_ctx.set_ipv6(addresses.ipv6);
         cancel.cancel();
-        let outcome = host.apply_dhcp_ipv4(Some(address), None).await;
+        let outcome = host.apply_dhcp(DhcpAddresses::default()).await;
         assert!(outcome.result.is_err());
-        assert_eq!(outcome.actual, Some(address));
-        assert_eq!(global_ctx.get_ipv4(), Some(address));
+        assert_eq!(outcome.actual, addresses);
+        assert_eq!(global_ctx.get_ipv4(), addresses.ipv4);
+        assert_eq!(global_ctx.get_ipv6(), addresses.ipv6);
         runtime.shutdown().await;
     }
 }
