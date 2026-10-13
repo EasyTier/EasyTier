@@ -149,3 +149,9 @@ lock operations, disabled arguments, span parentage, per-poll enter/exit,
 cancellation, and LTTng layer composition. Feature builds are not a throughput
 benchmark: enabled-backend overhead and real packet forwarding performance need
 separate measurement.
+
+### Runtime evidence
+
+See [VALIDATION.md](VALIDATION.md) for backend-specific results and repeatable
+artifact checks, including two real nodes echoing 1 MiB through a TCP tunnel.
+The CPU check rejects sampler errors even when the profiled program exits 0.

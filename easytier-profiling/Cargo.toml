@@ -28,4 +28,4 @@ lttng = ["tracing", "dep:tracing-subscriber", "dep:lttng-ust-generate"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["registry"] }
+tracing-subscriber = { workspace = true, features = ["registry", "fmt"] }
