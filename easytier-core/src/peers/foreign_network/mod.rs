@@ -521,6 +521,7 @@ impl ForeignNetworkEntry {
             self.peer_context.clone(),
             public_ipv6_runtime,
             self.peer_rpc.clone(),
+            None,
         );
         route
             .open(Box::new(ForeignNetworkRouteInterface {

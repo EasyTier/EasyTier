@@ -1276,6 +1276,7 @@ mod tests {
                 Arc::new(()),
                 None,
                 Arc::new(()),
+                None,
             )
             .unwrap(),
         );
