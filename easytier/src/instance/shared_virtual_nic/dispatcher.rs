@@ -2172,7 +2172,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
+        tokio::time::timeout(Duration::from_secs(1), dispatcher.task)
             .await
             .unwrap()
             .unwrap();
@@ -2212,7 +2212,7 @@ mod tests {
             }
             assert!(!valid.load(Ordering::Acquire));
             assert!(member_tunnel_table.control_sender().is_none());
-            tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
+            tokio::time::timeout(Duration::from_secs(1), dispatcher.task)
                 .await
                 .unwrap()
                 .unwrap();
