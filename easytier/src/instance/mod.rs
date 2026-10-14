@@ -7,6 +7,7 @@ pub(crate) mod config_storage;
 pub mod dns_server;
 pub mod factory;
 pub mod host;
+pub mod route;
 mod runtime_executor;
 pub(crate) mod runtime_host;
 #[cfg(test)]

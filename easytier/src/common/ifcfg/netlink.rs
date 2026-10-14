@@ -61,7 +61,7 @@ fn send_netlink_req(builder: MessageBuilder) -> Result<Socket, Error> {
     Ok(socket)
 }
 
-fn send_netlink_req_and_wait_ack(builder: MessageBuilder) -> Result<(), Error> {
+pub(crate) fn send_netlink_req_and_wait_ack(builder: MessageBuilder) -> Result<(), Error> {
     let socket = send_netlink_req(builder)?;
     loop {
         let (response, _) = socket.recv_from_full()?;
@@ -80,7 +80,7 @@ fn send_netlink_req_and_wait_ack(builder: MessageBuilder) -> Result<(), Error> {
     }
 }
 
-fn message_request<T: NetlinkEncode>(
+pub(crate) fn message_request<T: NetlinkEncode>(
     message_type: u16,
     flags: u16,
     message: &T,

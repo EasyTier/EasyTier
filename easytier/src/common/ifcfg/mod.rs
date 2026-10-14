@@ -9,9 +9,9 @@
 ))]
 mod darwin;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-mod netlink;
+pub(crate) mod netlink;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-mod netlink_wire;
+pub(crate) mod netlink_wire;
 #[cfg(target_os = "windows")]
 mod win;
 #[cfg(target_os = "windows")]
