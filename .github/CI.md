@@ -53,6 +53,13 @@ events still handle full main builds dispatched manually by a maintainer.
 Nightly Release can also be started manually to publish existing main HEAD
 builds without rebuilding them.
 
+Nightly uses the same asset names and archive layout as version releases.
+Core, Web, and Magisk ZIP names include the built commit's version (for example,
+`easytier-linux-x86_64-v2.7.0.zip`). GUI installers and Android APKs retain their
+original filenames without an extra ZIP wrapper. `SHA256SUMS` covers every
+download. Asset URLs can change when the project version changes; use the
+fixed `nightly` release page to find the current files.
+
 ## Manual builds and releases
 
 Repository Write access is required. In Actions, run Core, GUI, and Mobile
