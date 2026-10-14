@@ -272,6 +272,11 @@ pub struct VirtualNic {
 
     ifname: Option<String>,
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
+
+    // Keep the name reserved through firewall cleanup in Drop. The device
+    // itself may already have disappeared when its forwarding tasks stop.
+    #[cfg(target_os = "windows")]
+    name_reservation: Option<std::os::windows::io::OwnedHandle>,
 }
 
 impl Drop for VirtualNic {
@@ -298,6 +303,8 @@ impl VirtualNic {
             config,
             ifname: None,
             ifcfg: Box::new(IfConfiger::default()),
+            #[cfg(target_os = "windows")]
+            name_reservation: None,
         }
     }
 
@@ -548,6 +555,12 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
+            if self.name_reservation.is_none() {
+                let (name, reservation) =
+                    crate::arch::windows::reserve_tun_name(&self.config.dev_name)?;
+                self.config.dev_name = name;
+                self.name_reservation = Some(reservation);
+            }
             let dev_name = self.config.dev_name.clone();
 
             match crate::arch::windows::add_self_to_firewall_allowlist() {
@@ -1065,12 +1078,6 @@ impl NicCtx {
         }
 
         let dev_name = flags.dev_name;
-        #[cfg(target_os = "windows")]
-        let dev_name = if dev_name.is_empty() {
-            format!("et_{}", global_ctx.get_id().simple())
-        } else {
-            dev_name
-        };
 
         VirtualNicConfig::new(dev_name, mtu, global_ctx.net_ns.clone())
     }
@@ -1118,8 +1125,7 @@ impl NicCtx {
             net_ns: NetNS::new(None),
             ..nic_config
         };
-        // Only an explicitly configured name opts into sharing. Windows also
-        // assigns a stable name to each dedicated NIC.
+        // Only an explicitly configured name opts into sharing.
         let backend = if cfg!(mobile) || !global_ctx.get_flags().dev_name.is_empty() {
             NicBackend::Shared(registry.lock().await.create_member(
                 nic_config.dev_name.clone(),
