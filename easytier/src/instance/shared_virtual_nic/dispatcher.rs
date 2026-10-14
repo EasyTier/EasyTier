@@ -508,7 +508,7 @@ impl SharedVirtualNicNatTable {
 }
 
 pub(super) struct SharedVirtualNicDispatcher {
-    _task: AbortOnDropHandle<()>,
+    task: AbortOnDropHandle<()>,
     control_sender: mpsc::UnboundedSender<SharedVirtualNicControl>,
 }
 
@@ -534,7 +534,7 @@ impl SharedVirtualNicDispatcher {
         };
 
         Self {
-            _task: AbortOnDropHandle::new(SHARED_VIRTUAL_NIC_RUNTIME.spawn(task.run())),
+            task: AbortOnDropHandle::new(SHARED_VIRTUAL_NIC_RUNTIME.spawn(task.run())),
             control_sender,
         }
     }
@@ -566,7 +566,7 @@ impl SharedVirtualNicDispatcher {
         let task = SHARED_VIRTUAL_NIC_RUNTIME.spawn(task.run_for_mobile(first_open_sender));
 
         let dispatcher = Self {
-            _task: AbortOnDropHandle::new(task),
+            task: AbortOnDropHandle::new(task),
             control_sender,
         };
         await_mobile_open(first_open_receiver)
@@ -631,23 +631,25 @@ impl SharedVirtualNicDispatcher {
 
     pub(super) async fn shutdown_without_invalidation(self) {
         let (ack, rx) = oneshot::channel();
-        if self
+        let sent = self
             .control_sender
             .send(SharedVirtualNicControl::Shutdown {
                 invalidate: false,
                 ack,
             })
-            .is_err()
-        {
-            return;
-        }
+            .is_ok();
 
-        if tokio::time::timeout(DISPATCHER_SHUTDOWN_TIMEOUT, rx)
-            .await
-            .is_err()
+        if sent
+            && tokio::time::timeout(DISPATCHER_SHUTDOWN_TIMEOUT, rx)
+                .await
+                .is_err()
         {
             tracing::warn!("timed out shutting down shared virtual nic dispatcher");
         }
+        // Even on send failure or timeout, wait for the task's TUN halves to
+        // be dropped before releasing the device name for another owner.
+        self.task.abort();
+        let _ = self.task.await;
     }
 }
 
@@ -2025,7 +2027,7 @@ mod tests {
             },
         };
         let dispatcher = SharedVirtualNicDispatcher {
-            _task: AbortOnDropHandle::new(tokio::spawn(task.run())),
+            task: AbortOnDropHandle::new(tokio::spawn(task.run())),
             control_sender: control_sender.clone(),
         };
         (dispatcher, control_sender)
@@ -2104,7 +2106,7 @@ mod tests {
         }
         assert!(!valid.load(Ordering::Acquire));
         assert!(member_tunnel_table.control_sender().is_none());
-        tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
+        tokio::time::timeout(Duration::from_secs(1), dispatcher.task)
             .await
             .unwrap()
             .unwrap();
@@ -2170,7 +2172,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
+        tokio::time::timeout(Duration::from_secs(1), dispatcher.task)
             .await
             .unwrap()
             .unwrap();
@@ -2210,7 +2212,7 @@ mod tests {
             }
             assert!(!valid.load(Ordering::Acquire));
             assert!(member_tunnel_table.control_sender().is_none());
-            tokio::time::timeout(Duration::from_secs(1), dispatcher._task)
+            tokio::time::timeout(Duration::from_secs(1), dispatcher.task)
                 .await
                 .unwrap()
                 .unwrap();
@@ -3078,6 +3080,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_shutdown_waits_for_resources_when_control_fails() {
+        for receiver_closed in [true, false] {
+            let (control_sender, control_receiver) = mpsc::unbounded_channel();
+            let resource = Arc::new(());
+            let weak = Arc::downgrade(&resource);
+            let (ready, started) = oneshot::channel();
+            let task = tokio::spawn(async move {
+                let _resource = resource;
+                let _receiver = if receiver_closed {
+                    drop(control_receiver);
+                    None
+                } else {
+                    Some(control_receiver)
+                };
+                ready.send(()).unwrap();
+                std::future::pending::<()>().await;
+            });
+            started.await.unwrap();
+            let dispatcher = SharedVirtualNicDispatcher {
+                task: AbortOnDropHandle::new(task),
+                control_sender,
+            };
+
+            dispatcher.shutdown_without_invalidation().await;
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn cancelled_member_updates_finish_before_registration_cleanup() {
         use super::super::{SharedVirtualNic, SharedVirtualNicMember};
         use crate::{
@@ -3222,7 +3253,7 @@ mod tests {
                     }
                 });
                 shared_nic.dispatcher = Some(SharedVirtualNicDispatcher {
-                    _task: AbortOnDropHandle::new(task),
+                    task: AbortOnDropHandle::new(task),
                     control_sender,
                 });
                 let table = shared_nic.member_tunnel_table.clone();
