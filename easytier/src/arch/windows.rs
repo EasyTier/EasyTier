@@ -4,7 +4,7 @@ use anyhow::Context;
 use network_interface::NetworkInterfaceConfig;
 use windows::{
     Win32::{
-        Foundation::FALSE,
+        Foundation::{ERROR_FILE_NOT_FOUND, FALSE},
         NetworkManagement::WindowsFirewall::{
             INetFwPolicy2, INetFwRule, NET_FW_ACTION_ALLOW, NET_FW_PROFILE2_DOMAIN,
             NET_FW_PROFILE2_PRIVATE, NET_FW_PROFILE2_PUBLIC, NET_FW_RULE_DIR_IN,
@@ -375,6 +375,7 @@ pub fn remove_interface_firewall_rules(interface_name: &str) -> anyhow::Result<(
     }?;
 
     let rules = unsafe { policy.Rules()? };
+    let mut failures = Vec::new();
 
     for protocol_name in ["TCP", "UDP", "ICMP", "ALL"] {
         for direction in ["Inbound", "Outbound"] {
@@ -383,12 +384,19 @@ pub fn remove_interface_firewall_rules(interface_name: &str) -> anyhow::Result<(
                 interface_name, protocol_name, direction
             );
             let name_bstr = BSTR::from(&rule_name);
-            unsafe {
-                let _ = rules.Remove(&name_bstr); // Ignore errors, rule might not exist
+            // Removing a missing rule succeeds. Keep trying the remaining
+            // rules on failure, but report failures to the caller.
+            if let Err(error) = unsafe { rules.Remove(&name_bstr) } {
+                failures.push(format!("{rule_name}: {error}"));
             }
         }
     }
 
+    anyhow::ensure!(
+        failures.is_empty(),
+        "failed to remove firewall rules: {}",
+        failures.join("; ")
+    );
     Ok(())
 }
 
@@ -408,8 +416,8 @@ pub fn list_interface_firewall_rules(interface_name: &str) -> anyhow::Result<Vec
     let rules = unsafe { policy.Rules()? };
     let mut found_rules = Vec::new();
 
-    // Check protocol-specific rules
-    for protocol_name in ["TCP", "UDP", "ICMP"] {
+    // Check protocol-specific and all-protocol rules
+    for protocol_name in ["TCP", "UDP", "ICMP", "ALL"] {
         for direction in ["Inbound", "Outbound"] {
             let rule_name = format!(
                 "EasyTier {} - {} Protocol ({})",
@@ -418,17 +426,6 @@ pub fn list_interface_firewall_rules(interface_name: &str) -> anyhow::Result<Vec
             if check_rule_exists(&rules, &rule_name)? {
                 found_rules.push(rule_name);
             }
-        }
-    }
-
-    // Check fallback protocol rules
-    for direction in ["Inbound", "Outbound"] {
-        let rule_name = format!(
-            "EasyTier {} - All Protocols ({})",
-            interface_name, direction
-        );
-        if check_rule_exists(&rules, &rule_name)? {
-            found_rules.push(rule_name);
         }
     }
 
@@ -444,7 +441,10 @@ fn check_rule_exists(
     unsafe {
         match rules.Item(&name_bstr) {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Err(error) if error.code() == ERROR_FILE_NOT_FOUND.to_hresult() => Ok(false),
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to inspect firewall rule {rule_name}"))
+            }
         }
     }
 }
@@ -459,10 +459,32 @@ mod tests {
         assert!(res.is_ok());
     }
 
-    #[test]
-    #[ignore] // Requires administrator privileges, ignored by default
-    fn test_interface_firewall_rules() {
-        let test_interface = "test_interface";
+    #[cfg(feature = "tun")]
+    #[tokio::test]
+    #[ignore = "requires Administrator privileges and wintun.dll"]
+    async fn test_interface_firewall_rules() {
+        use crate::{
+            common::netns::NetNS,
+            instance::virtual_nic::{VirtualNic, VirtualNicConfig},
+        };
+        use windows::Win32::System::Ole::{
+            SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
+        };
+
+        let test_interface = "et_test_firewall";
+        let mut nic = VirtualNic::new(VirtualNicConfig::new(
+            test_interface.to_owned(),
+            1500,
+            NetNS::new(None),
+        ));
+        let _tunnel = nic.create_dev().await.unwrap();
+        guarden::defer! {
+            remove_interface_firewall_rules(test_interface).unwrap();
+        }
+
+        // Removing missing rules is successful, including on repeated cleanup.
+        remove_interface_firewall_rules(test_interface).unwrap();
+        remove_interface_firewall_rules(test_interface).unwrap();
 
         // Add firewall rules
         let add_result = add_interface_to_firewall_allowlist(test_interface);
@@ -479,17 +501,31 @@ mod tests {
 
         // Verify rules were created
         let rules = list_interface_firewall_rules(test_interface).unwrap();
+        assert_eq!(rules.len(), 8);
         println!("Created {} firewall rules:", rules.len());
         for rule in &rules {
             println!("  - {}", rule);
         }
 
         // Verify required protocol rules are all created
-        let expected_protocols = ["TCP", "UDP", "ICMP"];
-        let expected_directions = ["Inbound", "Outbound"];
+        let expected_protocols = [("TCP", 6), ("UDP", 17), ("ICMP", 1), ("ALL", 256)];
+        let expected_directions = [
+            ("Inbound", NET_FW_RULE_DIR_IN),
+            ("Outbound", NET_FW_RULE_DIR_OUT),
+        ];
+        let _com = ComInitializer::new().unwrap();
+        let policy: INetFwPolicy2 = unsafe {
+            CoCreateInstance(
+                &windows::Win32::NetworkManagement::WindowsFirewall::NetFwPolicy2,
+                None,
+                CLSCTX_ALL,
+            )
+            .unwrap()
+        };
+        let collection = unsafe { policy.Rules().unwrap() };
 
-        for protocol in &expected_protocols {
-            for direction in &expected_directions {
+        for (protocol, number) in expected_protocols {
+            for (direction, value) in expected_directions {
                 let rule_name = format!(
                     "EasyTier {} - {} Protocol ({})",
                     test_interface, protocol, direction
@@ -499,10 +535,46 @@ mod tests {
                     "Missing required rule: {}",
                     rule_name
                 );
+                unsafe {
+                    let rule = collection.Item(&BSTR::from(&rule_name)).unwrap();
+                    assert_eq!(rule.Protocol().unwrap(), number);
+                    assert_eq!(rule.Direction().unwrap(), value);
+                    assert_eq!(rule.Action().unwrap(), NET_FW_ACTION_ALLOW);
+                    assert_eq!(
+                        rule.Enabled().unwrap(),
+                        windows::Win32::Foundation::VARIANT_TRUE
+                    );
+                    assert_eq!(rule.Profiles().unwrap(), 7);
+                    assert!(rule.ApplicationName().unwrap().is_empty());
+                    assert_eq!(rule.LocalAddresses().unwrap().to_string(), "*");
+                    assert_eq!(rule.RemoteAddresses().unwrap().to_string(), "*");
+                    let interfaces = rule.Interfaces().unwrap();
+                    assert_eq!(
+                        interfaces.Anonymous.Anonymous.vt,
+                        VARENUM(VT_ARRAY.0 | VT_VARIANT.0)
+                    );
+                    let array = interfaces.Anonymous.Anonymous.Anonymous.parray;
+                    let index = SafeArrayGetLBound(array, 1).unwrap();
+                    assert_eq!(SafeArrayGetUBound(array, 1).unwrap(), index);
+                    let mut interface = VARIANT::default();
+                    SafeArrayGetElement(array, &index, &mut interface as *mut _ as *mut _).unwrap();
+                    assert_eq!(interface.Anonymous.Anonymous.vt, VT_BSTR);
+                    assert_eq!(
+                        interface.Anonymous.Anonymous.Anonymous.bstrVal.to_string(),
+                        test_interface
+                    );
+                }
             }
         }
 
-        println!("✓ All required protocol rules (TCP/UDP/ICMP) are present");
+        println!("✓ All eight protocol rules and their properties are correct");
+
+        // Repeated starts retain the same rule names.
+        add_interface_to_firewall_allowlist(test_interface).unwrap();
+        assert_eq!(
+            list_interface_firewall_rules(test_interface).unwrap(),
+            rules
+        );
 
         // Remove firewall rules
         let remove_result = remove_interface_firewall_rules(test_interface);
@@ -524,5 +596,24 @@ mod tests {
             "✓ Successfully removed all firewall rules for interface: {}",
             test_interface
         );
+    }
+
+    #[test]
+    #[ignore = "requires a non-administrator token and preinstalled interface rules"]
+    fn firewall_permission_failures_are_reported() {
+        let interface = std::env::var("EASYTIER_TEST_FIREWALL_INTERFACE").unwrap();
+        assert!(interface.starts_with("et_test_"));
+        let before = list_interface_firewall_rules(&interface).unwrap();
+        assert!(
+            !before.is_empty(),
+            "an administrator must install test rules first"
+        );
+
+        assert!(add_interface_to_firewall_allowlist(&interface).is_err());
+        let error = remove_interface_firewall_rules(&interface).unwrap_err();
+        for name in &before {
+            assert!(error.to_string().contains(name));
+        }
+        assert_eq!(list_interface_firewall_rules(&interface).unwrap(), before);
     }
 }

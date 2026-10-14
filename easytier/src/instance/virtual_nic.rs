@@ -1723,6 +1723,7 @@ mod tests {
     #[ignore = "requires Administrator privileges and wintun.dll"]
     async fn windows_device_identity_survives_recreation(#[case] dev_name: Option<&str>) {
         use crate::{
+            arch::windows::list_interface_firewall_rules,
             common::{
                 config::{ConfigLoader, TomlConfigLoader},
                 ifcfg::RegistryManager,
@@ -1752,6 +1753,7 @@ mod tests {
         first.run().await.unwrap();
         let name = first.get_global_ctx().get_tun_device_name().unwrap();
         let guid = RegistryManager::find_interface_guid(&name).unwrap();
+        assert_eq!(list_interface_firewall_rules(&name).unwrap().len(), 8);
         // The resolved name is runtime state, not an explicit request to share
         // the device when this GlobalCtx next recreates its NIC.
         assert_eq!(
@@ -1796,9 +1798,24 @@ mod tests {
                 RegistryManager::find_interface_guid(&other_name).unwrap(),
                 other_guid,
             );
+            assert_eq!(list_interface_firewall_rules(&name).unwrap().len(), 8);
             restarted.clear_resources().await;
+            assert_eq!(list_interface_firewall_rules(&other_name).unwrap().len(), 8);
+            if dev_name.is_none() {
+                assert!(list_interface_firewall_rules(&name).unwrap().is_empty());
+            }
         }
         other.clear_resources().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !list_interface_firewall_rules(&other_name)
+                .unwrap()
+                .is_empty()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[cfg(target_os = "linux")]

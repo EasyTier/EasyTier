@@ -35,6 +35,7 @@ async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
         registry.clone(),
     );
     first.run().await.unwrap();
+    assert_eq!(list_interface_firewall_rules(name).unwrap().len(), 8);
     let cached = registry
         .lock()
         .await
@@ -53,6 +54,7 @@ async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
     })
     .await
     .unwrap();
+    assert!(list_interface_firewall_rules(name).unwrap().is_empty());
 
     // An independent registry has the same name-allocation boundary as a
     // separate process. The previous registry deliberately remains alive.
@@ -64,12 +66,19 @@ async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
     second.run().await.unwrap();
     assert_eq!(second.get_global_ctx().get_tun_device_name().unwrap(), name);
     let rules = list_interface_firewall_rules(name).unwrap();
-    assert!(!rules.is_empty());
+    assert_eq!(rules.len(), 8);
     drop(first);
     drop(registry);
     drop(cached);
     assert_eq!(list_interface_firewall_rules(name).unwrap(), rules);
     second.clear_resources().await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !list_interface_firewall_rules(name).unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 fn virtual_nic_config(mtu: u32, netns: Option<&str>) -> VirtualNicConfig {
