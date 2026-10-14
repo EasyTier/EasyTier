@@ -16,6 +16,7 @@ use super::device::DeviceFacts;
 use super::model::{CleanupIncomplete, DeviceId, RetryState, Route, RouteError};
 
 const DEFAULT_METRIC: u32 = 65535;
+const UNKNOWN_PROBE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct RouteMgr<B> {
     global_ctx: ArcGlobalCtx,
@@ -33,6 +34,7 @@ pub struct RouteMgr<B> {
     installed: BTreeSet<Route>,
     external: BTreeSet<Route>,
     unknown: BTreeSet<Route>,
+    unknown_probe_at: Option<tokio::time::Instant>,
     retries: BTreeMap<Route, RetryState>,
     desired: Option<BTreeSet<Route>>,
 
@@ -63,6 +65,7 @@ impl<B: RouteBackend> RouteMgr<B> {
             installed: BTreeSet::new(),
             external: BTreeSet::new(),
             unknown: BTreeSet::new(),
+            unknown_probe_at: None,
             retries: BTreeMap::new(),
             current_tun_device: None,
             desired: None,
@@ -83,6 +86,43 @@ impl<B: RouteBackend> RouteMgr<B> {
             .retain(|route| !facts.destroyed(&route.interface));
         self.retries
             .retain(|route, _| !facts.destroyed(&route.interface));
+        if self.unknown.is_empty() {
+            self.unknown_probe_at = None;
+        }
+    }
+
+    fn isolate(&mut self, route: Route) {
+        self.retries.remove(&route);
+        self.unknown.insert(route);
+        self.unknown_probe_at
+            .get_or_insert_with(|| tokio::time::Instant::now() + UNKNOWN_PROBE_DELAY);
+    }
+
+    async fn inspect_unknown(&mut self, force: bool) {
+        if self.unknown.is_empty() {
+            self.unknown_probe_at = None;
+            return;
+        }
+        if !force
+            && self
+                .unknown_probe_at
+                .is_some_and(|at| at > tokio::time::Instant::now())
+        {
+            return;
+        }
+        match self.backend.existing(&self.unknown).await {
+            Ok(existing) => {
+                let absent: Vec<_> = self.unknown.difference(&existing).cloned().collect();
+                for route in absent {
+                    self.unknown.remove(&route);
+                    self.installed.remove(&route);
+                    self.retries.remove(&route);
+                }
+            }
+            Err(error) => tracing::warn!(?error, "unable to inspect isolated routes"),
+        }
+        self.unknown_probe_at =
+            (!self.unknown.is_empty()).then(|| tokio::time::Instant::now() + UNKNOWN_PROBE_DELAY);
     }
 
     fn blocked_slots(&self, desired: &BTreeSet<Route>) -> BTreeSet<cidr::IpCidr> {
@@ -120,7 +160,7 @@ impl<B: RouteBackend> RouteMgr<B> {
             .active
             .is_some_and(|device| !device.ready)
         {
-            return None;
+            return self.unknown_probe_at;
         }
         let Some(desired) = &self.desired else {
             return Some(tokio::time::Instant::now());
@@ -140,6 +180,7 @@ impl<B: RouteBackend> RouteMgr<B> {
                     .get(route)
                     .map_or_else(tokio::time::Instant::now, |retry| retry.next_retry)
             })
+            .chain(self.unknown_probe_at)
             .min()
     }
 
@@ -193,6 +234,12 @@ impl<B: RouteBackend> RouteMgr<B> {
         self.changed.mark_unchanged();
         self.config_changed.mark_unchanged();
         self.device_changed.mark_unchanged();
+        let device_facts = self.global_ctx.tun_devices.snapshot();
+        self.retire_destroyed_devices(&device_facts);
+        self.inspect_unknown(false).await;
+        if self.batch_interrupted() {
+            return;
+        }
         let device_facts = self.global_ctx.tun_devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
         if device_facts
@@ -293,8 +340,7 @@ impl<B: RouteBackend> RouteMgr<B> {
                         ?err,
                         "unknown result during remove; isolating route"
                     );
-                    self.unknown.insert(route.clone());
-                    self.retries.remove(&route);
+                    self.isolate(route);
                 }
             }
         }
@@ -311,8 +357,21 @@ impl<B: RouteBackend> RouteMgr<B> {
             }
 
             match self.backend.add(&route).await {
-                Ok(Some(actual)) => {
-                    self.installed.insert(actual);
+                Ok(Some(mut actual)) => {
+                    if self
+                        .global_ctx
+                        .tun_devices
+                        .snapshot()
+                        .destroyed(&actual.interface)
+                    {
+                        // The ACK may describe a write after the original
+                        // device died and its physical index was reused. Do
+                        // not discard this effect as old-generation cascade.
+                        actual.interface.host_instance = None;
+                        self.isolate(actual);
+                    } else {
+                        self.installed.insert(actual);
+                    }
                     self.retries.remove(&route);
                 }
                 Ok(None) => {
@@ -327,8 +386,16 @@ impl<B: RouteBackend> RouteMgr<B> {
                 Err(RouteError::Unknown(err)) => {
                     tracing::error!(?route, ?err, "unknown result during add; isolating route");
                     blocked.insert(route.destination);
-                    self.unknown.insert(route.clone());
-                    self.retries.remove(&route);
+                    let mut route = route;
+                    if self
+                        .global_ctx
+                        .tun_devices
+                        .snapshot()
+                        .destroyed(&route.interface)
+                    {
+                        route.interface.host_instance = None;
+                    }
+                    self.isolate(route);
                 }
             }
         }
@@ -353,7 +420,7 @@ impl<B: RouteBackend> RouteMgr<B> {
             if !self.installed.contains(&route) {
                 continue;
             }
-            self.unknown.insert(route.clone());
+            self.isolate(route.clone());
             match self.backend.remove(&route).await {
                 Ok(Some(())) | Ok(None) => {
                     self.installed.remove(&route);
@@ -380,6 +447,9 @@ impl<B: RouteBackend> RouteMgr<B> {
 
         // Device destruction may have happened while the final request was in
         // flight. Only owned fd generations prove cascading route removal.
+        let device_facts = self.global_ctx.tun_devices.snapshot();
+        self.retire_destroyed_devices(&device_facts);
+        self.inspect_unknown(true).await;
         let device_facts = self.global_ctx.tun_devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
         if self.installed.is_empty() && self.unknown.is_empty() {
@@ -468,6 +538,8 @@ mod tests {
         add_error_map: HashMap<Route, RouteError>,
         remove_error_map: HashMap<Route, RouteError>,
         external_present: BTreeSet<Route>,
+        inspection_calls: Vec<BTreeSet<Route>>,
+        inspection_error: Option<RouteError>,
         /// When set, `add` reports the route and then waits for a release.
         paused_add: Option<PausedOperation>,
         paused_remove: Option<PausedOperation>,
@@ -528,6 +600,30 @@ mod tests {
                 Ok(None)
             }
         }
+
+        async fn existing(
+            &mut self,
+            routes: &BTreeSet<Route>,
+        ) -> Result<BTreeSet<Route>, RouteError> {
+            self.inspection_calls.push(routes.clone());
+            if let Some(error) = self.inspection_error.take() {
+                return Err(error);
+            }
+            Ok(routes
+                .iter()
+                .filter(|route| {
+                    self.routes
+                        .iter()
+                        .chain(self.external_present.iter())
+                        .any(|actual| {
+                            actual.destination == route.destination
+                                && actual.metric == route.metric
+                                && actual.interface.ifindex == route.interface.ifindex
+                        })
+                })
+                .cloned()
+                .collect())
+        }
     }
 
     #[tokio::test]
@@ -558,6 +654,131 @@ mod tests {
                 .register(RouteDemand::Additional(BTreeSet::new()))
                 .is_none()
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absent_unknown_adds_are_inspected_as_a_batch_and_can_be_retried() {
+        let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
+        let routes = BTreeSet::from([test_route("10.0.0.0/24"), test_route("10.1.0.0/24")]);
+        for route in &routes {
+            manager.backend.add_error_map.insert(
+                route.clone(),
+                RouteError::Unknown(anyhow::anyhow!("no ACK")),
+            );
+        }
+        let _registration = handle
+            .register(RouteDemand::Additional(
+                routes.iter().map(|r| r.destination).collect(),
+            ))
+            .unwrap();
+        manager.reconcile().await;
+        assert_eq!(manager.unknown, routes);
+        assert!(manager.backend.inspection_calls.is_empty());
+        assert_eq!(
+            manager.next_wakeup_time(),
+            Some(tokio::time::Instant::now() + UNKNOWN_PROBE_DELAY)
+        );
+        tokio::time::advance(UNKNOWN_PROBE_DELAY).await;
+        manager.reconcile().await;
+        assert_eq!(manager.backend.inspection_calls, vec![routes.clone()]);
+        assert_eq!(manager.installed, routes);
+        assert!(manager.unknown.is_empty());
+        assert_eq!(manager.next_wakeup_time(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unknown_presence_does_not_authorize_adoption_or_removal() {
+        let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
+        let route = test_route("10.0.0.0/24");
+        manager.backend.routes.insert(route.clone());
+        manager.backend.add_error_map.insert(
+            route.clone(),
+            RouteError::Unknown(anyhow::anyhow!("no ACK")),
+        );
+        let registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        tokio::time::advance(UNKNOWN_PROBE_DELAY).await;
+        manager.reconcile().await;
+        drop(registration);
+        manager.reconcile().await;
+        assert_eq!(
+            manager.backend.inspection_calls.len(),
+            1,
+            "notifications must not accelerate probes"
+        );
+        assert!(manager.installed.is_empty());
+        assert!(manager.external.is_empty());
+        assert_eq!(manager.unknown, BTreeSet::from([route.clone()]));
+        assert!(manager.backend.remove_calls.is_empty());
+        let report = manager.perform_shutdown_cleanup().await.unwrap_err();
+        assert_eq!(report.unknown_routes, vec![route]);
+        assert!(manager.backend.remove_calls.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn inspection_failure_is_not_absence_and_unready_devices_allow_readonly_probes() {
+        let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
+        let route = test_route("10.0.0.0/24");
+        manager.backend.add_error_map.insert(
+            route.clone(),
+            RouteError::Unknown(anyhow::anyhow!("no ACK")),
+        );
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        let _pending = manager.global_ctx.tun_devices.attach("pending".into(), 101);
+        manager.backend.inspection_error = Some(RouteError::Failed(anyhow::anyhow!("dump failed")));
+        tokio::time::advance(UNKNOWN_PROBE_DELAY).await;
+        manager.reconcile().await;
+        assert_eq!(manager.unknown, BTreeSet::from([route.clone()]));
+        assert_eq!(manager.backend.add_calls.len(), 1);
+        assert_eq!(
+            manager.next_wakeup_time(),
+            Some(tokio::time::Instant::now() + UNKNOWN_PROBE_DELAY)
+        );
+        tokio::time::advance(UNKNOWN_PROBE_DELAY).await;
+        manager.reconcile().await;
+        assert!(manager.unknown.is_empty());
+        assert_eq!(manager.backend.inspection_calls.len(), 2);
+        assert_eq!(manager.backend.add_calls.len(), 1);
+        assert_eq!(manager.next_wakeup_time(), None);
+    }
+
+    #[tokio::test]
+    async fn successful_inflight_add_on_a_retired_generation_remains_uncertain() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (backend, mut entered) = MockRouteBackend::paused(release.clone());
+        let (mut manager, handle, _) = test_manager(backend);
+        let ctx = manager.global_ctx.clone();
+        let route = test_route("10.0.0.0/24");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        let mut reconcile = Box::pin(manager.reconcile());
+        assert!(futures::poll!(reconcile.as_mut()).is_pending());
+        assert_eq!(entered.try_recv().unwrap(), route);
+        ctx.set_tun_device_index_for_test(None);
+        ctx.set_tun_device_index_for_test(Some(TEST_DEVICE_INDEX));
+        release.notify_one();
+        reconcile.await;
+        let uncertain = Route {
+            interface: DeviceId::new(TEST_DEVICE_INDEX, None),
+            ..route
+        };
+        manager.reconcile().await;
+        assert_eq!(manager.unknown, BTreeSet::from([uncertain.clone()]));
+        assert!(manager.installed.is_empty());
+        assert_eq!(
+            manager.backend.add_calls.len(),
+            1,
+            "replacement must remain blocked"
+        );
+        let report = manager.perform_shutdown_cleanup().await.unwrap_err();
+        assert_eq!(report.unknown_routes, vec![uncertain]);
+        assert!(manager.backend.remove_calls.is_empty());
     }
 
     #[tokio::test]
@@ -1043,6 +1264,7 @@ mod tests {
         };
 
         // Simulate Unknown error on add
+        backend.routes.insert(route.clone());
         backend.add_error_map.insert(
             route.clone(),
             RouteError::Unknown(anyhow::anyhow!("timeout")),

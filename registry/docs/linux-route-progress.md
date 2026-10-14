@@ -75,6 +75,16 @@ Descriptor lifetime 测试使用真实 pipe fd；本轮环境没有 /dev/net/tun
 
 27 个 manager 测试通过，新增虚拟时钟测试覆盖以上四项行为。
 
+Unknown 使用只读批量核实，每个地址族最多一次 dump。确认 absent 才解除隔离、
+允许当前声明再创建；present 不证明 ownership，不认领、不盲目删除。核实失败
+保留记录。只有存在 Unknown 时才以一秒间隔核实，无关通知不提前 / 重置期限；
+未 ready 的设备只允许该只读路径。停机在最终报告前再核实一次。
+
+add 等待结果期间 owned generation 消失时，即使收到成功 ACK，也保留对应
+物理 ifindex 的 uncertain 责任；不能假定该迟到写入属于已经级联删除的旧接口。
+Linux 不提供应用 generation 的内核 CAS，此处采用保守隔离，并由 absent 核实
+恢复。它不声称能阻止外部程序随意重写完全相同的内核 route key。
+
 ## 清理任务 ownership
 
 Host 使用既有 guarden 观察原 manager 的结束结果。五秒等待期限包含 task slot
@@ -94,13 +104,16 @@ owned 路由。30 个 manager 测试通过，覆盖中断、确定失败后再�
 ## 当前验证
 
 - native 路由、设备事实、GlobalCtx 与 RuntimeHost 测试：44 项通过。
+- 新增 Unknown 核实后 route 模块测试：43 项通过，五项内核测试默认 ignored。
 - 设备事实基础提交单独运行四项合约测试通过；无默认功能的 library 编译通过。
 - Netlink wire 既有测试：4 项通过。
-- 真实 Linux 测试：4 项通过。测试运行在 user/network namespace 中，每项再
+- 真实 Linux 测试：5 项通过。测试运行在 user/network namespace 中，每项再
   创建自己的 netns，仅操作 dummy 接口及测试路由。
 - 内核测试覆盖 IPv4 / IPv6、同前缀不同 metric / table 的保留、非等价 EEXIST、
   发送后的真实 ACK 超时、迟到 ACK，以及调用线程切换 namespace 后 socket
   仍作用于创建时的 namespace。
+- 新增内核核实测试覆盖多条 IPv4 / IPv6 key、不同 metric、应用 generation
+  保留、每个地址族一次 dump，以及空集合不请求内核。
 
 可重运行真实内核测试：
 
@@ -112,7 +125,6 @@ unshare --user --map-root-user --net cargo test -p easytier --lib \
 
 ## 仍需完成
 
-- 增加 Unknown 核实，保留无法证明本方 ownership 的不确定记录。
 - DNS 等依赖实际安装结果的启动链路需要业务层答复，registration 成功本身不是 ready。
 - 核对 Linux 上其余路由 writer（包括 Public IPv6）及相关接管边界。
 - 完成规模 / 稳态验证后，再审查未迁移平台的具体 OS 合约和测试条件。

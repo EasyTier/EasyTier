@@ -1,4 +1,10 @@
-use std::{fs::File, io, net::IpAddr, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::File,
+    io,
+    net::IpAddr,
+    time::Duration,
+};
 
 use anyhow::Context as _;
 use cidr::IpCidr;
@@ -141,20 +147,20 @@ impl PlatformRouteBackend {
     }
 
     async fn contains(&mut self, route: &Route) -> Result<bool, RouteError> {
+        Ok(self
+            .existing(&BTreeSet::from([route.clone()]))
+            .await?
+            .contains(route))
+    }
+
+    async fn dump(&mut self, family: u8) -> Result<Vec<RouteMessage>, RouteError> {
         let mut header = RouteMessage::dump_header();
-        header[0] = family(route.destination);
+        header[0] = family;
         let mut request = MessageBuilder::new(RTM_GETROUTE, NLM_F_REQUEST | NLM_F_DUMP);
         request.append_bytes(&header);
-        let messages = self
-            .request(request, ReplyKind::Dump)
+        self.request(request, ReplyKind::Dump)
             .await
-            .map_err(|error| error.into_route_error(false))?;
-        for message in messages {
-            if equivalent(&message, route).map_err(|error| RouteError::Failed(error.into()))? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+            .map_err(|error| error.into_route_error(false))
     }
 }
 
@@ -188,6 +194,31 @@ impl RouteBackend for PlatformRouteBackend {
             Err(RequestFailure::Kernel(libc::ESRCH | libc::ENOENT)) => Ok(None),
             Err(error) => Err(error.into_route_error(true)),
         }
+    }
+
+    async fn existing(&mut self, routes: &BTreeSet<Route>) -> Result<BTreeSet<Route>, RouteError> {
+        let mut requested = BTreeMap::<_, Vec<&Route>>::new();
+        let mut families = BTreeSet::new();
+        for route in routes {
+            requested
+                .entry(physical_key(route))
+                .or_default()
+                .push(route);
+            families.insert(family(route.destination));
+        }
+        let mut existing = BTreeSet::new();
+        // Exceptional inspection batches use one dump per family, regardless
+        // of how many isolated keys need checking. No steady-state dumps.
+        for family in families {
+            for message in self.dump(family).await? {
+                if let Some(key) = direct_key(&message).map_err(|e| RouteError::Failed(e.into()))? {
+                    if let Some(matches) = requested.get(&key) {
+                        existing.extend(matches.iter().map(|route| (*route).clone()));
+                    }
+                }
+            }
+        }
+        Ok(existing)
     }
 }
 
@@ -231,24 +262,36 @@ fn route_request(
     Ok(request)
 }
 
+fn physical_key(route: &Route) -> (IpCidr, u32, u32) {
+    (route.destination, route.interface.ifindex, route.metric)
+}
+
+fn direct_key(message: &RouteMessage) -> io::Result<Option<(IpCidr, u32, u32)>> {
+    if message.table()? != u32::from(libc::RT_TABLE_MAIN)
+        || message.protocol() != libc::RTPROT_STATIC
+        || message.scope() != libc::RT_SCOPE_UNIVERSE
+        || message.route_type() != RouteType::Unicast
+        || !message.is_direct()
+    {
+        return Ok(None);
+    }
+    let Some(ifindex) = message.oif() else {
+        return Ok(None);
+    };
+    let unspecified = match message.family() as i32 {
+        libc::AF_INET => IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+        libc::AF_INET6 => IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+        _ => return Ok(None),
+    };
+    let destination = message.destination().copied().unwrap_or(unspecified);
+    let destination = IpCidr::new(destination, message.dst_len())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(Some((destination, ifindex, message.priority()?)))
+}
+
+#[cfg(test)]
 fn equivalent(message: &RouteMessage, route: &Route) -> io::Result<bool> {
-    let destination = message
-        .destination()
-        .copied()
-        .unwrap_or_else(|| match route.destination {
-            IpCidr::V4(_) => IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-            IpCidr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
-        });
-    Ok(message.family() == family(route.destination)
-        && message.dst_len() == route.destination.network_length()
-        && destination == route.destination.first_address()
-        && message.oif() == Some(route.interface.ifindex)
-        && message.priority()? == route.metric
-        && message.table()? == u32::from(libc::RT_TABLE_MAIN)
-        && message.protocol() == libc::RTPROT_STATIC
-        && message.scope() == libc::RT_SCOPE_UNIVERSE
-        && message.route_type() == RouteType::Unicast
-        && message.is_direct())
+    Ok(direct_key(message)? == Some(physical_key(route)))
 }
 
 #[derive(Clone, Copy)]
@@ -584,6 +627,40 @@ mod tests {
                 assert_eq!(other.as_array().unwrap().len(), 1);
             }
             assert_eq!(fd, backend.socket.get_ref().as_raw_fd());
+        });
+    }
+
+    #[test]
+    #[ignore = "requires namespace privileges; creates a private network namespace"]
+    fn kernel_inspection_batches_families_and_keeps_requested_generations() {
+        kernel_test(|| async {
+            let ifindex = dummy("et-route");
+            let mut backend = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+            let v4 = route("10.71.0.0/24", ifindex, 65535);
+            let v6 = route("2001:db8:71::/64", ifindex, 65535);
+            backend.add(&v4).await.unwrap();
+            backend.add(&v6).await.unwrap();
+            let generated = Route {
+                interface: DeviceId::new(ifindex, Some(42)),
+                ..v4.clone()
+            };
+            let wanted = BTreeSet::from([
+                v4.clone(),
+                v6.clone(),
+                generated.clone(),
+                route("10.72.0.0/24", ifindex, 65535),
+                route("2001:db8:72::/64", ifindex, 65535),
+                route("10.71.0.0/24", ifindex, 5),
+            ]);
+            let before = backend.sequence;
+            assert_eq!(
+                backend.existing(&wanted).await.unwrap(),
+                BTreeSet::from([v4, v6, generated])
+            );
+            assert_eq!(backend.sequence - before, 2, "one dump per family");
+            let before = backend.sequence;
+            assert!(backend.existing(&BTreeSet::new()).await.unwrap().is_empty());
+            assert_eq!(backend.sequence, before, "no queries for empty input");
         });
     }
 

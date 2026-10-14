@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::model::{Route, RouteError};
 
 #[async_trait::async_trait]
@@ -15,6 +17,12 @@ pub trait RouteBackend: Send + 'static {
     /// - Err(RouteError::Failed(err)): Deterministic failure (track retry with backoff).
     /// - Err(RouteError::Unknown(err)): Unknown outcome (isolate in `unknown_routes`, report on stop).
     async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError>;
+
+    /// Read-only, complete inspection of the supplied physical route keys.
+    /// Returns only matching input routes; application device generations do
+    /// not participate in OS lookup. Presence never establishes ownership.
+    /// An error must not be interpreted as evidence that any route is absent.
+    async fn existing(&mut self, routes: &BTreeSet<Route>) -> Result<BTreeSet<Route>, RouteError>;
 }
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
