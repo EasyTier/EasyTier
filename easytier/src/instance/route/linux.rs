@@ -807,7 +807,23 @@ mod tests {
             drop(device);
         }
         let mut nic = VirtualNic::new(ctx.clone());
-        let tunnel = nic.create_dev().await.unwrap();
+        let tunnel = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match nic.create_dev().await {
+                    Ok(tunnel) => break tunnel,
+                    Err(crate::common::error::Error::TunError(tun::Error::Io(error)))
+                        if persistent && error.raw_os_error() == Some(libc::EBUSY) =>
+                    {
+                        // The synchronous setup fd was closed above; its
+                        // kernel file can still be retiring under load.
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    Err(error) => panic!("unable to attach test TUN: {error:?}"),
+                }
+            }
+        })
+        .await
+        .expect("persistent setup fd did not finish retiring");
         nic.link_up().await.unwrap();
         nic.add_ip("10.88.0.1".parse().unwrap(), 24).await.unwrap();
         let active = ctx.tun_devices.snapshot().active.unwrap();
@@ -919,6 +935,186 @@ mod tests {
     #[ignore = "requires root, TUN node and private network namespace"]
     fn kernel_tun_persistent_attachment_requires_explicit_route_cleanup() {
         kernel_test(|| tun_lifetime_case(true));
+    }
+
+    #[cfg(all(feature = "tun", feature = "public-ipv6-provider", not(mobile)))]
+    #[test]
+    #[ignore = "requires root, TUN node and private network namespace"]
+    fn kernel_public_ipv6_producers_follow_peer_leases_and_shutdown() {
+        kernel_test(|| async {
+            use crate::{
+                common::config::{ConfigLoader as _, TomlConfig},
+                instance::test_instance::TestInstance,
+            };
+            use easytier_core::{
+                process_runtime::CoreProcessRuntime, tunnel::ring::create_ring_tunnel_pair,
+            };
+
+            dummy("et-wan");
+            ip(&[
+                "-6",
+                "addr",
+                "add",
+                "240e:1234:abcd::1/64",
+                "dev",
+                "et-wan",
+                "nodad",
+            ]);
+            let provider_config = TomlConfig::default();
+            provider_config.set_ipv4(Some("10.88.0.1/24".parse().unwrap()));
+            provider_config.set_ipv6_public_addr_provider(true);
+            provider_config
+                .set_ipv6_public_addr_prefix(Some("240e:1234:abcd::/64".parse().unwrap()));
+            let client_config = TomlConfig::default();
+            client_config.set_ipv4(Some("10.88.0.2/24".parse().unwrap()));
+            client_config.set_ipv6_public_addr_auto(true);
+            let mut provider =
+                TestInstance::new_with_process_runtime(provider_config, CoreProcessRuntime::new());
+            let mut client =
+                TestInstance::new_with_process_runtime(client_config, CoreProcessRuntime::new());
+            provider.run().await.unwrap();
+            client.run().await.unwrap();
+            let provider_core = provider.get_core_instance();
+            let client_core = client.get_core_instance();
+            let provider_ctx = provider.get_global_ctx();
+            let client_ctx = client.get_global_ctx();
+            let provider_handle = provider_ctx.get_route_handle().unwrap();
+            let client_handle = client_ctx.get_route_handle().unwrap();
+            let (server_tunnel, client_tunnel) = create_ring_tunnel_pair();
+            let (server, connected) = tokio::join!(
+                provider_core
+                    .peer_manager()
+                    .add_tunnel_as_server(server_tunnel),
+                client_core.peer_manager().add_client_tunnel(client_tunnel),
+            );
+            server.unwrap();
+            connected.unwrap();
+            let (lease, provider_route, default_route) =
+                tokio::time::timeout(Duration::from_secs(15), async {
+                    loop {
+                        if let Some(lease) = client_core.packet_plane().public_ipv6_addr().await {
+                            let provider_device =
+                                provider_ctx.tun_devices.snapshot().active.unwrap();
+                            let client_device = client_ctx.tun_devices.snapshot().active.unwrap();
+                            let provider_route = Route {
+                                destination: IpCidr::new(
+                                    IpAddr::V6(lease.first_address()),
+                                    lease.network_length(),
+                                )
+                                .unwrap(),
+                                interface: provider_device.id,
+                                metric: 65535,
+                            };
+                            let default_route = Route {
+                                destination: "::/0".parse().unwrap(),
+                                interface: client_device.id,
+                                metric: 5,
+                            };
+                            let mut checker =
+                                PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+                            let wanted =
+                                BTreeSet::from([provider_route.clone(), default_route.clone()]);
+                            if checker.existing(&wanted).await.unwrap() == wanted {
+                                break (lease, provider_route, default_route);
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("public IPv6 lease did not produce kernel routes");
+            assert!(
+                provider_core
+                    .packet_plane()
+                    .public_ipv6_routes()
+                    .await
+                    .contains(&lease)
+            );
+            assert!(
+                provider_handle
+                    .status()
+                    .ready
+                    .iter()
+                    .any(|route| route.destination == provider_route.destination
+                        && route.metric.get() == 65535)
+            );
+            assert!(
+                client_handle
+                    .status()
+                    .ready
+                    .iter()
+                    .any(|route| route.destination == default_route.destination
+                        && route.metric.get() == 5)
+            );
+            let provider_claim = provider_ctx
+                .tun_devices
+                .snapshot()
+                .active
+                .unwrap()
+                .registration;
+            let client_claim = client_ctx
+                .tun_devices
+                .snapshot()
+                .active
+                .unwrap()
+                .registration;
+            let mut disabled = crate::instance::config::test_runtime_instance_config(&provider_ctx);
+            disabled.services.public_ipv6_provider.provider_enabled = false;
+            provider_core.update_runtime_config(disabled).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(15), async {
+                let mut checker = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+                loop {
+                    let wanted = BTreeSet::from([provider_route.clone(), default_route.clone()]);
+                    if provider_core
+                        .packet_plane()
+                        .public_ipv6_routes()
+                        .await
+                        .is_empty()
+                        && client_core
+                            .packet_plane()
+                            .public_ipv6_addr()
+                            .await
+                            .is_none()
+                        && checker.existing(&wanted).await.unwrap().is_empty()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("public IPv6 withdrawal did not remove live-device routes");
+            assert_eq!(
+                provider_ctx
+                    .tun_devices
+                    .snapshot()
+                    .active
+                    .unwrap()
+                    .registration,
+                provider_claim
+            );
+            assert_eq!(
+                client_ctx
+                    .tun_devices
+                    .snapshot()
+                    .active
+                    .unwrap()
+                    .registration,
+                client_claim
+            );
+            client.clear_resources().await;
+            provider.clear_resources().await;
+            assert!(client_handle.status().closed);
+            assert!(provider_handle.status().closed);
+            let mut checker = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+            assert!(
+                checker
+                    .existing(&BTreeSet::from([provider_route, default_route]))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        });
     }
 
     #[test]

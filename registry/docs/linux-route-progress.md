@@ -115,7 +115,7 @@ invalidation，lag 后重新读取。默认路由保持 metric 5，只有 IPv6 a
 NicCtx 根据实际 RouteHandle capability 选择 managed 路径；无该 capability 的
 平台保留原有 IfConfiguer writer。地址、link / MTU 及 OS connected routes 仍由
 设备层负责，registry 不管理它们。57 项 native 路由 / DNS / Host 测试通过；
-完整 Public IPv6 producer 事件链及 DNS 双向 packet 集成尚未执行。
+Public IPv6 producer 事件链和 DNS 双向 packet 集成的后续验证见下文。
 
 声明现在使用 RouteSpec(destination, NonZeroU32 metric)；Additional 可以表达
 具体优先级，ordinary proxy / DNS 保留 metric 65535。同一目标的 contribution
@@ -186,9 +186,23 @@ sudo -n sh easytier/tests/linux-route-kernel.sh \
 ```
 
 fixture 自身创建独立 network/mount namespace，并在私有 /dev 创建 TUN node；
-只运行 kernel_ 测试。编译仍由普通用户完成，避免 root 改变工作树文件 ownership。
+默认只运行 kernel_，dns 模式串行运行 DNS 集成测试。编译仍由普通用户完成，
+避免 root 改变工作树文件 ownership。
 
 ## 跨平台审查
+
+生产 NativeHost / 双 TUN / ring peer 的 Public IPv6 联合测试通过：provider 分配
+lease 后，provider 的普通 IPv6 route 和 client 的 metric 5 default route 都在
+实际内核出现。关闭 provider 的 runtime policy 后，两边的 fd claim 保持不变，
+两条 route 被撤销；最后完整 Host shutdown 关闭旧 handle。当前 kernel_ 共九项。
+
+三个既有 DNS 集成测试全部通过，包括真实 TUN fake-IP 请求 / 回包、默认与自定义
+zone、Unicode 名称和同 client 记录替换。可在同一隔离 fixture 中串行重运行：
+
+```sh
+sudo -n sh easytier/tests/linux-route-kernel.sh \
+  /absolute/path/to/target/debug/deps/easytier-<hash> dns
+```
 
 平台 capability、实际 OS key / metric、借用 fd / VPN ownership 及迁移建议已
 记录于 [平台边界](/home/luna/EasyTier-route/registry/docs/route-platform-boundary.md)。

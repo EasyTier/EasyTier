@@ -54,7 +54,9 @@ Linux 测试只操作独立 namespace。宿主无 /dev/net/tun，但通过私有
 中的测试节点补齐真实 TUN 创建、link / IPv4 address 配置、IO 最后 owner 关闭、
 路由 cascade 和 persistent attachment 的核实。fd ownership release 不保证一次
 立即的并发接口查询已经观察到 kernel reclamation；测试以有界的只读核实验证
-最终实际状态。DNS 完整双向 packet 流程与重建尚未做端到端测试。
+最终实际状态。三个既有 DNS 集成测试覆盖真实 TUN 双向 packet、默认 / 自定义
+zone 和记录替换；另有生产 NativeHost / 双 peer 的 Public IPv6 集成，覆盖 lease
+发布、实时配置撤销（fd claim 不变）和 shutdown。
 
 ## Windows：先确定 OS key 和实际 adapter lifetime
 
