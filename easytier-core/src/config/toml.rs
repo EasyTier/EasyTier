@@ -6,170 +6,22 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::normalize_secure_mode_config;
+use super::{DhcpConfig, normalize_secure_mode_config};
 pub use super::{EncryptionAlgorithm, gateway::PortForwardConfig};
 use anyhow::Context;
 #[cfg(feature = "rich-config-errors")]
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
+use optionize::Optionizable;
 use serde::{Deserialize, Serialize};
 
-use crate::proto::{
-    acl::Acl,
-    common::{CompressionAlgoPb, SecureModeConfig},
-};
+use crate::proto::{acl::Acl, common::SecureModeConfig};
 
 pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
-pub type Flags = crate::proto::common::FlagsInConfig;
+pub use crate::proto::common::{Flags, FlagsPatch};
 
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
-}
-
-pub fn gen_default_flags() -> Flags {
-    #[allow(deprecated)]
-    Flags {
-        default_protocol: "tcp".to_string(),
-        dev_name: "".to_string(),
-        enable_encryption: true,
-        enable_ipv6: true,
-        mtu: 1380,
-        latency_first: false,
-        enable_exit_node: false,
-        proxy_forward_by_system: false,
-        no_tun: false,
-        use_smoltcp: false,
-        relay_network_whitelist: "*".to_string(),
-        disable_p2p: false,
-        p2p_only: false,
-        lazy_p2p: false,
-        relay_all_peer_rpc: false,
-        disable_tcp_hole_punching: false,
-        disable_udp_hole_punching: false,
-        multi_thread: true,
-        data_compress_algo: CompressionAlgoPb::None.into(),
-        bind_device: true,
-        enable_kcp_proxy: false,
-        disable_kcp_input: false,
-        disable_relay_kcp: false,
-        enable_relay_foreign_network_kcp: false,
-        accept_dns: false,
-        private_mode: false,
-        enable_quic_proxy: false,
-        disable_quic_input: false,
-        disable_relay_quic: false,
-        enable_relay_foreign_network_quic: false,
-        foreign_relay_bps_limit: u64::MAX,
-        multi_thread_count: 2,
-        encryption_algorithm: EncryptionAlgorithm::default().to_string(),
-        disable_sym_hole_punching: false,
-        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
-
-        quic_listen_port: u32::MAX,
-        need_p2p: false,
-        instance_recv_bps_limit: u64::MAX,
-        disable_upnp: false,
-        disable_relay_data: false,
-        prefer_peer_relay: false,
-        enable_udp_broadcast_relay: false,
-        socket_mark: None,
-    }
-}
-
-#[cfg(feature = "config-write")]
-macro_rules! define_flags_diff {
-    (
-        fields: [$($field:ident),* $(,)?],
-        u64s: [$($u64_field:ident),* $(,)?],
-        enums: [$($enum_field:ident),* $(,)?]
-    ) => {
-        #[allow(deprecated)]
-        fn flags_diff_from_default(flags: &Flags) -> serde_json::Map<String, serde_json::Value> {
-            let defaults = gen_default_flags();
-            let mut changed = serde_json::Map::new();
-            $(
-                if flags.$field != defaults.$field {
-                    changed.insert(
-                        stringify!($field).to_owned(),
-                        serde_json::to_value(&flags.$field)
-                            .expect("FlagsInConfig field should serialize to JSON"),
-                    );
-                }
-            )*
-            $(
-                if flags.$u64_field != defaults.$u64_field {
-                    changed.insert(
-                        stringify!($u64_field).to_owned(),
-                        serde_json::json!(flags.$u64_field.to_string()),
-                    );
-                }
-            )*
-            $(
-                if flags.$enum_field != defaults.$enum_field {
-                    let value = CompressionAlgoPb::try_from(flags.$enum_field)
-                        .map(|value| serde_json::to_value(value).expect("enum should serialize"))
-                        .unwrap_or_else(|_| serde_json::json!(flags.$enum_field));
-                    changed.insert(stringify!($enum_field).to_owned(), value);
-                }
-            )*
-            changed
-        }
-
-        #[cfg(all(test, feature = "config-write"))]
-        const FLAGS_DIFF_FIELDS: &[&str] = &[
-            $(stringify!($field),)*
-            $(stringify!($u64_field),)*
-            $(stringify!($enum_field),)*
-        ];
-    };
-}
-
-#[cfg(feature = "config-write")]
-define_flags_diff! {
-    fields: [
-        default_protocol,
-        dev_name,
-        enable_encryption,
-        enable_ipv6,
-        mtu,
-        latency_first,
-        enable_exit_node,
-        no_tun,
-        use_smoltcp,
-        relay_network_whitelist,
-        disable_p2p,
-        relay_all_peer_rpc,
-        disable_udp_hole_punching,
-        multi_thread,
-        bind_device,
-        enable_kcp_proxy,
-        disable_kcp_input,
-        disable_relay_kcp,
-        proxy_forward_by_system,
-        accept_dns,
-        private_mode,
-        enable_quic_proxy,
-        disable_quic_input,
-        disable_relay_quic,
-        quic_listen_port,
-        multi_thread_count,
-        enable_relay_foreign_network_kcp,
-        enable_relay_foreign_network_quic,
-        encryption_algorithm,
-        disable_sym_hole_punching,
-        tld_dns_zone,
-        p2p_only,
-        disable_tcp_hole_punching,
-        lazy_p2p,
-        need_p2p,
-        disable_upnp,
-        disable_relay_data,
-        prefer_peer_relay,
-        enable_udp_broadcast_relay,
-        socket_mark,
-    ],
-    u64s: [foreign_relay_bps_limit, instance_recv_bps_limit],
-    enums: [data_compress_algo]
 }
 
 #[auto_impl::auto_impl(Box, &)]
@@ -201,8 +53,27 @@ pub trait ConfigLoader: Send + Sync {
     fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr>;
     fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>);
 
-    fn get_dhcp(&self) -> bool;
-    fn set_dhcp(&self, dhcp: bool);
+    fn get_dhcp_config(&self) -> DhcpConfig;
+    fn set_dhcp_config(&self, dhcp: DhcpConfig);
+
+    fn get_dhcp(&self) -> bool {
+        self.get_dhcp_config().enabled()
+    }
+
+    fn set_dhcp(&self, dhcp: bool) {
+        self.set_dhcp_config(DhcpConfig::Enabled(dhcp));
+    }
+
+    fn get_dhcpv6_config(&self) -> DhcpConfig<cidr::Ipv6Cidr>;
+    fn set_dhcpv6_config(&self, dhcp: DhcpConfig<cidr::Ipv6Cidr>);
+
+    fn get_dhcpv6(&self) -> bool {
+        self.get_dhcpv6_config().enabled()
+    }
+
+    fn set_dhcpv6(&self, dhcp: bool) {
+        self.set_dhcpv6_config(DhcpConfig::Enabled(dhcp));
+    }
 
     fn add_proxy_cidr(
         &self,
@@ -231,7 +102,12 @@ pub trait ConfigLoader: Send + Sync {
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
 
     fn get_flags(&self) -> Flags;
+    /// Replace all flags with explicitly supplied values.
     fn set_flags(&self, flags: Flags);
+    /// The user-supplied values, before application defaults are resolved.
+    fn get_flags_patch(&self) -> FlagsPatch;
+    /// Apply only supplied fields, preserving absence and explicit defaults.
+    fn patch_flags(&self, flags: FlagsPatch);
 
     fn get_exit_nodes(&self) -> Vec<IpAddr>;
     fn set_exit_nodes(&self, nodes: Vec<IpAddr>);
@@ -486,19 +362,30 @@ fn default_true() -> bool {
     true
 }
 
+#[optionize::optionized]
+#[cfg_attr(any(feature = "web-client", feature = "browser-config"), optionize(object = easytier_proto::api::manage::ManagedCredentialConfig))]
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedCredentialConfig {
+    #[optionize(flatten)]
     pub credential_id: String,
+    #[optionize(flatten)]
     pub credential_secret: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[optionize(flatten)]
     pub groups: Vec<String>,
     #[serde(default)]
+    #[optionize(flatten)]
     pub allow_relay: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[optionize(flatten)]
     pub allowed_proxy_cidrs: Vec<String>,
+    #[optionize(flatten)]
     pub expiry_unix: i64,
     #[serde(default = "default_true")]
+    // The mapped field is `Option<bool>` (the protocol spells it `optional bool`),
+    // so this document default does not describe it.
+    #[optionize(attrs(.., -serde), default = |_| default_true())]
     pub reusable: bool,
 }
 
@@ -529,7 +416,8 @@ struct Config {
     ipv6_public_addr_provider: Option<bool>,
     ipv6_public_addr_auto: Option<bool>,
     ipv6_public_addr_prefix: Option<String>,
-    dhcp: Option<bool>,
+    dhcp: Option<DhcpConfig>,
+    dhcpv6: Option<DhcpConfig<cidr::Ipv6Cidr>>,
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
@@ -548,10 +436,8 @@ struct Config {
 
     secure_mode: Option<SecureModeConfig>,
 
-    flags: Option<serde_json::Map<String, serde_json::Value>>,
-
-    #[serde(skip)]
-    flags_struct: Option<Flags>,
+    #[serde(default)]
+    flags: FlagsPatch,
 
     acl: Option<Acl>,
 
@@ -631,7 +517,6 @@ impl TomlConfig {
     fn config_for_dump(&self) -> Config {
         let mut config = self.config.lock().unwrap().clone();
         Self::normalize_config_source(&mut config);
-        config.flags = Some(flags_diff_from_default(&self.get_flags()));
         config
     }
 
@@ -705,10 +590,6 @@ impl TomlConfig {
     }
 
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
-        config.flags_struct = Some(
-            Self::gen_flags(config.flags.clone().unwrap_or_default())
-                .context("failed to parse flags")?,
-        );
         config.secure_mode = config
             .secure_mode
             .take()
@@ -744,17 +625,6 @@ impl TomlConfig {
         }
 
         Ok(config)
-    }
-
-    fn gen_flags(
-        flags_hashmap: serde_json::Map<String, serde_json::Value>,
-    ) -> serde_json::Result<Flags> {
-        let mut merged_hashmap = match serde_json::to_value(gen_default_flags()) {
-            Ok(serde_json::Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
-        };
-        merged_hashmap.extend(flags_hashmap);
-        serde_json::from_value(serde_json::Value::Object(merged_hashmap))
     }
 }
 
@@ -875,12 +745,20 @@ impl ConfigLoader for TomlConfig {
             prefix.map(|prefix| prefix.to_string());
     }
 
-    fn get_dhcp(&self) -> bool {
+    fn get_dhcp_config(&self) -> DhcpConfig {
         self.config.lock().unwrap().dhcp.unwrap_or_default()
     }
 
-    fn set_dhcp(&self, dhcp: bool) {
+    fn set_dhcp_config(&self, dhcp: DhcpConfig) {
         self.config.lock().unwrap().dhcp = Some(dhcp);
+    }
+
+    fn get_dhcpv6_config(&self) -> DhcpConfig<cidr::Ipv6Cidr> {
+        self.config.lock().unwrap().dhcpv6.unwrap_or_default()
+    }
+
+    fn set_dhcpv6_config(&self, dhcp: DhcpConfig<cidr::Ipv6Cidr>) {
+        self.config.lock().unwrap().dhcpv6 = Some(dhcp);
     }
 
     fn add_proxy_cidr(
@@ -1019,16 +897,27 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn get_flags(&self) -> Flags {
-        self.config
-            .lock()
-            .unwrap()
-            .flags_struct
-            .clone()
-            .unwrap_or_default()
+        Flags::resolve(self.get_flags_patch())
     }
 
     fn set_flags(&self, flags: Flags) {
-        self.config.lock().unwrap().flags_struct = Some(flags);
+        self.config.lock().unwrap().flags = flags.downgrade();
+    }
+
+    fn get_flags_patch(&self) -> FlagsPatch {
+        self.config.lock().unwrap().flags.clone()
+    }
+
+    fn patch_flags(&self, flags: FlagsPatch) {
+        // Protobuf merge: an update overwrites exactly the fields it carries,
+        // and presence is the encoding, so a flag explicitly set to its default
+        // value is applied like any other. Optionize's merge cannot express that
+        // here, because the one flattened nullable field would have to assign
+        // unconditionally.
+        let mut config = self.config.lock().unwrap();
+        let update = prost::Message::encode_to_vec(&flags);
+        prost::Message::merge(&mut config.flags, update.as_slice())
+            .expect("decoding the bytes just encoded cannot fail");
     }
 
     fn get_exit_nodes(&self) -> Vec<IpAddr> {
@@ -1205,19 +1094,113 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_error_preserves_source_and_location() {
-        let error =
-            TomlConfig::new_from_str_with_source("fixture.toml", "dhcp = \"yes\"").unwrap_err();
-        let display = error.to_string();
+    fn dhcp_accepts_booleans_and_ipv4_subnets() {
+        assert!(!TomlConfig::default().get_dhcp());
+        for (value, expected) in [
+            ("false", DhcpConfig::Enabled(false)),
+            ("true", DhcpConfig::Enabled(true)),
+            (
+                "'192.168.100.0/24'",
+                DhcpConfig::Cidr("192.168.100.0/24".parse().unwrap()),
+            ),
+            (
+                "'192.168.100.0/30'",
+                DhcpConfig::Cidr("192.168.100.0/30".parse().unwrap()),
+            ),
+            (
+                "'0.0.0.0/0'",
+                DhcpConfig::Cidr("0.0.0.0/0".parse().unwrap()),
+            ),
+        ] {
+            let config = TomlConfig::new_from_str(&format!("dhcp = {value}")).unwrap();
+            assert_eq!(config.get_dhcp_config(), expected);
+            assert_eq!(config.get_dhcp(), expected.enabled());
+            #[cfg(feature = "config-write")]
+            assert_eq!(
+                TomlConfig::new_from_str(&config.dump())
+                    .unwrap()
+                    .get_dhcp_config(),
+                expected
+            );
+            config.set_dhcp(false);
+            assert_eq!(config.get_dhcp_config(), DhcpConfig::Enabled(false));
+        }
+    }
 
-        assert!(display.contains("fixture.toml"));
-        assert!(display.contains("dhcp = \"yes\""));
-        assert!(display.contains("invalid type: string"));
-        assert!(
-            error
-                .chain()
-                .any(|cause| cause.downcast_ref::<toml::de::Error>().is_some())
-        );
+    #[test]
+    fn dhcpv6_config_round_trip_and_validation() {
+        assert!(!TomlConfig::default().get_dhcpv6());
+        for value in [
+            "true",
+            "false",
+            "'fd12:3456::/64'",
+            "'fd12::/126'",
+            "'2001:db8::/48'",
+        ] {
+            let config =
+                TomlConfig::new_from_str(&format!("dhcp = true\ndhcpv6 = {value}")).unwrap();
+            let exported = config.dump();
+            let restored = TomlConfig::new_from_str(&exported).unwrap();
+            assert_eq!(restored.get_dhcpv6_config(), config.get_dhcpv6_config());
+            assert!(restored.get_dhcp());
+            assert!(exported.contains("dhcp = true"));
+        }
+        for value in [
+            "yes",
+            "10.0.0.0/24",
+            "fd12::1/64",
+            "fd12::/127",
+            "fd12::/128",
+            "::/0",
+            "::/64",
+            "fe80::/64",
+            "ff00::/8",
+        ] {
+            assert!(
+                TomlConfig::new_from_str(&format!("dhcpv6 = '{value}'")).is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn dhcp_rejects_invalid_or_unusable_subnets() {
+        for value in [
+            "'yes'",
+            "'true'",
+            "'::/64'",
+            "'192.168.100.0/31'",
+            "'192.168.100.1/32'",
+            "'192.168.100.1/24'",
+            "'192.168.100.0/33'",
+            "'192.168.100.1'",
+            "123",
+            "{}",
+            "[]",
+        ] {
+            assert!(
+                TomlConfig::new_from_str(&format!("dhcp = {value}")).is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_error_preserves_source_and_location() {
+        for field in ["dhcp", "dhcpv6"] {
+            let input = format!("{field} = \"yes\"");
+            let error = TomlConfig::new_from_str_with_source("fixture.toml", &input).unwrap_err();
+            let display = error.to_string();
+
+            assert!(display.contains("fixture.toml"));
+            assert!(display.contains(&input));
+            assert!(display.contains("invalid DHCP CIDR"));
+            assert!(
+                error
+                    .chain()
+                    .any(|cause| cause.downcast_ref::<toml::de::Error>().is_some())
+            );
+        }
     }
 
     #[cfg(feature = "config-write")]
@@ -1406,36 +1389,8 @@ source = "web"
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
+    use crate::proto::common::CompressionAlgoPb;
     use base64::{Engine as _, prelude::BASE64_STANDARD};
-
-    #[cfg(feature = "config-write")]
-    #[test]
-    fn flags_diff_covers_every_protobuf_field() {
-        use prost::Message as _;
-
-        let descriptor_set =
-            prost_types::FileDescriptorSet::decode(crate::proto::DESCRIPTOR_POOL_BYTES).unwrap();
-        let proto_fields = descriptor_set
-            .file
-            .iter()
-            .find(|file| file.package.as_deref() == Some("common"))
-            .and_then(|file| {
-                file.message_type
-                    .iter()
-                    .find(|message| message.name.as_deref() == Some("FlagsInConfig"))
-            })
-            .unwrap()
-            .field
-            .iter()
-            .map(|field| field.name.as_deref().unwrap())
-            .collect::<std::collections::BTreeSet<_>>();
-        let diff_fields = FLAGS_DIFF_FIELDS
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-
-        assert_eq!(diff_fields, proto_fields);
-    }
 
     #[test]
     fn socket_mark_config_file_roundtrip_none_some_and_zero() {
@@ -1486,13 +1441,91 @@ socket_mark = 66
             ..cfg.get_flags()
         });
         assert_eq!(cfg.get_flags().socket_mark, None);
+        #[cfg(feature = "config-write")]
+        assert_eq!(
+            TomlConfigLoader::new_from_str(&cfg.dump())
+                .unwrap()
+                .get_flags()
+                .socket_mark,
+            None
+        );
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn flags_presence_survives_parse_patch_and_dump() {
+        for (input, expected) in [
+            ("", None),
+            ("enable_encryption = true", Some(true)),
+            ("enable_encryption = false", Some(false)),
+        ] {
+            let config = TomlConfig::new_from_str(&format!("[flags]\n{input}")).unwrap();
+            assert_eq!(config.get_flags_patch().enable_encryption, expected);
+            config.patch_flags(FlagsPatch {
+                latency_first: Some(false),
+                ..Default::default()
+            });
+            let restored = TomlConfig::new_from_str(&config.dump()).unwrap();
+            assert_eq!(restored.get_flags_patch().enable_encryption, expected);
+            assert_eq!(restored.get_flags_patch().latency_first, Some(false));
+            assert_eq!(restored.get_flags_patch().mtu, None);
+            assert_eq!(
+                restored.get_flags().enable_encryption,
+                expected.unwrap_or(true)
+            );
+        }
+    }
+
+    #[test]
+    fn flags_accept_protobuf_aliases_and_numbers_without_default_collisions() {
+        let config = TomlConfig::new_from_str(
+            r#"[flags]
+enableEncryption = false
+mtu = "1420"
+foreignRelayBpsLimit = "18446744073709551615"
+dataCompressAlgo = "Zstd"
+socketMark = "0"
+"#,
+        )
+        .unwrap();
+        let flags = config.get_flags();
+        assert!(!flags.enable_encryption);
+        assert_eq!(flags.mtu, 1420);
+        assert_eq!(flags.foreign_relay_bps_limit, u64::MAX);
+        assert_eq!(flags.data_compress_algo, CompressionAlgoPb::Zstd as i32);
+        assert_eq!(flags.socket_mark, Some(0));
+        for fields in [
+            "enableEncryption = true\nenable_encryption = false",
+            "mtu = -1",
+            "mtu = 4294967296",
+            "unknown_flag = true",
+            "data_compress_algo = 99",
+        ] {
+            assert!(
+                TomlConfig::new_from_str(&format!("[flags]\n{fields}")).is_err(),
+                "{fields}"
+            );
+        }
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn dump_omits_all_default_flags() {
+        let config = TomlConfigLoader::default();
+        let dumped = config.dump();
+        let document: toml::Table = toml::from_str(&dumped).unwrap();
+        assert!(document["flags"].as_table().unwrap().is_empty());
+        assert_eq!(
+            TomlConfigLoader::new_from_str(&dumped).unwrap().get_flags(),
+            Flags::resolve(FlagsPatch::default())
+        );
     }
 
     #[cfg(feature = "config-write")]
     #[test]
     fn dump_preserves_flags_that_differ_from_easytier_defaults() {
         let cfg = TomlConfigLoader::default();
-        let mut flags = gen_default_flags();
+        let mut flags = Flags::resolve(FlagsPatch::default());
         flags.dev_name = "et_test".to_string();
         flags.enable_quic_proxy = true;
         flags.disable_tcp_hole_punching = true;
@@ -1973,13 +2006,16 @@ mod diagnostic_compatibility_tests {
 
     #[test]
     fn non_ascii_before_typed_error_keeps_byte_location() {
-        let error = TomlConfig::new_from_str("hostname = \"节点\"\ndhcp = \"yes\"")
-            .unwrap_err()
-            .to_string();
+        for field in ["dhcp", "dhcpv6"] {
+            let invalid_field = format!("{field} = \"yes\"");
+            let error = TomlConfig::new_from_str(&format!("hostname = \"节点\"\n{invalid_field}"))
+                .unwrap_err()
+                .to_string();
 
-        assert!(error.contains("dhcp = \"yes\""));
-        assert!(error.contains('^'));
-        assert!(error.contains("invalid type: string"));
+            assert!(error.contains(&invalid_field));
+            assert!(error.contains('^'));
+            assert!(error.contains("invalid DHCP CIDR"));
+        }
     }
 
     #[cfg(feature = "rich-config-errors")]
@@ -1996,7 +2032,7 @@ mod diagnostic_compatibility_tests {
     }
 
     #[test]
-    fn flags_conversion_error_keeps_source_and_cause_chain() {
+    fn flags_parse_error_keeps_source_span_and_cause_chain() {
         let error = TomlConfig::new_from_str_with_source(
             "flags-fixture.toml",
             "[flags]\nsocket_mark = \"bad\"",
@@ -2005,12 +2041,13 @@ mod diagnostic_compatibility_tests {
         let display = error.to_string();
 
         assert!(display.contains("flags-fixture.toml"));
-        assert!(display.contains("failed to load config"));
-        assert!(display.contains("failed to parse flags"));
+        assert!(display.contains("failed to parse config TOML"));
+        assert!(display.contains("socket_mark = \"bad\""));
+        assert!(display.contains('^'));
         assert!(
             error
                 .chain()
-                .any(|cause| cause.to_string().contains("failed to parse flags"))
+                .any(|cause| cause.downcast_ref::<toml::de::Error>().is_some())
         );
     }
 }

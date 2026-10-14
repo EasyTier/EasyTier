@@ -29,6 +29,7 @@ declare global {
   const getCurrentInstance: typeof import('vue')['getCurrentInstance']
   const getCurrentScope: typeof import('vue')['getCurrentScope']
   const getEasytierVersion: typeof import('./composables/backend')['getEasytierVersion']
+  const getMobileTunConfig: typeof import('./composables/backend')['getMobileTunConfig']
   const getNetworkMetas: typeof import('./composables/backend')['getNetworkMetas']
   const getServiceStatus: typeof import('./composables/backend')['getServiceStatus']
   const getVpnPortalInfo: typeof import('./composables/backend')['getVpnPortalInfo']
@@ -48,6 +49,7 @@ declare global {
   const listenGlobalEvents: typeof import('./composables/event')['listenGlobalEvents']
   const loadLastNetworkInstanceId: typeof import('./composables/config')['loadLastNetworkInstanceId']
   const loadMode: typeof import('./composables/mode')['loadMode']
+  const loadVpnTileStoppedInstanceIds: typeof import('./composables/config')['loadVpnTileStoppedInstanceIds']
   const mapActions: typeof import('pinia')['mapActions']
   const mapGetters: typeof import('pinia')['mapGetters']
   const mapState: typeof import('pinia')['mapState']
@@ -67,6 +69,7 @@ declare global {
   const onMounted: typeof import('vue')['onMounted']
   const onNetworkInstanceChange: typeof import('./composables/mobile_vpn')['onNetworkInstanceChange']
   const onNetworkInstanceUpdate: typeof import('./composables/mobile_vpn')['onNetworkInstanceUpdate']
+  const onNetworkInstancesChange: typeof import('./composables/mobile_vpn')['onNetworkInstancesChange']
   const onRenderTracked: typeof import('vue')['onRenderTracked']
   const onRenderTriggered: typeof import('vue')['onRenderTriggered']
   const onScopeDispose: typeof import('vue')['onScopeDispose']
@@ -85,10 +88,12 @@ declare global {
   const saveLastNetworkInstanceId: typeof import('./composables/config')['saveLastNetworkInstanceId']
   const saveMode: typeof import('./composables/mode')['saveMode']
   const saveNetworkConfig: typeof import('./composables/backend')['saveNetworkConfig']
+  const saveVpnTileStoppedInstanceIds: typeof import('./composables/config')['saveVpnTileStoppedInstanceIds']
   const sendConfigs: typeof import('./composables/backend')['sendConfigs']
   const setActivePinia: typeof import('pinia')['setActivePinia']
   const setLoggingLevel: typeof import('./composables/backend')['setLoggingLevel']
   const setMapStoreSuffix: typeof import('pinia')['setMapStoreSuffix']
+  const setMobileVpnErrorHandler: typeof import('./composables/mobile_vpn')['setMobileVpnErrorHandler']
   const setMobileVpnTileActionHandler: typeof import('./composables/mobile_vpn')['setMobileVpnTileActionHandler']
   const setServiceStatus: typeof import('./composables/backend')['setServiceStatus']
   const setTrayMenu: typeof import('./composables/tray')['setTrayMenu']
@@ -160,6 +165,7 @@ declare module 'vue' {
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getEasytierVersion: UnwrapRef<typeof import('./composables/backend')['getEasytierVersion']>
+    readonly getMobileTunConfig: UnwrapRef<typeof import('./composables/backend')['getMobileTunConfig']>
     readonly getNetworkMetas: UnwrapRef<typeof import('./composables/backend')['getNetworkMetas']>
     readonly getServiceStatus: UnwrapRef<typeof import('./composables/backend')['getServiceStatus']>
     readonly getVpnPortalInfo: UnwrapRef<typeof import('./composables/backend')['getVpnPortalInfo']>
@@ -179,6 +185,7 @@ declare module 'vue' {
     readonly listenGlobalEvents: UnwrapRef<typeof import('./composables/event')['listenGlobalEvents']>
     readonly loadLastNetworkInstanceId: UnwrapRef<typeof import('./composables/config')['loadLastNetworkInstanceId']>
     readonly loadMode: UnwrapRef<typeof import('./composables/mode')['loadMode']>
+    readonly loadVpnTileStoppedInstanceIds: UnwrapRef<typeof import('./composables/config')['loadVpnTileStoppedInstanceIds']>
     readonly mapActions: UnwrapRef<typeof import('pinia')['mapActions']>
     readonly mapGetters: UnwrapRef<typeof import('pinia')['mapGetters']>
     readonly mapState: UnwrapRef<typeof import('pinia')['mapState']>
@@ -198,6 +205,7 @@ declare module 'vue' {
     readonly onMounted: UnwrapRef<typeof import('vue')['onMounted']>
     readonly onNetworkInstanceChange: UnwrapRef<typeof import('./composables/mobile_vpn')['onNetworkInstanceChange']>
     readonly onNetworkInstanceUpdate: UnwrapRef<typeof import('./composables/mobile_vpn')['onNetworkInstanceUpdate']>
+    readonly onNetworkInstancesChange: UnwrapRef<typeof import('./composables/mobile_vpn')['onNetworkInstancesChange']>
     readonly onRenderTracked: UnwrapRef<typeof import('vue')['onRenderTracked']>
     readonly onRenderTriggered: UnwrapRef<typeof import('vue')['onRenderTriggered']>
     readonly onScopeDispose: UnwrapRef<typeof import('vue')['onScopeDispose']>
@@ -216,10 +224,12 @@ declare module 'vue' {
     readonly saveLastNetworkInstanceId: UnwrapRef<typeof import('./composables/config')['saveLastNetworkInstanceId']>
     readonly saveMode: UnwrapRef<typeof import('./composables/mode')['saveMode']>
     readonly saveNetworkConfig: UnwrapRef<typeof import('./composables/backend')['saveNetworkConfig']>
+    readonly saveVpnTileStoppedInstanceIds: UnwrapRef<typeof import('./composables/config')['saveVpnTileStoppedInstanceIds']>
     readonly sendConfigs: UnwrapRef<typeof import('./composables/backend')['sendConfigs']>
     readonly setActivePinia: UnwrapRef<typeof import('pinia')['setActivePinia']>
     readonly setLoggingLevel: UnwrapRef<typeof import('./composables/backend')['setLoggingLevel']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
+    readonly setMobileVpnErrorHandler: UnwrapRef<typeof import('./composables/mobile_vpn')['setMobileVpnErrorHandler']>
     readonly setMobileVpnTileActionHandler: UnwrapRef<typeof import('./composables/mobile_vpn')['setMobileVpnTileActionHandler']>
     readonly setServiceStatus: UnwrapRef<typeof import('./composables/backend')['setServiceStatus']>
     readonly setTrayMenu: UnwrapRef<typeof import('./composables/tray')['setTrayMenu']>

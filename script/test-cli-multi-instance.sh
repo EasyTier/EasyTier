@@ -143,7 +143,7 @@ data = json.loads(os.environ["JSON_PAYLOAD"])
 assert len(data) == 2, data
 for item in data:
     assert item["result"]["tcp_ports"] == ["80", "443"], item
-    assert item["result"]["udp_ports"] == [], item
+    assert item["result"].get("udp_ports", []) == [], item
 PY
 }
 
@@ -155,7 +155,7 @@ import os
 
 data = {item["instance_name"]: item["result"] for item in json.loads(os.environ["JSON_PAYLOAD"])}
 assert data["e2e-inst-a"]["tcp_ports"] == ["80", "443"], data
-assert data["e2e-inst-b"]["tcp_ports"] == [], data
+assert data["e2e-inst-b"].get("tcp_ports", []) == [], data
 PY
 }
 
@@ -261,6 +261,36 @@ EOF
     "Case 7: whitelist show confirms single-instance write isolation" \
     "$CLI_BIN" -p "127.0.0.1:${rpc_port}" -o json whitelist show
   assert_single_instance_write "$cleared_output"
+
+  local credential_table
+  run_cmd credential_table \
+    "Case 8: credential peers table fans out to all instances" \
+    "$CLI_BIN" -p "127.0.0.1:${rpc_port}" credential peers
+  assert_text_output "$credential_table"
+
+  local credential_json
+  run_cmd credential_json \
+    "Case 9: credential peers JSON preserves instance wrappers" \
+    "$CLI_BIN" -p "127.0.0.1:${rpc_port}" -o json credential peers
+  assert_multi_instance_json "$credential_json"
+  JSON_PAYLOAD="$credential_json" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+
+data = json.loads(os.environ["JSON_PAYLOAD"])
+assert all(item["result"] == {"credentials": []} for item in data), data
+PY
+
+  local credential_single
+  run_cmd credential_single \
+    "Case 10: credential peers explicit selector returns one instance" \
+    "$CLI_BIN" -p "127.0.0.1:${rpc_port}" --instance-name e2e-inst-a -o json credential peers
+  JSON_PAYLOAD="$credential_single" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+
+assert json.loads(os.environ["JSON_PAYLOAD"]) == {"credentials": []}
+PY
 
   print_section "Result"
   echo "CLI multi-instance E2E passed"

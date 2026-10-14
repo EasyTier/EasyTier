@@ -6,7 +6,7 @@
 
 use anyhow::Context as _;
 use cidr::Ipv6Cidr;
-use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig, StunInfo};
+use easytier_proto::common::{Flags, PeerFeatureFlag, SecureModeConfig, StunInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::acl::{Acl, AclV1, Action, Chain, ChainType, GroupInfo, Protocol, Rule};
@@ -236,7 +236,7 @@ pub struct PeerRuntimeSnapshot {
     pub runtime: PeerRuntimeConfig,
     pub easytier_version: String,
     pub avoid_relay_data_preference: bool,
-    pub flags: FlagsInConfig,
+    pub flags: Flags,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
     pub peer_group_memberships: Vec<PeerGroupIdentity>,
     pub acl_group_declarations: Vec<PeerGroupIdentity>,
@@ -246,7 +246,7 @@ pub struct PeerRuntimeSnapshot {
 }
 
 impl PeerRuntimeSnapshot {
-    pub fn new(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
+    pub fn new(runtime: PeerRuntimeConfig, flags: Flags) -> Self {
         let avoid_relay_data_preference = runtime.feature_flags.avoid_relay_data;
         Self {
             runtime,
@@ -274,7 +274,7 @@ impl Default for PeerRuntimeSnapshot {
                 secure_mode: None,
                 host_routing: HostRoutingPolicy::default(),
             },
-            FlagsInConfig::default(),
+            Flags::default(),
         )
     }
 }

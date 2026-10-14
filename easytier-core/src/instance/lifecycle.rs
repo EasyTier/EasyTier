@@ -6,8 +6,8 @@
 
 use std::sync::{Arc, Weak};
 
-#[cfg(feature = "dhcp-ipv4")]
-use crate::gateway::dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource};
+#[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+use crate::gateway::dhcp::{DhcpHost, DhcpRouteSource};
 
 use super::{CoreInstance, CoreInstanceHost, CoreInstanceState};
 
@@ -66,16 +66,16 @@ where
         }
     }
 
-    #[cfg(feature = "dhcp-ipv4")]
-    async fn start_dhcp_ipv4(&self, host: Option<Arc<dyn DhcpIpv4Host>>) -> anyhow::Result<()> {
-        if !self.runtime_config.snapshot().services.dhcp_ipv4 {
+    #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+    async fn start_dhcp(&self, host: Option<Arc<dyn DhcpHost>>) -> anyhow::Result<()> {
+        let config = self.runtime_config.snapshot();
+        if !config.services.dhcp_ipv4 && !config.services.dhcp_ipv6 {
             return Ok(());
         }
-        let host = host.ok_or_else(|| {
-            anyhow::anyhow!("DHCP IPv4 is enabled but no host adapter was provided")
-        })?;
-        let route_source: Arc<dyn DhcpIpv4RouteSource> = self.peer_manager.clone();
-        self.dhcp_ipv4
+        let host = host
+            .ok_or_else(|| anyhow::anyhow!("DHCP is enabled but no host adapter was provided"))?;
+        let route_source: Arc<dyn DhcpRouteSource> = self.peer_manager.clone();
+        self.dhcp
             .start(route_source, self.runtime_config.clone(), host)
             .await;
         Ok(())
@@ -125,9 +125,9 @@ where
         self.public_ipv6_provider.start().await;
 
         let dhcp_host = self.instance_runtime.prepare(self.packet_plane()).await?;
-        #[cfg(feature = "dhcp-ipv4")]
-        self.start_dhcp_ipv4(dhcp_host).await?;
-        #[cfg(not(feature = "dhcp-ipv4"))]
+        #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+        self.start_dhcp(dhcp_host).await?;
+        #[cfg(not(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6")))]
         let _ = dhcp_host;
         #[cfg(feature = "wrapped-transport")]
         if let Some(wrapped_transport) = &self.wrapped_transport {
@@ -173,8 +173,8 @@ where
         self.vpn_portal.stop().await;
         #[cfg(feature = "public-ipv6-provider")]
         self.public_ipv6_provider.stop().await;
-        #[cfg(feature = "dhcp-ipv4")]
-        self.dhcp_ipv4.stop().await;
+        #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+        self.dhcp.stop().await;
         #[cfg(feature = "proxy-cidr-monitor")]
         self.proxy_cidr_monitor.stop().await;
         if let Some(listener) = &self.listener {
@@ -216,8 +216,25 @@ where
         self.packet_egress.stop().await;
     }
 
+    /// Returns the optional Host-owned executor for this instance.
+    pub fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.instance_runtime.runtime_handle()
+    }
+
     /// Starts the complete instance through one serial composition path.
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            return tokio_util::task::AbortOnDropHandle::new(
+                runtime.spawn(async move { instance.start_on_runtime().await }),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("instance start task failed: {error}"))?;
+        }
+        self.start_on_runtime().await
+    }
+
+    async fn start_on_runtime(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Created {
@@ -260,6 +277,21 @@ where
     }
 
     pub async fn stop(self: &Arc<Self>) {
+        self.cancel.cancel();
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            // Cleanup must survive cancellation even before its first poll.
+            // Dropping a plain JoinHandle detaches rather than aborts the task.
+            runtime
+                .spawn(async move { instance.stop_on_runtime().await })
+                .await
+                .expect("instance stop task failed");
+        } else {
+            self.stop_on_runtime().await;
+        }
+    }
+
+    async fn stop_on_runtime(self: &Arc<Self>) {
         self.cancel.cancel();
         let mut recovery = self.recovery_guard();
         let _operation = self.operation.lock().await;

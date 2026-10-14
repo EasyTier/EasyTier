@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n';
 import { Config, NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
 import AclPolicyTab from './AclPolicyTab.vue';
 import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../modules/api';
+import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
 
 const { t } = useI18n()
 const route = useRoute();
@@ -364,7 +365,7 @@ const saveSettings = async () => {
             networking_method: method,
             public_server_url: method === 'PublicServer' ? initialNodes.value[0] : null,
             peer_urls: method === 'Manual' ? initialNodes.value : [],
-            virtual_cidr: settingsForm.value.virtual_cidr.trim() || null,
+            virtual_cidr: normalizeVirtualSubnet(settingsForm.value.virtual_cidr) || null,
             secure_mode: settingsForm.value.secure_mode,
         };
         await api?.update_network(networkId.value, settings, settingsForm.value.regenerate_secret ? uuidv4() : undefined);
@@ -1147,6 +1148,7 @@ const switchTab = async (tab: string) => {
                         <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('web.network_list.virtual_cidr_hint')"></span>
                     </div>
                     <InputText id="settings-virtual-cidr" v-model="settingsForm.virtual_cidr" class="font-mono"
+                        @blur="settingsForm.virtual_cidr = normalizeVirtualSubnet(settingsForm.virtual_cidr)"
                         :placeholder="t('web.network_list.virtual_cidr_placeholder')" />
                 </div>
                 <div class="flex flex-col gap-1">

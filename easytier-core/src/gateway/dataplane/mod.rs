@@ -42,7 +42,7 @@ use crate::{
     },
     packet::{PacketType, ZCPacket},
     peers::{
-        PeerPacketFilter,
+        PeerPacketFilter, PeerPacketFilterResult,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
     socket::{
@@ -52,7 +52,7 @@ use crate::{
             VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket,
             VirtualTcpSocketFactory,
         },
-        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+        udp::VirtualUdpSocketFactory,
     },
 };
 
@@ -69,6 +69,9 @@ mod tcp;
 #[cfg(test)]
 mod tests;
 mod udp;
+mod udp_fragments;
+
+use udp_fragments::UdpFragments;
 
 use self::{
     deadline::{DataPlaneDeadline, DataPlaneIoDeadline},
@@ -169,7 +172,6 @@ pub(super) enum FlowData {
     Udp,
 }
 
-const UDP_ENTRY: FlowKind = FlowKind::Udp;
 const TCP_ENTRY: FlowKind = FlowKind::Tcp;
 const TCP_LISTEN_ENTRY: FlowKind = FlowKind::TcpListen;
 
@@ -195,6 +197,7 @@ where
 
     net: Arc<Mutex<Option<SmoltcpPlane>>>,
     pub(super) entries: FlowSet,
+    udp_fragments: Arc<std::sync::Mutex<UdpFragments>>,
 
     data_plane_consumers: Arc<DataPlaneConsumers>,
     // Tracks whether the smoltcp `net` is ready for data-plane callers.
@@ -207,8 +210,8 @@ impl<H> PeerPacketFilter for DataPlaneRuntime<H>
 where
     H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if self.entries.is_idle() {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
+        if self.entries.is_idle() && !packet::is_udp_fragment(&packet) {
             if tracing::enabled!(tracing::Level::TRACE)
                 && let Some(hdr) = packet.peer_manager_header()
                 && matches!(
@@ -257,11 +260,11 @@ where
                     );
                 }
             }
-            return Some(packet);
+            return PeerPacketFilterResult::Pass(packet);
         }
         let route = self.entries.route_peer_packet(&packet, true);
         let (entry_key, tcp_flags) = match route {
-            PeerPacketRoute::Pass => return Some(packet),
+            PeerPacketRoute::Pass => return PeerPacketFilterResult::Pass(packet),
             PeerPacketRoute::Unmatched { entry, tcp_flags } => {
                 tracing::trace!(
                     entry_key = ?entry,
@@ -271,34 +274,20 @@ where
                     entry_count = self.entries.count(),
                     "data plane has no flow for packet from peer"
                 );
-                return Some(packet);
+                return PeerPacketFilterResult::Pass(packet);
             }
             PeerPacketRoute::Deliver { entry, tcp_flags } => (entry, tcp_flags),
-            PeerPacketRoute::FragmentedUdp { source, mirror } => {
-                let source: IpAddr = source.into();
-                tracing::trace!(
-                    is_in_entries = mirror,
-                    "ipv4 src = {:?}, check need send both smoltcp and kernel tun",
-                    source
-                );
-                if mirror {
-                    // if the packet is fragmented, no matther what the payload is, need send it to both smoltcp and kernel tun. because
-                    // we cannot determine the udp port of the packet.
-                    match self.packet_sender.try_send(packet.clone()) {
-                        Ok(()) => tracing::trace!(
-                            ?source,
-                            entry_count = self.entries.count(),
-                            "data plane delivered fragmented packet from peer to smoltcp"
-                        ),
-                        Err(err) => tracing::trace!(
-                            ?source,
-                            ?err,
-                            entry_count = self.entries.count(),
-                            "data plane failed to deliver fragmented packet from peer to smoltcp"
-                        ),
-                    }
+            PeerPacketRoute::FragmentedUdp { destination } => {
+                let local_ip = Self::runtime_ipv4(&self.runtime_config).map(|ip| ip.address());
+                if Some(destination) != local_ip {
+                    return PeerPacketFilterResult::Pass(packet);
                 }
-                return Some(packet);
+                return self.udp_fragments.lock().unwrap().process(
+                    packet,
+                    local_ip,
+                    &self.entries,
+                    &self.packet_sender,
+                );
             }
         };
 
@@ -327,7 +316,7 @@ where
             ),
         }
 
-        None
+        PeerPacketFilterResult::Consumed
     }
 }
 
@@ -359,6 +348,7 @@ where
 
             net: Arc::new(Mutex::new(None)),
             entries: Arc::new(FlowTable::default()),
+            udp_fragments: Arc::new(std::sync::Mutex::new(UdpFragments::default())),
 
             data_plane_consumers: Arc::new(DataPlaneConsumers::new()),
             data_plane_net_ready: tokio::sync::watch::channel(false).0,
@@ -392,12 +382,21 @@ where
         let peer_manager = self.peer_manager.clone();
         let packet_recv = self.packet_recv.clone();
         let entries = self.entries.clone();
+        let udp_fragments = self.udp_fragments.clone();
         let data_plane_consumers = self.data_plane_consumers.clone();
         let data_plane_net_ready = self.data_plane_net_ready.clone();
         self.runtime_tasks.lock().unwrap().spawn(async move {
             let mut prev_ipv4 = None;
+            let mut fragment_gc = tokio::time::interval(Duration::from_secs(1));
             let mut peer_changes = runtime_config.subscribe_peer_runtime_changes();
             loop {
+                // Run housekeeping regardless of which select branch woke us.
+                let cur_ipv4 = Self::runtime_ipv4(&runtime_config);
+                {
+                    let mut fragments = udp_fragments.lock().unwrap();
+                    fragments.set_local_ip(cur_ipv4.map(|ip| ip.address()));
+                    fragments.remove_expired();
+                }
                 let data_plane_active = data_plane_consumers.has_consumers();
 
                 if !data_plane_active {
@@ -429,12 +428,12 @@ where
                     let _ = data_plane_net_ready.send_replace(false);
                     select! {
                         _ = peer_changes.changed() => {}
+                        _ = fragment_gc.tick() => {}
                         _ = data_plane_consumers.changed() => {}
                     }
                     continue;
                 }
 
-                let cur_ipv4 = Self::runtime_ipv4(&runtime_config);
                 if prev_ipv4 != cur_ipv4 {
                     let old_ipv4 = prev_ipv4;
                     prev_ipv4 = cur_ipv4;
@@ -487,6 +486,7 @@ where
 
                 select! {
                     _ = peer_changes.changed() => {}
+                    _ = fragment_gc.tick() => {}
                     _ = data_plane_consumers.changed() => {}
                 }
             }
@@ -549,6 +549,7 @@ where
         let _ = self.data_plane_net_ready.send_replace(false);
         self.entries.clear();
         Self::shutdown_tasks(&self.runtime_tasks).await;
+        *self.udp_fragments.lock().unwrap() = UdpFragments::default();
     }
 
     pub(crate) async fn stop_runtime(&self) {
@@ -943,19 +944,44 @@ where
     ) -> DataPlaneResult<DataPlaneUdpSocket> {
         let data_plane_ref = self.acquire_data_plane_ref()?;
         let (ipv4_addr, smoltcp_net, generation) = self.wait_data_plane_net(deadline).await?;
-        let reservation_options = UdpBindOptions::port_lease(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            local_port,
-        ))
-        .with_context(self.socket_context.clone());
-        let reservation = generation
-            .while_open(deadline.run(self.host.bind_udp(reservation_options)))
-            .await?;
-        let reserved_port = reservation
-            .local_addr()
-            .map_err(DataPlaneError::from)?
-            .port();
-        let bind_addr = SocketAddr::new(IpAddr::V4(ipv4_addr.address()), reserved_port);
+
+        // The bound endpoint is also the port lease. Reserve it before creating
+        // the smoltcp socket, which does not check other sockets for duplicates.
+        let try_register = |port| {
+            let local_addr = SocketAddr::new(ipv4_addr.address().into(), port);
+            FlowLease::try_register(
+                self.entries.clone(),
+                FlowKey::udp_bind(local_addr),
+                FlowData::Udp,
+            )
+            .map(|flow| (local_addr, flow))
+        };
+        let (bind_addr, bind_flow) = if local_port != 0 {
+            generation.ensure_open()?;
+            deadline.remaining()?;
+            try_register(local_port).ok_or_else(|| {
+                DataPlaneError::new(
+                    DataPlaneErrorKind::AddressInUse,
+                    format!("data-plane UDP port {local_port} is already bound"),
+                )
+            })?
+        } else {
+            let mut binding = None;
+            for port in smoltcp_net.ephemeral_ports() {
+                generation.ensure_open()?;
+                deadline.remaining()?;
+                binding = try_register(port);
+                if binding.is_some() {
+                    break;
+                }
+            }
+            binding.ok_or_else(|| {
+                DataPlaneError::new(
+                    DataPlaneErrorKind::ResourceLimit,
+                    "no free data-plane UDP ports",
+                )
+            })?
+        };
         let smol = generation
             .while_open(deadline.run(smoltcp_net.udp_bind(bind_addr)))
             .await?;
@@ -965,10 +991,8 @@ where
 
         Ok(DataPlaneUdpSocket {
             socket,
-            flows: self.entries.clone(),
-            routes: std::sync::Mutex::new(std::collections::HashMap::new()),
+            _bind_flow: bind_flow,
             local_addr,
-            _reservation: reservation,
             _data_plane_lease: data_plane_ref,
             generation,
         })

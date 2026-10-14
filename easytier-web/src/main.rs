@@ -3,7 +3,7 @@
 #[macro_use]
 extern crate rust_i18n;
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,7 +17,6 @@ use easytier::{
         constants::EASYTIER_VERSION,
         error::Error,
         log,
-        network::{local_ipv4, local_ipv6},
     },
     proto::rpc::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
@@ -30,6 +29,8 @@ use mimalloc::MiMalloc;
 mod central_network;
 mod client_manager;
 mod console_config;
+#[cfg(test)]
+mod config_server_listener_tests;
 mod db;
 mod migrator;
 mod restful;
@@ -263,55 +264,38 @@ impl LoggingConfigLoader for &Cli {
     }
 }
 
-pub fn get_listener_by_url(
-    scheme: IpScheme,
-    l: &url::Url,
-) -> Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>> {
-    Some(match scheme {
-        IpScheme::Tcp => {
-            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
-            Box::new(runtime_rpc_listener(addr))
-        }
-        IpScheme::Udp => {
-            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
-            Box::new(runtime_udp_tunnel_listener(l.clone(), addr))
-        }
-        IpScheme::Ws => Box::new(WsTunnelListener::new(l.clone())),
-        _ => return None,
-    })
-}
+type ConfigServerListener = Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>;
 
-async fn get_dual_stack_listener(
+fn get_config_server_listeners(
     protocol: &str,
     port: u16,
-) -> Result<
-    (
-        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
-        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
-    ),
-    Error,
-> {
+) -> Result<Vec<ConfigServerListener>, Error> {
     let scheme = protocol
         .parse()
         .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
-    let v6_listener =
-        if local_ipv6().await.is_ok() && matches!(scheme, IpScheme::Tcp | IpScheme::Udp) {
-            get_listener_by_url(
-                scheme,
-                &format!("{protocol}://[::]:{port}").parse().unwrap(),
-            )
-        } else {
-            None
-        };
-    let v4_listener = if local_ipv4().await.is_ok() {
-        get_listener_by_url(
-            scheme,
-            &format!("{protocol}://0.0.0.0:{port}").parse().unwrap(),
-        )
-    } else {
-        None
-    };
-    Ok((v6_listener, v4_listener))
+    // Wildcard binds do not require a default route or a public IP address.
+    let ipv6 = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port);
+    let ipv4 = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
+    match scheme {
+        IpScheme::Tcp => Ok(vec![
+            Box::new(runtime_rpc_listener(ipv6)),
+            Box::new(runtime_rpc_listener(ipv4)),
+        ]),
+        IpScheme::Udp => Ok(vec![
+            Box::new(runtime_udp_tunnel_listener(
+                format!("udp://{ipv6}").parse().unwrap(),
+                ipv6,
+            )),
+            Box::new(runtime_udp_tunnel_listener(
+                format!("udp://{ipv4}").parse().unwrap(),
+                ipv4,
+            )),
+        ]),
+        IpScheme::Ws => Ok(vec![Box::new(WsTunnelListener::new(
+            format!("ws://{ipv4}").parse().unwrap(),
+        ))]),
+        _ => Err(Error::InvalidUrl(protocol.to_string())),
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -424,24 +408,33 @@ async fn main() {
         feature_flags.clone(),
         webhook_config.clone(),
     );
-    let (v6_listener, v4_listener) =
-        get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
-            .await
-            .unwrap();
-    if v4_listener.is_none() && v6_listener.is_none() {
-        panic!("Listen to both IPv4 and IPv6 failed");
-    }
-    for listener in [v6_listener, v4_listener].into_iter().flatten() {
-        if let Some(instances) = network_instances.as_ref() {
+    for listener in
+        get_config_server_listeners(&cli.config_server_protocol, cli.config_server_port).unwrap()
+    {
+        let local_url = listener.local_url();
+        let result = if let Some(instances) = network_instances.as_ref() {
             mgr.add_listener(gateway::listener::GatewayListener::new(
                 listener,
                 instances.clone(),
             ))
             .await
-            .unwrap();
         } else {
-            mgr.add_listener(listener).await.unwrap();
+            mgr.add_listener(listener).await
+        };
+        match result {
+            Ok(local_url) => {
+                tracing::info!(%local_url, "Config server listener bound");
+            }
+            Err(error) => {
+                tracing::warn!(%local_url, error = %format_args!("{error:#}"), "Failed to bind config server listener");
+            }
         }
+    }
+    if !mgr.is_running() {
+        panic!(
+            "Failed to bind any config server listener for {} on port {}",
+            cli.config_server_protocol, cli.config_server_port
+        );
     }
 
     let mgr = Arc::new(mgr);

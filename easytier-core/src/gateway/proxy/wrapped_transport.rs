@@ -12,7 +12,7 @@ use crate::{
     listener::RunningListenerRegistry,
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{
-        PeerPacketFilter,
+        PeerPacketFilter, PeerPacketFilterResult,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
     process_runtime::ProtectedTcpPortRegistry,
@@ -147,15 +147,15 @@ struct WrappedTransportPeerFilter {
 
 #[async_trait]
 impl PeerPacketFilter for WrappedTransportPeerFilter {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
         let Some(header) = packet.peer_manager_header() else {
-            return Some(packet);
+            return PeerPacketFilterResult::Pass(packet);
         };
         if header.packet_type != self.transport.incoming_packet_type(self.role) as u8 {
-            return Some(packet);
+            return PeerPacketFilterResult::Pass(packet);
         }
         let Some(engine) = self.engine.upgrade() else {
-            return Some(packet);
+            return PeerPacketFilterResult::Pass(packet);
         };
         let from_peer_id = header.from_peer_id.get();
         if let Err(error) = engine
@@ -169,7 +169,7 @@ impl PeerPacketFilter for WrappedTransportPeerFilter {
                 "failed to inject wrapped transport packet"
             );
         }
-        None
+        PeerPacketFilterResult::Consumed
     }
 }
 
@@ -797,7 +797,10 @@ mod tests {
         let mut packet = ZCPacket::new_with_payload(b"payload");
         packet.fill_peer_manager_hdr(7, 1, PacketType::KcpDst as u8);
 
-        assert!(filter.try_process_packet_from_peer(packet).await.is_none());
+        assert!(matches!(
+            filter.try_process_packet_from_peer(packet).await,
+            PeerPacketFilterResult::Consumed
+        ));
         assert_eq!(
             *engine.injections.lock().unwrap(),
             [(
@@ -811,7 +814,10 @@ mod tests {
         drop(engine);
         let mut packet = ZCPacket::new_with_payload(b"stale");
         packet.fill_peer_manager_hdr(7, 1, PacketType::KcpDst as u8);
-        assert!(filter.try_process_packet_from_peer(packet).await.is_some());
+        assert!(matches!(
+            filter.try_process_packet_from_peer(packet).await,
+            PeerPacketFilterResult::Pass(_)
+        ));
     }
 
     #[test]

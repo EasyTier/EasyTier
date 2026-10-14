@@ -3,24 +3,20 @@
 use crate::{
     config::toml::TomlConfig,
     connectivity::connector_host::HostConnectorEnvironmentSnapshot,
-    gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4Host},
+    gateway::dhcp::{DhcpAddresses, DhcpApplyOutcome, DhcpHost},
     instance::{CorePacketPlane, InstanceRuntimeHost},
 };
 
 struct WasiInstanceRuntimeHost;
 
 #[async_trait::async_trait]
-impl DhcpIpv4Host for WasiInstanceRuntimeHost {
+impl DhcpHost for WasiInstanceRuntimeHost {
     fn take_interface_closed(&self) -> bool {
         false
     }
 
-    async fn apply_dhcp_ipv4(
-        &self,
-        _previous: Option<cidr::Ipv4Inet>,
-        next: Option<cidr::Ipv4Inet>,
-    ) -> DhcpIpv4ApplyOutcome {
-        DhcpIpv4ApplyOutcome::applied(next)
+    async fn apply_dhcp(&self, next: DhcpAddresses) -> DhcpApplyOutcome {
+        DhcpApplyOutcome::applied(next)
     }
 }
 
@@ -29,7 +25,7 @@ impl InstanceRuntimeHost for WasiInstanceRuntimeHost {
     async fn prepare(
         &self,
         _packet_plane: std::sync::Arc<CorePacketPlane>,
-    ) -> anyhow::Result<Option<std::sync::Arc<dyn DhcpIpv4Host>>> {
+    ) -> anyhow::Result<Option<std::sync::Arc<dyn DhcpHost>>> {
         Ok(Some(std::sync::Arc::new(WasiInstanceRuntimeHost)))
     }
 

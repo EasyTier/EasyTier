@@ -82,6 +82,21 @@ pub struct NetworkSettings {
     pub secure_mode: bool,
 }
 
+impl NetworkSettings {
+    fn normalize_virtual_cidr(&mut self) {
+        self.virtual_cidr = self.virtual_cidr.take().and_then(|value| {
+            let value = value.trim();
+            if value.is_empty() {
+                None
+            } else if value.contains('/') {
+                Some(value.to_owned())
+            } else {
+                Some(format!("{value}/24"))
+            }
+        });
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UpdateNetworkReq {
     pub settings: NetworkSettings,
@@ -370,10 +385,11 @@ impl CentralNetworkService {
     pub async fn create_network(
         &self,
         user_id: UserIdInDb,
-        settings: NetworkSettings,
+        mut settings: NetworkSettings,
         network_secret: Option<String>,
     ) -> Result<NetworkDetail, CentralNetworkServiceError> {
         let _mutation = self.mutation_lock.lock().await;
+        settings.normalize_virtual_cidr();
         let network_name = settings
             .network_name
             .clone()
@@ -423,9 +439,10 @@ impl CentralNetworkService {
         &self,
         user_id: UserIdInDb,
         network_id: Uuid,
-        request: UpdateNetworkReq,
+        mut request: UpdateNetworkReq,
     ) -> Result<NetworkDetail, CentralNetworkServiceError> {
         let _mutation = self.mutation_lock.lock().await;
+        request.settings.normalize_virtual_cidr();
         let mut intent = self.load(user_id, network_id).await?;
         let mode = mode_from_settings(&request.settings, self.gateway_config())?;
         intent.display_name = request.settings.display_name;
@@ -1556,6 +1573,177 @@ mod tests {
             networking_method: "Gateway".to_owned(),
             peer_urls,
             ..standalone_settings()
+        }
+    }
+
+    #[tokio::test]
+    async fn virtual_subnets_are_normalized_on_create_and_update() {
+        let (service, user_id, _) = service().await;
+        let existing = service
+            .create_network(user_id, standalone_settings(), None)
+            .await
+            .unwrap();
+        let existing_id = Uuid::parse_str(&existing.network_id).unwrap();
+
+        for (index, (input, expected)) in [
+            (Some("10.88.0.0"), Some("10.88.0.0/24")),
+            (Some(" \t10.88.0.0\n"), Some("10.88.0.0/24")),
+            (Some(" 10.88.0.0/25 "), Some("10.88.0.0/25")),
+            (Some("10.88.0.0/16"), Some("10.88.0.0/16")),
+            (Some(""), None),
+            (Some(" \t\n"), None),
+            (None, None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut settings = standalone_settings();
+            settings.network_name = Some(format!("normalized-{index}"));
+            settings.virtual_cidr = input.map(str::to_owned);
+            let created = service
+                .create_network(user_id, settings, None)
+                .await
+                .unwrap();
+            assert_eq!(created.virtual_cidr.as_deref(), expected);
+            let created_id = Uuid::parse_str(&created.network_id).unwrap();
+            assert_eq!(
+                service
+                    .get_network(user_id, created_id)
+                    .await
+                    .unwrap()
+                    .virtual_cidr
+                    .as_deref(),
+                expected
+            );
+
+            let mut settings = standalone_settings();
+            settings.virtual_cidr = input.map(str::to_owned);
+            let updated = service
+                .update_network(
+                    user_id,
+                    existing_id,
+                    UpdateNetworkReq {
+                        settings,
+                        network_secret: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(updated.virtual_cidr.as_deref(), expected);
+            assert_eq!(
+                service
+                    .get_network(user_id, existing_id)
+                    .await
+                    .unwrap()
+                    .virtual_cidr
+                    .as_deref(),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn virtual_subnets_still_reject_invalid_create_and_update_requests() {
+        let (service, user_id, _) = service().await;
+        let network = service
+            .create_network(user_id, standalone_settings(), None)
+            .await
+            .unwrap();
+        let id = Uuid::parse_str(&network.network_id).unwrap();
+        let before = service.load(user_id, id).await.unwrap();
+
+        for input in [
+            "not-an-ip",
+            "10.88.0.256",
+            "10.88.0.0/",
+            "10.88.0.0/33",
+            "10.88.0.0/invalid",
+            "10.88.0.0/24/24",
+            "fd00::",
+        ] {
+            let mut settings = standalone_settings();
+            settings.network_name = Some("invalid-subnet".to_owned());
+            settings.virtual_cidr = Some(input.to_owned());
+            assert!(matches!(
+                service
+                    .create_network(user_id, settings.clone(), None)
+                    .await,
+                Err(CentralNetworkServiceError::Invalid(_))
+            ));
+            assert!(matches!(
+                service
+                    .update_network(
+                        user_id,
+                        id,
+                        UpdateNetworkReq {
+                            settings,
+                            network_secret: None,
+                        },
+                    )
+                    .await,
+                Err(CentralNetworkServiceError::Invalid(_))
+            ));
+            assert_eq!(service.load(user_id, id).await.unwrap(), before);
+        }
+    }
+
+    #[tokio::test]
+    async fn equivalent_virtual_subnet_updates_preserve_automatic_allocations() {
+        let (service, user_id, _) = service().await;
+        let devices = [Uuid::new_v4(), Uuid::new_v4()];
+        for device in devices {
+            register_device(&service, user_id, device).await;
+        }
+        let network = service
+            .create_network(user_id, standalone_settings(), None)
+            .await
+            .unwrap();
+        let id = Uuid::parse_str(&network.network_id).unwrap();
+        service
+            .add_members(
+                user_id,
+                id,
+                AddMembersReq {
+                    device_ids: devices.iter().map(ToString::to_string).collect(),
+                    temporary: false,
+                    ttl_seconds: None,
+                },
+            )
+            .await
+            .unwrap();
+        let initial = service.load(user_id, id).await.unwrap();
+        let first = initial
+            .members
+            .iter()
+            .find(|member| member.allocated_ipv4.as_deref() == Some("10.88.0.1"))
+            .unwrap();
+        service
+            .remove_member(user_id, id, Uuid::parse_str(&first.device_id).unwrap())
+            .await
+            .unwrap();
+        let before = service.load(user_id, id).await.unwrap();
+        assert_eq!(before.members.len(), 1);
+        assert_eq!(
+            before.members[0].allocated_ipv4.as_deref(),
+            Some("10.88.0.2")
+        );
+
+        // The free .1 address would replace .2 if an equivalent edit reset allocations.
+        for input in ["10.88.0.0", " \t10.88.0.0\n", " 10.88.0.0/24 "] {
+            let mut settings = standalone_settings();
+            settings.virtual_cidr = Some(input.to_owned());
+            service
+                .update_network(
+                    user_id,
+                    id,
+                    UpdateNetworkReq {
+                        settings,
+                        network_secret: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(service.load(user_id, id).await.unwrap(), before);
         }
     }
 

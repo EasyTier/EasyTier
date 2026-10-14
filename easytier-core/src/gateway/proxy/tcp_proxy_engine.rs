@@ -186,7 +186,7 @@ impl TcpProxyEngine {
         for _ in 0..u16::MAX {
             let translated_port = self
                 .next_translated_port
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |port| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |port| {
                     Some(if port == u16::MAX { 1 } else { port + 1 })
                 })
                 .expect("translated port counter update cannot fail");

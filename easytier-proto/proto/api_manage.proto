@@ -106,6 +106,10 @@ message NetworkConfig {
   optional VpnPortalConfig vpn_portal_config = 69;
   repeated ManagedCredentialConfig managed_credentials = 71;
   optional bool prefer_peer_relay = 72;
+  // Bootstrap subnet used when DHCP has not learned a subnet from peers.
+  optional string dhcp_ipv4_cidr = 74;
+  optional bool dhcpv6 = 75;
+  optional string dhcp_ipv6_cidr = 76;
 }
 
 message ManagedCredentialConfig {
@@ -158,6 +162,7 @@ message MyNodeInfo {
   repeated common.Url listeners = 6;
   optional string vpn_portal_cfg = 7 [deprecated = true];
   uint32 peer_id = 8;
+  common.Ipv6Inet virtual_ipv6 = 9;
 }
 
 message NetworkInstanceRunningInfo {

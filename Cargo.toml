@@ -22,6 +22,7 @@ edition = "2024"
 rust-version = "1.95"
 
 [workspace.dependencies]
+optionize = "0.5"
 # Shared versions and sources; members select features and optional dependencies.
 anyhow = "1.0"
 arc-swap = "1.9"

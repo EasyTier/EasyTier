@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { UrlListInput, Utils } from 'easytier-frontend-lib';
 import ApiClient, { type CentralNetworkSettings, type CentralNetworkSummary, type GatewayInfo } from '../modules/api';
+import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
 
 const { t } = useI18n()
 const route = useRoute();
@@ -113,7 +114,7 @@ const openCreate = () => {
 const createNetwork = async () => {
     creating.value = true;
     try {
-        const virtual_cidr = createForm.value.virtual_cidr.trim() || null;
+        const virtual_cidr = normalizeVirtualSubnet(createForm.value.virtual_cidr) || null;
         let settings: CentralNetworkSettings;
         if (!advancedMode.value && gatewayEnabled.value) {
             settings = {
@@ -218,6 +219,7 @@ const openNetwork = (network: CentralNetworkSummary) => {
                         <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('web.network_list.virtual_cidr_hint')"></span>
                     </div>
                     <InputText id="network-cidr" v-model="createForm.virtual_cidr" class="font-mono"
+                        @blur="createForm.virtual_cidr = normalizeVirtualSubnet(createForm.virtual_cidr)"
                         :placeholder="t('web.network_list.virtual_cidr_placeholder')" />
                 </div>
                 <div class="flex items-center gap-2">

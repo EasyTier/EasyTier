@@ -1,4 +1,6 @@
-use std::{collections::HashMap, net::IpAddr};
+#[cfg(not(mobile))]
+use std::collections::HashMap;
+use std::net::IpAddr;
 
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
@@ -8,6 +10,7 @@ use crate::proto::peer_rpc::GetIpListResponse;
 
 use super::netns::NetNS;
 
+#[cfg(not(mobile))]
 #[derive(Clone, Copy, Debug, Default)]
 struct InterfaceState {
     is_point_to_point: bool,
@@ -46,6 +49,7 @@ fn collect_interface_states() -> HashMap<String, InterfaceState> {
     states
 }
 
+#[cfg(not(mobile))]
 #[cfg(not(any(
     all(target_os = "linux", not(target_env = "ohos")),
     all(target_os = "macos", not(feature = "macos-ne")),
@@ -99,11 +103,13 @@ pub(crate) fn ip_mask_to_prefix(mask: IpAddr) -> Result<u8, ()> {
     }
 }
 
+#[cfg(not(mobile))]
 struct InterfaceFilter {
     iface: NetworkInterface,
     state: InterfaceState,
 }
 
+#[cfg(not(mobile))]
 fn interface_state(
     iface: &NetworkInterface,
     states: &HashMap<String, InterfaceState>,
@@ -115,18 +121,6 @@ fn interface_state(
         is_lower_up: true,
         ..Default::default()
     })
-}
-
-#[cfg(any(
-    target_os = "android",
-    target_os = "ios",
-    all(target_os = "macos", feature = "macos-ne"),
-    target_env = "ohos"
-))]
-impl InterfaceFilter {
-    async fn filter_iface(&self) -> bool {
-        true
-    }
 }
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
@@ -363,22 +357,31 @@ async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInt
             return Vec::new();
         }
     };
-    let states = collect_interface_states();
-    let mut ret = vec![];
-    for iface in ifaces {
-        let f = InterfaceFilter {
-            iface: iface.clone(),
-            state: interface_state(&iface, &states),
-        };
-
-        if filter && !f.filter_iface().await {
-            continue;
-        }
-
-        ret.push(iface);
+    #[cfg(mobile)]
+    {
+        let _ = filter;
+        ifaces
     }
 
-    ret
+    #[cfg(not(mobile))]
+    {
+        let states = collect_interface_states();
+        let mut ret = vec![];
+        for iface in ifaces {
+            let f = InterfaceFilter {
+                iface: iface.clone(),
+                state: interface_state(&iface, &states),
+            };
+
+            if filter && !f.filter_iface().await {
+                continue;
+            }
+
+            ret.push(iface);
+        }
+
+        ret
+    }
 }
 
 #[cfg(target_os = "linux")]

@@ -13,6 +13,7 @@ import {
   consumePendingMobileVpnTileAction,
   initMobileVpnService,
   setMobileVpnTileActionHandler,
+  setMobileVpnErrorHandler,
   syncMobileVpnService,
 } from '~/composables/mobile_vpn'
 import { executeVpnTileAction } from '~/composables/mobile_vpn_tile'
@@ -20,7 +21,12 @@ import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
-import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
+import {
+  saveLastNetworkInstanceId,
+  loadLastNetworkInstanceId,
+  loadVpnTileStoppedInstanceIds,
+  saveVpnTileStoppedInstanceIds,
+} from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
 import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
 
@@ -227,6 +233,8 @@ onMounted(async () => {
   const cleanupFns: Array<() => void> = []
 
   if (type() === 'android') {
+    setMobileVpnErrorHandler(error => toast.add({ severity: 'error', summary: t('error'), detail: error, life: 10000 }))
+    cleanupFns.push(() => setMobileVpnErrorHandler())
     try {
       await initMobileVpnService()
     } catch (e: any) {
@@ -265,6 +273,8 @@ async function handleMobileVpnTileAction(action: 'start' | 'stop') {
   try {
     const result = await executeVpnTileAction(action, remoteClient.value, {
       lastInstanceId: loadLastNetworkInstanceId(),
+      stoppedInstanceIds: loadVpnTileStoppedInstanceIds(),
+      saveStoppedInstanceIds: saveVpnTileStoppedInstanceIds,
       syncVpnService: syncMobileVpnService,
     })
 

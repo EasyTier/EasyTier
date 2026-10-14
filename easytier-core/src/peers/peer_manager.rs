@@ -37,7 +37,7 @@ use crate::{
         CompressorAlgo, PacketType, ZCPacket,
         compressor::{Compressor as _, DefaultCompressor},
     },
-    proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
+    proto::common::{Flags, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     tunnel::{
         Tunnel,
@@ -50,7 +50,7 @@ use crate::{
 
 use super::{
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver, PeerConnectionOrigin,
-    PeerPacketFilter, PeerPacketIngress,
+    PeerPacketFilter, PeerPacketFilterResult, PeerPacketIngress,
     acl::AclFilter,
     conn::{
         peer_conn::{PeerConn, PeerConnId},
@@ -98,6 +98,7 @@ pub struct PeerSnapshot {
 pub struct NodeSnapshot {
     pub peer_id: PeerId,
     pub ipv4_addr: Option<cidr::Ipv4Inet>,
+    pub ipv6_addr: Option<cidr::Ipv6Inet>,
     pub proxy_networks: Vec<ProxyNetworkConfig>,
     pub hostname: String,
     pub stun_info: StunInfo,
@@ -213,14 +214,14 @@ pub struct PortablePeerManagerConfig {
     ///
     /// This is explicit because those contexts participate in the same
     /// handshake as the parent but do not inherit all parent policy flags.
-    pub foreign_context_default_flags: FlagsInConfig,
+    pub foreign_context_default_flags: Flags,
 }
 
 impl PortablePeerManagerConfig {
     pub fn new(mut runtime: PeerRuntimeConfig) -> Self {
         let policy = &runtime.core.peer_policy;
         let traffic = &runtime.core.traffic;
-        let flags = FlagsInConfig {
+        let flags = Flags {
             enable_encryption: policy.encryption_required,
             encryption_algorithm: crate::config::EncryptionAlgorithm::default().to_string(),
             disable_p2p: !policy.p2p_enabled,
@@ -282,6 +283,9 @@ fn retain_runtime_owned_peer_state(
     next_peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
     if current.services.dhcp_ipv4 && next.services.dhcp_ipv4 {
         next_peer.runtime.core.routes.ipv4 = current.peer.runtime.core.routes.ipv4.clone();
+    }
+    if current.services.dhcp_ipv6 && next.services.dhcp_ipv6 {
+        next_peer.runtime.core.routes.ipv6 = current.peer.runtime.core.routes.ipv6.clone();
     }
 }
 
@@ -453,7 +457,7 @@ struct NicPacketProcessor {
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for NicPacketProcessor {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
         let hdr = packet.peer_manager_header().unwrap();
         if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
             if hdr.is_encrypted() || hdr.is_compressed() {
@@ -464,7 +468,7 @@ impl PeerPacketFilter for NicPacketProcessor {
                     compressed = hdr.is_compressed(),
                     "dropping packet before nic because it is not fully decoded"
                 );
-                return None;
+                return PeerPacketFilterResult::Consumed;
             }
             tracing::trace!(?packet, "send packet to nic channel");
             if let Err(error) = self
@@ -476,9 +480,9 @@ impl PeerPacketFilter for NicPacketProcessor {
                     "dropping packet because nic channel cannot accept it"
                 );
             }
-            None
+            PeerPacketFilterResult::Consumed
         } else {
-            Some(packet)
+            PeerPacketFilterResult::Pass(packet)
         }
     }
 }
@@ -489,16 +493,16 @@ struct PeerRpcPacketProcessor {
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for PeerRpcPacketProcessor {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
         let hdr = packet.peer_manager_header().unwrap();
         if hdr.packet_type == PacketType::TaRpc as u8
             || hdr.packet_type == PacketType::RpcReq as u8
             || hdr.packet_type == PacketType::RpcResp as u8
         {
             self.peer_rpc_tspt_sender.send(packet).unwrap();
-            None
+            PeerPacketFilterResult::Consumed
         } else {
-            Some(packet)
+            PeerPacketFilterResult::Pass(packet)
         }
     }
 }
@@ -956,7 +960,7 @@ impl PeerManagerCore {
         is_secure_mode_enabled: bool,
         data_compress_algo: CompressorAlgo,
         exit_nodes: Vec<IpAddr>,
-        foreign_context_default_flags: FlagsInConfig,
+        foreign_context_default_flags: Flags,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> Self {
         let stats_manager = core_context.stats_manager();
@@ -1265,6 +1269,7 @@ impl PeerManagerCore {
         NodeSnapshot {
             peer_id: self.my_peer_id,
             ipv4_addr: self.context.ipv4(),
+            ipv6_addr: self.context.ipv6(),
             proxy_networks: self.context.proxy_networks(),
             hostname: self.context.hostname(),
             stun_info: self.context.stun_info(),
@@ -3175,25 +3180,33 @@ impl PeerPacketRouter {
                 return;
             }
 
-            let mut processed = false;
-            let mut zc_packet = Some(ret);
-            tracing::trace!(?zc_packet, "try_process_packet_from_peer");
+            tracing::trace!(?ret, "try_process_packet_from_peer");
             let pipelines = self.peer_packet_process_pipeline.load_full();
-            for pipeline in pipelines.iter().rev() {
-                if let Some(filter) = pipeline.filter_if_active() {
-                    zc_packet = filter
-                        .try_process_packet_from_peer(zc_packet.unwrap())
-                        .await;
+            process_peer_packet(&pipelines, ret).await;
+        }
+    }
+}
+
+async fn process_peer_packet(pipelines: &[PeerPipelineEntry], packet: ZCPacket) {
+    let mut first = Some((packet, pipelines.len()));
+    // The ordinary single-packet path does not allocate this queue.
+    let mut pending = Vec::new();
+    'packets: while let Some((mut packet, next)) = first.take().or_else(|| pending.pop()) {
+        for (index, pipeline) in pipelines[..next].iter().enumerate().rev() {
+            let Some(filter) = pipeline.filter_if_active() else {
+                continue;
+            };
+            match filter.try_process_packet_from_peer(packet).await {
+                PeerPacketFilterResult::Consumed => continue 'packets,
+                PeerPacketFilterResult::Pass(next) => packet = next,
+                PeerPacketFilterResult::PassBatch(packets) => {
+                    // Resume each packet after the filter that produced it.
+                    pending.extend(packets.into_iter().rev().map(|packet| (packet, index)));
+                    continue 'packets;
                 }
-                if zc_packet.is_none() {
-                    processed = true;
-                    break;
-                }
-            }
-            if !processed {
-                tracing::error!(?zc_packet, "unhandled packet");
             }
         }
+        tracing::error!(?packet, "unhandled packet");
     }
 }
 
@@ -3538,6 +3551,58 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn packet_batches_resume_at_next_filter_in_order() {
+        struct Filter {
+            stage: u8,
+            seen: Arc<std::sync::Mutex<Vec<(u8, u8)>>>,
+        }
+        #[async_trait::async_trait]
+        impl PeerPacketFilter for Filter {
+            async fn try_process_packet_from_peer(
+                &self,
+                packet: ZCPacket,
+            ) -> PeerPacketFilterResult {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((self.stage, packet.payload()[0]));
+                match self.stage {
+                    0 => PeerPacketFilterResult::Consumed,
+                    1 | 2 => {
+                        let mut extra = packet.clone();
+                        extra.mut_payload()[0] += if self.stage == 1 { 10 } else { 1 };
+                        PeerPacketFilterResult::PassBatch(vec![packet, extra])
+                    }
+                    _ => PeerPacketFilterResult::Pass(packet),
+                }
+            }
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pipelines = (0..4)
+            .map(|stage| {
+                permanent_peer_pipeline_entry(Box::new(Filter {
+                    stage,
+                    seen: seen.clone(),
+                }))
+            })
+            .collect::<Vec<_>>();
+        process_peer_packet(&pipelines, ZCPacket::new_with_payload(&[0])).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (3, 0),
+                (2, 0),
+                (1, 0),
+                (0, 0),
+                (0, 10),
+                (1, 1),
+                (0, 1),
+                (0, 11),
+            ]
+        );
+    }
+
     struct RuntimeConfigStunInfoSource(CoreRuntimeConfigStore);
 
     impl PeerStunInfoSource for RuntimeConfigStunInfoSource {
@@ -3607,7 +3672,7 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "a full host queue blocked the peer router");
-        assert!(result.unwrap().is_none());
+        assert!(matches!(result.unwrap(), PeerPacketFilterResult::Consumed));
         assert_eq!(nic_receiver.try_recv().unwrap().payload(), b"queued");
     }
 

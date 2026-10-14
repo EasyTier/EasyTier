@@ -11,7 +11,7 @@ use crate::{
     foundation::time::timeout,
     packet::ZCPacket,
     peers::{
-        NicPacketFilter, PeerPacketFilter,
+        NicPacketFilter, PeerPacketFilter, PeerPacketFilterResult,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
     socket::{
@@ -544,11 +544,11 @@ struct TcpProxyServiceFilter<
 impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDestinationConnector>
     PeerPacketFilter for TcpProxyServiceFilter<R, F, C>
 {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
         let Some(service) = self.service.upgrade() else {
-            return Some(packet);
+            return PeerPacketFilterResult::Pass(packet);
         };
-        service.handle_peer_packet(packet).await
+        service.handle_peer_packet(packet).await.into()
     }
 }
 

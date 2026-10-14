@@ -20,10 +20,11 @@ use easytier::{
                 RunNetworkInstanceRequest,
             },
         },
-        common::{CompressionAlgoPb, Ipv4Inet as RpcIpv4Inet},
+        common::{CompressionAlgoPb, FlagsPatch, Ipv4Inet as RpcIpv4Inet},
         rpc_types::controller::BaseController,
     },
 };
+use optionize::Retain;
 
 use super::session::{SessionConfigClient, SessionRpcClient};
 
@@ -53,7 +54,11 @@ fn instance_identifier(inst_id: &str) -> anyhow::Result<InstanceIdentifier> {
 fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     let data_compress_algo = normalized_data_compress_algo(config.data_compress_algo);
     let encryption_algorithm = normalized_encryption_algorithm(config.encryption_algorithm.clone());
-    let mut config = NetworkConfig::new_from_config(config.gen_config()?)?;
+    let config = config.gen_config()?;
+    // Runtime comparison intentionally resolves defaults. Configuration exports
+    // otherwise preserve whether each flag was supplied by the user.
+    config.set_flags(config.get_flags());
+    let mut config = NetworkConfig::new_from_config(config)?;
     let is_credential_mode = config.network_secret.is_none()
         && config
             .secure_mode
@@ -208,14 +213,6 @@ fn normalized_proxy_networks(config: &NetworkConfig) -> anyhow::Result<Vec<Runti
         .collect())
 }
 
-fn normalized_disable_relay_data(config: &NetworkConfig) -> anyhow::Result<bool> {
-    Ok(config.gen_config()?.get_flags().disable_relay_data)
-}
-
-fn normalized_prefer_peer_relay(config: &NetworkConfig) -> anyhow::Result<bool> {
-    Ok(config.gen_config()?.get_flags().prefer_peer_relay)
-}
-
 fn normalized_vpn_portal(config: &NetworkConfig) -> anyhow::Result<Option<RuntimeVpnPortalConfig>> {
     Ok(config.gen_config()?.get_vpn_portal_config())
 }
@@ -335,17 +332,16 @@ fn web_source_runtime_patch(
             diff_proxy_networks(&current_proxy_networks, &desired_proxy_networks)?;
     }
 
-    let current_disable_relay_data = normalized_disable_relay_data(current)?;
-    let desired_disable_relay_data = normalized_disable_relay_data(desired)?;
-    if current_disable_relay_data != desired_disable_relay_data {
-        patch.disable_relay_data = Some(desired_disable_relay_data);
-    }
-
-    let current_prefer_peer_relay = normalized_prefer_peer_relay(current)?;
-    let desired_prefer_peer_relay = normalized_prefer_peer_relay(desired)?;
-    if current_prefer_peer_relay != desired_prefer_peer_relay {
-        patch.prefer_peer_relay = Some(desired_prefer_peer_relay);
-    }
+    let current_flags = current.gen_config()?.get_flags();
+    let desired_flags = desired.gen_config()?.get_flags();
+    let mut flags = FlagsPatch {
+        disable_relay_data: Some(desired_flags.disable_relay_data),
+        prefer_peer_relay: Some(desired_flags.prefer_peer_relay),
+        ..Default::default()
+    };
+    flags.retain(&current_flags);
+    patch.disable_relay_data = flags.disable_relay_data;
+    patch.prefer_peer_relay = flags.prefer_peer_relay;
 
     match (
         normalized_vpn_portal(current)?,

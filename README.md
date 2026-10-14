@@ -7,7 +7,7 @@
 [![GitHub Core Actions](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml)
 [![GitHub GUI Actions](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml)
 [![GitHub Test Actions](https://github.com/EasyTier/EasyTier/actions/workflows/test.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/test.yml)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/EasyTier/EasyTier)
+[<img src="https://devin.ai/assets/askdeepwiki.png" alt="Ask DeepWiki" height="20"/>](https://deepwiki.com/EasyTier/EasyTier)
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
@@ -18,7 +18,7 @@
 <img src="assets/running-page.png" width="300" alt="running page">
 </p>
 
-📚 **[Full Documentation](https://easytier.cn/en/)** | 🖥️ **[Web Console](https://easytier.cn/web)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | 🧩 **[Third Party Tools](https://easytier.cn/en/guide/installation_gui.html#third-party-graphical-interfaces)** | ❤️ **[Sponsor](#sponsor)**
+📚 **[Full Documentation](https://easytier.cn/en/)** | 🖥️ **[Web Console](https://easytier.cn/web)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | **[Nightly](https://github.com/EasyTier/EasyTier/releases/tag/nightly)** | 🧩 **[Third Party Tools](https://easytier.cn/en/guide/installation_gui.html#third-party-graphical-interfaces)** | ❤️ **[Sponsor](#sponsor)**
 
 ## Features
 
@@ -68,6 +68,13 @@ Install via cargo (Latest development version):
 ```bash
 cargo install --git https://github.com/EasyTier/EasyTier.git easytier
 ```
+
+Install prebuilt CLI tools with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) (specify an existing release version):
+```bash
+cargo binstall --git https://github.com/EasyTier/EasyTier.git --version 2.6.4 easytier
+```
+
+This installs `easytier-core` and `easytier-cli` using the repository's metadata, independently of crates.io publication. On Windows, also copy the DLL and driver files from the matching release ZIP beside the installed binaries; binstall only installs executables.
 
 [Install pre-built binary](https://github.com/EasyTier/EasyTier/releases) (Recommended, All platforms supported)
 

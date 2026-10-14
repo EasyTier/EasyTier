@@ -12,17 +12,24 @@ const devices = ref<Utils.DeviceInfo[]>();
 const networks = ref<CentralNetworkSummary[]>();
 const loadError = ref(false);
 const refreshing = ref(false);
+let requestInFlight = false;
 
-const loadSummary = async () => {
-    if (refreshing.value) return;
-    refreshing.value = true;
-    const results = await Promise.allSettled([
-        props.api.get_summary().then(value => { summary.value = value; }),
-        props.api.list_machines().then(value => { devices.value = value.map(Utils.buildDeviceInfo); }),
-        ...(props.centralEnabled ? [props.api.list_networks().then(value => { networks.value = value; })] : []),
-    ]);
-    loadError.value = results.some(result => result.status === 'rejected');
-    refreshing.value = false;
+const loadSummary = async (manual = false) => {
+    // A manual refresh can show progress for an already running background request.
+    if (manual) refreshing.value = true;
+    if (requestInFlight) return;
+    requestInFlight = true;
+    try {
+        const results = await Promise.allSettled([
+            props.api.get_summary().then(value => { summary.value = value; }),
+            props.api.list_machines().then(value => { devices.value = value.map(Utils.buildDeviceInfo); }),
+            ...(props.centralEnabled ? [props.api.list_networks().then(value => { networks.value = value; })] : []),
+        ]);
+        loadError.value = results.some(result => result.status === 'rejected');
+    } finally {
+        requestInFlight = false;
+        refreshing.value = false;
+    }
 };
 watch(() => props.centralEnabled, () => loadSummary());
 const periodFunc = new Utils.PeriodicTask(loadSummary, 2000);
@@ -45,7 +52,7 @@ const stats = computed(() => [
     <div class="console-page">
         <header class="page-heading">
             <div><h1>{{ t('web.main.dashboard') }}</h1></div>
-            <Button icon="pi pi-refresh" :label="t('web.console.refresh')" severity="secondary" outlined :loading="refreshing" @click="loadSummary" />
+            <Button icon="pi pi-refresh" :label="t('web.console.refresh')" severity="secondary" outlined :loading="refreshing" @click="loadSummary(true)" />
         </header>
         <Message v-if="loadError" severity="warn" :closable="false">{{ t('web.console.load_failed') }}</Message>
         <section class="console-panel summary-strip" :aria-label="t('web.main.dashboard')">

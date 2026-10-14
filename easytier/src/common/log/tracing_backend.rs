@@ -70,7 +70,7 @@ impl tracing::Subscriber for EventSubscriber {
     fn new_span(&self, _attributes: &Attributes<'_>) -> Id {
         let id = self
             .next_span_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
                 Some(if id == usize::MAX { 1 } else { id + 1 })
             })
             .expect("span id update always succeeds");

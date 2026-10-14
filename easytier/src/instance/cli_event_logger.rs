@@ -187,6 +187,12 @@ fn log_event(instance_id: Uuid, event: GlobalCtxEvent) {
         GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
             event!(info, ?ip, "[{}] dhcp ip conflict", instance_id);
         }
+        GlobalCtxEvent::DhcpIpv6Changed(old, new) => {
+            event!(info, ?old, ?new, "[{}] dhcp ipv6 changed", instance_id);
+        }
+        GlobalCtxEvent::DhcpIpv6Conflicted(ip) => {
+            event!(info, ?ip, "[{}] dhcp ipv6 conflict", instance_id);
+        }
         GlobalCtxEvent::PublicIpv6Changed(old, new) => {
             event!(info, ?old, ?new, "[{}] public ipv6 changed", instance_id);
         }

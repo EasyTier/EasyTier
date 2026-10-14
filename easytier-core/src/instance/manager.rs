@@ -479,9 +479,9 @@ where
     }
 
     pub fn data_plane_runtime_handle(&self, instance_id: &Uuid) -> Option<tokio::runtime::Handle> {
-        self.instance(*instance_id)?;
-        self.runtime_handle
-            .clone()
+        self.instance(*instance_id)?
+            .runtime_handle()
+            .or_else(|| self.runtime_handle.clone())
             .or_else(|| tokio::runtime::Handle::try_current().ok())
     }
 
