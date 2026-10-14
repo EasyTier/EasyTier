@@ -178,6 +178,15 @@ test('manual publication checks the current main commit', async () => {
   assert.equal((await prepare(f)).sha, 'main-head');
 });
 
+test('scheduled publication uses the completed commit even after main advances', async () => {
+  const f = fixture();
+  f.context.payload = {};
+  const build = await prepare({ ...f, sha: 'built' });
+  assert.equal(build.sha, 'built');
+  assert.ok(f.calls.some(call => call[0] === 'compare' && call[1] === 'built...main-head'));
+  assert.deepEqual(build.runs, { core: 1, gui: 2, mobile: 3, test: 4 });
+});
+
 test('nightly requires a published version baseline and a mutable release', async () => {
   const f = fixture();
   f.state.releases = [];
