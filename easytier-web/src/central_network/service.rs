@@ -570,6 +570,28 @@ impl CentralNetworkService {
         Ok(deleted)
     }
 
+    /// Blocks a device while keeping its registration record. The live
+    /// session, if any, is disconnected and later token validations are
+    /// rejected until the device is unblocked.
+    pub async fn block_device(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: Uuid,
+    ) -> Result<bool, CentralNetworkServiceError> {
+        let _mutation = self.mutation_lock.lock().await;
+        let Some(device) = self.db.get_device((user_id, machine_id)).await? else {
+            return Ok(false);
+        };
+        self.db
+            .block_device((user_id, machine_id), &device.hostname)
+            .await?;
+        self.client_manager
+            .disconnect_session_by_machine_id(user_id, &machine_id)
+            .await;
+        self.publish_user(user_id).await;
+        Ok(true)
+    }
+
     pub async fn add_members(
         &self,
         user_id: UserIdInDb,

@@ -136,6 +136,30 @@ const handleDeleteDevice = (device: Utils.DeviceInfo) => {
 // 别名仅改变控制台内的显示名，不影响设备上报的主机名
 const deviceName = (device: Utils.DeviceInfo) => device.alias || device.hostname || device.machine_id;
 
+// 拉黑设备：断开并拒绝重连，但保留注册记录，解封后原样恢复
+const blockVisible = ref(false);
+const blocking = ref(false);
+const blockTarget = ref<Utils.DeviceInfo | null>(null);
+
+const handleBlockDevice = (device: Utils.DeviceInfo) => {
+    blockTarget.value = device;
+    blockVisible.value = true;
+};
+
+const confirmBlockDevice = async () => {
+    if (!blockTarget.value) return;
+    blocking.value = true;
+    try {
+        await api?.block_device(blockTarget.value.machine_id);
+        blockVisible.value = false;
+        await loadDevices();
+    } catch (e: any) {
+        toast.add({ severity: 'error', summary: t('web.console.block_device_action'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
+    } finally {
+        blocking.value = false;
+    }
+};
+
 const aliasVisible = ref(false);
 const aliasTarget = ref<Utils.DeviceInfo | null>(null);
 const aliasInput = ref('');
@@ -270,6 +294,8 @@ const locationText = (device: Utils.DeviceInfo) => {
                             <div class="flex items-center gap-1">
                                 <Button v-if="centralEnabled" v-tooltip.top="t('web.console.set_alias')" icon="pi pi-pencil" severity="secondary"
                                     text rounded :aria-label="t('web.console.set_alias')" @click="handleSetAlias(data)" />
+                                <Button v-if="centralEnabled" v-tooltip.top="t('web.console.block_device_action')" icon="pi pi-ban" severity="warn"
+                                    text rounded :aria-label="t('web.console.block_device_action')" @click="handleBlockDevice(data)" />
                                 <Button v-if="centralEnabled" v-tooltip.top="t('web.console.delete_device')" icon="pi pi-trash" severity="danger"
                                     text rounded :aria-label="t('web.console.delete_device')" @click="handleDeleteDevice(data)" />
                                 <Button icon="pi pi-cog" severity="secondary" text rounded
@@ -301,6 +327,8 @@ const locationText = (device: Utils.DeviceInfo) => {
                             <div class="flex items-center gap-1">
                                 <Button v-if="centralEnabled" v-tooltip.top="t('web.console.set_alias')" icon="pi pi-pencil" severity="secondary"
                                     text rounded class="w-8 h-8" :aria-label="t('web.console.set_alias')" @click="handleSetAlias(device)" />
+                                <Button v-if="centralEnabled" v-tooltip.top="t('web.console.block_device_action')" icon="pi pi-ban" severity="warn"
+                                    text rounded class="w-8 h-8" :aria-label="t('web.console.block_device_action')" @click="handleBlockDevice(device)" />
                                 <Button v-if="centralEnabled" v-tooltip.top="t('web.console.delete_device')" icon="pi pi-trash" severity="danger"
                                     text rounded class="w-8 h-8" :aria-label="t('web.console.delete_device')" @click="handleDeleteDevice(device)" />
                                 <Button icon="pi pi-cog" severity="secondary" text rounded class="w-8 h-8"
@@ -356,6 +384,18 @@ const locationText = (device: Utils.DeviceInfo) => {
             <template #footer>
                 <Button :label="t('web.common.cancel')" icon="pi pi-times" text severity="secondary" @click="deleteVisible = false" />
                 <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="deleting" severity="danger" @click="confirmDeleteDevice" />
+            </template>
+        </Dialog>
+
+        <!-- 拉黑确认对话框：保留注册记录，仅断开并拒绝重连 -->
+        <Dialog v-model:visible="blockVisible" modal :header="t('web.console.block_device_action')" :style="{ width: '26rem' }">
+            <div class="flex flex-col gap-3">
+                <div>{{ t('web.console.block_device_confirm', { device: blockTarget?.hostname || blockTarget?.machine_id }) }}</div>
+                <div class="text-xs text-500">{{ t('web.console.block_device_keep_hint') }}</div>
+            </div>
+            <template #footer>
+                <Button :label="t('web.common.cancel')" icon="pi pi-times" text severity="secondary" @click="blockVisible = false" />
+                <Button :label="t('web.common.confirm')" icon="pi pi-ban" :loading="blocking" severity="warn" @click="confirmBlockDevice" />
             </template>
         </Dialog>
 

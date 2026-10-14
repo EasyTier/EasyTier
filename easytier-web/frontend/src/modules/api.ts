@@ -323,6 +323,10 @@ export class ApiClient {
         await this.client.delete(`/machines/${machine_id}`, { params: block ? { block: true } : {} });
     }
 
+    public async block_device(machine_id: string): Promise<undefined> {
+        await this.client.post('/blocked-devices', { machine_id });
+    }
+
     public async update_machine_alias(machine_id: string, alias: string): Promise<undefined> {
         await this.client.put(`/machines/${machine_id}/alias`, { alias });
     }

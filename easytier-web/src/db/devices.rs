@@ -165,6 +165,33 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Blocks a device without deleting its registration. The device keeps its
+    /// record (alias, membership, assigned addresses) but is rejected on every
+    /// later token validation until it is unblocked.
+    pub async fn block_device(
+        &self,
+        (user_id, machine_id): (UserIdInDb, Uuid),
+        hostname: &str,
+    ) -> Result<(), DbErr> {
+        sqlx::query(
+            r#"
+            INSERT INTO blocked_devices (
+                user_id, machine_id, hostname, blocked_time,
+                attempt_count, last_attempt_time
+            ) VALUES (?, ?, ?, ?, 0, NULL)
+            ON CONFLICT(user_id, machine_id) DO NOTHING
+            "#,
+        )
+        .bind(user_id)
+        .bind(machine_id.to_string())
+        .bind(hostname)
+        .bind(chrono::Local::now().fixed_offset())
+        .execute(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
     pub async fn delete_device_with_optional_block(
         &self,
         (user_id, machine_id): (UserIdInDb, Uuid),
@@ -380,6 +407,60 @@ mod tests {
         assert_eq!(after.easytier_version, "2");
         assert_eq!(after.device_os, r#"{"os":"after"}"#);
         assert_eq!(after.client_url, "tcp://127.0.0.1:1002");
+    }
+
+    #[tokio::test]
+    async fn block_device_keeps_registration_and_unblock_clears_it() {
+        let db = Db::memory_db().await;
+        let user_id = db.auto_create_user("block-owner").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let device = (user_id, machine_id);
+
+        db.upsert_device_heartbeat(DeviceHeartbeatRecord {
+            user_id,
+            machine_id,
+            hostname: "blocked-target".to_string(),
+            easytier_version: "1".to_string(),
+            device_os: r#"{"os":"Linux"}"#.to_string(),
+            client_url: String::new(),
+        })
+        .await
+        .unwrap();
+
+        db.block_device(device, "blocked-target").await.unwrap();
+        // Blocking twice must not duplicate or error; the row stays intact.
+        db.block_device(device, "blocked-target").await.unwrap();
+        let blocked = db.list_blocked_devices(user_id).await.unwrap();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].hostname, "blocked-target");
+        assert_eq!(blocked[0].attempt_count, 0);
+        assert!(blocked[0].last_attempt_time.is_none());
+
+        // The registration record survives a block so unblocking restores the
+        // device with its alias, membership, and addresses intact.
+        assert!(db.get_device(device).await.unwrap().is_some());
+        db.set_device_alias(device, "kept-alias".to_string())
+            .await
+            .unwrap();
+
+        // A later rejected attempt still lands on the admin-created row.
+        assert!(
+            db.record_blocked_attempt(device, "blocked-retry")
+                .await
+                .unwrap()
+        );
+        let blocked = db.list_blocked_devices(user_id).await.unwrap();
+        assert_eq!(blocked[0].hostname, "blocked-retry");
+        assert_eq!(blocked[0].attempt_count, 1);
+        assert!(blocked[0].last_attempt_time.is_some());
+
+        assert!(db.unblock_device(device).await.unwrap());
+        assert!(db.list_blocked_devices(user_id).await.unwrap().is_empty());
+        assert!(db.get_device(device).await.unwrap().is_some());
+        assert_eq!(
+            db.get_device(device).await.unwrap().unwrap().alias,
+            "kept-alias"
+        );
     }
 
     #[tokio::test]

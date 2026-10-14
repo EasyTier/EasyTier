@@ -139,6 +139,11 @@ struct DeleteMachineParams {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct BlockDeviceJsonReq {
+    machine_id: uuid::Uuid,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct UpdateDeviceAliasJsonReq {
     alias: String,
 }
@@ -397,6 +402,24 @@ impl NetworkApi {
             return Err((
                 StatusCode::NOT_FOUND,
                 other_error(format!("device not found: {machine_id}")).into(),
+            ));
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    async fn handle_block_device(
+        auth_session: AuthSession,
+        Extension(network_service): Extension<Arc<CentralNetworkService>>,
+        Json(request): Json<BlockDeviceJsonReq>,
+    ) -> Result<StatusCode, HttpHandleError> {
+        let blocked = network_service
+            .block_device(Self::get_user_id(&auth_session)?, request.machine_id)
+            .await
+            .map_err(super::central_network::convert_error)?;
+        if !blocked {
+            return Err((
+                StatusCode::NOT_FOUND,
+                other_error(format!("device not found: {}", request.machine_id)).into(),
             ));
         }
         Ok(StatusCode::NO_CONTENT)
@@ -835,7 +858,7 @@ impl NetworkApi {
             )
             .route(
                 "/api/v1/blocked-devices",
-                get(Self::handle_list_blocked_devices),
+                get(Self::handle_list_blocked_devices).post(Self::handle_block_device),
             )
             .route(
                 "/api/v1/blocked-devices/{machine-id}",
