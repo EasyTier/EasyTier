@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use registry::Registry;
+use easytier_core::host::route::{RouteRegistry, RouteStatus};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -23,7 +23,7 @@ pub struct RouteMgr<B> {
     backend: B,
 
     /// Independently owned dynamic route declarations.
-    routes: Registry<RouteDemand>,
+    routes: RouteRegistry,
     /// Wakes the reconcile loop when a declaration changes.
     changed: watch::Receiver<()>,
     /// Authoritative manual proxy policy and its existing invalidation signal.
@@ -47,7 +47,7 @@ impl<B: RouteBackend> RouteMgr<B> {
     pub fn new(
         global_ctx: ArcGlobalCtx,
         backend: B,
-        routes: Registry<RouteDemand>,
+        routes: RouteRegistry,
         runtime_config: CoreRuntimeConfigStore,
         cancel: CancellationToken,
     ) -> Self {
@@ -229,6 +229,26 @@ impl<B: RouteBackend> RouteMgr<B> {
     }
 
     pub async fn reconcile(&mut self) {
+        self.reconcile_inner().await;
+        let facts = self.global_ctx.tun_devices.snapshot();
+        let mut status = RouteStatus::default();
+        if let Some(active) = facts.active.filter(|device| device.ready) {
+            status.device_registration = Some(active.registration);
+            let uncertain: BTreeSet<_> =
+                self.unknown.iter().map(|route| route.destination).collect();
+            status.ready = self
+                .installed
+                .union(&self.external)
+                .filter(|route| {
+                    route.interface == active.id && !uncertain.contains(&route.destination)
+                })
+                .map(|route| route.destination)
+                .collect();
+        }
+        self.routes.publish_status(status);
+    }
+
+    async fn reconcile_inner(&mut self) {
         // All baselines precede every snapshot read. Inputs arriving during I/O
         // remain pending and stop the obsolete batch after its current result.
         self.changed.mark_unchanged();
@@ -509,7 +529,7 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(TEST_DEVICE_INDEX));
         let cancel_token = CancellationToken::new();
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
         let manager = RouteMgr::new(
             global_ctx,
@@ -654,6 +674,34 @@ mod tests {
                 .register(RouteDemand::Additional(BTreeSet::new()))
                 .is_none()
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn route_feedback_follows_ack_device_readiness_and_shutdown() {
+        let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
+        let route = test_route("10.0.0.0/24");
+        let required = BTreeSet::from([route.destination]);
+        let _registration = handle
+            .register(RouteDemand::Additional(required.clone()))
+            .unwrap();
+        manager.backend.add_error_map.insert(
+            route.clone(),
+            RouteError::Failed(anyhow::anyhow!("no permission")),
+        );
+        manager.reconcile().await;
+        assert_eq!(handle.status().device_registration, Some(1));
+        assert!(handle.status().ready.is_empty());
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        manager.reconcile().await;
+        assert_eq!(handle.status().ready, required);
+        manager
+            .global_ctx
+            .set_tun_device_error("configuration retry".into());
+        manager.reconcile().await;
+        assert!(handle.status().ready.is_empty());
+        assert_eq!(manager.installed, BTreeSet::from([route]));
+        manager.perform_shutdown_cleanup().await.unwrap();
+        assert!(handle.status().closed);
     }
 
     #[tokio::test(start_paused = true)]
@@ -838,7 +886,7 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
 
         let mut manager = RouteMgr::new(
@@ -892,7 +940,7 @@ mod tests {
         // Mark it external present in backend
         backend.external_present.insert(fake_route.clone());
 
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
         let mut manager = RouteMgr::new(
             global_ctx,
@@ -934,7 +982,7 @@ mod tests {
         let fake_ip = Ipv4Addr::new(7, 7, 7, 7);
         let cidr = IpCidr::V4(Ipv4Cidr::new(fake_ip, 32).unwrap());
 
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
         let mut manager = RouteMgr::new(
             global_ctx.clone(),
@@ -1124,7 +1172,7 @@ mod tests {
             .tun_devices
             .attach_external("persistent".into(), TEST_DEVICE_INDEX);
         ctx.tun_devices.mark_ready(device.registration());
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
         let mut manager = RouteMgr::new(
             ctx,
@@ -1207,7 +1255,7 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
 
         let manager = RouteMgr::new(
@@ -1270,7 +1318,7 @@ mod tests {
             RouteError::Unknown(anyhow::anyhow!("timeout")),
         );
 
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
         let mut manager = RouteMgr::new(
             global_ctx,
@@ -1315,7 +1363,7 @@ mod tests {
 
         backend.external_present.insert(route.clone());
 
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
         let mut manager = RouteMgr::new(
             global_ctx,
@@ -1347,7 +1395,7 @@ mod tests {
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
 
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
         let mut manager = RouteMgr::new(
             global_ctx,
@@ -1394,7 +1442,7 @@ mod tests {
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
 
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
         let mut manager = RouteMgr::new(
             global_ctx,
@@ -1745,7 +1793,7 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(100));
         let backend = MockRouteBackend::new();
-        let routes = Registry::default();
+        let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
 
         let mut manager = RouteMgr::new(

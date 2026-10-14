@@ -99,8 +99,8 @@ impl NativeInstanceRuntimeHost {
         runtime_config: CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         self.event_journal.start(self.cancel.clone()).await;
-        self.tun.prepare(packet_plane.clone()).await?;
         self.route.prepare(runtime_config).await?;
+        self.tun.prepare(packet_plane.clone()).await?;
 
         Ok(Some(
             self.tun.dhcp_host(self.operation.clone(), packet_plane),

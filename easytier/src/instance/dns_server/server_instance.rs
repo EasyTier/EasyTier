@@ -364,6 +364,53 @@ fn get_system_config(
     Ok(None)
 }
 
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+async fn register_native_dns_route(
+    global_ctx: &ArcGlobalCtx,
+    tun_dev: Option<&str>,
+    fake_ip: Ipv4Addr,
+) -> anyhow::Result<Registration<RouteDemand>> {
+    let handle = global_ctx
+        .get_route_handle()
+        .context("route handle missing for native route runtime")?;
+    let cidr = cidr::Ipv4Cidr::new(fake_ip, 32)?;
+    let required = std::collections::BTreeSet::from([cidr::IpCidr::V4(cidr)]);
+    let reg = handle
+        .register(RouteDemand::Additional(required.clone()))
+        .context("failed to register fake ip route demand")?;
+    let mut devices = global_ctx.tun_devices.subscribe();
+    let active = devices
+        .borrow_and_update()
+        .active
+        .clone()
+        .filter(|device| device.ready && tun_dev == Some(device.name.as_str()))
+        .context("DNS interface is no longer the selected ready TUN")?;
+    // Membership is desired state. Wait for the OS result before
+    // configuring DNS, and reject a replaced fd even if its name
+    // and ifindex were reused. Cancellation drops the local lease.
+    tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(10), handle.wait_ready(&required, active.registration)) => {
+            result.context("timed out waiting for fake-IP route")??;
+        }
+        _ = async {
+            loop {
+                let current = devices.borrow_and_update().active.clone();
+                if !current.is_some_and(|device| device.registration == active.registration && device.ready) { break; }
+                if devices.changed().await.is_err() { break; }
+            }
+        } => anyhow::bail!("DNS interface changed while waiting for fake-IP route"),
+    }
+    anyhow::ensure!(
+        global_ctx
+            .tun_devices
+            .snapshot()
+            .active
+            .is_some_and(|device| device.registration == active.registration && device.ready),
+        "DNS interface changed before startup completed"
+    );
+    Ok(reg)
+}
+
 impl MagicDnsServerInstance {
     async fn add_fake_ip_route(
         tun_dev_name: &str,
@@ -440,16 +487,7 @@ impl MagicDnsServerInstance {
         let route_registration = if manage_fake_ip_route && !tun_inet.contains(&fake_ip) {
             #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
             if !global_ctx.get_flags().no_tun {
-                let handle = global_ctx
-                    .get_route_handle()
-                    .context("route handle missing for native route runtime")?;
-                let cidr = cidr::Ipv4Cidr::new(fake_ip, 32)?;
-                let reg = handle
-                    .register(RouteDemand::Additional(std::collections::BTreeSet::from([
-                        cidr::IpCidr::V4(cidr),
-                    ])))
-                    .context("failed to register fake ip route demand")?;
-                Some(reg)
+                Some(register_native_dns_route(&global_ctx, tun_dev.as_deref(), fake_ip).await?)
             } else {
                 None
             }
@@ -538,5 +576,80 @@ impl MagicDnsServerInstance {
 impl Drop for MagicDnsServerInstance {
     fn drop(&mut self) {
         println!("MagicDnsServerInstance dropped");
+    }
+}
+
+#[cfg(all(test, target_os = "linux", feature = "linux-netlink"))]
+mod route_tests {
+    use super::*;
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
+    use easytier_core::host::route::{RouteHandle, RouteRegistry, RouteStatus};
+
+    fn fixture() -> (ArcGlobalCtx, RouteRegistry) {
+        let ctx = get_mock_global_ctx();
+        // Synthetic device facts let these tests exercise startup ownership
+        // without requiring privileged TUN creation.
+        ctx.tun_devices.set_for_test(Some(42));
+        let routes = RouteRegistry::default();
+        ctx.set_route_handle(Some(RouteHandle::new(routes.clone())));
+        (ctx, routes)
+    }
+
+    #[tokio::test]
+    async fn native_dns_waits_for_os_feedback_and_cancellation_withdraws() {
+        let (ctx, routes) = fixture();
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        let mut startup = Box::pin(register_native_dns_route(
+            &ctx,
+            Some(&active.name),
+            "100.100.100.100".parse().unwrap(),
+        ));
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        assert_eq!(routes.len(), 1);
+        drop(startup);
+        assert!(routes.is_empty());
+        let mut startup = Box::pin(register_native_dns_route(
+            &ctx,
+            Some(&active.name),
+            "100.100.100.100".parse().unwrap(),
+        ));
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        routes.publish_status(RouteStatus {
+            device_registration: Some(active.registration),
+            ready: std::collections::BTreeSet::from(["100.100.100.100/32".parse().unwrap()]),
+            closed: false,
+        });
+        let registration = startup.await.unwrap();
+        assert_eq!(routes.len(), 1);
+        drop(registration);
+        assert!(routes.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn native_dns_rejects_fd_replacement_and_times_out_without_feedback() {
+        let (ctx, routes) = fixture();
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        let mut startup = Box::pin(register_native_dns_route(
+            &ctx,
+            Some(&active.name),
+            "100.100.100.100".parse().unwrap(),
+        ));
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        ctx.tun_devices.set_for_test(Some(42));
+        assert!(
+            startup
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("interface changed")
+        );
+        assert!(routes.is_empty());
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        let error =
+            register_native_dns_route(&ctx, Some(&active.name), "100.100.100.100".parse().unwrap())
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(routes.is_empty());
     }
 }

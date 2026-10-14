@@ -42,7 +42,7 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
 
     #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
     let route_runtime = {
-        let routes = registry::Registry::default();
+        let routes = easytier_core::host::route::RouteRegistry::default();
         let handle = easytier_core::host::route::RouteHandle::new(routes.clone());
         ctx.set_route_handle(Some(handle.clone()));
         Arc::new(TestRouteRuntime {
@@ -75,7 +75,7 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 struct TestRouteRuntime {
     ctx: ArcGlobalCtx,
-    routes: registry::Registry<easytier_core::host::route::RouteDemand>,
+    routes: easytier_core::host::route::RouteRegistry,
     cancel: CancellationToken,
     task: tokio::sync::Mutex<
         Option<tokio::task::JoinHandle<Result<(), crate::instance::route::CleanupIncomplete>>>,

@@ -103,6 +103,20 @@ owned 路由。30 个 manager 测试通过，覆盖中断、确定失败后再�
 
 ## 当前验证
 
+RouteRegistry 是 route-domain facade：组合 scoped 声明和独立的 applied-state
+watch。producer 的 RouteHandle 只能 register / 观察 / wait_ready；不能发布结果或
+close。反馈标明选中的 fd registration，只包含 acknowledged / verified 条目，
+排除 Unknown；closed 为终态，迟到 reconciliation 不能恢复 ready。
+
+DNS 持有 Additional lease，等待该 fd claim 的 fake-IP 路由结果后才完成系统
+DNS 配置。十秒业务 deadline、关闭、设备替换或 construction 取消均撤销 lease。
+Manager 在 TUN prepare 前启动，消除启动依赖环。这里的 ready 是最后已知
+安装事实，未声称监控任意外部 writer 的后续修改。
+
+- applied-state、DNS startup、manager 与 RuntimeHost：native 56 项及 core 8 项
+  通过。包含 membership 不等于 ready、错误设备、关闭后迟到发布、取消撤销、
+  timeout 和同 ifindex fd 替换。
+
 - native 路由、设备事实、GlobalCtx 与 RuntimeHost 测试：44 项通过。
 - 新增 Unknown 核实后 route 模块测试：43 项通过，五项内核测试默认 ignored。
 - 设备事实基础提交单独运行四项合约测试通过；无默认功能的 library 编译通过。
@@ -125,7 +139,6 @@ unshare --user --map-root-user --net cargo test -p easytier --lib \
 
 ## 仍需完成
 
-- DNS 等依赖实际安装结果的启动链路需要业务层答复，registration 成功本身不是 ready。
 - 核对 Linux 上其余路由 writer（包括 Public IPv6）及相关接管边界。
 - 完成规模 / 稳态验证后，再审查未迁移平台的具体 OS 合约和测试条件。
 

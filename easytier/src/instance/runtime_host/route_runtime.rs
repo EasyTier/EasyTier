@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use easytier_core::config::runtime::CoreRuntimeConfigStore;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use registry::Registry;
+use easytier_core::host::route::RouteRegistry;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 use std::{
     future::{Future, IntoFuture},
@@ -15,9 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::ArcGlobalCtx;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-use crate::instance::route::{
-    CleanupIncomplete, PlatformRouteBackend, RouteDemand, RouteHandle, RouteMgr,
-};
+use crate::instance::route::{CleanupIncomplete, PlatformRouteBackend, RouteHandle, RouteMgr};
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 type RouteJoinResult = Result<Result<(), CleanupIncomplete>, tokio::task::JoinError>;
@@ -46,7 +44,7 @@ fn observe_route_task(task: JoinHandle<Result<(), CleanupIncomplete>>) -> RouteC
 pub(super) struct NativeRouteRuntime {
     global_ctx: ArcGlobalCtx,
     cancel: CancellationToken,
-    routes: Option<Registry<RouteDemand>>,
+    routes: Option<RouteRegistry>,
     handle: Option<RouteHandle>,
     mgr_task: Mutex<Option<RouteCleanupTask>>,
 }
@@ -68,7 +66,7 @@ impl NativeRouteRuntime {
                 mgr_task: Mutex::new(None),
             }
         } else {
-            let routes = Registry::default();
+            let routes = RouteRegistry::default();
             let handle = RouteHandle::new(routes.clone());
             global_ctx.set_route_handle(Some(handle.clone()));
             Self {

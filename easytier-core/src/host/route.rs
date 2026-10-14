@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use cidr::{IpCidr, Ipv4Cidr};
 use registry::{Registration, Registry};
+use tokio::sync::watch;
 
 /// One publisher's set of route destinations.
 pub type RouteSet = BTreeSet<IpCidr>;
@@ -22,6 +23,69 @@ pub enum RouteDemand {
     Additional(RouteSet),
 }
 
+/// Last acknowledged or verified routes on the selected, ready device.
+/// This is route-domain feedback, not a registry membership notification or
+/// a guarantee against arbitrary subsequent changes by external OS writers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RouteStatus {
+    /// Identifies the selected fd claim, including persistent TUN attachments.
+    pub device_registration: Option<u64>,
+    pub ready: RouteSet,
+    pub closed: bool,
+}
+
+/// Owner-side route declarations and independently published OS feedback.
+/// Producers receive only [`RouteHandle`]; only the domain manager publishes
+/// feedback and closes this facade. The generic Registry remains unchanged.
+#[derive(Clone, Debug)]
+pub struct RouteRegistry {
+    declarations: Registry<RouteDemand>,
+    status: watch::Sender<Arc<RouteStatus>>,
+}
+
+impl Default for RouteRegistry {
+    fn default() -> Self {
+        Self {
+            declarations: Registry::default(),
+            status: watch::channel(Arc::new(RouteStatus::default())).0,
+        }
+    }
+}
+
+impl RouteRegistry {
+    pub fn snapshot(&self) -> Vec<Arc<RouteDemand>> {
+        self.declarations.snapshot()
+    }
+    pub fn subscribe(&self) -> watch::Receiver<()> {
+        self.declarations.subscribe()
+    }
+    pub fn len(&self) -> usize {
+        self.declarations.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.declarations.is_empty()
+    }
+
+    /// A closed status is terminal, even if an older reconciliation finishes.
+    pub fn publish_status(&self, status: RouteStatus) {
+        self.status.send_if_modified(|current| {
+            if current.closed || **current == status {
+                return false;
+            }
+            *current = Arc::new(status);
+            true
+        });
+    }
+
+    pub fn close(&self) {
+        self.publish_status(RouteStatus {
+            closed: true,
+            ..RouteStatus::default()
+        });
+        self.declarations.close();
+    }
+}
+
 /// Lightweight, cloneable handle for registering route publishers.
 ///
 /// RouteHandle exposes only registration capability, preventing producers
@@ -29,19 +93,53 @@ pub enum RouteDemand {
 #[derive(Clone, Debug)]
 pub struct RouteHandle {
     routes: Registry<RouteDemand>,
+    status: watch::Receiver<Arc<RouteStatus>>,
 }
 
 impl RouteHandle {
     /// Wraps an existing route registry.
-    pub fn new(routes: Registry<RouteDemand>) -> Self {
-        Self { routes }
+    pub fn new(routes: RouteRegistry) -> Self {
+        Self {
+            routes: routes.declarations,
+            status: routes.status.subscribe(),
+        }
     }
 
     /// Registers a new route demand. Returns `None` if the registry is closed.
     pub fn register(&self, demand: RouteDemand) -> Option<Registration<RouteDemand>> {
         self.routes.register(demand)
     }
+
+    pub fn status(&self) -> Arc<RouteStatus> {
+        self.status.borrow().clone()
+    }
+
+    /// Waits for an acknowledged / verified route set on this exact fd claim.
+    /// Callers supply their business deadline and retain their registration.
+    pub async fn wait_ready(
+        &self,
+        required: &RouteSet,
+        device_registration: u64,
+    ) -> Result<(), RouteRuntimeClosed> {
+        let mut status = self.status.clone();
+        loop {
+            let snapshot = status.borrow_and_update().clone();
+            if snapshot.closed {
+                return Err(RouteRuntimeClosed);
+            }
+            if snapshot.device_registration == Some(device_registration)
+                && required.is_subset(&snapshot.ready)
+            {
+                return Ok(());
+            }
+            status.changed().await.map_err(|_| RouteRuntimeClosed)?;
+        }
+    }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("route runtime closed before routes became ready")]
+pub struct RouteRuntimeClosed;
 
 /// Resolves dynamic declarations and authoritative manual policy into a route set.
 ///
@@ -96,6 +194,53 @@ pub fn resolve_proxy_cidrs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn declaration_membership_and_wrong_device_do_not_mean_ready() {
+        let routes = RouteRegistry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let required = RouteSet::from([ip("10.0.0.1/32")]);
+        let _registration = handle
+            .register(RouteDemand::Additional(required.clone()))
+            .unwrap();
+        let mut ready = Box::pin(handle.wait_ready(&required, 2));
+        assert!(futures::poll!(ready.as_mut()).is_pending());
+        routes.publish_status(RouteStatus {
+            device_registration: Some(1),
+            ready: required.clone(),
+            closed: false,
+        });
+        assert!(futures::poll!(ready.as_mut()).is_pending());
+        routes.publish_status(RouteStatus {
+            device_registration: Some(2),
+            ready: required.clone(),
+            closed: false,
+        });
+        ready.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_wakes_waiters_and_rejects_late_ready_publication() {
+        let routes = RouteRegistry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let required = RouteSet::from([ip("10.0.0.1/32")]);
+        let mut ready = Box::pin(handle.wait_ready(&required, 1));
+        assert!(futures::poll!(ready.as_mut()).is_pending());
+        routes.close();
+        routes.publish_status(RouteStatus {
+            device_registration: Some(1),
+            ready: required.clone(),
+            closed: false,
+        });
+        assert!(ready.await.is_err());
+        assert!(handle.status().closed);
+        assert!(handle.status().ready.is_empty());
+        assert!(
+            handle
+                .register(RouteDemand::Additional(RouteSet::new()))
+                .is_none()
+        );
+    }
 
     fn v4(s: &str) -> Ipv4Cidr {
         s.parse().unwrap()
