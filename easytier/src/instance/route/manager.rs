@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
 use registry::Registry;
 use tokio::sync::watch;
@@ -86,10 +85,34 @@ impl<B: RouteBackend> RouteMgr<B> {
             .retain(|route, _| !facts.destroyed(&route.interface));
     }
 
-    pub fn next_wakeup_time(&self) -> tokio::time::Instant {
+    fn blocked_slots(&self, desired: &BTreeSet<Route>) -> BTreeSet<cidr::IpCidr> {
+        self.unknown
+            .iter()
+            .chain(self.installed.difference(desired))
+            .map(|route| route.destination)
+            .collect()
+    }
+
+    fn batch_interrupted(&self) -> bool {
+        self.cancel.is_cancelled()
+            || self.changed.has_changed().unwrap_or(true)
+            || self.config_changed.has_changed().unwrap_or(true)
+            || self.device_changed.has_changed().unwrap_or(true)
+    }
+
+    fn record_failure(&mut self, route: Route) {
         let now = tokio::time::Instant::now();
-        // 1 second polling interval
-        let fallback_deadline = now + Duration::from_secs(1);
+        match self.retries.entry(route) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(RetryState::new(now, 100));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().record_failure(now);
+            }
+        }
+    }
+
+    pub fn next_wakeup_time(&self) -> Option<tokio::time::Instant> {
         if self
             .global_ctx
             .tun_devices
@@ -97,15 +120,27 @@ impl<B: RouteBackend> RouteMgr<B> {
             .active
             .is_some_and(|device| !device.ready)
         {
-            return fallback_deadline;
+            return None;
         }
-
-        let earliest_retry = self.retries.values().map(|s| s.next_retry).min();
-
-        match earliest_retry {
-            Some(inst) => inst.min(fallback_deadline),
-            None => fallback_deadline,
-        }
+        let Some(desired) = &self.desired else {
+            return Some(tokio::time::Instant::now());
+        };
+        let blocked = self.blocked_slots(desired);
+        let removals = self
+            .installed
+            .difference(desired)
+            .filter(|route| !self.unknown.contains(*route));
+        let additions = desired.difference(&self.installed).filter(|route| {
+            !self.external.contains(*route) && !blocked.contains(&route.destination)
+        });
+        removals
+            .chain(additions)
+            .map(|route| {
+                self.retries
+                    .get(route)
+                    .map_or_else(tokio::time::Instant::now, |retry| retry.next_retry)
+            })
+            .min()
     }
 
     pub async fn run(mut self) -> Result<(), CleanupIncomplete> {
@@ -114,11 +149,6 @@ impl<B: RouteBackend> RouteMgr<B> {
                 break;
             }
 
-            // Confirm the notification baseline before reading: a change that
-            // lands during reconcile stays pending for the wait below.
-            self.changed.mark_unchanged();
-            self.config_changed.mark_unchanged();
-            self.device_changed.mark_unchanged();
             self.reconcile().await;
 
             if self.cancel.is_cancelled() {
@@ -145,7 +175,12 @@ impl<B: RouteBackend> RouteMgr<B> {
                 changed = self.device_changed.changed() => {
                     if changed.is_err() { break; }
                 }
-                _ = tokio::time::sleep_until(next_wakeup) => {}
+                _ = async {
+                    match next_wakeup {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {}
             }
         }
 
@@ -153,6 +188,11 @@ impl<B: RouteBackend> RouteMgr<B> {
     }
 
     pub async fn reconcile(&mut self) {
+        // All baselines precede every snapshot read. Inputs arriving during I/O
+        // remain pending and stop the obsolete batch after its current result.
+        self.changed.mark_unchanged();
+        self.config_changed.mark_unchanged();
+        self.device_changed.mark_unchanged();
         let device_facts = self.global_ctx.tun_devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
         if device_facts
@@ -186,8 +226,13 @@ impl<B: RouteBackend> RouteMgr<B> {
 
         // Scope external_present and retry_tracker to only currently desired routes
         self.external.retain(|r| desired.contains(r));
-        self.retries
-            .retain(|r, _| desired.contains(r) || self.installed.contains(r));
+        self.retries.retain(|route, _| {
+            (self.installed.contains(route) && !desired.contains(route))
+                || (desired.contains(route)
+                    && !self.installed.contains(route)
+                    && !self.external.contains(route)
+                    && !self.unknown.contains(route))
+        });
 
         self.desired = Some(desired.clone());
 
@@ -226,8 +271,8 @@ impl<B: RouteBackend> RouteMgr<B> {
 
         // 6. Execute removals
         for route in to_remove {
-            if self.cancel.is_cancelled() {
-                break;
+            if self.batch_interrupted() {
+                return;
             }
             match self.backend.remove(&route).await {
                 Ok(Some(())) | Ok(None) => {
@@ -240,10 +285,7 @@ impl<B: RouteBackend> RouteMgr<B> {
                         ?err,
                         "failed to remove route, will retry with backoff"
                     );
-                    self.retries
-                        .entry(route)
-                        .or_insert_with(|| RetryState::new(now, 100))
-                        .record_failure(now);
+                    self.record_failure(route);
                 }
                 Err(RouteError::Unknown(err)) => {
                     tracing::error!(
@@ -257,17 +299,14 @@ impl<B: RouteBackend> RouteMgr<B> {
             }
         }
 
-        // 7. Execute additions
+        // A failed or uncertain removal blocks replacement of the same
+        // destination. A deadline for a blocked addition must not busy-loop.
+        let mut blocked = self.blocked_slots(&desired);
         for route in to_add {
-            if self.cancel.is_cancelled() {
-                break;
+            if self.batch_interrupted() {
+                return;
             }
-            // Check if there is an unknown route with the same destination (slot replacement block)
-            if self
-                .unknown
-                .iter()
-                .any(|u| u.destination == route.destination)
-            {
+            if blocked.contains(&route.destination) {
                 continue;
             }
 
@@ -283,13 +322,11 @@ impl<B: RouteBackend> RouteMgr<B> {
                 }
                 Err(RouteError::Failed(err)) => {
                     tracing::warn!(?route, ?err, "failed to add route, will retry with backoff");
-                    self.retries
-                        .entry(route)
-                        .or_insert_with(|| RetryState::new(now, 100))
-                        .record_failure(now);
+                    self.record_failure(route);
                 }
                 Err(RouteError::Unknown(err)) => {
                     tracing::error!(?route, ?err, "unknown result during add; isolating route");
+                    blocked.insert(route.destination);
                     self.unknown.insert(route.clone());
                     self.retries.remove(&route);
                 }
@@ -613,6 +650,119 @@ mod tests {
         assert_eq!(manager.installed.len(), 1);
         let installed = manager.installed.iter().next().unwrap();
         assert_eq!(installed.interface, dev2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stable_state_has_no_polling_deadline() {
+        let (mut manager, handle, _cancel) = test_manager(MockRouteBackend::new());
+        let route = test_route("7.7.7.7/32");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        assert_eq!(manager.next_wakeup_time(), None);
+        assert_eq!(manager.backend.add_calls, vec![route]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_delay_starts_at_failure_completion_and_survives_notifications() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (mut backend, mut entered) = MockRouteBackend::paused(release.clone());
+        let route = test_route("7.7.7.7/32");
+        backend.add_error_map.insert(
+            route.clone(),
+            RouteError::Failed(anyhow::anyhow!("temporary failure")),
+        );
+        let (mut manager, handle, _cancel) = test_manager(backend);
+        let registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        let mut reconcile = Box::pin(manager.reconcile());
+        assert!(futures::poll!(reconcile.as_mut()).is_pending());
+        assert_eq!(entered.try_recv().unwrap(), route);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        release.notify_one();
+        reconcile.await;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+        assert_eq!(manager.next_wakeup_time(), Some(deadline));
+        registration
+            .replace(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager
+            .runtime_config
+            .update_services(|services| services.dhcp_ipv4 = true);
+        manager.reconcile().await;
+        assert_eq!(manager.next_wakeup_time(), Some(deadline));
+        assert_eq!(manager.retries[&route].attempts, 1);
+        assert_eq!(manager.backend.add_calls.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn input_changes_stop_the_remaining_obsolete_additions() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (backend, mut entered) = MockRouteBackend::paused(release.clone());
+        let (manager, handle, cancel) = test_manager(backend);
+        let first = test_route("10.0.0.0/24");
+        let obsolete = test_route("10.1.0.0/24");
+        let latest = test_route("10.2.0.0/24");
+        let registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                first.destination,
+                obsolete.destination,
+            ])))
+            .unwrap();
+        let mut run = Box::pin(manager.run());
+        assert!(futures::poll!(run.as_mut()).is_pending());
+        assert_eq!(entered.try_recv().unwrap(), first);
+        registration
+            .replace(RouteDemand::Additional(BTreeSet::from(
+                [latest.destination],
+            )))
+            .unwrap();
+        release.notify_one();
+        assert!(futures::poll!(run.as_mut()).is_pending());
+        assert_eq!(entered.try_recv().unwrap(), latest);
+        assert!(entered.try_recv().is_err());
+        release.notify_one();
+        cancel.cancel();
+        run.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_removal_blocks_replacement_without_a_busy_deadline() {
+        let (mut manager, handle, _cancel) = test_manager(MockRouteBackend::new());
+        let old = test_route("7.7.7.7/32");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([old.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        let replacement = manager.global_ctx.tun_devices.attach("new".into(), 101);
+        manager
+            .global_ctx
+            .tun_devices
+            .mark_ready(replacement.registration());
+        let new = Route {
+            interface: replacement.id().clone(),
+            ..old.clone()
+        };
+        manager.backend.remove_error_map.insert(
+            old.clone(),
+            RouteError::Failed(anyhow::anyhow!("temporary removal failure")),
+        );
+        manager.retries.insert(
+            new.clone(),
+            RetryState::new(tokio::time::Instant::now() - Duration::from_secs(1), 100),
+        );
+        manager.reconcile().await;
+        assert_eq!(manager.backend.add_calls, vec![old]);
+        assert_eq!(
+            manager.next_wakeup_time(),
+            Some(tokio::time::Instant::now() + Duration::from_millis(100))
+        );
+        tokio::time::advance(Duration::from_millis(100)).await;
+        manager.reconcile().await;
+        assert_eq!(manager.installed, BTreeSet::from([new]));
+        assert_eq!(manager.next_wakeup_time(), None);
     }
 
     #[tokio::test]

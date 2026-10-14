@@ -63,6 +63,18 @@ fd 关闭不会被当成 kernel 接口消失，已安装路由仍由 Manager 显
 Descriptor lifetime 测试使用真实 pipe fd；本轮环境没有 /dev/net/tun，尚未运行
 完整 TUN 创建 / 关闭集成测试。
 
+## 协调循环
+
+稳态不再定时重读声明；设备事实、配置和 registration 的既有通知驱动刷新。
+只有可执行的 pending 操作 / retry 才设置 deadline。blocked addition 的旧
+期限不参与唤醒，避免 removal 失败 / Unknown 时忙循环。
+
+重试从收到失败结果的时刻计时，第一次为 100ms；无关通知不清空退避。
+替换必须等待同目标的旧条目被确认删除。I/O 中更新输入后，先记录正在执行
+的结果，再停止旧批次余下操作并读取最新 snapshot。
+
+27 个 manager 测试通过，新增虚拟时钟测试覆盖以上四项行为。
+
 ## 当前验证
 
 - native 路由、设备事实、GlobalCtx 与 RuntimeHost 测试：44 项通过。
@@ -84,8 +96,7 @@ unshare --user --map-root-user --net cargo test -p easytier --lib \
 
 ## 仍需完成
 
-- 改善协调循环的撤销 / 替换依赖、退避和 Unknown 核实，避免被阻塞的重试忙循环。
-- 在 backend I/O 期间输入变化时停止旧批次剩余操作，保留已执行结果的责任。
+- 增加 Unknown 核实，保留无法证明本方 ownership 的不确定记录。
 - 停机超时保留任务 ownership；清理结束前重读设备事实，完整报告失败和 Unknown。
 - DNS 等依赖实际安装结果的启动链路需要业务层答复，registration 成功本身不是 ready。
 - 核对 Linux 上其余路由 writer（包括 Public IPv6）及相关接管边界。
