@@ -39,14 +39,90 @@ pub async fn prepare_env(
 
 async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPacketReceiver) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
-    let adapters = runtime_core_host_adapters(
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    let route_runtime = {
+        let routes = registry::Registry::default();
+        let handle = easytier_core::host::route::RouteHandle::new(routes.clone());
+        ctx.set_route_handle(Some(handle.clone()));
+        Arc::new(TestRouteRuntime {
+            ctx: ctx.clone(),
+            routes,
+            cancel: CancellationToken::new(),
+            task: tokio::sync::Mutex::new(None),
+        })
+    };
+
+    let mut adapters = runtime_core_host_adapters(
         ctx.clone(),
         CoreProcessRuntime::new(),
         Arc::new(HostPacketChannelSink::new(packet_sink)),
     );
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    {
+        adapters.routes = Some(easytier_core::host::route::RouteHandle::new(
+            route_runtime.routes.clone(),
+        ));
+        adapters.instance_runtime = route_runtime;
+    }
     let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
     core_instance.start().await.unwrap();
     (core_instance, HostPacketReceiver::new(packet_receiver))
+}
+
+/// Tests create their TUN separately, but use the core's actual configuration
+/// authority when starting the route manager through the Host lifecycle.
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+struct TestRouteRuntime {
+    ctx: ArcGlobalCtx,
+    routes: registry::Registry<easytier_core::host::route::RouteDemand>,
+    cancel: CancellationToken,
+    task: tokio::sync::Mutex<
+        Option<tokio::task::JoinHandle<Result<(), crate::instance::route::CleanupIncomplete>>>,
+    >,
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[async_trait::async_trait]
+impl easytier_core::instance::InstanceRuntimeHost for TestRouteRuntime {
+    async fn prepare(
+        &self,
+        _packet_plane: Arc<easytier_core::instance::CorePacketPlane>,
+        runtime_config: easytier_core::config::runtime::CoreRuntimeConfigStore,
+    ) -> anyhow::Result<Option<Arc<dyn easytier_core::gateway::dhcp::DhcpIpv4Host>>> {
+        let backend = crate::instance::route::PlatformRouteBackend::new(self.ctx.net_ns.clone())?;
+        let manager = crate::instance::route::RouteMgr::new(
+            self.ctx.clone(),
+            backend,
+            self.routes.clone(),
+            runtime_config,
+            self.cancel.clone(),
+        );
+        *self.task.lock().await = Some(tokio::spawn(manager.run()));
+        Ok(None)
+    }
+
+    fn request_shutdown(&self) {
+        self.routes.close();
+        self.ctx.set_route_handle(None);
+        self.cancel.cancel();
+    }
+
+    async fn shutdown(&self) {
+        self.request_shutdown();
+        if let Some(task) = self.task.lock().await.take() {
+            if let Err(err) = tokio::time::timeout(Duration::from_secs(5), task).await {
+                tracing::warn!(?err, "test route manager cleanup timed out");
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+impl Drop for TestRouteRuntime {
+    fn drop(&mut self) {
+        easytier_core::instance::InstanceRuntimeHost::request_shutdown(self);
+    }
 }
 
 pub async fn prepare_env_with_tld_dns_zone(

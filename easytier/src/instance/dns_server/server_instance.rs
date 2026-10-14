@@ -42,16 +42,19 @@ use easytier_core::gateway::magic_dns::{
     MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsResolverRegistration,
     MagicDnsRoute,
 };
+use easytier_core::host::route::RouteDemand;
 use easytier_core::instance::CorePacketPlane;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use registry::Registration;
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
+    #[allow(dead_code)]
     tun_dev: Option<String>,
     net_ns: NetNS,
     fake_ip: Ipv4Addr,
@@ -336,7 +339,9 @@ pub struct MagicDnsServerInstance {
     _rpc_server: StandAloneServer<RuntimeRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     packet_filter: MagicDnsResolverRegistration,
+    #[allow(dead_code)]
     tun_inet: Ipv4Inet,
+    _route_registration: Option<Registration<RouteDemand>>,
 }
 
 fn get_system_config(
@@ -432,17 +437,38 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        if manage_fake_ip_route
-            && !tun_inet.contains(&fake_ip)
-            && let Some(tun_dev_name) = &tun_dev
-        {
-            let cost = if cfg!(target_os = "windows") {
-                Some(4)
+        let route_registration = if manage_fake_ip_route && !tun_inet.contains(&fake_ip) {
+            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            if !global_ctx.get_flags().no_tun {
+                let handle = global_ctx
+                    .get_route_handle()
+                    .context("route handle missing for native route runtime")?;
+                let cidr = cidr::Ipv4Cidr::new(fake_ip, 32)?;
+                let reg = handle
+                    .register(RouteDemand::Additional(std::collections::BTreeSet::from([
+                        cidr::IpCidr::V4(cidr),
+                    ])))
+                    .context("failed to register fake ip route demand")?;
+                Some(reg)
             } else {
                 None
-            };
-            Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
-        }
+            }
+
+            #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+            {
+                if let Some(tun_dev_name) = &tun_dev {
+                    let cost = if cfg!(target_os = "windows") {
+                        Some(4)
+                    } else {
+                        None
+                    };
+                    Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
+                }
+                None
+            }
+        } else {
+            None
+        };
 
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
@@ -485,6 +511,7 @@ impl MagicDnsServerInstance {
             data,
             packet_filter,
             tun_inet,
+            _route_registration: route_registration,
         })
     }
 
@@ -496,7 +523,8 @@ impl MagicDnsServerInstance {
             }
         }
 
-        if self.data.manage_fake_ip_route
+        if self._route_registration.is_none()
+            && self.data.manage_fake_ip_route
             && !self.tun_inet.contains(&self.data.fake_ip)
             && let Some(tun_dev_name) = &self.data.tun_dev
         {

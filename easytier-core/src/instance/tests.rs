@@ -1375,6 +1375,64 @@ virtual_ip = "10.82.0.2/24"
     }
 
     #[tokio::test]
+    async fn host_prepare_receives_the_instances_configuration_authority() {
+        #[derive(Default)]
+        struct ConfigAwareRuntimeHost {
+            config: parking_lot::Mutex<Option<CoreRuntimeConfigStore>>,
+        }
+
+        #[async_trait]
+        impl InstanceRuntimeHost for ConfigAwareRuntimeHost {
+            async fn prepare(
+                &self,
+                _packet_plane: Arc<CorePacketPlane>,
+                runtime_config: CoreRuntimeConfigStore,
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
+                *self.config.lock() = Some(runtime_config);
+                Ok(None)
+            }
+
+            async fn shutdown(&self) {
+                self.config.lock().take();
+            }
+        }
+
+        let runtime_host = Arc::new(ConfigAwareRuntimeHost::default());
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut adapters = adapters(None, Arc::new(packet_sink));
+        adapters.instance_runtime = runtime_host.clone();
+        let routes = registry::Registry::default();
+        adapters.routes = Some(crate::host::route::RouteHandle::new(routes.clone()));
+        let mut config = test_config("host-runtime-config");
+        config.connectivity.runtime.manual_routes =
+            Some(std::collections::BTreeSet::from(["10.0.0.0/8"
+                .parse()
+                .unwrap()]));
+        let instance = CoreInstance::new(config, adapters).unwrap();
+        instance.start().await.unwrap();
+        let host_config = runtime_host.config.lock().clone().unwrap();
+        assert!(Arc::ptr_eq(
+            &host_config.snapshot(),
+            &instance.runtime_config.snapshot()
+        ));
+        // Only the OSPF producer owns a dynamic declaration. Manual policy is
+        // already available to the Host in the configuration snapshot.
+        assert_eq!(routes.len(), 1);
+        let mut changes = host_config.subscribe_service_runtime_changes();
+        let mut next = instance.runtime_config.snapshot().as_ref().clone();
+        next.services.manual_routes = Some(std::collections::BTreeSet::new());
+        instance.update_runtime_config(next).await.unwrap();
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(
+            host_config.snapshot().services.manual_routes,
+            Some(std::collections::BTreeSet::new())
+        );
+        changes.mark_unchanged();
+        instance.stop().await;
+        assert!(runtime_host.config.lock().is_none());
+    }
+
+    #[tokio::test]
     async fn dropping_core_instance_requests_host_shutdown() {
         struct DropAwareRuntimeHost(Arc<AtomicBool>);
 
@@ -1383,6 +1441,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
+                _runtime_config: crate::config::runtime::CoreRuntimeConfigStore,
             ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
@@ -1417,6 +1476,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
+                _runtime_config: crate::config::runtime::CoreRuntimeConfigStore,
             ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 anyhow::bail!("host prepare failed")
             }
@@ -1528,6 +1588,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
+                _runtime_config: crate::config::runtime::CoreRuntimeConfigStore,
             ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 self.prepare_started.notify_one();
                 self.prepare_release.notified().await;
@@ -1582,6 +1643,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
+                _runtime_config: CoreRuntimeConfigStore,
             ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 assert_eq!(tokio::runtime::Handle::current().id(), self.handle.id());
                 self.prepare_started.notify_one();
@@ -1667,6 +1729,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
+                _runtime_config: CoreRuntimeConfigStore,
             ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
@@ -1749,6 +1812,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
+                _runtime_config: crate::config::runtime::CoreRuntimeConfigStore,
             ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
@@ -2039,6 +2103,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
+                _runtime_config: crate::config::runtime::CoreRuntimeConfigStore,
             ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }

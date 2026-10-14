@@ -91,6 +91,7 @@ impl TestInstance {
             process_runtime,
             runtime_host.clone(),
         );
+        adapters.routes = runtime_host.route_handle();
         customize(&mut adapters);
         adapters.instance_runtime = runtime_host;
         let core = CoreInstance::from_toml(config, adapters)

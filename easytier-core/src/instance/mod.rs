@@ -235,9 +235,11 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
         None
     }
 
+    /// Receives the same configuration authority used by the core instance.
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,
+        runtime_config: CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>>;
 
     async fn shutdown(&self);
@@ -276,6 +278,7 @@ impl InstanceRuntimeHost for () {
     async fn prepare(
         &self,
         _packet_plane: Arc<CorePacketPlane>,
+        _runtime_config: CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         Ok(None)
     }

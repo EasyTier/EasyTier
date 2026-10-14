@@ -1295,6 +1295,7 @@ impl NicCtx {
         }
     }
 
+    #[cfg_attr(all(target_os = "linux", feature = "linux-netlink"), allow(dead_code))]
     async fn apply_route_changes(
         backend: &NicBackend,
         cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
@@ -1380,6 +1381,7 @@ impl NicCtx {
         }
     }
 
+    #[cfg_attr(all(target_os = "linux", feature = "linux-netlink"), allow(dead_code))]
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
         let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
@@ -1597,6 +1599,7 @@ impl NicCtx {
             self.assign_ipv6_to_tun_device(ipv6_addr).await?;
         }
 
+        #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
         self.run_proxy_cidrs_route_updater().await?;
         self.run_public_ipv6_route_updater().await?;
         // Keep the updater running so runtime config patches can enable auto mode

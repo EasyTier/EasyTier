@@ -124,7 +124,7 @@ where
         #[cfg(feature = "public-ipv6-provider")]
         self.public_ipv6_provider.start().await;
 
-        let dhcp_host = self.instance_runtime.prepare(self.packet_plane()).await?;
+        let dhcp_host = self.instance_runtime.prepare(self.packet_plane(), self.runtime_config.clone()).await?;
         #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
         self.start_dhcp(dhcp_host).await?;
         #[cfg(not(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6")))]
