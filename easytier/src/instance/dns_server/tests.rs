@@ -40,7 +40,12 @@ pub async fn prepare_env(
 async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPacketReceiver) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
 
-    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    #[cfg(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    ))]
     let route_runtime = {
         let routes = easytier_core::host::route::RouteRegistry::default();
         let handle = easytier_core::host::route::RouteHandle::new(routes.clone());
@@ -58,7 +63,12 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
         CoreProcessRuntime::new(),
         Arc::new(HostPacketChannelSink::new(packet_sink)),
     );
-    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    #[cfg(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    ))]
     {
         adapters.routes = Some(easytier_core::host::route::RouteHandle::new(
             route_runtime.routes.clone(),
@@ -72,7 +82,12 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
 
 /// Tests create their TUN separately, but use the core's actual configuration
 /// authority when starting the route manager through the Host lifecycle.
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 struct TestRouteRuntime {
     ctx: ArcGlobalCtx,
     routes: easytier_core::host::route::RouteRegistry,
@@ -82,7 +97,12 @@ struct TestRouteRuntime {
     >,
 }
 
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 #[async_trait::async_trait]
 impl easytier_core::instance::InstanceRuntimeHost for TestRouteRuntime {
     async fn prepare(
@@ -119,7 +139,12 @@ impl easytier_core::instance::InstanceRuntimeHost for TestRouteRuntime {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 impl Drop for TestRouteRuntime {
     fn drop(&mut self) {
         easytier_core::instance::InstanceRuntimeHost::request_shutdown(self);

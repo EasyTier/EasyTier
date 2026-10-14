@@ -42,7 +42,14 @@ use easytier_core::gateway::magic_dns::{
     MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsResolverRegistration,
     MagicDnsRoute,
 };
-use easytier_core::host::route::{RouteDemand, RouteSpec};
+use easytier_core::host::route::RouteDemand;
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
+use easytier_core::host::route::RouteSpec;
 use easytier_core::instance::CorePacketPlane;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
@@ -364,7 +371,12 @@ fn get_system_config(
     Ok(None)
 }
 
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 async fn register_native_dns_route(
     global_ctx: &ArcGlobalCtx,
     tun_dev: Option<&str>,
@@ -485,14 +497,24 @@ impl MagicDnsServerInstance {
         dns_server.run().await?;
 
         let route_registration = if manage_fake_ip_route && !tun_inet.contains(&fake_ip) {
-            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            #[cfg(all(
+                target_os = "linux",
+                feature = "linux-netlink",
+                feature = "tun",
+                not(mobile)
+            ))]
             if !global_ctx.get_flags().no_tun {
                 Some(register_native_dns_route(&global_ctx, tun_dev.as_deref(), fake_ip).await?)
             } else {
                 None
             }
 
-            #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+            #[cfg(not(all(
+                target_os = "linux",
+                feature = "linux-netlink",
+                feature = "tun",
+                not(mobile)
+            )))]
             {
                 if let Some(tun_dev_name) = &tun_dev {
                     let cost = if cfg!(target_os = "windows") {
@@ -579,7 +601,13 @@ impl Drop for MagicDnsServerInstance {
     }
 }
 
-#[cfg(all(test, target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    test,
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 mod route_tests {
     use super::*;
     use crate::common::global_ctx::tests::get_mock_global_ctx;

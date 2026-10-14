@@ -297,7 +297,7 @@ thunk-rs = { workspace = true, features = [
 
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 criterion = "0.8.2"
 easytier-core = { workspace = true, features = [
     "test-utils",

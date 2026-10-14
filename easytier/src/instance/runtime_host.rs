@@ -319,7 +319,12 @@ mod tests {
         assert_eq!(global_ctx.get_ipv4(), Some(lease));
     }
 
-    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    #[cfg(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    ))]
     #[test]
     fn route_handle_lifecycle_without_prepare_closes_registry() {
         use easytier_core::host::route::RouteDemand;
@@ -350,7 +355,12 @@ mod tests {
         assert!(global_ctx.get_route_handle().is_none());
     }
 
-    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    #[cfg(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    ))]
     #[test]
     fn two_instances_have_independent_route_registries() {
         use easytier_core::host::route::RouteDemand;
@@ -412,6 +422,20 @@ mod tests {
         let global_ctx = Arc::new(GlobalCtx::new(config));
         let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
 
+        assert!(runtime_host.route_handle().is_none());
+        assert!(global_ctx.get_route_handle().is_none());
+    }
+
+    #[cfg(not(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    )))]
+    #[test]
+    fn builds_without_a_managed_device_producer_provide_no_route_handle() {
+        let global_ctx = Arc::new(GlobalCtx::new(TomlConfig::default()));
+        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
         assert!(runtime_host.route_handle().is_none());
         assert!(global_ctx.get_route_handle().is_none());
     }

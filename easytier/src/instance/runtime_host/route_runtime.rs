@@ -1,31 +1,71 @@
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 use std::time::Duration;
 
 use easytier_core::config::runtime::CoreRuntimeConfigStore;
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 use easytier_core::host::route::RouteRegistry;
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 use std::{
     future::{Future, IntoFuture},
     pin::Pin,
 };
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 use tokio::{sync::Mutex, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::ArcGlobalCtx;
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 use crate::instance::route::{CleanupIncomplete, PlatformRouteBackend, RouteHandle, RouteMgr};
 
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 type RouteJoinResult = Result<Result<(), CleanupIncomplete>, tokio::task::JoinError>;
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 type RouteCleanupTask = guarden::task::DetachableTaskFuture<
     guarden::task::TokioHandle,
     dyn Future<Output = RouteJoinResult> + Send,
 >;
 
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 fn observe_route_task(task: JoinHandle<Result<(), CleanupIncomplete>>) -> RouteCleanupTask {
     let observer: Pin<Box<dyn Future<Output = RouteJoinResult> + Send>> = Box::pin(async move {
         let result = task.await;
@@ -40,7 +80,12 @@ fn observe_route_task(task: JoinHandle<Result<(), CleanupIncomplete>>) -> RouteC
         .into_future()
 }
 
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 pub(super) struct NativeRouteRuntime {
     global_ctx: ArcGlobalCtx,
     cancel: CancellationToken,
@@ -49,10 +94,20 @@ pub(super) struct NativeRouteRuntime {
     mgr_task: Mutex<Option<RouteCleanupTask>>,
 }
 
-#[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+#[cfg(not(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+)))]
 pub(super) struct NativeRouteRuntime;
 
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 impl NativeRouteRuntime {
     pub(super) fn new(global_ctx: ArcGlobalCtx, cancel: CancellationToken) -> Self {
         let flags = global_ctx.get_flags();
@@ -155,14 +210,24 @@ impl NativeRouteRuntime {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 impl Drop for NativeRouteRuntime {
     fn drop(&mut self) {
         self.request_shutdown();
     }
 }
 
-#[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+#[cfg(not(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+)))]
 impl NativeRouteRuntime {
     pub(super) fn new(_global_ctx: ArcGlobalCtx, _cancel: CancellationToken) -> Self {
         Self
@@ -184,7 +249,13 @@ impl NativeRouteRuntime {
     pub(super) async fn shutdown(&self) {}
 }
 
-#[cfg(all(test, target_os = "linux", feature = "linux-netlink"))]
+#[cfg(all(
+    test,
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
 mod tests {
     use super::*;
     use crate::common::global_ctx::tests::get_mock_global_ctx;

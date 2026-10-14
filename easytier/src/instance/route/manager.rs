@@ -4,9 +4,11 @@ use easytier_core::host::route::{RouteRegistry, RouteSpec, RouteStatus};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+use easytier_core::host::route::RouteDemand;
 use easytier_core::{
     config::runtime::CoreRuntimeConfigStore,
-    host::route::{RouteDemand, RouteHandle, resolve_route_demands},
+    host::route::{RouteHandle, resolve_route_demands},
 };
 
 use crate::common::global_ctx::ArcGlobalCtx;
