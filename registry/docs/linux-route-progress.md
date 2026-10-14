@@ -75,6 +75,16 @@ Descriptor lifetime 测试使用真实 pipe fd；本轮环境没有 /dev/net/tun
 
 27 个 manager 测试通过，新增虚拟时钟测试覆盖以上四项行为。
 
+## 清理任务 ownership
+
+Host 使用既有 guarden 观察原 manager 的结束结果。五秒等待期限包含 task slot
+的锁等待；超时保留 observer 和原 writer。Host Drop 将未完成的 observer 交给
+创建时捕获的 Tokio runtime，继续报告失败 / Unknown 或 JoinError，不产生第二个
+cleanup writer。关闭 TUN 不依赖 route cleanup 完成，Manager 继续读取 fd 事实。
+
+RuntimeHost 十项测试通过，包括超时后完成、锁等待 deadline、任务 panic 和
+Host Drop 后 observer 继续执行。
+
 ## 当前验证
 
 - native 路由、设备事实、GlobalCtx 与 RuntimeHost 测试：44 项通过。
@@ -97,7 +107,7 @@ unshare --user --map-root-user --net cargo test -p easytier --lib \
 ## 仍需完成
 
 - 增加 Unknown 核实，保留无法证明本方 ownership 的不确定记录。
-- 停机超时保留任务 ownership；清理结束前重读设备事实，完整报告失败和 Unknown。
+- 清理结束前重读设备事实，完整报告失败和 Unknown；中断不得丢失记录。
 - DNS 等依赖实际安装结果的启动链路需要业务层答复，registration 成功本身不是 ready。
 - 核对 Linux 上其余路由 writer（包括 Public IPv6）及相关接管边界。
 - 完成规模 / 稳态验证后，再审查未迁移平台的具体 OS 合约和测试条件。

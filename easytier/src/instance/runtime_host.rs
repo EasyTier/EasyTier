@@ -112,9 +112,11 @@ impl NativeInstanceRuntimeHost {
         self.route.request_shutdown();
         let _operation = self.operation.lock().await;
 
-        self.route.shutdown().await;
         self.event_journal.stop().await;
         self.tun.shutdown().await;
+        // Device destruction does not wait for route cleanup. The manager owns
+        // only facts and its socket, and observes actual descriptor retirement.
+        self.route.shutdown().await;
     }
 
     fn request_runtime_shutdown(&self) {
