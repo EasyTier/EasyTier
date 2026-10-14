@@ -2579,6 +2579,7 @@ dependencies = [
  "rand 0.8.8",
  "rcgen",
  "regex",
+ "registry",
  "rstest",
  "rust-i18n",
  "rustls",
