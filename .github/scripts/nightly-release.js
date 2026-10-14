@@ -32,10 +32,10 @@ function releaseNotes(repository, baseline, sha, commits, runs) {
   ].join('\n');
 }
 
-async function prepare({ github, context, core }) {
+async function prepare({ github, context, core, sha }) {
   const repository = context.repo;
   const { data: branch } = await github.rest.repos.getBranch({ ...repository, branch: 'main' });
-  const sha = context.payload.workflow_run?.head_sha || branch.commit.sha;
+  sha ||= context.payload.workflow_run?.head_sha || branch.commit.sha;
   const { data: ancestry } = await github.rest.repos.compareCommitsWithBasehead({
     ...repository, basehead: `${sha}...${branch.commit.sha}`, per_page: 1,
   });

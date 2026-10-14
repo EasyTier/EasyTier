@@ -1,4 +1,6 @@
-module.exports = async ({ github, context, core }) => {
+const { setTimeout } = require('node:timers/promises');
+
+module.exports = async ({ github, context, core, sleep = setTimeout }) => {
   const repository = context.repo;
   const branches = await github.paginate(github.rest.repos.listBranches, {
     ...repository,
@@ -6,6 +8,7 @@ module.exports = async ({ github, context, core }) => {
   });
 
   for (const branch of branches.filter(({ name }) => name === 'main')) {
+    const pending = new Map();
     for (const workflow of ['core.yml', 'gui.yml', 'mobile.yml', 'test.yml']) {
       const { data } = await github.rest.actions.listWorkflowRuns({
         ...repository,
@@ -20,13 +23,48 @@ module.exports = async ({ github, context, core }) => {
         continue;
       }
 
-      await github.rest.actions.createWorkflowDispatch({
+      const { data: run } = await github.rest.actions.createWorkflowDispatch({
         ...repository,
         workflow_id: workflow,
         ref: branch.name,
+        // This API version returns the dispatched run ID.
+        headers: { 'X-GitHub-Api-Version': '2026-03-10' },
         ...(workflow === 'core.yml' ? { inputs: { sign_windows: false } } : {}),
       });
-      core.info(`${workflow}: dispatched a full build for ${branch.name}.`);
+      pending.set(workflow, { id: run.workflow_run_id, attempt: 1 });
+      core.info(`${workflow}: dispatched ${run.html_url} for ${branch.name}.`);
     }
+
+    // GITHUB_TOKEN dispatches do not trigger downstream workflow_run jobs.
+    // Wait here so publication and retries do not depend on those events.
+    while (pending.size) {
+      for (const [workflow, build] of pending) {
+        const { data: run } = await github.rest.actions.getWorkflowRun({
+          ...repository, run_id: build.id,
+        });
+        if (run.head_sha !== branch.commit.sha) {
+          throw new Error(`${workflow}: main changed while dispatching; run Nightly again.`);
+        }
+        // A rerun request can return before the new attempt becomes visible.
+        if (run.run_attempt < build.attempt || run.status !== 'completed') continue;
+        if (run.conclusion === 'success') {
+          core.info(`${workflow}: run ${build.id} succeeded.`);
+          pending.delete(workflow);
+        } else if (run.conclusion === 'failure' && run.run_attempt === 1) {
+          await github.rest.actions.reRunWorkflowFailedJobs({
+            ...repository, run_id: build.id,
+          });
+          build.attempt = 2;
+          core.info(`${workflow}: retrying failed jobs in run ${build.id}.`);
+        } else {
+          throw new Error(`${workflow}: run ${build.id} finished with ${run.conclusion}.`);
+        }
+      }
+      if (pending.size) {
+        core.info(`Waiting for ${[...pending.keys()].join(', ')} at ${branch.commit.sha}.`);
+        await sleep(60_000);
+      }
+    }
+    return branch.commit.sha;
   }
 };

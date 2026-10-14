@@ -2,6 +2,11 @@ name: EasyTier Nightly Release
 
 on:
   workflow_call:
+    inputs:
+      sha:
+        description: Commit whose full builds the caller has waited for
+        required: true
+        type: string
   workflow_run:
     workflows: [EasyTier Core, EasyTier GUI, EasyTier Mobile, EasyTier Test]
     branches: [main]
@@ -33,11 +38,13 @@ jobs:
       - name: Select complete main builds and prepare release notes
         id: prepare
         uses: actions/github-script@v8
+        env:
+          BUILD_SHA: ${{ inputs.sha }}
         with:
           script: |
             const fs = require('node:fs');
             const { prepare } = require('./.github/scripts/nightly-release.js');
-            const build = await prepare({ github, context, core });
+            const build = await prepare({ github, context, core, sha: process.env.BUILD_SHA });
             if (!build) return;
             fs.writeFileSync('nightly-release.json', JSON.stringify(build));
             for (const workflow of ['core', 'gui', 'mobile']) {

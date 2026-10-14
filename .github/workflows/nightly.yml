@@ -18,15 +18,19 @@ jobs:
   dispatch:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build branches with new commits
+      - name: Build main and wait for successful results
+        id: build
         uses: actions/github-script@v8
         with:
           script: |
             const dispatch = require('./.github/scripts/nightly-build.js');
-            await dispatch({ github, context, core });
+            core.setOutput('sha', await dispatch({ github, context, core }));
 
   release:
     needs: dispatch
@@ -34,3 +38,5 @@ jobs:
       actions: read
       contents: write
     uses: ./.github/workflows/nightly-release.yml
+    with:
+      sha: ${{ needs.dispatch.outputs.sha }}
