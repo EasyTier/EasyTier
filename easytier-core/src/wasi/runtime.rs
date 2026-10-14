@@ -681,7 +681,9 @@ mod abi {
 
     #[unsafe(no_mangle)]
     /// WASI command entrypoint used only to initialize the host runtime.
-    pub extern "C" fn _start() {}
+    pub extern "C" fn _start() {
+        crate::wasi::logger::init();
+    }
 
     #[unsafe(no_mangle)]
     /// Allocates a guest-owned ABI buffer and returns its linear-memory offset.
@@ -759,15 +761,6 @@ mod abi {
                 return 0;
             }
         };
-        // The embedded core has no CLI to read logging options from, so install a subscriber here;
-        // without it every tracing call inside the guest is discarded (see foundation::logger).
-        crate::foundation::logger::install(
-            config
-                .logging()
-                .and_then(|logging| logging.console_logger)
-                .and_then(|console| console.level)
-                .as_deref(),
-        );
         let handle = match with_abi_state_mut(WasiAbiState::allocate_handle) {
             Ok(handle) => handle,
             Err(_) => return 0,

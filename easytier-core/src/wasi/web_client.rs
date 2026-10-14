@@ -260,6 +260,12 @@ impl WebClientBackend for WasiWebClientBackend {
     fn register(&self, registry: &ServiceRegistry) {
         registry.register(self.handler.clone(), "");
         register_forwarded_instance_management_rpc(self.handler.clone(), registry);
+        registry.register(
+            crate::proto::api::logger::LoggerRpcServer::new(
+                crate::management::LoggerManagementRpc::new(crate::wasi::logger::control()),
+            ),
+            "",
+        );
     }
 
     async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>> {
