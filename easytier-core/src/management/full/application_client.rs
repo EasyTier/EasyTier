@@ -982,7 +982,7 @@ mod tests {
         (client, control, repository)
     }
     fn config() -> NetworkConfig {
-        NetworkConfig::new_from_config(&crate::config::toml::TomlConfigLoader::default()).unwrap()
+        NetworkConfig::new_from_config(crate::config::toml::TomlConfigLoader::default()).unwrap()
     }
 
     #[derive(Clone, Default)]

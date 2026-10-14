@@ -316,7 +316,7 @@ mod tests {
             .config
             .instance_id()
             .to_owned();
-        repo.save_enabled(&[id.clone()]).unwrap();
+        repo.save_enabled(std::slice::from_ref(&id)).unwrap();
         repo.save_preferences(serde_json::json!({"mode":"normal"}), Some(id))
             .unwrap();
         repo.save_configs(&[]).unwrap();
