@@ -543,6 +543,34 @@ function assertPeerPublicKeysPreserved() {
   assert.deepEqual(clearedUrls.peers ?? [], [])
 }
 
+function assertNetworkIdentityRolesPreserved() {
+  const privateKey = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc='
+  const secureMode = { enabled: true, local_private_key: privateKey }
+  for (const secret of ['', 'network-password']) {
+    const normalized = normalizeNetworkConfig({
+      ...DEFAULT_NETWORK_CONFIG(),
+      network_secret: secret,
+      secure_mode: secureMode,
+    })
+    assert.ok(!normalized.credential_secret)
+    assert.equal(normalized.secure_mode.enabled, true)
+    assert.equal(normalized.secure_mode.local_private_key, privateKey)
+    const backend = toBackendNetworkConfig(normalized)
+    assert.equal(backend.network_secret, secret)
+    assert.deepEqual(backend.secure_mode, secureMode)
+  }
+
+  const credential = normalizeNetworkConfig({
+    ...DEFAULT_NETWORK_CONFIG(),
+    network_secret: undefined,
+    secure_mode: secureMode,
+  })
+  assert.equal(credential.credential_secret, privateKey)
+  const backendCredential = toBackendNetworkConfig(credential)
+  assert.equal(backendCredential.network_secret, undefined)
+  assert.deepEqual(backendCredential.secure_mode, secureMode)
+}
+
 function assertNumberBoundaries() {
   const safeLimit = normalizeNetworkConfig({
     ...DEFAULT_NETWORK_CONFIG(),
@@ -598,6 +626,7 @@ const tests = [
   assertAclDefaultsAndExplicitZero,
   assertNetworkingMethodNormalization,
   assertPeerPublicKeysPreserved,
+  assertNetworkIdentityRolesPreserved,
   assertNumberBoundaries,
 ]
 

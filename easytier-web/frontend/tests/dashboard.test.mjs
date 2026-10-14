@@ -354,8 +354,9 @@ for (const action of ['creation', 'settings']) {
         for (const peer of peers) {
             const url = new URL(peer);
             const protocol = url.protocol.slice(0, -1);
+            const rowIndex = await nodes.locator('.url-input-full').count();
             await nodes.getByText('Add Initial Node', { exact: true }).click();
-            const row = nodes.locator('.url-input-full').last();
+            const row = nodes.locator('.url-input-full').nth(rowIndex);
             await row.locator('.p-autocomplete-dropdown').click();
             const options = page.locator(`#${await row.getByRole('combobox').getAttribute('aria-controls')}`);
             await options.getByRole('option', { name: protocol, exact: true }).click();
@@ -496,11 +497,33 @@ test('network tabs preserve gateway settings and unsaved input across polling', 
     assert.equal(state.networks.length, 2);
 });
 
+test('display-name-only saves preserve padded and whitespace-only secret baselines', async t => {
+    for (const [index, baseline] of ['  padded secret  ', '   '].entries()) {
+        const { page, state } = await open(t, '/h/networks/network-0', {}, state => {
+            state.networks[0].network_secret = baseline;
+        });
+        const secret = page.locator('#settings-network-secret');
+        await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+        assert.equal(await secret.inputValue(), baseline);
+        await page.locator('#settings-display-name').fill(`Renamed network ${index}`);
+        await saveNetworkSettings(page, 'network-0');
+        await page.getByRole('heading', { name: `Renamed network ${index}`, exact: true }).waitFor();
+
+        const saved = state.writes.filter(write => write.method === 'PATCH').at(-1);
+        assert.equal(Object.hasOwn(saved.payload, 'network_secret'), false);
+        assert.equal(state.networks[0].network_secret, baseline);
+        assert.equal(await secret.inputValue(), baseline);
+    }
+});
+
 test('unchanged secret saves preserve external updates and refresh the form baseline', async t => {
-    const { page, state } = await open(t, '/h/networks/network-0');
+    const originalSecret = '  test-secret  ';
+    const { page, state } = await open(t, '/h/networks/network-0', {}, state => {
+        state.networks[0].network_secret = originalSecret;
+    });
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     const secret = page.locator('#settings-network-secret');
-    assert.equal(await secret.inputValue(), 'test-secret');
+    assert.equal(await secret.inputValue(), originalSecret);
     await page.locator('#settings-display-name').fill('Renamed network');
     await saveNetworkSettings(page, 'network-0');
     await page.getByRole('heading', { name: 'Renamed network', exact: true }).waitFor();
@@ -508,10 +531,10 @@ test('unchanged secret saves preserve external updates and refresh the form base
 
     state.networks[0].network_secret = 'changed by another client';
     await waitForNetworkPoll(page, 'network-0');
-    assert.equal(await secret.inputValue(), 'test-secret');
+    assert.equal(await secret.inputValue(), originalSecret);
     // Returning to the form's original value is unchanged, even after polling.
     await secret.fill('temporary edit');
-    await secret.fill('test-secret');
+    await secret.fill(originalSecret);
     await page.getByRole('tab', { name: 'Members', exact: true }).click();
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     await page.locator('#settings-display-name').fill('External password retained');
@@ -559,15 +582,20 @@ test('create network with no password and toggle it back in settings', async t =
     await page.locator('#network-display-name').fill('Open Network');
     await page.getByLabel('No password').check();
     assert.ok(await secret.isDisabled(), 'secret input is disabled when no-password is checked');
+    assert.ok(await page.locator('#create-secure-mode').isChecked());
+    assert.ok(await page.locator('#create-secure-mode').isEnabled());
     await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/networks/created-*');
     assert.equal(state.writes.filter(write => write.path === '/networks').at(-1).payload.network_secret, '');
+    assert.equal(state.writes.filter(write => write.path === '/networks').at(-1).payload.settings.secure_mode, true);
     assert.equal(state.networks.at(-1).network_secret, '');
 
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     const settingsSecret = page.locator('#settings-network-secret');
     assert.ok(await page.getByLabel('No password').isChecked(), 'no-password checkbox reflects the current state');
     assert.ok(await settingsSecret.isDisabled());
+    assert.ok(await page.locator('#settings-secure-mode').isChecked());
+    assert.ok(await page.locator('#settings-secure-mode').isEnabled());
 
     await page.getByLabel('No password').uncheck();
     assert.ok(await settingsSecret.isEnabled(), 'secret input is re-enabled when no-password is unchecked');

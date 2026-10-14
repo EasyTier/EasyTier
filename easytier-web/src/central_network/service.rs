@@ -1582,6 +1582,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn passwordless_secure_networks_publish_restartable_member_configs() {
+        use easytier::common::config::NetworkConfigExt as _;
+        use easytier_core::management::remote_client::{PersistentConfig as _, Storage as _};
+
+        for create_without_password in [true, false] {
+            let (service, user_id, _) = service().await;
+            let permanent_device = Uuid::new_v4();
+            let temporary_device = Uuid::new_v4();
+            for device_id in [permanent_device, temporary_device] {
+                register_device(&service, user_id, device_id).await;
+            }
+            let network = service
+                .create_network(
+                    user_id,
+                    standalone_settings(),
+                    create_without_password.then(String::new),
+                )
+                .await
+                .unwrap();
+            let network_id = Uuid::parse_str(&network.network_id).unwrap();
+            for (device_id, temporary) in [(permanent_device, false), (temporary_device, true)] {
+                service
+                    .add_members(
+                        user_id,
+                        network_id,
+                        AddMembersReq {
+                            device_ids: vec![device_id.to_string()],
+                            temporary,
+                            ttl_seconds: Some(300),
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            if !create_without_password {
+                service
+                    .update_network(
+                        user_id,
+                        network_id,
+                        UpdateNetworkReq {
+                            settings: standalone_settings(),
+                            network_secret: Some(" \t ".to_owned()),
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            let saved_network = service.get_network(user_id, network_id).await.unwrap();
+            assert!(saved_network.secure_mode);
+            assert!(saved_network.network_secret.is_empty());
+
+            let saved_config = service
+                .db
+                .get_network_config((user_id, permanent_device), &network_id.to_string())
+                .await
+                .unwrap()
+                .unwrap();
+            let config = saved_config
+                .get_network_config()
+                .unwrap()
+                .gen_config()
+                .unwrap();
+            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            assert_eq!(
+                restored.get_network_identity().network_secret.as_deref(),
+                Some("")
+            );
+            assert_eq!(restored.get_secure_mode(), config.get_secure_mode());
+            assert_eq!(
+                restored.get_managed_credentials(),
+                config.get_managed_credentials()
+            );
+            assert_eq!(restored.get_managed_credentials().len(), 1);
+            easytier_core::instance::CoreInstanceConfig::from_toml(&restored).unwrap();
+
+            let saved_temporary = service
+                .db
+                .get_network_config((user_id, temporary_device), &network_id.to_string())
+                .await
+                .unwrap()
+                .unwrap();
+            let temporary_config = saved_temporary
+                .get_network_config()
+                .unwrap()
+                .gen_config()
+                .unwrap();
+            let restored_temporary =
+                TomlConfigLoader::new_from_str(&temporary_config.dump()).unwrap();
+            assert_eq!(
+                restored_temporary.get_network_identity().network_secret,
+                None
+            );
+            assert!(restored_temporary.get_managed_credentials().is_empty());
+            easytier_core::instance::CoreInstanceConfig::from_toml(&restored_temporary).unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn virtual_subnets_are_normalized_on_create_and_update() {
         let (service, user_id, _) = service().await;
         let existing = service

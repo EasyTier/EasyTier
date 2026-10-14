@@ -370,14 +370,20 @@ const saveSettings = async () => {
             virtual_cidr: normalizeVirtualSubnet(settingsForm.value.virtual_cidr) || null,
             secure_mode: settingsForm.value.secure_mode,
         };
-        const trimmedSecret = settingsForm.value.network_secret.trim();
+        const secretWasEdited = settingsForm.value.network_secret !== settingsSecretBaseline.value;
+        let secret: string | undefined;
         if (settingsNoPassword.value) {
             settingsForm.value.network_secret = '';
-        } else {
+            if (settingsSecretBaseline.value !== '') {
+                secret = '';
+            }
+        } else if (secretWasEdited) {
+            const trimmedSecret = settingsForm.value.network_secret.trim();
             settingsForm.value.network_secret = trimmedSecret;
+            if (trimmedSecret !== settingsSecretBaseline.value) {
+                secret = trimmedSecret;
+            }
         }
-        const secret = settingsForm.value.network_secret !== settingsSecretBaseline.value
-            ? settingsForm.value.network_secret : undefined;
         const updated = await api?.update_network(networkId.value, settings, secret);
         if (updated) {
             settingsForm.value.network_secret = updated.network_secret;
