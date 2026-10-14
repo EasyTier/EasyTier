@@ -4017,10 +4017,11 @@ dependencies = [
 
 [[package]]
 name = "guarden"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11e5aa725802d305ed9726003d1d2c0329cea9802314d482b7d1206b10e92461"
+checksum = "6ff18f32fb55f69f2dfc31266f760f6e9bd9d450c9ee8d6cd8891a4ebf558c23"
 dependencies = [
+ "derive_more",
  "futures-core",
  "guarden-macros",
  "tokio",
@@ -4028,9 +4029,9 @@ dependencies = [
 
 [[package]]
 name = "guarden-macros"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58fae24d0e2228af3151faf0153dc6c9ef1f7fa7965ffb7e3022052fcb78f297"
+checksum = "e9e8489ba07ce36023240486aa77adbf18b49a61c384be6eb0d128c18388efc6"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
