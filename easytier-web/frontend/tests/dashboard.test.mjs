@@ -243,6 +243,70 @@ test('network creation retains gateway and advanced standalone modes', async t =
     assert.equal(state.writes.filter(w => w.path === '/networks').at(-1).payload.settings.networking_method, 'Standalone');
 });
 
+for (const action of ['creation', 'settings']) {
+    test(`network ${action} supports all initial-node protocols and preserves URLs`, async t => {
+        const { page, state } = await open(t, action === 'creation' ? '/h/networks' : '/h/networks/network-1', {}, state => {
+            state.gatewayEnabled = false;
+            state.networks[1].peer_urls = [];
+            state.networks[1].networking_method = 'Standalone';
+        });
+        if (action === 'creation') {
+            await page.getByRole('button', { name: 'Create Network', exact: true }).click();
+            await page.locator('#network-display-name').fill('Peer protocols');
+        } else {
+            await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+        }
+
+        const peers = [
+            'tcp://peers.example:11010',
+            'udp://peers.example:11010',
+            'wg://peers.example:11011',
+            'ws://peers.example:11011/peers',
+            'wss://peers.example:11012/peers',
+            'quic://peers.example:11012',
+            'faketcp://peers.example:11013',
+            'http://peers.example:80/peers',
+            'https://peers.example:443/peers',
+            'txt://peers.example',
+            'srv://_easytier._tcp.peers.example',
+        ];
+        const nodes = page.locator(action === 'creation' ? '#initial-nodes' : '#settings-initial-nodes');
+        for (const peer of peers) {
+            const url = new URL(peer);
+            const protocol = url.protocol.slice(0, -1);
+            await nodes.getByText('Add Initial Node', { exact: true }).click();
+            const row = nodes.locator('.url-input-full').last();
+            await row.locator('.p-autocomplete-dropdown').click();
+            const options = page.locator(`#${await row.getByRole('combobox').getAttribute('aria-controls')}`);
+            await options.getByRole('option', { name: protocol, exact: true }).click();
+            await row.locator('input.grow').first().fill(url.hostname);
+            if (url.pathname) await row.getByPlaceholder('/mypath').fill(url.pathname);
+            assert.equal(await row.getByRole('spinbutton').count(), ['txt', 'srv'].includes(protocol) ? 0 : 1);
+        }
+
+        if (action === 'creation') {
+            await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
+            await page.waitForURL('**/networks/created-*');
+        } else {
+            const saved = page.waitForResponse(response => response.request().method() === 'PATCH');
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await saved;
+        }
+        let settings = state.writes.at(-1).payload.settings;
+        assert.equal(settings.networking_method, 'Manual');
+        assert.deepEqual(settings.peer_urls, peers);
+
+        await page.reload();
+        await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+        const saved = page.waitForResponse(response => response.request().method() === 'PATCH');
+        await page.getByRole('button', { name: 'Save', exact: true }).click();
+        await saved;
+        settings = state.writes.at(-1).payload.settings;
+        assert.equal(settings.networking_method, 'Manual');
+        assert.deepEqual(settings.peer_urls, peers);
+    });
+}
+
 for (const [input, expected] of [
     [' 10.200.0.0 ', '10.200.0.0/24'],
     [' 10.200.0.0/16 ', '10.200.0.0/16'],
