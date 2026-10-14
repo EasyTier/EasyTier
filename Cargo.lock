@@ -2682,6 +2682,7 @@ dependencies = [
  "prost-types 0.14.4",
  "quanta",
  "rand 0.8.8",
+ "registry",
  "ring",
  "rustls",
  "rustls-pki-types",

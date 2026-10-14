@@ -97,7 +97,8 @@ impl CoreRuntimeConfigStore {
 
     pub fn replace(&self, config: CoreInstanceRuntimeConfig) {
         let _update = self.inner.update.lock();
-        self.inner.snapshot.store(Arc::new(config));
+        let config = Arc::new(config);
+        self.inner.snapshot.store(config);
         self.inner.peer_changes.send_modify(|version| *version += 1);
         self.inner
             .service_changes
@@ -123,9 +124,11 @@ impl CoreRuntimeConfigStore {
 
     pub fn update_services(&self, update: impl FnOnce(&mut CoreRuntimeConfig)) {
         let _update = self.inner.update.lock();
-        let mut config = self.inner.snapshot.load_full().as_ref().clone();
+        let current = self.inner.snapshot.load_full();
+        let mut config = current.as_ref().clone();
         update(&mut config.services);
-        self.inner.snapshot.store(Arc::new(config));
+        let config = Arc::new(config);
+        self.inner.snapshot.store(config);
         self.inner
             .service_changes
             .send_modify(|version| *version += 1);
@@ -280,6 +283,43 @@ mod tests {
                 .address,
             "10.20.30.7".parse::<std::net::IpAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn manual_policy_is_published_through_all_config_commit_paths() {
+        let store = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::default()),
+        );
+        let before = store.snapshot();
+        let mut changes = store.subscribe_service_runtime_changes();
+        let cidrs = BTreeSet::from(["10.0.0.0/8".parse().unwrap()]);
+
+        store.update_services(|services| services.manual_routes = Some(cidrs.clone()));
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(
+            store.snapshot().services.manual_routes.as_ref(),
+            Some(&cidrs)
+        );
+        assert_eq!(before.services.manual_routes, None);
+
+        changes.mark_unchanged();
+        let mut next = store.snapshot().as_ref().clone();
+        next.services.manual_routes = Some(BTreeSet::new());
+        store.replace(next);
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(
+            store.snapshot().services.manual_routes,
+            Some(BTreeSet::new())
+        );
+
+        changes.mark_unchanged();
+        let mut next = store.snapshot().as_ref().clone();
+        next.services.manual_routes = None;
+        let committed = store.replace_with_current(next, |_, _| {});
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(committed.services.manual_routes, None);
+        assert!(Arc::ptr_eq(&committed, &store.snapshot()));
     }
 
     #[test]
