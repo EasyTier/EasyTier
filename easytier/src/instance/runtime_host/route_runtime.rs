@@ -63,7 +63,7 @@ impl NativeRouteRuntime {
             return Ok(());
         };
 
-        let backend = PlatformRouteBackend::new(self.global_ctx.net_ns.clone())?;
+        let backend = PlatformRouteBackend::new(self.global_ctx.net_ns.clone()).await?;
         let manager = RouteMgr::new(
             self.global_ctx.clone(),
             backend,

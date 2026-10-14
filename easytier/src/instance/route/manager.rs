@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use cidr::IpCidr;
 use registry::Registry;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -165,12 +164,6 @@ impl<B: RouteBackend> RouteMgr<B> {
         let snapshot = self.routes.snapshot();
         let config = self.runtime_config.snapshot();
         let cidrs = resolve_route_demands(&snapshot, config.services.manual_routes.as_ref());
-
-        for cidr in &cidrs {
-            if matches!(cidr, IpCidr::V6(_)) {
-                unimplemented!("ipv6 route is not supported yet");
-            }
-        }
 
         // 3. Compute desired routes from active slots
         let desired = match &self.current_tun_device {
@@ -814,8 +807,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "ipv6 route is not supported yet")]
-    async fn test_ipv6_route_panics_unimplemented() {
+    async fn test_ipv6_route_is_reconciled_like_ipv4() {
         let cancel_token = CancellationToken::new();
 
         let global_ctx = get_mock_global_ctx();
@@ -838,6 +830,10 @@ mod tests {
             .unwrap();
 
         manager.reconcile().await;
+        assert_eq!(manager.installed, BTreeSet::from([test_route("fd00::/64")]));
+        drop(_reg);
+        manager.reconcile().await;
+        assert!(manager.installed.is_empty());
     }
 
     #[tokio::test]

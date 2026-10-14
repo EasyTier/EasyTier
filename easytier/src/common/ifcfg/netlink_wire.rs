@@ -39,6 +39,14 @@ const RTA_OIF: u16 = 4;
 const RTA_PRIORITY: u16 = 6;
 const RTA_PREFSRC: u16 = 7;
 const RTA_TABLE: u16 = 15;
+const RTA_GATEWAY: u16 = 5;
+const RTA_PREFSRC: u16 = 7;
+const RTA_MULTIPATH: u16 = 9;
+const RTA_VIA: u16 = 18;
+const RTA_ENCAP_TYPE: u16 = 21;
+const RTA_ENCAP: u16 = 22;
+const RTA_NH_ID: u16 = 30;
+const RTM_F_CLONED: u32 = 0x200;
 
 const NDA_DST: u16 = 1;
 const NTF_PROXY: u8 = 0x08;
@@ -96,6 +104,11 @@ impl MessageBuilder {
         self.bytes.extend_from_slice(bytes);
     }
 
+    pub(crate) fn sequence(mut self, sequence: u32) -> Self {
+        self.bytes[8..12].copy_from_slice(&sequence.to_ne_bytes());
+        self
+    }
+
     pub(crate) fn finish(mut self) -> io::Result<Vec<u8>> {
         let len = u32::try_from(self.bytes.len())
             .map_err(|_| invalid_data("netlink message is too large"))?;
@@ -108,6 +121,7 @@ impl MessageBuilder {
 pub(crate) struct MessageHeader {
     pub(crate) message_type: u16,
     pub(crate) flags: u16,
+    pub(crate) sequence: u32,
 }
 
 pub(crate) struct MessageIter<'a> {
@@ -157,12 +171,14 @@ impl<'a> Iterator for MessageIter<'a> {
 
         let message_type = read_u16(&self.bytes[4..]).expect("header length checked");
         let flags = read_u16(&self.bytes[6..]).expect("header length checked");
+        let sequence = read_u32(&self.bytes[8..]).expect("header length checked");
         let payload = &self.bytes[NLMSG_HEADER_LEN..len];
         self.bytes = &self.bytes[aligned_len..];
         Some(Ok((
             MessageHeader {
                 message_type,
                 flags,
+                sequence,
             },
             payload,
         )))
@@ -252,6 +268,24 @@ fn parse_ip(family: u8, bytes: &[u8]) -> Option<IpAddr> {
         ))),
         _ => None,
     }
+}
+
+fn route_ip_attribute(
+    family: u8,
+    attributes: &[Attribute],
+    kind: u16,
+) -> io::Result<Option<IpAddr>> {
+    if !matches!(family as i32, libc::AF_INET | libc::AF_INET6) {
+        return Ok(None);
+    }
+    attributes
+        .iter()
+        .find(|attribute| attribute.kind & NLA_TYPE_MASK == kind)
+        .map(|attribute| {
+            parse_ip(family, &attribute.value)
+                .ok_or_else(|| invalid_data("invalid route address attribute"))
+        })
+        .transpose()
 }
 
 pub(crate) trait NetlinkEncode {
@@ -373,6 +407,56 @@ impl RouteMessage {
     pub(crate) fn oif(&self) -> Option<u32> {
         self.oif
     }
+
+    fn u32_attribute(&self, kind: u16) -> io::Result<Option<u32>> {
+        self.attributes
+            .iter()
+            .find(|attribute| attribute.kind & NLA_TYPE_MASK == kind)
+            .map(|attribute| {
+                if attribute.value.len() != 4 {
+                    return Err(invalid_data("invalid route integer attribute"));
+                }
+                read_u32(&attribute.value)
+            })
+            .transpose()
+    }
+
+    pub(crate) fn priority(&self) -> io::Result<u32> {
+        Ok(self.u32_attribute(RTA_PRIORITY)?.unwrap_or(0))
+    }
+
+    pub(crate) fn table(&self) -> io::Result<u32> {
+        Ok(self.u32_attribute(RTA_TABLE)?.unwrap_or(self.table.into()))
+    }
+
+    pub(crate) fn protocol(&self) -> u8 {
+        self.protocol
+    }
+
+    pub(crate) fn scope(&self) -> u8 {
+        self.scope
+    }
+
+    /// A destination-only, directly attached route without source selection,
+    /// a gateway, multipath, nexthop indirection or encapsulation.
+    pub(crate) fn is_direct(&self) -> bool {
+        self.src_len == 0
+            && self.tos == 0
+            && self.flags & RTM_F_CLONED == 0
+            && !self.attributes.iter().any(|attribute| {
+                matches!(
+                    attribute.kind & NLA_TYPE_MASK,
+                    RTA_SRC
+                        | RTA_GATEWAY
+                        | RTA_PREFSRC
+                        | RTA_MULTIPATH
+                        | RTA_VIA
+                        | RTA_ENCAP_TYPE
+                        | RTA_ENCAP
+                        | RTA_NH_ID
+                )
+            })
+    }
 }
 
 impl RouteMessage {
@@ -390,14 +474,8 @@ impl NetlinkDecode for RouteMessage {
         }
         let family = bytes[0];
         let attributes = parse_attributes(&bytes[12..])?;
-        let destination = attributes
-            .iter()
-            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_DST)
-            .and_then(|attribute| parse_ip(family, &attribute.value));
-        let source = attributes
-            .iter()
-            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_SRC)
-            .and_then(|attribute| parse_ip(family, &attribute.value));
+        let destination = route_ip_attribute(family, &attributes, RTA_DST)?;
+        let source = route_ip_attribute(family, &attributes, RTA_SRC)?;
         let oif = attributes
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_OIF)

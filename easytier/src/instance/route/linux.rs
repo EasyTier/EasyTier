@@ -1,0 +1,706 @@
+use std::{fs::File, io, net::IpAddr, time::Duration};
+
+use anyhow::Context as _;
+use cidr::IpCidr;
+use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
+use nix::{
+    libc,
+    sched::{CloneFlags, setns},
+};
+use tokio::{io::unix::AsyncFd, sync::oneshot};
+
+use crate::common::{
+    ifcfg::netlink_wire::{
+        MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_DUMP_INTR,
+        NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NetlinkDecode, NetlinkEncode,
+        RTM_DELROUTE, RTM_GETROUTE, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder, RouteType,
+        netlink_error_code,
+    },
+    netns::{NetNS, ROOT_NETNS_NAME},
+};
+
+use super::{Route, RouteBackend, RouteError};
+
+/// One writer's reusable socket, bound to its network namespace at creation.
+/// Readiness and ACK waiting stay on the async runtime; only socket setup uses
+/// a short-lived thread so namespace changes cannot leak into runtime workers.
+pub struct PlatformRouteBackend {
+    socket: AsyncFd<Socket>,
+    sequence: u32,
+    timeout: Duration,
+}
+
+impl PlatformRouteBackend {
+    pub async fn new(net_ns: NetNS) -> anyhow::Result<Self> {
+        let (sender, receiver) = oneshot::channel();
+        std::thread::Builder::new()
+            .name("easytier-route-socket".into())
+            .spawn(move || {
+                let result = (|| -> anyhow::Result<Socket> {
+                    if let Some(name) = net_ns.name() {
+                        let path = if name == ROOT_NETNS_NAME {
+                            "/proc/1/ns/net".to_owned()
+                        } else {
+                            format!("/var/run/netns/{name}")
+                        };
+                        let namespace = File::open(&path)
+                            .with_context(|| format!("open network namespace {path}"))?;
+                        setns(&namespace, CloneFlags::CLONE_NEWNET)
+                            .context("enter route network namespace")?;
+                    }
+                    let mut socket = Socket::new(NETLINK_ROUTE)?;
+                    socket.bind_auto()?;
+                    socket.connect(&SocketAddr::new(0, 0))?;
+                    socket.set_non_blocking(true)?;
+                    Ok(socket)
+                })();
+                let _ = sender.send(result);
+            })?;
+        let socket = receiver
+            .await
+            .context("route socket setup thread stopped")??;
+        Ok(Self {
+            socket: AsyncFd::new(socket)?,
+            sequence: 0,
+            timeout: Duration::from_secs(2),
+        })
+    }
+
+    async fn send(&self, request: &[u8], sent: &mut bool) -> io::Result<()> {
+        loop {
+            let mut ready = self.socket.writable().await?;
+            match ready.try_io(|socket| {
+                let result = socket.get_ref().send(request, 0);
+                // WouldBlock has not queued a datagram. Any other attempted
+                // send is conservatively uncertain until a matching ACK.
+                *sent = !matches!(&result, Err(error) if error.kind() == io::ErrorKind::WouldBlock);
+                result
+            }) {
+                Ok(Ok(len)) if len == request.len() => return Ok(()),
+                Ok(Ok(_)) => return Err(io::Error::other("short netlink datagram send")),
+                Ok(Err(error)) => return Err(error),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    async fn receive(&self) -> io::Result<Vec<u8>> {
+        loop {
+            let mut ready = self.socket.readable().await?;
+            match ready.try_io(|socket| socket.get_ref().recv_from_full()) {
+                Ok(Ok((bytes, sender))) if sender.port_number() == 0 => return Ok(bytes),
+                Ok(Ok(_)) => continue,
+                Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Ok(Err(error)) => return Err(error),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    async fn request(
+        &mut self,
+        request: MessageBuilder,
+        kind: ReplyKind,
+    ) -> Result<Vec<RouteMessage>, RequestFailure> {
+        self.sequence = self.sequence.checked_add(1).ok_or_else(|| {
+            RequestFailure::io(io::Error::other("netlink sequence exhausted"), false)
+        })?;
+        let request = request
+            .sequence(self.sequence)
+            .finish()
+            .map_err(|error| RequestFailure::io(error, false))?;
+        let mut reply = Reply::new(self.sequence, kind);
+        let mut sent = false;
+        let result = tokio::time::timeout(self.timeout, async {
+            self.send(&request, &mut sent)
+                .await
+                .map_err(|error| RequestFailure::io(error, sent))?;
+            loop {
+                let bytes = self
+                    .receive()
+                    .await
+                    .map_err(|error| RequestFailure::io(error, sent))?;
+                if reply.accept(&bytes).map_err(|error| match error {
+                    ReplyFailure::Kernel(errno) => RequestFailure::Kernel(errno),
+                    ReplyFailure::Io(error) => RequestFailure::io(error, sent),
+                })? {
+                    return Ok(reply.routes);
+                }
+            }
+        })
+        .await;
+        result.unwrap_or_else(|_| {
+            Err(RequestFailure::io(
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "netlink response deadline exceeded",
+                ),
+                sent,
+            ))
+        })
+    }
+
+    async fn contains(&mut self, route: &Route) -> Result<bool, RouteError> {
+        let mut header = RouteMessage::dump_header();
+        header[0] = family(route.destination);
+        let mut request = MessageBuilder::new(RTM_GETROUTE, NLM_F_REQUEST | NLM_F_DUMP);
+        request.append_bytes(&header);
+        let messages = self
+            .request(request, ReplyKind::Dump)
+            .await
+            .map_err(|error| error.into_route_error(false))?;
+        for message in messages {
+            if equivalent(&message, route).map_err(|error| RouteError::Failed(error.into()))? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+#[async_trait::async_trait]
+impl RouteBackend for PlatformRouteBackend {
+    async fn add(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
+        let request = route_request(
+            route,
+            RTM_NEWROUTE,
+            NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL,
+        )?;
+        match self.request(request, ReplyKind::Ack).await {
+            Ok(_) => Ok(Some(route.clone())),
+            Err(RequestFailure::Kernel(libc::EEXIST)) => {
+                if self.contains(route).await? {
+                    Ok(None)
+                } else {
+                    Err(RouteError::Failed(anyhow::anyhow!(
+                        "route conflict: EEXIST without an equivalent route: {route:?}"
+                    )))
+                }
+            }
+            Err(error) => Err(error.into_route_error(true)),
+        }
+    }
+
+    async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
+        let request = route_request(route, RTM_DELROUTE, NLM_F_REQUEST | NLM_F_ACK)?;
+        match self.request(request, ReplyKind::Ack).await {
+            Ok(_) => Ok(Some(())),
+            Err(RequestFailure::Kernel(libc::ESRCH | libc::ENOENT)) => Ok(None),
+            Err(error) => Err(error.into_route_error(true)),
+        }
+    }
+}
+
+fn family(destination: IpCidr) -> u8 {
+    match destination {
+        IpCidr::V4(_) => libc::AF_INET as u8,
+        IpCidr::V6(_) => libc::AF_INET6 as u8,
+    }
+}
+
+fn route_request(
+    route: &Route,
+    message_type: u16,
+    flags: u16,
+) -> Result<MessageBuilder, RouteError> {
+    // Linux treats a zero delete priority as a wildcard. Resolve defaults
+    // before constructing Route, and never emit an ambiguous delete request.
+    if route.metric == 0 || route.interface.ifindex == 0 {
+        return Err(RouteError::Failed(anyhow::anyhow!(
+            "route metric and interface index must be nonzero"
+        )));
+    }
+    let message = RouteMessageBuilder::new(family(route.destination))
+        .destination(
+            route.destination.first_address(),
+            route.destination.network_length(),
+        )
+        .oif(route.interface.ifindex)
+        .priority(route.metric)
+        .table(libc::RT_TABLE_MAIN.into())
+        .static_protocol()
+        .universe_scope()
+        .route_type(RouteType::Unicast)
+        .build();
+    let mut request = MessageBuilder::new(message_type, flags);
+    let mut bytes = Vec::new();
+    message
+        .write_to(&mut bytes)
+        .map_err(|error| RouteError::Failed(error.into()))?;
+    request.append_bytes(&bytes);
+    Ok(request)
+}
+
+fn equivalent(message: &RouteMessage, route: &Route) -> io::Result<bool> {
+    let destination = message
+        .destination()
+        .copied()
+        .unwrap_or_else(|| match route.destination {
+            IpCidr::V4(_) => IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            IpCidr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+        });
+    Ok(message.family() == family(route.destination)
+        && message.dst_len() == route.destination.network_length()
+        && destination == route.destination.first_address()
+        && message.oif() == Some(route.interface.ifindex)
+        && message.priority()? == route.metric
+        && message.table()? == u32::from(libc::RT_TABLE_MAIN)
+        && message.protocol() == libc::RTPROT_STATIC
+        && message.scope() == libc::RT_SCOPE_UNIVERSE
+        && message.route_type() == RouteType::Unicast
+        && message.is_direct())
+}
+
+#[derive(Clone, Copy)]
+enum ReplyKind {
+    Ack,
+    Dump,
+}
+
+struct Reply {
+    sequence: u32,
+    kind: ReplyKind,
+    routes: Vec<RouteMessage>,
+}
+
+impl Reply {
+    fn new(sequence: u32, kind: ReplyKind) -> Self {
+        Self {
+            sequence,
+            kind,
+            routes: Vec::new(),
+        }
+    }
+
+    fn accept(&mut self, bytes: &[u8]) -> Result<bool, ReplyFailure> {
+        for frame in MessageIter::new(bytes) {
+            let (header, payload) = frame.map_err(ReplyFailure::Io)?;
+            if header.sequence != self.sequence {
+                continue;
+            }
+            if header.flags & NLM_F_DUMP_INTR != 0 {
+                return Err(ReplyFailure::Io(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "netlink dump interrupted",
+                )));
+            }
+            match header.message_type {
+                NLMSG_ERROR => {
+                    let errno = netlink_error_code(payload).map_err(ReplyFailure::Io)?;
+                    if errno > 0 {
+                        return Err(ReplyFailure::Io(io::Error::other(
+                            "invalid positive netlink errno",
+                        )));
+                    }
+                    if errno != 0 {
+                        return Err(ReplyFailure::Kernel(errno.checked_abs().ok_or_else(
+                            || ReplyFailure::Io(io::Error::other("invalid netlink errno")),
+                        )?));
+                    }
+                    if matches!(self.kind, ReplyKind::Ack) {
+                        return Ok(true);
+                    }
+                }
+                NLMSG_DONE if matches!(self.kind, ReplyKind::Dump) => {
+                    let errno = netlink_error_code(payload).map_err(ReplyFailure::Io)?;
+                    if errno > 0 {
+                        return Err(ReplyFailure::Io(io::Error::other(
+                            "invalid positive netlink errno",
+                        )));
+                    }
+                    if errno != 0 {
+                        return Err(ReplyFailure::Kernel(errno.checked_abs().ok_or_else(
+                            || ReplyFailure::Io(io::Error::other("invalid netlink errno")),
+                        )?));
+                    }
+                    return Ok(true);
+                }
+                RTM_NEWROUTE if matches!(self.kind, ReplyKind::Dump) => {
+                    self.routes
+                        .push(RouteMessage::from_bytes(payload).map_err(ReplyFailure::Io)?);
+                }
+                _ => {
+                    return Err(ReplyFailure::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unexpected netlink response",
+                    )));
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
+#[derive(Debug)]
+enum ReplyFailure {
+    Kernel(i32),
+    Io(io::Error),
+}
+enum RequestFailure {
+    Kernel(i32),
+    Io { source: io::Error, sent: bool },
+}
+
+impl RequestFailure {
+    fn io(source: io::Error, sent: bool) -> Self {
+        Self::Io { source, sent }
+    }
+    fn into_route_error(self, mutation: bool) -> RouteError {
+        match self {
+            Self::Kernel(errno) => RouteError::Failed(io::Error::from_raw_os_error(errno).into()),
+            Self::Io { source, sent: true } if mutation => RouteError::Unknown(source.into()),
+            Self::Io { source, .. } => RouteError::Failed(source.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::instance::route::DeviceId;
+    use std::{future::Future, os::fd::AsRawFd, process::Command};
+
+    fn route(destination: &str, ifindex: u32, metric: u32) -> Route {
+        Route {
+            destination: destination.parse().unwrap(),
+            interface: DeviceId::new(ifindex, None),
+            metric,
+        }
+    }
+
+    fn frame(sequence: u32, message_type: u16, flags: u16, payload: &[u8]) -> Vec<u8> {
+        let mut builder = MessageBuilder::new(message_type, flags).sequence(sequence);
+        builder.append_bytes(payload);
+        builder.finish().unwrap()
+    }
+
+    #[test]
+    fn late_ack_cannot_complete_a_new_request() {
+        let mut reply = Reply::new(2, ReplyKind::Ack);
+        assert!(
+            !reply
+                .accept(&frame(1, NLMSG_ERROR, 0, &0_i32.to_ne_bytes()))
+                .unwrap()
+        );
+        assert!(
+            reply
+                .accept(&frame(2, NLMSG_ERROR, 0, &0_i32.to_ne_bytes()))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn dump_waits_for_done_and_rejects_interruptions() {
+        let mut reply = Reply::new(3, ReplyKind::Dump);
+        assert!(
+            !reply
+                .accept(&frame(3, NLMSG_ERROR, 0, &0_i32.to_ne_bytes()))
+                .unwrap()
+        );
+        assert!(
+            reply
+                .accept(&frame(3, NLMSG_DONE, 0, &0_i32.to_ne_bytes()))
+                .unwrap()
+        );
+        let mut interrupted = Reply::new(3, ReplyKind::Dump);
+        assert!(
+            interrupted
+                .accept(&frame(3, NLMSG_DONE, NLM_F_DUMP_INTR, &0_i32.to_ne_bytes()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn malformed_and_error_responses_do_not_report_success() {
+        for errno in [libc::EEXIST, i32::MIN] {
+            let mut reply = Reply::new(1, ReplyKind::Ack);
+            assert!(
+                reply
+                    .accept(&frame(1, NLMSG_ERROR, 0, &errno.to_ne_bytes()))
+                    .is_err()
+            );
+        }
+        let mut reply = Reply::new(1, ReplyKind::Ack);
+        assert!(matches!(
+            reply.accept(&frame(1, NLMSG_ERROR, 0, &(-libc::EPERM).to_ne_bytes())),
+            Err(ReplyFailure::Kernel(libc::EPERM))
+        ));
+        assert!(reply.accept(&frame(1, NLMSG_ERROR, 0, &[])).is_err());
+    }
+
+    #[test]
+    fn add_and_delete_use_the_same_complete_route_key() {
+        for destination in ["10.71.0.0/24", "2001:db8:71::/64", "0.0.0.0/0", "::/0"] {
+            let route = route(destination, 7, 65535);
+            for message_type in [RTM_NEWROUTE, RTM_DELROUTE] {
+                let bytes = route_request(&route, message_type, NLM_F_REQUEST | NLM_F_ACK)
+                    .unwrap()
+                    .finish()
+                    .unwrap();
+                let (header, payload) = MessageIter::new(&bytes).next().unwrap().unwrap();
+                assert_eq!(header.message_type, message_type);
+                let message = RouteMessage::from_bytes(payload).unwrap();
+                assert!(equivalent(&message, &route).unwrap());
+                assert!(
+                    !equivalent(
+                        &message,
+                        &Route {
+                            metric: 5,
+                            ..route.clone()
+                        }
+                    )
+                    .unwrap()
+                );
+                assert!(
+                    !equivalent(
+                        &message,
+                        &Route {
+                            interface: DeviceId::new(8, None),
+                            ..route.clone()
+                        }
+                    )
+                    .unwrap()
+                );
+            }
+        }
+        assert!(route_request(&route("10.71.0.0/24", 7, 0), RTM_DELROUTE, NLM_F_REQUEST).is_err());
+    }
+
+    #[tokio::test]
+    async fn invalid_namespace_is_a_setup_error_without_panic() {
+        assert!(
+            PlatformRouteBackend::new(NetNS::new(Some(format!(
+                "easytier-missing-{}",
+                uuid::Uuid::new_v4()
+            ))))
+            .await
+            .is_err()
+        );
+    }
+
+    fn ip(args: &[&str]) -> String {
+        let mut command = Command::new("ip");
+        if args.iter().any(|arg| arg.contains(':')) {
+            command.arg("-6");
+        }
+        let output = command.args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "ip {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn dummy(name: &str) -> u32 {
+        ip(&["link", "add", name, "type", "dummy"]);
+        ip(&["link", "set", name, "up"]);
+        let names =
+            serde_json::from_str::<serde_json::Value>(&ip(&["-j", "link", "show", name])).unwrap();
+        names[0]["ifindex"].as_u64().unwrap() as u32
+    }
+
+    fn kernel_test<F, Fut>(test: F)
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()>,
+    {
+        std::thread::spawn(move || {
+            nix::sched::unshare(CloneFlags::CLONE_NEWNET)
+                .expect("kernel tests need a private network namespace");
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(test());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires namespace privileges; creates a private network namespace"]
+    fn kernel_add_equivalent_delete_preserves_other_metrics_and_tables() {
+        kernel_test(|| async {
+            let ifindex = dummy("et-route");
+            let mut backend = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+            let fd = backend.socket.get_ref().as_raw_fd();
+            for destination in ["10.71.0.0/24", "2001:db8:71::/64"] {
+                let route = route(destination, ifindex, 65535);
+                assert_eq!(backend.add(&route).await.unwrap(), Some(route.clone()));
+                assert_eq!(backend.add(&route).await.unwrap(), None);
+                ip(&[
+                    "route",
+                    "add",
+                    destination,
+                    "dev",
+                    "et-route",
+                    "metric",
+                    "5",
+                    "proto",
+                    "static",
+                    "scope",
+                    "global",
+                ]);
+                ip(&[
+                    "route",
+                    "add",
+                    destination,
+                    "dev",
+                    "et-route",
+                    "metric",
+                    "65535",
+                    "proto",
+                    "static",
+                    "scope",
+                    "global",
+                    "table",
+                    "123",
+                ]);
+                assert_eq!(backend.remove(&route).await.unwrap(), Some(()));
+                assert_eq!(backend.remove(&route).await.unwrap(), None);
+                let main = serde_json::from_str::<serde_json::Value>(&ip(&[
+                    "-j",
+                    "route",
+                    "show",
+                    "table",
+                    "main",
+                    "exact",
+                    destination,
+                ]))
+                .unwrap();
+                let other = serde_json::from_str::<serde_json::Value>(&ip(&[
+                    "-j",
+                    "route",
+                    "show",
+                    "table",
+                    "123",
+                    "exact",
+                    destination,
+                ]))
+                .unwrap();
+                assert_eq!(main.as_array().unwrap().len(), 1);
+                assert_eq!(main[0]["metric"], 5);
+                assert_eq!(other.as_array().unwrap().len(), 1);
+            }
+            assert_eq!(fd, backend.socket.get_ref().as_raw_fd());
+        });
+    }
+
+    #[test]
+    #[ignore = "requires namespace privileges; creates a private network namespace"]
+    fn kernel_non_equivalent_eexist_is_a_conflict() {
+        kernel_test(|| async {
+            let a = dummy("et-a");
+            dummy("et-b");
+            ip(&[
+                "route",
+                "add",
+                "10.72.0.0/24",
+                "dev",
+                "et-b",
+                "metric",
+                "65535",
+                "proto",
+                "static",
+                "scope",
+                "global",
+            ]);
+            let mut backend = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+            assert!(matches!(
+                backend.add(&route("10.72.0.0/24", a, 65535)).await,
+                Err(RouteError::Failed(_))
+            ));
+            let existing = serde_json::from_str::<serde_json::Value>(&ip(&[
+                "-j",
+                "route",
+                "show",
+                "exact",
+                "10.72.0.0/24",
+            ]))
+            .unwrap();
+            assert_eq!(existing[0]["dev"], "et-b");
+        });
+    }
+
+    #[test]
+    #[ignore = "requires namespace privileges; creates a private network namespace"]
+    fn kernel_missing_ack_is_unknown_and_late_ack_is_ignored() {
+        kernel_test(|| async {
+            let ifindex = dummy("et-route");
+            let mut backend = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+            let first = route("10.73.0.0/24", ifindex, 65535);
+            let second = route("10.74.0.0/24", ifindex, 65535);
+            let request = route_request(
+                &first,
+                RTM_NEWROUTE,
+                NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL,
+            )
+            .unwrap()
+            .sequence(1)
+            .finish()
+            .unwrap();
+            backend.sequence = 1;
+            backend.send(&request, &mut false).await.unwrap();
+            // The first ACK is deliberately left queued. It must not be used
+            // as the second request's success indication.
+            assert_eq!(backend.add(&second).await.unwrap(), Some(second.clone()));
+            assert!(backend.contains(&first).await.unwrap());
+            backend.timeout = Duration::from_millis(50);
+            let request = route_request(&first, RTM_DELROUTE, NLM_F_REQUEST).unwrap();
+            let failure = backend
+                .request(request, ReplyKind::Ack)
+                .await
+                .err()
+                .expect("an operation without ACK must time out");
+            assert!(matches!(
+                failure.into_route_error(true),
+                RouteError::Unknown(_)
+            ));
+            assert!(
+                !backend.contains(&first).await.unwrap(),
+                "the timed-out delete actually reached the kernel"
+            );
+            assert_eq!(backend.remove(&second).await.unwrap(), Some(()));
+        });
+    }
+
+    #[test]
+    #[ignore = "requires namespace privileges; creates a private network namespace"]
+    fn kernel_socket_remains_bound_to_its_creation_namespace() {
+        kernel_test(|| async {
+            let ifindex = dummy("et-route");
+            let mut backend = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+            let owned = route("10.75.0.0/24", ifindex, 65535);
+            backend.add(&owned).await.unwrap();
+            let original = File::open("/proc/thread-self/ns/net").unwrap();
+            nix::sched::unshare(CloneFlags::CLONE_NEWNET).unwrap();
+            assert_eq!(dummy("et-route"), ifindex);
+            ip(&[
+                "route",
+                "add",
+                "10.75.0.0/24",
+                "dev",
+                "et-route",
+                "metric",
+                "65535",
+                "proto",
+                "static",
+                "scope",
+                "global",
+            ]);
+            assert_eq!(backend.remove(&owned).await.unwrap(), Some(()));
+            let other = serde_json::from_str::<serde_json::Value>(&ip(&[
+                "-j",
+                "route",
+                "show",
+                "exact",
+                "10.75.0.0/24",
+            ]))
+            .unwrap();
+            assert_eq!(other.as_array().unwrap().len(), 1);
+            setns(&original, CloneFlags::CLONE_NEWNET).unwrap();
+            assert!(!backend.contains(&owned).await.unwrap());
+        });
+    }
+}
