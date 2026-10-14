@@ -1,7 +1,4 @@
-use std::{
-    any::Any,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 
 #[cfg(not(mobile))]
 use easytier_core::instance::CorePacketPlane;
@@ -18,24 +15,24 @@ use super::MagicDnsRuntime;
 use crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry;
 use crate::{common::global_ctx::ArcGlobalCtx, instance::virtual_nic::NicCtx};
 
-struct NicCtxContainer {
-    _nic_ctx: Option<Box<dyn Any + Send>>,
-    magic_dns: MagicDnsRuntime,
+enum NicCtxContainer {
+    Active {
+        nic_ctx: Box<NicCtx>,
+        magic_dns: MagicDnsRuntime,
+    },
+    PacketDrain(JoinSet<()>),
 }
 
 impl NicCtxContainer {
     fn new(nic_ctx: NicCtx, magic_dns: MagicDnsRuntime) -> Self {
-        Self {
-            _nic_ctx: Some(Box::new(nic_ctx)),
+        Self::Active {
+            nic_ctx: Box::new(nic_ctx),
             magic_dns,
         }
     }
 
     fn packet_drain(tasks: JoinSet<()>) -> Self {
-        Self {
-            _nic_ctx: Some(Box::new(tasks)),
-            magic_dns: MagicDnsRuntime::default(),
-        }
+        Self::PacketDrain(tasks)
     }
 }
 
@@ -67,11 +64,18 @@ impl TunNicState {
     }
 
     pub(super) async fn stop(&self) {
-        let mut old = self.nic_ctx.lock().await.take();
-        if let Some(nic) = old.as_mut() {
-            nic.magic_dns.stop().await;
+        let old = self.nic_ctx.lock().await.take();
+        match old {
+            Some(NicCtxContainer::Active {
+                mut nic_ctx,
+                mut magic_dns,
+            }) => {
+                magic_dns.stop().await;
+                nic_ctx.shutdown().await;
+            }
+            Some(NicCtxContainer::PacketDrain(mut tasks)) => tasks.shutdown().await,
+            None => {}
         }
-        drop(old);
     }
 
     #[cfg(mobile)]
@@ -79,8 +83,10 @@ impl TunNicState {
         &self,
     ) -> Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims> {
         let nic = self.nic_ctx.lock().await;
-        let nic = nic.as_ref()?._nic_ctx.as_ref()?.downcast_ref::<NicCtx>()?;
-        nic.current_mobile_tun_claims().await
+        match nic.as_ref()? {
+            NicCtxContainer::Active { nic_ctx, .. } => nic_ctx.current_mobile_tun_claims().await,
+            NicCtxContainer::PacketDrain(_) => None,
+        }
     }
 
     pub(super) async fn drain(&self) {
@@ -193,6 +199,28 @@ mod tests {
 
     use super::*;
     use crate::{common::global_ctx::GlobalCtxEvent, instance::test_instance::TestInstance};
+
+    #[tokio::test]
+    async fn stop_releases_packet_receiver_before_returning() {
+        let state = TunNicState::empty();
+        let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+        state
+            .install_receiver(HostPacketReceiver::new(receiver))
+            .unwrap();
+        let receiver = state.receiver();
+        state.drain().await;
+        // Let the drain acquire the receiver and block waiting for a packet.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while receiver.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        state.stop().await;
+        assert!(receiver.try_lock().is_ok());
+    }
 
     #[tokio::test]
     async fn dhcp_preserves_publication_permit_and_cancelled_address() {

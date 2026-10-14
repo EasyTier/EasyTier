@@ -246,6 +246,8 @@ impl SharedVirtualNic {
         if let Some(dispatcher) = self.dispatcher.take() {
             dispatcher.shutdown_without_invalidation().await;
         }
+        #[cfg(target_os = "windows")]
+        self.nic.lock().await.clear_windows_device();
     }
 
     async fn apply_ifcfg_update(&self, next_ifcfg: &SharedIfConfig) -> Result<(), Error> {
@@ -362,7 +364,10 @@ impl SharedVirtualNic {
             self.member_tunnel_table.clone(),
             self.valid.clone(),
         );
-        self.sync_dispatcher_sources(&dispatcher).await?;
+        if let Err(err) = self.sync_dispatcher_sources(&dispatcher).await {
+            dispatcher.shutdown_without_invalidation().await;
+            return Err(err);
+        }
         self.dispatcher = Some(dispatcher);
         Ok(())
     }
@@ -891,6 +896,10 @@ impl SharedVirtualNicRegistry {
     }
 }
 
+// Rust 1.95's LLVM can zero this result when inlined into the async add_ip path.
+// Remove this workaround once all build toolchains include LLVM's fix:
+// https://github.com/llvm/llvm-project/pull/207229
+#[inline(never)]
 fn ipv4_inet(address: Ipv4Addr, prefix: i32) -> Result<Ipv4Inet, Error> {
     let prefix = u8::try_from(prefix)
         .map_err(|_| anyhow::anyhow!("invalid IPv4 prefix length {}", prefix))?;

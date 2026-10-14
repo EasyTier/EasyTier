@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Button, Checkbox, Column, DataTable, Dialog, InputSwitch, InputText, Message, Password, Skeleton, Tag, useToast } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
-import { UrlListInput, Utils } from 'easytier-frontend-lib';
+import { NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
 import ApiClient, { type CentralNetworkSettings, type CentralNetworkSummary, type GatewayInfo } from '../modules/api';
 import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
 
@@ -34,12 +34,7 @@ const filteredNetworks = computed(() => {
 
 const gatewayEnabled = computed(() => gatewayInfo.value?.enabled === true);
 
-const protos: { [proto: string]: number } = {
-    tcp: 11010,
-    udp: 11010,
-    ws: 11011,
-    wss: 11012,
-};
+const protos = NetworkTypes.PEER_PROTOCOLS;
 
 const networkingMethodLabels: { [method: string]: () => string } = {
     PublicServer: () => t('public_server'),

@@ -83,16 +83,16 @@ jobs:
           artifact-ids: ${{ steps.prepare.outputs.mobile_artifact_ids }}
           path: ${{ steps.prepare.outputs.mobile_path }}
 
-      - name: Package assets with stable names
+      - name: Package assets like version releases
         if: steps.prepare.outputs.ready == 'true'
-        shell: bash
-        run: |
-          mkdir nightly-assets
-          chmod -R 755 nightly-artifacts
-          for artifact in nightly-artifacts/*; do
-            name=$(basename "$artifact")
-            (cd "$artifact" && zip -qr "$GITHUB_WORKSPACE/nightly-assets/$name.zip" .)
-          done
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { packageAssets } = require('./.github/scripts/nightly-release.js');
+            const build = require(`${process.env.GITHUB_WORKSPACE}/nightly-release.json`);
+            await packageAssets({ build, source: 'nightly-artifacts', directory: 'nightly-assets' });
+            fs.writeFileSync('nightly-release.json', JSON.stringify(build));
 
       - name: Update the fixed nightly prerelease
         if: steps.prepare.outputs.ready == 'true'

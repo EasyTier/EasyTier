@@ -306,12 +306,7 @@ const savingSettings = ref(false);
 
 const gatewayInfo = ref<{ enabled: boolean; peer_url?: string } | undefined>(undefined);
 
-const protos: { [proto: string]: number } = {
-    tcp: 11010,
-    udp: 11010,
-    ws: 11011,
-    wss: 11012,
-};
+const protos = NetworkTypes.PEER_PROTOCOLS;
 
 const gatewayFollowed = () =>
     gatewayInfo.value?.enabled === true
