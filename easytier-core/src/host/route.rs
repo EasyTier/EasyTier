@@ -5,14 +5,39 @@
 //! the instance's runtime configuration.
 
 use std::collections::BTreeSet;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use cidr::{IpCidr, Ipv4Cidr};
 use registry::{Registration, Registry};
 use tokio::sync::watch;
 
-/// One publisher's set of route destinations.
-pub type RouteSet = BTreeSet<IpCidr>;
+/// A concrete direct-route request. The manager supplies the selected device;
+/// the producer supplies the destination and a nonzero Linux route metric.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RouteSpec {
+    pub destination: IpCidr,
+    pub metric: NonZeroU32,
+}
+
+impl RouteSpec {
+    pub const fn new(destination: IpCidr, metric: NonZeroU32) -> Self {
+        Self {
+            destination,
+            metric,
+        }
+    }
+}
+
+/// Ordinary proxy / DNS routes use the existing metric 65535.
+impl From<IpCidr> for RouteSpec {
+    fn from(destination: IpCidr) -> Self {
+        Self::new(destination, NonZeroU32::new(65535).unwrap())
+    }
+}
+
+/// One publisher's complete set of direct-route requests.
+pub type RouteSet = BTreeSet<RouteSpec>;
 
 /// Route intent declared by an individual producer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +46,12 @@ pub enum RouteDemand {
     AutoProxy(BTreeSet<Ipv4Cidr>),
     /// Additional routes that must always be present (e.g. DNS fake-IP).
     Additional(RouteSet),
+}
+
+impl RouteDemand {
+    pub fn additional(destinations: impl IntoIterator<Item = IpCidr>) -> Self {
+        Self::Additional(destinations.into_iter().map(RouteSpec::from).collect())
+    }
 }
 
 /// Last acknowledged or verified routes on the selected, ready device.
@@ -114,7 +145,8 @@ impl RouteHandle {
         self.status.borrow().clone()
     }
 
-    /// Waits for an acknowledged / verified route set on this exact fd claim.
+    /// Waits for acknowledged / verified destinations on this exact fd claim,
+    /// at the requested metric or a lower effective metric from another source.
     /// Callers supply their business deadline and retain their registration.
     pub async fn wait_ready(
         &self,
@@ -128,7 +160,13 @@ impl RouteHandle {
                 return Err(RouteRuntimeClosed);
             }
             if snapshot.device_registration == Some(device_registration)
-                && required.is_subset(&snapshot.ready)
+                && required.iter().all(|request| {
+                    snapshot
+                        .ready
+                        .range(RouteSpec::new(request.destination, NonZeroU32::MIN)..=*request)
+                        .next()
+                        .is_some()
+                })
             {
                 return Ok(());
             }
@@ -147,6 +185,8 @@ pub struct RouteRuntimeClosed;
 /// 1. `Additional` routes are always merged into the result.
 /// 2. `Some(routes)` replaces the entire auto-proxy group, including when empty.
 /// 3. `None` allows all `AutoProxy` declarations to contribute.
+/// 4. Overlapping requests for one destination use the lowest metric. Removing
+///    that contribution exposes the next remaining request for the same slot.
 pub fn resolve_route_demands(
     demands: &[Arc<RouteDemand>],
     manual_routes: Option<&BTreeSet<Ipv4Cidr>>,
@@ -165,20 +205,24 @@ pub fn resolve_route_demands(
     match manual_routes {
         Some(manual_routes) => {
             for &cidr in manual_routes {
-                result.insert(IpCidr::V4(cidr));
+                result.insert(IpCidr::V4(cidr).into());
             }
         }
         None => {
             for demand in demands {
                 if let RouteDemand::AutoProxy(auto_routes) = demand.as_ref() {
                     for &cidr in auto_routes {
-                        result.insert(IpCidr::V4(cidr));
+                        result.insert(IpCidr::V4(cidr).into());
                     }
                 }
             }
         }
     }
 
+    // RouteSpec is ordered by destination, then metric. Keep one effective
+    // request per destination, with an explicit deterministic cost policy.
+    let mut destinations = BTreeSet::new();
+    result.retain(|route| destinations.insert(route.destination));
     result
 }
 
@@ -246,8 +290,40 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn ip(s: &str) -> IpCidr {
-        s.parse().unwrap()
+    fn ip(s: &str) -> RouteSpec {
+        s.parse::<IpCidr>().unwrap().into()
+    }
+
+    #[tokio::test]
+    async fn overlapping_metrics_select_the_lowest_and_withdrawal_exposes_the_next() {
+        let low = RouteSpec::new("::/0".parse().unwrap(), NonZeroU32::new(5).unwrap());
+        let ordinary = ip("::/0");
+        let routes = RouteRegistry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let _ordinary = handle
+            .register(RouteDemand::Additional(RouteSet::from([ordinary])))
+            .unwrap();
+        let preferred = handle
+            .register(RouteDemand::Additional(RouteSet::from([low])))
+            .unwrap();
+        assert_eq!(
+            resolve_route_demands(&routes.snapshot(), None),
+            RouteSet::from([low])
+        );
+        routes.publish_status(RouteStatus {
+            device_registration: Some(1),
+            ready: RouteSet::from([low]),
+            closed: false,
+        });
+        handle
+            .wait_ready(&RouteSet::from([ordinary]), 1)
+            .await
+            .unwrap();
+        drop(preferred);
+        assert_eq!(
+            resolve_route_demands(&routes.snapshot(), None),
+            RouteSet::from([ordinary])
+        );
     }
 
     #[test]

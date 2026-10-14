@@ -330,7 +330,7 @@ mod tests {
 
         let handle = runtime_host.route_handle().expect("handle must exist");
         let reg = handle
-            .register(RouteDemand::Additional(BTreeSet::new()))
+            .register(RouteDemand::additional(BTreeSet::new()))
             .expect("must register");
         assert!(global_ctx.get_route_handle().is_some());
 
@@ -340,11 +340,11 @@ mod tests {
         // Registry is closed synchronously
         assert!(
             handle
-                .register(RouteDemand::Additional(BTreeSet::new()))
+                .register(RouteDemand::additional(BTreeSet::new()))
                 .is_none()
         );
         assert!(
-            reg.replace(RouteDemand::Additional(BTreeSet::new()))
+            reg.replace(RouteDemand::additional(BTreeSet::new()))
                 .is_none()
         );
         assert!(global_ctx.get_route_handle().is_none());
@@ -366,22 +366,22 @@ mod tests {
         let handle_b = runtime_host_b.route_handle().unwrap();
 
         let reg_a = handle_a
-            .register(RouteDemand::Additional(BTreeSet::new()))
+            .register(RouteDemand::additional(BTreeSet::new()))
             .unwrap();
         let reg_b = handle_b
-            .register(RouteDemand::Additional(BTreeSet::new()))
+            .register(RouteDemand::additional(BTreeSet::new()))
             .unwrap();
 
         // Shut down A
         runtime_host_a.request_runtime_shutdown();
         assert!(
             handle_a
-                .register(RouteDemand::Additional(BTreeSet::new()))
+                .register(RouteDemand::additional(BTreeSet::new()))
                 .is_none()
         );
         assert!(
             reg_a
-                .replace(RouteDemand::Additional(BTreeSet::new()))
+                .replace(RouteDemand::additional(BTreeSet::new()))
                 .is_none()
         );
         assert!(global_ctx_a.get_route_handle().is_none());
@@ -389,12 +389,12 @@ mod tests {
         // B remains fully functional
         assert!(
             handle_b
-                .register(RouteDemand::Additional(BTreeSet::new()))
+                .register(RouteDemand::additional(BTreeSet::new()))
                 .is_some()
         );
         assert!(
             reg_b
-                .replace(RouteDemand::Additional(BTreeSet::new()))
+                .replace(RouteDemand::additional(BTreeSet::new()))
                 .is_some()
         );
         assert!(global_ctx_b.get_route_handle().is_some());

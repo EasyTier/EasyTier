@@ -42,7 +42,7 @@ use easytier_core::gateway::magic_dns::{
     MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsResolverRegistration,
     MagicDnsRoute,
 };
-use easytier_core::host::route::RouteDemand;
+use easytier_core::host::route::{RouteDemand, RouteSpec};
 use easytier_core::instance::CorePacketPlane;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
@@ -374,7 +374,7 @@ async fn register_native_dns_route(
         .get_route_handle()
         .context("route handle missing for native route runtime")?;
     let cidr = cidr::Ipv4Cidr::new(fake_ip, 32)?;
-    let required = std::collections::BTreeSet::from([cidr::IpCidr::V4(cidr)]);
+    let required = std::collections::BTreeSet::from([RouteSpec::from(cidr::IpCidr::V4(cidr))]);
     let reg = handle
         .register(RouteDemand::Additional(required.clone()))
         .context("failed to register fake ip route demand")?;
@@ -616,7 +616,9 @@ mod route_tests {
         assert!(futures::poll!(startup.as_mut()).is_pending());
         routes.publish_status(RouteStatus {
             device_registration: Some(active.registration),
-            ready: std::collections::BTreeSet::from(["100.100.100.100/32".parse().unwrap()]),
+            ready: std::collections::BTreeSet::from([RouteSpec::from(
+                "100.100.100.100/32".parse::<cidr::IpCidr>().unwrap(),
+            )]),
             closed: false,
         });
         let registration = startup.await.unwrap();

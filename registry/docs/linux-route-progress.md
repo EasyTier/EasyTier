@@ -103,6 +103,15 @@ owned 路由。30 个 manager 测试通过，覆盖中断、确定失败后再�
 
 ## 当前验证
 
+声明现在使用 RouteSpec(destination, NonZeroU32 metric)；Additional 可以表达
+具体优先级，ordinary proxy / DNS 保留 metric 65535。同一目标的 contribution
+采用最低 metric，withdraw 后露出余下 contribution。替换仍经过原条目的精确
+删除；失败时保持旧 installed 并阻塞新 metric 的创建。反馈和 wait_ready 使用
+相同 effective-state 规则，较低 metric 的 direct route 可满足较高 metric 请求。
+这一规则只在路由领域 resolver 中，未引入 registry policy trait。
+
+- metric 声明、聚合与替换后相关 native 57 项、core 8 项测试通过。
+
 RouteRegistry 是 route-domain facade：组合 scoped 声明和独立的 applied-state
 watch。producer 的 RouteHandle 只能 register / 观察 / wait_ready；不能发布结果或
 close。反馈标明选中的 fd registration，只包含 acknowledged / verified 条目，
