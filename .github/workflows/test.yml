@@ -28,7 +28,6 @@ jobs:
   ci-scripts:
     name: Test CI scripts
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
       - uses: actions/checkout@v5
 
@@ -66,19 +65,16 @@ jobs:
       go: ${{ github.event_name == 'workflow_dispatch' || steps.path_filter.outputs.go == 'true' }}
       should_skip: >-
         ${{
-          (github.event_name == 'pull_request' && github.event.pull_request.draft) ||
           (
+            steps.skip_check.outputs.should_skip == 'true' ||
             (
-              steps.skip_check.outputs.should_skip == 'true' ||
-              (
-                github.event_name == 'pull_request' &&
-                steps.path_filter.outputs.relevant != 'true'
-              )
-            ) &&
-            github.event_name != 'workflow_dispatch' &&
-            github.ref_type != 'tag' &&
-            !startsWith(github.ref_name, 'releases/')
-          )
+              github.event_name == 'pull_request' &&
+              steps.path_filter.outputs.relevant != 'true'
+            )
+          ) &&
+          github.event_name != 'workflow_dispatch' &&
+          github.ref_type != 'tag' &&
+          !startsWith(github.ref_name, 'releases/')
         }}
     steps:
       - uses: actions/checkout@v5
@@ -87,8 +83,7 @@ jobs:
       - id: skip_check
         if: >-
           github.event_name != 'workflow_dispatch' && github.ref_type != 'tag' &&
-          !startsWith(github.ref_name, 'releases/') &&
-          (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+          !startsWith(github.ref_name, 'releases/')
         uses: fkirc/skip-duplicate-actions@v5
         with:
           concurrent_skipping: 'never'
@@ -282,9 +277,7 @@ jobs:
     name: Test Go modules
     runs-on: ubuntu-latest
     needs: pre_job
-    if: >-
-      needs.pre_job.outputs.run_checks == 'true' && needs.pre_job.outputs.go == 'true' &&
-      (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    if: needs.pre_job.outputs.run_checks == 'true' && needs.pre_job.outputs.go == 'true'
     permissions:
       contents: read
     steps:
