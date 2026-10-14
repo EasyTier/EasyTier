@@ -13,6 +13,7 @@ use easytier_core::{
 use crate::common::global_ctx::ArcGlobalCtx;
 
 use super::backend::RouteBackend;
+use super::device::DeviceFacts;
 use super::model::{CleanupIncomplete, DeviceId, RetryState, Route, RouteError};
 
 const DEFAULT_METRIC: u32 = 65535;
@@ -28,6 +29,7 @@ pub struct RouteMgr<B> {
     /// Authoritative manual proxy policy and its existing invalidation signal.
     runtime_config: CoreRuntimeConfigStore,
     config_changed: watch::Receiver<u64>,
+    device_changed: watch::Receiver<DeviceFacts>,
 
     installed: BTreeSet<Route>,
     external: BTreeSet<Route>,
@@ -50,6 +52,7 @@ impl<B: RouteBackend> RouteMgr<B> {
     ) -> Self {
         let changed = routes.subscribe();
         let config_changed = runtime_config.subscribe_service_runtime_changes();
+        let device_changed = global_ctx.tun_devices.subscribe();
         Self {
             global_ctx,
             backend,
@@ -57,6 +60,7 @@ impl<B: RouteBackend> RouteMgr<B> {
             changed,
             runtime_config,
             config_changed,
+            device_changed,
             installed: BTreeSet::new(),
             external: BTreeSet::new(),
             unknown: BTreeSet::new(),
@@ -71,15 +75,30 @@ impl<B: RouteBackend> RouteMgr<B> {
         RouteHandle::new(self.routes.clone())
     }
 
-    fn get_tun_device(&self) -> Option<DeviceId> {
-        let ifindex = self.global_ctx.get_tun_device_index()?;
-        Some(DeviceId::new(ifindex, None))
+    fn retire_destroyed_devices(&mut self, facts: &DeviceFacts) {
+        self.installed
+            .retain(|route| !facts.destroyed(&route.interface));
+        self.external
+            .retain(|route| !facts.destroyed(&route.interface));
+        self.unknown
+            .retain(|route| !facts.destroyed(&route.interface));
+        self.retries
+            .retain(|route, _| !facts.destroyed(&route.interface));
     }
 
     pub fn next_wakeup_time(&self) -> tokio::time::Instant {
         let now = tokio::time::Instant::now();
         // 1 second polling interval
         let fallback_deadline = now + Duration::from_secs(1);
+        if self
+            .global_ctx
+            .tun_devices
+            .snapshot()
+            .active
+            .is_some_and(|device| !device.ready)
+        {
+            return fallback_deadline;
+        }
 
         let earliest_retry = self.retries.values().map(|s| s.next_retry).min();
 
@@ -99,6 +118,7 @@ impl<B: RouteBackend> RouteMgr<B> {
             // lands during reconcile stays pending for the wait below.
             self.changed.mark_unchanged();
             self.config_changed.mark_unchanged();
+            self.device_changed.mark_unchanged();
             self.reconcile().await;
 
             if self.cancel.is_cancelled() {
@@ -122,6 +142,9 @@ impl<B: RouteBackend> RouteMgr<B> {
                         break;
                     }
                 }
+                changed = self.device_changed.changed() => {
+                    if changed.is_err() { break; }
+                }
                 _ = tokio::time::sleep_until(next_wakeup) => {}
             }
         }
@@ -130,35 +153,18 @@ impl<B: RouteBackend> RouteMgr<B> {
     }
 
     pub async fn reconcile(&mut self) {
-        // 1. Read latest device fact and handle interface destruction / recreation
-        let device_fact = self.get_tun_device();
-        let device_changed = match (&self.current_tun_device, &device_fact) {
-            (Some(old_dev), Some(new_dev)) => {
-                old_dev.host_instance != new_dev.host_instance || old_dev.ifindex != new_dev.ifindex
-            }
-            (Some(_), None) => true,
-            (None, Some(_)) => true,
-            (None, None) => false,
-        };
-
-        if device_changed {
-            if let Some(old_dev) = &self.current_tun_device {
-                let old_ifindex = old_dev.ifindex;
-                tracing::info!(
-                    ?old_dev,
-                    ?device_fact,
-                    "TUN device destroyed or recreated, retiring routes via kernel cascading"
-                );
-                self.installed
-                    .retain(|r| r.interface.ifindex != old_ifindex);
-                self.external.retain(|r| r.interface.ifindex != old_ifindex);
-                self.unknown.retain(|r| r.interface.ifindex != old_ifindex);
-                self.retries
-                    .retain(|r, _| r.interface.ifindex != old_ifindex);
-            }
-            self.current_tun_device = device_fact.clone();
-            self.desired = None;
+        let device_facts = self.global_ctx.tun_devices.snapshot();
+        self.retire_destroyed_devices(&device_facts);
+        if device_facts
+            .active
+            .as_ref()
+            .is_some_and(|device| !device.ready)
+        {
+            // An unready replacement does not revoke the old live device or
+            // its installed routes. No ordinary writes until it becomes ready.
+            return;
         }
+        self.current_tun_device = device_facts.active.map(|device| device.id);
 
         // 2. Combine dynamic declarations with the current configuration policy.
         let snapshot = self.routes.snapshot();
@@ -301,20 +307,8 @@ impl<B: RouteBackend> RouteMgr<B> {
         let mut newly_unknown = Vec::new();
 
         // 1. Re-read device fact before cleanup to account for devices that disappeared
-        let latest_device = self.get_tun_device();
-        if match (&self.current_tun_device, &latest_device) {
-            (Some(old_dev), Some(new_dev)) => {
-                old_dev.host_instance != new_dev.host_instance || old_dev.ifindex != new_dev.ifindex
-            }
-            (Some(_), None) => true,
-            _ => false,
-        } && let Some(old_dev) = &self.current_tun_device
-        {
-            let old_ifindex = old_dev.ifindex;
-            self.installed
-                .retain(|r| r.interface.ifindex != old_ifindex);
-            self.unknown.retain(|r| r.interface.ifindex != old_ifindex);
-        }
+        let device_facts = self.global_ctx.tun_devices.snapshot();
+        self.retire_destroyed_devices(&device_facts);
 
         // 2. Remove all remaining installed routes
         let installed = std::mem::take(&mut self.installed);
@@ -387,7 +381,7 @@ mod tests {
     fn test_route(cidr: &str) -> Route {
         Route {
             destination: IpCidr::from_str(cidr).unwrap(),
-            interface: DeviceId::new(TEST_DEVICE_INDEX, None),
+            interface: DeviceId::new(TEST_DEVICE_INDEX, Some(1)),
             metric: 65535,
         }
     }
@@ -539,7 +533,7 @@ mod tests {
 
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(100));
-        let dev = DeviceId::new(100, None);
+        let dev = DeviceId::new(100, Some(1));
         let mut backend = MockRouteBackend::new();
 
         let fake_ip = Ipv4Addr::new(7, 7, 7, 7);
@@ -611,7 +605,7 @@ mod tests {
         assert_eq!(manager.installed.len(), 1);
 
         // Now destroy device 1 and recreate device 2 (new ifindex)
-        let dev2 = DeviceId::new(101, None);
+        let dev2 = DeviceId::new(101, Some(2));
         global_ctx.set_tun_device_index_for_test(Some(101));
 
         manager.reconcile().await;
@@ -619,6 +613,132 @@ mod tests {
         assert_eq!(manager.installed.len(), 1);
         let installed = manager.installed.iter().next().unwrap();
         assert_eq!(installed.interface, dev2);
+    }
+
+    #[tokio::test]
+    async fn configuration_error_does_not_claim_device_destruction() {
+        let (mut manager, handle, _cancel) = test_manager(MockRouteBackend::new());
+        let route = test_route("7.7.7.7/32");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        manager
+            .global_ctx
+            .set_tun_device_error("configuration failed".into());
+        manager.reconcile().await;
+        assert_eq!(manager.installed, BTreeSet::from([route]));
+        assert!(manager.backend.remove_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unready_replacement_preserves_live_routes_and_selection_removes_them() {
+        let (mut manager, handle, _cancel) = test_manager(MockRouteBackend::new());
+        let route = test_route("7.7.7.7/32");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        let new = manager.global_ctx.tun_devices.attach("new".into(), 101);
+        manager.reconcile().await;
+        assert_eq!(manager.installed, BTreeSet::from([route.clone()]));
+        assert!(manager.backend.remove_calls.is_empty());
+        manager
+            .global_ctx
+            .tun_devices
+            .mark_ready(new.registration());
+        manager.reconcile().await;
+        assert_eq!(manager.backend.remove_calls, vec![route.clone()]);
+        assert_eq!(
+            manager.installed,
+            BTreeSet::from([Route {
+                interface: new.id().clone(),
+                ..route
+            }])
+        );
+    }
+
+    #[tokio::test]
+    async fn external_interface_routes_are_removed_after_the_fd_claim_closes() {
+        let ctx = get_mock_global_ctx();
+        let device = ctx
+            .tun_devices
+            .attach_external("persistent".into(), TEST_DEVICE_INDEX);
+        ctx.tun_devices.mark_ready(device.registration());
+        let routes = Registry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let mut manager = RouteMgr::new(
+            ctx,
+            MockRouteBackend::new(),
+            routes,
+            test_config_store(),
+            CancellationToken::new(),
+        );
+        let route = Route {
+            interface: device.id().clone(),
+            ..test_route("7.7.7.7/32")
+        };
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        drop(device);
+        manager.reconcile().await;
+        assert!(manager.installed.is_empty());
+        assert_eq!(manager.backend.remove_calls, vec![route]);
+    }
+
+    #[tokio::test]
+    async fn same_index_recreation_retires_only_the_old_instance() {
+        let (mut manager, handle, _cancel) = test_manager(MockRouteBackend::new());
+        let route = test_route("7.7.7.7/32");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        manager.global_ctx.set_tun_device_index_for_test(None);
+        // Model the kernel's route cascading when the old interface dies.
+        manager.backend.routes.clear();
+        manager
+            .global_ctx
+            .set_tun_device_index_for_test(Some(TEST_DEVICE_INDEX));
+        manager.reconcile().await;
+        assert_eq!(
+            manager.installed,
+            BTreeSet::from([Route {
+                interface: DeviceId::new(TEST_DEVICE_INDEX, Some(2)),
+                ..route
+            }])
+        );
+        assert!(manager.backend.remove_calls.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn device_readiness_wakes_the_manager_without_polling() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (backend, mut entered) = MockRouteBackend::paused(release.clone());
+        let (manager, handle, cancel) = test_manager(backend);
+        let ctx = manager.global_ctx.clone();
+        let new = ctx.tun_devices.attach("new".into(), 101);
+        let route = test_route("7.7.7.7/32");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        let mut run = Box::pin(manager.run());
+        assert!(futures::poll!(run.as_mut()).is_pending());
+        assert!(entered.try_recv().is_err());
+        ctx.tun_devices.mark_ready(new.registration());
+        assert!(futures::poll!(run.as_mut()).is_pending());
+        assert_eq!(
+            entered.try_recv().unwrap(),
+            Route {
+                interface: new.id().clone(),
+                ..route
+            }
+        );
+        release.notify_one();
+        cancel.cancel();
+        run.await.unwrap();
     }
 
     #[tokio::test]
@@ -674,7 +794,7 @@ mod tests {
 
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(100));
-        let dev = DeviceId::new(100, None);
+        let dev = DeviceId::new(100, Some(1));
         let mut backend = MockRouteBackend::new();
 
         let fake_ip = Ipv4Addr::new(7, 7, 7, 7);
@@ -723,7 +843,7 @@ mod tests {
 
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(100));
-        let dev = DeviceId::new(100, None);
+        let dev = DeviceId::new(100, Some(1));
         let mut backend = MockRouteBackend::new();
 
         let fake_ip = Ipv4Addr::new(7, 7, 7, 7);

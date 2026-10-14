@@ -29,7 +29,9 @@ pub(super) struct NativeRouteRuntime;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 impl NativeRouteRuntime {
     pub(super) fn new(global_ctx: ArcGlobalCtx, cancel: CancellationToken) -> Self {
-        if global_ctx.get_flags().no_tun {
+        let flags = global_ctx.get_flags();
+        // Explicitly named NICs use the process-wide shared NIC route authority.
+        if flags.no_tun || !flags.dev_name.is_empty() {
             Self {
                 global_ctx,
                 cancel,

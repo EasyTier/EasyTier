@@ -45,9 +45,28 @@ main table、static protocol、universe scope、unicast type。正常删除不 d
 ACK 及 sequence 依据 [Linux Netlink 文档](https://docs.kernel.org/userspace-api/netlink/intro.html)。
 delete priority 的匹配依据 [Linux v6.18 fib_nh_match](https://github.com/torvalds/linux/blob/v6.18/net/ipv4/fib_semantics.c)。
 
+## 设备事实与 fd lifetime
+
+设备输入使用同一份 Host snapshot 区分选中的设备、是否 ready、以及仍有 fd
+owner 的 claims。fd registration identity 与 kernel device identity 分离；
+新实例 identity 不复用，所以同名同 ifindex 重建且中间通知被合并时仍可识别。
+改变选择不表示旧设备已销毁：旧 fd 仍存活时，旧 route 走正常精确删除。
+未 ready 或配置失败时暂停普通写入，保留已有安装责任。
+
+TUN IO 的 read/write 两半共享 DeviceResource。它先关闭实际 IO resource，
+再释放 lifetime claim；丢弃 NicCtx 元数据或一半 IO 不会提前宣布销毁。
+后端和 Manager 均不持有 TUN resource。只有非持久化、本方独占生命周期的
+设备使用 owned generation；TUNGETIFF 显示持久化时使用 external identity，
+fd 关闭不会被当成 kernel 接口消失，已安装路由仍由 Manager 显式删除。
+
+以上判定依据 [Linux v6.18 TUN driver](https://github.com/torvalds/linux/blob/v6.18/drivers/net/tun.c)。
+Descriptor lifetime 测试使用真实 pipe fd；本轮环境没有 /dev/net/tun，尚未运行
+完整 TUN 创建 / 关闭集成测试。
+
 ## 当前验证
 
-- native 路由测试：23 项通过，其中包括 manager 与 ACK / 请求模型测试。
+- native 路由、设备事实、GlobalCtx 与 RuntimeHost 测试：44 项通过。
+- 设备事实基础提交单独运行四项合约测试通过；无默认功能的 library 编译通过。
 - Netlink wire 既有测试：4 项通过。
 - 真实 Linux 测试：4 项通过。测试运行在 user/network namespace 中，每项再
   创建自己的 netns，仅操作 dummy 接口及测试路由。
@@ -65,8 +84,6 @@ unshare --user --map-root-user --net cargo test -p easytier --lib \
 
 ## 仍需完成
 
-- 以 Host 实例 identity 和真实 fd lifetime 发布设备事实，替代索引轮询；
-  区分配置失败、暂未 ready、改选设备和确认销毁。
 - 改善协调循环的撤销 / 替换依赖、退避和 Unknown 核实，避免被阻塞的重试忙循环。
 - 在 backend I/O 期间输入变化时停止旧批次剩余操作，保留已执行结果的责任。
 - 停机超时保留任务 ownership；清理结束前重读设备事实，完整报告失败和 Unknown。

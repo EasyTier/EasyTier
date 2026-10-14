@@ -92,8 +92,8 @@ pub struct GlobalCtx {
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
     hostname: Mutex<String>,
 
-    tun_device_name: Mutex<Option<String>>,
-    tun_device_index: Mutex<Option<u32>>,
+    tun_device_name: Arc<Mutex<Option<String>>>,
+    pub(crate) tun_devices: Arc<crate::instance::route::device::TunDeviceState>,
 
     flags: ArcSwap<Flags>,
     runtime_endpoint_protocols: Option<HashSet<String>>,
@@ -197,6 +197,7 @@ impl GlobalCtx {
         }
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
+        let tun_device_name = Arc::new(Mutex::new(None));
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
@@ -209,8 +210,8 @@ impl GlobalCtx {
             cached_ipv6: AtomicCell::new(ipv6),
             hostname: Mutex::new(hostname),
 
-            tun_device_name: Mutex::new(None),
-            tun_device_index: Mutex::new(None),
+            tun_device_name: tun_device_name.clone(),
+            tun_devices: crate::instance::route::device::TunDeviceState::new(tun_device_name),
 
             flags: ArcSwap::new(Arc::new(flags)),
             runtime_endpoint_protocols,
@@ -253,22 +254,10 @@ impl GlobalCtx {
     #[cfg(any(feature = "tun", test))]
     fn set_tun_device_name(&self, name: Option<String>) {
         *self.tun_device_name.lock().unwrap() = name;
-        if self.tun_device_name.lock().unwrap().is_none() {
-            *self.tun_device_index.lock().unwrap() = None;
-        }
     }
 
     #[cfg(any(feature = "tun", test))]
     pub(crate) fn set_tun_device_ready(&self, name: String) {
-        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-        {
-            // Interface indices are namespace-local: resolve the index in the
-            // namespace the device was just created in, not in the caller's.
-            let ifindex = self.net_ns.run(|| {
-                crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&name).ok()
-            });
-            *self.tun_device_index.lock().unwrap() = ifindex;
-        }
         self.set_tun_device_name(Some(name.clone()));
         self.issue_event(GlobalCtxEvent::TunDeviceReady(name));
     }
@@ -276,7 +265,7 @@ impl GlobalCtx {
     #[cfg(any(feature = "tun", test))]
     pub(crate) fn set_tun_device_error(&self, error: String) {
         self.set_tun_device_name(None);
-        *self.tun_device_index.lock().unwrap() = None;
+        self.tun_devices.mark_unready();
         self.issue_event(GlobalCtxEvent::TunDeviceError(error));
     }
 
@@ -285,23 +274,16 @@ impl GlobalCtx {
     }
 
     pub fn get_tun_device_index(&self) -> Option<u32> {
-        if let Some(idx) = *self.tun_device_index.lock().unwrap() {
-            return Some(idx);
-        }
-        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-        {
-            let name = self.get_tun_device_name()?;
-            self.net_ns.run(|| {
-                crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&name).ok()
-            })
-        }
-        #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
-        None
+        self.tun_devices
+            .snapshot()
+            .active
+            .filter(|device| device.ready)
+            .map(|device| device.id.ifindex)
     }
 
     #[cfg(test)]
     pub fn set_tun_device_index_for_test(&self, ifindex: Option<u32>) {
-        *self.tun_device_index.lock().unwrap() = ifindex;
+        self.tun_devices.set_for_test(ifindex);
     }
 
     pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {

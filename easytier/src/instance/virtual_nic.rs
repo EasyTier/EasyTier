@@ -39,6 +39,10 @@ use tokio_util::bytes::Bytes;
 #[cfg(target_os = "windows")]
 use tokio_util::task::AbortOnDropHandle;
 use tun::{AbstractDevice, AsyncDevice, Configuration, Layer};
+#[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+type NativeTunDevice = crate::instance::route::device::DeviceResource<AsyncDevice>;
+#[cfg(not(all(target_os = "linux", feature = "linux-netlink", not(mobile))))]
+type NativeTunDevice = AsyncDevice;
 use zerocopy::{NativeEndian, NetworkEndian};
 
 #[cfg(target_os = "windows")]
@@ -49,7 +53,7 @@ use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicMem
 pin_project! {
     pub struct TunStream {
         #[pin]
-        l: BiLock<AsyncDevice>,
+        l: BiLock<NativeTunDevice>,
         cur_buf: BytesMut,
         has_packet_info: bool,
         payload_offset: usize,
@@ -57,7 +61,7 @@ pin_project! {
 }
 
 impl TunStream {
-    pub fn new(l: BiLock<AsyncDevice>, has_packet_info: bool) -> Self {
+    fn new(l: BiLock<NativeTunDevice>, has_packet_info: bool) -> Self {
         let mut payload_offset = ZCPacketType::NIC.get_packet_offsets().payload_offset;
         if has_packet_info {
             payload_offset -= 4;
@@ -201,7 +205,7 @@ impl ZCPacketToBytes for TunZCPacketToBytes {
 pin_project! {
     pub struct TunAsyncWrite {
         #[pin]
-        l: BiLock<AsyncDevice>,
+        l: BiLock<NativeTunDevice>,
     }
 }
 
@@ -277,6 +281,10 @@ pub struct VirtualNic {
     // itself may already have disappeared when its forwarding tasks stop.
     #[cfg(target_os = "windows")]
     name_reservation: Option<std::os::windows::io::OwnedHandle>,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+    device_registration: Option<u64>,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+    device_state: Option<Arc<crate::instance::route::device::TunDeviceState>>,
 }
 
 impl Drop for VirtualNic {
@@ -309,7 +317,20 @@ impl VirtualNic {
             ifcfg: Box::new(IfConfiger::default()),
             #[cfg(target_os = "windows")]
             name_reservation: None,
+            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+            device_registration: None,
+            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+            device_state: None,
         }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+    pub(crate) fn with_device_state(
+        mut self,
+        state: Arc<crate::instance::route::device::TunDeviceState>,
+    ) -> Self {
+        self.device_state = Some(state);
+        self
     }
 
     /// Check and create TUN device node if necessary on Linux systems
@@ -629,6 +650,8 @@ impl VirtualNic {
         ));
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        let dev = crate::instance::route::device::DeviceResource::untracked(dev);
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -646,6 +669,25 @@ impl VirtualNic {
 
     pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
+
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        let destroy_on_close = {
+            use std::os::fd::AsRawFd;
+            let mut request: nix::libc::ifreq = unsafe { std::mem::zeroed() };
+            if unsafe {
+                nix::libc::ioctl(
+                    dev.as_raw_fd(),
+                    nix::libc::TUNGETIFF as nix::libc::Ioctl,
+                    &mut request,
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            // Attaching a persistent TUN does not grant authority to infer its
+            // destruction from this descriptor closing.
+            unsafe { request.ifr_ifru.ifru_flags as i32 & nix::libc::IFF_PERSIST == 0 }
+        };
 
         #[cfg(not(target_os = "freebsd"))]
         let ifname = dev.tun_name()?;
@@ -712,6 +754,21 @@ impl VirtualNic {
         }
 
         let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        let dev = if let Some(state) = &self.device_state {
+            let ifindex = self.config.net_ns.run(|| {
+                crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&ifname)
+            })?;
+            let lifetime = if destroy_on_close {
+                state.attach(ifname.clone(), ifindex)
+            } else {
+                state.attach_external(ifname.clone(), ifindex)
+            };
+            self.device_registration = Some(lifetime.registration());
+            crate::instance::route::device::DeviceResource::new(dev, lifetime)
+        } else {
+            crate::instance::route::device::DeviceResource::untracked(dev)
+        };
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -1138,7 +1195,10 @@ impl NicCtx {
                 close_notifier.clone(),
             ))
         } else {
-            NicBackend::Dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config))))
+            let nic = VirtualNic::new(nic_config);
+            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+            let nic = nic.with_device_state(global_ctx.tun_devices.clone());
+            NicBackend::Dedicated(Arc::new(Mutex::new(nic)))
         };
 
         Self::new_with_backend(
@@ -1562,6 +1622,24 @@ impl NicCtx {
         Ok(())
     }
 
+    async fn publish_ready(&self) -> Result<(), Error> {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        {
+            let registration = match &self.backend {
+                NicBackend::Dedicated(nic) => nic.lock().await.device_registration,
+                NicBackend::Shared(_) => None,
+            };
+            if let Some(registration) = registration {
+                if let Some(name) = self.global_ctx.tun_devices.mark_ready(registration) {
+                    self.global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady(name));
+                }
+                return Ok(());
+            }
+        }
+        self.global_ctx.set_tun_device_ready(self.tun_ifname().await?);
+        Ok(())
+    }
+
     pub async fn run(
         &mut self,
         ipv4_addr: Option<cidr::Ipv4Inet>,
@@ -1576,7 +1654,6 @@ impl NicCtx {
                     let _ = RegistryManager::reg_change_catrgory_in_profile(&ifname);
                 }
 
-                self.global_ctx.set_tun_device_ready(ifname);
                 ret
             }
             Err(err) => {
@@ -1605,6 +1682,8 @@ impl NicCtx {
         // Keep the updater running so runtime config patches can enable auto mode
         // without recreating the NIC.
         self.run_public_ipv6_addr_updater().await?;
+
+        self.publish_ready().await?;
 
         Ok(())
     }
