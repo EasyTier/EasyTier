@@ -180,7 +180,7 @@ pub(crate) fn merge_network_config_toml(
 
     // Normalize all schema aliases, including camelCase, before the form
     // replaces or removes the canonical keys it manages.
-    for &(alias, canonical) in Flags::aliases() {
+    for (&alias, &canonical) in Flags::aliases() {
         if let Some(value) = merged_flags.remove(alias) {
             merged_flags.entry(canonical.to_owned()).or_insert(value);
         }

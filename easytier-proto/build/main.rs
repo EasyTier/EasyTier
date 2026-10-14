@@ -1,5 +1,4 @@
 mod flags;
-mod flags_patch;
 mod rpc;
 
 use crate::rpc::ServiceGenerator;
@@ -149,14 +148,13 @@ fn main() -> anyhow::Result<()> {
     // which a prost-types round-trip drops.
     let annotated = std::fs::read(out.join("descriptors.bin"))?;
 
-    flags_patch::configure(&annotated, &mut config)?;
+    flags::generate(&annotated, &mut config, &out)?;
 
     let descriptors = prost::Message::encode_to_vec(&descriptor_set);
 
     config.file_descriptor_set_path(out.join("file_descriptor_set.bin"));
     config.compile_protos(&proto_files_reflect, &["proto/"])?;
     config.compile_fds(descriptor_set)?;
-    flags::write(&annotated, &out)?;
 
     pbjson_build::Builder::new()
         .register_descriptors(&descriptors)?

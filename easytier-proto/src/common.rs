@@ -4,6 +4,7 @@ use optionize::Optionizable as _;
 use prost::Message as _;
 use std::time::SystemTime;
 use std::{
+    collections::BTreeMap,
     fmt::{self, Display},
     str::FromStr,
     sync::OnceLock,
@@ -76,10 +77,10 @@ impl Flags {
         flags::FORM
     }
 
-    /// Alternate input names, including camelCase, and the canonical flag
-    /// each names. Generated from the same schema declarations as Serde.
-    pub fn aliases() -> &'static [(&'static str, &'static str)] {
-        flags::ALIASES
+    /// Maps alternate input names, including camelCase, to canonical flag
+    /// names. Generated from the same schema declarations as Serde.
+    pub fn aliases() -> &'static BTreeMap<&'static str, &'static str> {
+        &flags::ALIASES
     }
 }
 
@@ -757,7 +758,7 @@ mod tests {
     #[test]
     fn generated_flag_aliases_match_the_serde_input_names() {
         let defaults = serde_json::to_value(Flags::defaults().downgrade()).unwrap();
-        for &(alias, canonical) in Flags::aliases() {
+        for (&alias, &canonical) in Flags::aliases() {
             let value = &defaults[canonical];
             let patch: FlagsPatch =
                 serde_json::from_value(serde_json::json!({alias: value})).unwrap();
@@ -772,10 +773,13 @@ mod tests {
             "data_compress_algo",
             "dataCompressAlgo",
         ] {
-            assert!(Flags::aliases().contains(&(alias, "compression_algorithm")));
+            assert_eq!(Flags::aliases().get(alias), Some(&"compression_algorithm"));
         }
         for alias in ["foreign_network_whitelist", "foreignNetworkWhitelist"] {
-            assert!(Flags::aliases().contains(&(alias, "relay_network_whitelist")));
+            assert_eq!(
+                Flags::aliases().get(alias),
+                Some(&"relay_network_whitelist")
+            );
         }
     }
 
