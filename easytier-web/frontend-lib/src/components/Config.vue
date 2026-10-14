@@ -10,6 +10,7 @@ import {
   formFlags,
   NetworkConfig,
   normalizeNetworkConfig,
+  PEER_PROTOCOLS as protos,
   removeRow,
 } from '../types/network'
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
@@ -83,20 +84,6 @@ const secureModeEnabled = computed({
 })
 
 const { t } = useI18n()
-
-const protos: { [proto: string]: number } = {
-  tcp: 11010,
-  udp: 11010,
-  wg: 11011,
-  ws: 11011,
-  wss: 11012,
-  quic: 11012,
-  faketcp: 11013,
-  http: 80,
-  https: 443,
-  txt: 0,
-  srv: 0,
-}
 
 const listenerExcludedProtos = new Set(['http', 'https', 'txt', 'srv'])
 const listenerProtos: { [proto: string]: number } = Object.fromEntries(
