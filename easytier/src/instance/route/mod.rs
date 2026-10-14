@@ -1,4 +1,5 @@
 pub mod backend;
+pub(crate) mod device;
 pub mod manager;
 pub mod model;
 
