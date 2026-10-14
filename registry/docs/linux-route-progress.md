@@ -148,6 +148,19 @@ Manager 在 TUN prepare 前启动，消除启动依赖环。这里的 ready 是�
 - 新增内核核实测试覆盖多条 IPv4 / IPv6 key、不同 metric、应用 generation
   保留、每个地址族一次 dump，以及空集合不请求内核。
 
+真实内核测试现在六项通过，增加完整 RouteMgr 的规模 / 增量 / 清理检查。
+WSL Linux 上 debug test binary 的本次测量如下（用于回归证据，不是生产 benchmark）：
+
+| 路由数 | 初次 reconcile | 相同输入 10 次 | 替换一条 | 清理 |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 2.08ms | 1.70ms | 0.22ms | 0.97ms |
+| 1,000 | 13.38ms | 17.49ms | 1.72ms | 23.93ms |
+| 10,000 | 131.90ms | 217.62ms | 21.95ms | 1,639.02ms |
+
+断言确认：初次 N 次写入，相同输入无写入 / 无 inspection，替换一条仅一次
+delete 加一次 add，停机清理所有条目。独立 socket dump 确认最终实际为空。
+正常 run 稳态不调用这些重复 reconcile，只有输入更新或 pending deadline 才运行。
+
 可重运行真实内核测试：
 
 ```sh
@@ -158,7 +171,7 @@ unshare --user --map-root-user --net cargo test -p easytier --lib \
 
 ## 仍需完成
 
-- 完成规模 / 稳态验证后，再审查未迁移平台的具体 OS 合约和测试条件。
+- 审查未迁移平台的具体 OS 合约和测试条件。
 
 Registry core 的边界不变：只保存声明、管理 membership 并通知 invalidation。
 平台 I/O、设备事实、反馈、retry、reconciliation 和 shutdown 都在路由领域层。

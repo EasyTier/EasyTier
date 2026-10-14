@@ -632,6 +632,147 @@ mod tests {
 
     #[test]
     #[ignore = "requires namespace privileges; creates a private network namespace"]
+    fn kernel_manager_scale_and_incremental_updates() {
+        kernel_test(|| async {
+            use crate::common::global_ctx::tests::get_mock_global_ctx;
+            use crate::instance::route::RouteMgr;
+            use easytier_core::{
+                config::{
+                    peers::PeerRuntimeSnapshot,
+                    runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+                },
+                host::route::{RouteDemand, RouteHandle, RouteRegistry},
+            };
+            use std::{
+                net::Ipv4Addr,
+                sync::{
+                    Arc,
+                    atomic::{AtomicU32, Ordering},
+                },
+                time::Instant,
+            };
+            use tokio_util::sync::CancellationToken;
+
+            struct CountedBackend {
+                backend: PlatformRouteBackend,
+                writes: Arc<AtomicU32>,
+                queries: Arc<AtomicU32>,
+            }
+            #[async_trait::async_trait]
+            impl RouteBackend for CountedBackend {
+                async fn add(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
+                    self.writes.fetch_add(1, Ordering::Relaxed);
+                    self.backend.add(route).await
+                }
+                async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
+                    self.writes.fetch_add(1, Ordering::Relaxed);
+                    self.backend.remove(route).await
+                }
+                async fn existing(
+                    &mut self,
+                    routes: &BTreeSet<Route>,
+                ) -> Result<BTreeSet<Route>, RouteError> {
+                    self.queries.fetch_add(1, Ordering::Relaxed);
+                    self.backend.existing(routes).await
+                }
+            }
+
+            let ifindex = dummy("et-scale");
+            for count in [100, 1_000, 10_000] {
+                let ctx = get_mock_global_ctx();
+                let device = ctx.tun_devices.attach_external("et-scale".into(), ifindex);
+                ctx.tun_devices.mark_ready(device.registration());
+                let routes = RouteRegistry::default();
+                let handle = RouteHandle::new(routes.clone());
+                let config = CoreRuntimeConfigStore::new(
+                    CoreRuntimeConfig::default(),
+                    Arc::new(PeerRuntimeSnapshot::default()),
+                );
+                let writes = Arc::new(AtomicU32::new(0));
+                let queries = Arc::new(AtomicU32::new(0));
+                let backend = CountedBackend {
+                    backend: PlatformRouteBackend::new(NetNS::new(None)).await.unwrap(),
+                    writes: writes.clone(),
+                    queries: queries.clone(),
+                };
+                let mut manager =
+                    RouteMgr::new(ctx, backend, routes, config, CancellationToken::new());
+                let mut destinations: BTreeSet<_> = (0..count)
+                    .map(|i| IpCidr::new(IpAddr::V4(Ipv4Addr::from(0x0a800000 + i)), 32).unwrap())
+                    .collect();
+                let registration = handle
+                    .register(RouteDemand::additional(destinations.clone()))
+                    .unwrap();
+                let start = Instant::now();
+                manager.reconcile().await;
+                let initial = start.elapsed();
+                assert_eq!(handle.status().ready.len(), count as usize);
+                assert_eq!(manager.next_wakeup_time(), None);
+                let before = writes.load(Ordering::Relaxed);
+                assert_eq!(before, count);
+                let start = Instant::now();
+                for _ in 0..10 {
+                    manager.reconcile().await;
+                }
+                let unchanged = start.elapsed();
+                assert_eq!(
+                    writes.load(Ordering::Relaxed),
+                    before,
+                    "unchanged inputs must not perform kernel writes"
+                );
+                assert_eq!(
+                    queries.load(Ordering::Relaxed),
+                    0,
+                    "healthy state must not inspect kernel routes"
+                );
+                destinations
+                    .remove(&IpCidr::new(IpAddr::V4(Ipv4Addr::from(0x0a800000)), 32).unwrap());
+                destinations.insert(
+                    IpCidr::new(IpAddr::V4(Ipv4Addr::from(0x0a800000 + count)), 32).unwrap(),
+                );
+                registration
+                    .replace(RouteDemand::additional(destinations.clone()))
+                    .unwrap();
+                let start = Instant::now();
+                manager.reconcile().await;
+                let incremental = start.elapsed();
+                assert_eq!(
+                    writes.load(Ordering::Relaxed) - before,
+                    2,
+                    "one removal and one addition"
+                );
+                assert_eq!(handle.status().ready.len(), count as usize);
+                let start = Instant::now();
+                manager.perform_shutdown_cleanup().await.unwrap();
+                let cleanup = start.elapsed();
+                assert_eq!(writes.load(Ordering::Relaxed), count * 2 + 2);
+                destinations
+                    .insert(IpCidr::new(IpAddr::V4(Ipv4Addr::from(0x0a800000)), 32).unwrap());
+                // independent read-only evidence, including the removed key:
+                let mut checker = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+                let existing = checker
+                    .existing(
+                        &destinations
+                            .into_iter()
+                            .map(|destination| Route {
+                                destination,
+                                interface: device.id().clone(),
+                                metric: 65535,
+                            })
+                            .collect(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(existing.is_empty());
+                eprintln!(
+                    "routes={count} initial={initial:?} unchanged_10={unchanged:?} incremental={incremental:?} cleanup={cleanup:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "requires namespace privileges; creates a private network namespace"]
     fn kernel_inspection_batches_families_and_keeps_requested_generations() {
         kernel_test(|| async {
             let ifindex = dummy("et-route");
