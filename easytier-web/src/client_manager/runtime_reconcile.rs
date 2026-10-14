@@ -999,6 +999,31 @@ mod tests {
     }
 
     #[test]
+    fn empty_manual_routes_require_overwrite_when_switching_modes() {
+        let automatic = config_with_port_forwards(Vec::new());
+        let mut empty_manual = automatic.clone();
+        empty_manual.enable_manual_routes = Some(true);
+        assert!(empty_manual.routes.is_empty());
+
+        for (current, desired) in [(&automatic, &empty_manual), (&empty_manual, &automatic)] {
+            let action =
+                prepare_web_source_runtime_reconcile_from_current(current, desired.clone())
+                    .expect("prepare mode change");
+            assert!(matches!(
+                action,
+                RuntimeReconcileAction::Run {
+                    overwrite: true,
+                    ..
+                }
+            ));
+        }
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&empty_manual, empty_manual.clone())
+                .expect("prepare unchanged empty manual routes");
+        assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
+    }
+
+    #[test]
     fn runtime_patch_rejects_routes_change() {
         let mut current = config_with_port_forwards(Vec::new());
         current.enable_manual_routes = Some(true);
