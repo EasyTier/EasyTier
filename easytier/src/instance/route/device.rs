@@ -27,6 +27,10 @@ pub(crate) struct DeviceFacts {
 }
 
 impl DeviceFacts {
+    /// The owned, nonpersistent fd epoch has ended, so its routes have no
+    /// remaining manual cleanup obligation: the kernel reclaims the interface.
+    /// This is a lifecycle proof, not an instantaneous kernel topology read;
+    /// concurrent queries may still observe pending file reclamation.
     pub fn destroyed(&self, device: &DeviceId) -> bool {
         device.host_instance.is_some() && !self.live.values().any(|live| live == device)
     }

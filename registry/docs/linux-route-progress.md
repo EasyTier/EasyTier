@@ -63,6 +63,10 @@ fd 关闭不会被当成 kernel 接口消失，已安装路由仍由 Manager 显
 Descriptor lifetime 测试使用真实 pipe fd；本轮环境没有 /dev/net/tun，尚未运行
 完整 TUN 创建 / 关闭集成测试。
 
+后续通过 sudo + 独立 mount/network namespace 的私有 /dev 节点，已补齐实际
+TUN 创建 / IP 配置 / 关闭与路由联动测试。宿主 /dev 与网络保持原样。参见
+下面新增的真实 TUN 验证；早期的环境限制不再阻止该项测试。
+
 ## 协调循环
 
 稳态不再定时重读声明；设备事实、配置和 registration 的既有通知驱动刷新。
@@ -111,7 +115,7 @@ invalidation，lag 后重新读取。默认路由保持 metric 5，只有 IPv6 a
 NicCtx 根据实际 RouteHandle capability 选择 managed 路径；无该 capability 的
 平台保留原有 IfConfiguer writer。地址、link / MTU 及 OS connected routes 仍由
 设备层负责，registry 不管理它们。57 项 native 路由 / DNS / Host 测试通过；
-完整 TUN address 和 producer 集成受 /dev/net/tun 缺失限制，尚未执行。
+完整 Public IPv6 producer 事件链及 DNS 双向 packet 集成尚未执行。
 
 声明现在使用 RouteSpec(destination, NonZeroU32 metric)；Additional 可以表达
 具体优先级，ordinary proxy / DNS 保留 metric 65535。同一目标的 contribution
@@ -161,17 +165,36 @@ WSL Linux 上 debug test binary 的本次测量如下（用于回归证据，不
 delete 加一次 add，停机清理所有条目。独立 socket dump 确认最终实际为空。
 正常 run 稳态不调用这些重复 reconcile，只有输入更新或 pending deadline 才运行。
 
+新增两项真实 TUN 测试后，八项内核测试全部通过。测试经过 VirtualNic 和实际
+AsyncDevice / split IO 包装：丢弃元数据或只关闭 read half 仍保留 fd claim 和
+kernel route；最后 writer 关闭后，nonpersistent TUN 及 route 自动级联删除，
+manager 不再发出 delete。预先创建的 persistent TUN 则保持 interface / route，
+TUNGETIFF 正确识别 attachment，manager 显式删除本方 route。
+
+初次测试把 close 后立即读取 ifindex 当作同步屏障，出现了瞬时观测失败；已改为
+两秒以内的只读 kernel dump + interface lookup 来核实实际回收，不添加生产路径
+延时。fd ownership 结束和内核回收的并发观测应当区分。最终普通 route / DNS /
+Host 合约 57 项通过，8 项 kernel 测试在隔离 fixture 中单独全部通过。
+
 可重运行真实内核测试：
 
 ```sh
-unshare --user --map-root-user --net cargo test -p easytier --lib \
-  instance::route::backend::linux::tests::kernel_ --offline --locked \
-  --config 'target.x86_64-unknown-linux-gnu.runner="env"' -- --ignored
+cargo test -p easytier --lib --offline --locked --no-run
+# 使用上一步输出的实际 test binary 路径：
+sudo -n sh easytier/tests/linux-route-kernel.sh \
+  /absolute/path/to/target/debug/deps/easytier-<hash>
 ```
 
-## 仍需完成
+fixture 自身创建独立 network/mount namespace，并在私有 /dev 创建 TUN node；
+只运行 kernel_ 测试。编译仍由普通用户完成，避免 root 改变工作树文件 ownership。
 
-- 审查未迁移平台的具体 OS 合约和测试条件。
+## 跨平台审查
+
+平台 capability、实际 OS key / metric、借用 fd / VPN ownership 及迁移建议已
+记录于 [平台边界](/home/luna/EasyTier-route/registry/docs/route-platform-boundary.md)。
+Linux no-TUN / netlink-only 和 OHOS/mobile 不再提供没有设备 facts consumer 的
+RouteHandle。默认 Host / DNS 12 项及无 TUN Host 5 项测试通过；最小 library
+check 和本机 mobile cfg 编译通过。非 Linux backend 尚未迁移或在真实平台验证。
 
 Registry core 的边界不变：只保存声明、管理 membership 并通知 invalidation。
 平台 I/O、设备事实、反馈、retry、reconciliation 和 shutdown 都在路由领域层。

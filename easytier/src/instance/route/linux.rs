@@ -403,6 +403,35 @@ mod tests {
     use crate::instance::route::DeviceId;
     use std::{future::Future, os::fd::AsRawFd, process::Command};
 
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    };
+
+    struct CountedBackend {
+        backend: PlatformRouteBackend,
+        writes: Arc<AtomicU32>,
+        queries: Arc<AtomicU32>,
+    }
+    #[async_trait::async_trait]
+    impl RouteBackend for CountedBackend {
+        async fn add(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            self.backend.add(route).await
+        }
+        async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            self.backend.remove(route).await
+        }
+        async fn existing(
+            &mut self,
+            routes: &BTreeSet<Route>,
+        ) -> Result<BTreeSet<Route>, RouteError> {
+            self.queries.fetch_add(1, Ordering::Relaxed);
+            self.backend.existing(routes).await
+        }
+    }
+
     fn route(destination: &str, ifindex: u32, metric: u32) -> Route {
         Route {
             destination: destination.parse().unwrap(),
@@ -653,30 +682,6 @@ mod tests {
             };
             use tokio_util::sync::CancellationToken;
 
-            struct CountedBackend {
-                backend: PlatformRouteBackend,
-                writes: Arc<AtomicU32>,
-                queries: Arc<AtomicU32>,
-            }
-            #[async_trait::async_trait]
-            impl RouteBackend for CountedBackend {
-                async fn add(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
-                    self.writes.fetch_add(1, Ordering::Relaxed);
-                    self.backend.add(route).await
-                }
-                async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
-                    self.writes.fetch_add(1, Ordering::Relaxed);
-                    self.backend.remove(route).await
-                }
-                async fn existing(
-                    &mut self,
-                    routes: &BTreeSet<Route>,
-                ) -> Result<BTreeSet<Route>, RouteError> {
-                    self.queries.fetch_add(1, Ordering::Relaxed);
-                    self.backend.existing(routes).await
-                }
-            }
-
             let ifindex = dummy("et-scale");
             for count in [100, 1_000, 10_000] {
                 let ctx = get_mock_global_ctx();
@@ -769,6 +774,151 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[cfg(all(feature = "tun", not(mobile)))]
+    async fn tun_lifetime_case(persistent: bool) {
+        use crate::{
+            common::global_ctx::tests::get_mock_global_ctx,
+            instance::{route::RouteMgr, virtual_nic::VirtualNic},
+        };
+        use easytier_core::{
+            config::{
+                peers::PeerRuntimeSnapshot,
+                runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+            },
+            host::route::{RouteDemand, RouteHandle, RouteRegistry},
+        };
+        use tokio_util::sync::CancellationToken;
+
+        let ctx = get_mock_global_ctx();
+        let name = if persistent { "et-persist" } else { "et-owned" };
+        let mut flags = ctx.get_flags();
+        flags.dev_name = name.into();
+        ctx.set_flags(flags);
+        if persistent {
+            let mut config = tun::Configuration::default();
+            config.tun_name(name).layer(tun::Layer::L3);
+            let device = tun::create(&config).unwrap();
+            assert_eq!(
+                unsafe { libc::ioctl(device.as_raw_fd(), libc::TUNSETPERSIST as libc::Ioctl, 1) },
+                0
+            );
+            drop(device);
+        }
+        let mut nic = VirtualNic::new(ctx.clone());
+        let tunnel = nic.create_dev().await.unwrap();
+        nic.link_up().await.unwrap();
+        nic.add_ip("10.88.0.1".parse().unwrap(), 24).await.unwrap();
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        assert_eq!(
+            active.id.host_instance.is_none(),
+            persistent,
+            "TUNGETIFF must distinguish persistent attachment"
+        );
+        ctx.tun_devices.mark_ready(active.registration);
+        let (reader, writer) = tunnel.split();
+        let routes = RouteRegistry::default();
+        let handle = RouteHandle::new(routes.clone());
+        let config = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::default()),
+        );
+        let writes = Arc::new(AtomicU32::new(0));
+        let backend = CountedBackend {
+            backend: PlatformRouteBackend::new(NetNS::new(None)).await.unwrap(),
+            writes: writes.clone(),
+            queries: Arc::new(AtomicU32::new(0)),
+        };
+        let mut manager = RouteMgr::new(
+            ctx.clone(),
+            backend,
+            routes,
+            config,
+            CancellationToken::new(),
+        );
+        let target = Route {
+            destination: "100.100.100.101/32".parse().unwrap(),
+            interface: active.id.clone(),
+            metric: 65535,
+        };
+        let registration = handle
+            .register(RouteDemand::additional([target.destination]))
+            .unwrap();
+        manager.reconcile().await;
+        assert_eq!(handle.status().ready.len(), 1);
+        assert_eq!(writes.load(Ordering::Relaxed), 1);
+        let wanted = BTreeSet::from([target]);
+        let mut checker = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+        drop(nic);
+        assert!(
+            ctx.tun_devices
+                .snapshot()
+                .live
+                .contains_key(&active.registration),
+            "metadata does not own fd lifetime"
+        );
+        drop(reader);
+        assert!(
+            ctx.tun_devices
+                .snapshot()
+                .live
+                .contains_key(&active.registration),
+            "one IO half still owns the actual fd"
+        );
+        assert_eq!(checker.existing(&wanted).await.unwrap(), wanted);
+        drop(writer);
+        let facts = ctx.tun_devices.snapshot();
+        assert!(!facts.live.contains_key(&active.registration));
+        assert_eq!(facts.destroyed(&active.id), !persistent);
+        let ifname = std::ffi::CString::new(name).unwrap();
+        if persistent {
+            assert_eq!(
+                unsafe { libc::if_nametoindex(ifname.as_ptr()) },
+                active.id.ifindex
+            );
+            assert_eq!(checker.existing(&wanted).await.unwrap(), wanted);
+        } else {
+            // fd ownership ends synchronously, but kernel file reclamation
+            // and concurrent interface queries are not a userspace barrier.
+            // Verify the actual cascade with bounded, read-only observation.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if checker.existing(&wanted).await.unwrap().is_empty()
+                        && unsafe { libc::if_nametoindex(ifname.as_ptr()) } == 0
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("nonpersistent TUN and routes were not reclaimed");
+        }
+        manager.reconcile().await;
+        assert_eq!(
+            writes.load(Ordering::Relaxed),
+            if persistent { 2 } else { 1 },
+            "only persistent TUN requires explicit deletion"
+        );
+        assert!(handle.status().ready.is_empty());
+        assert!(checker.existing(&wanted).await.unwrap().is_empty());
+        manager.perform_shutdown_cleanup().await.unwrap();
+        drop(registration);
+    }
+
+    #[cfg(all(feature = "tun", not(mobile)))]
+    #[test]
+    #[ignore = "requires root, TUN node and private network namespace"]
+    fn kernel_tun_last_io_owner_proves_nonpersistent_route_cascade() {
+        kernel_test(|| tun_lifetime_case(false));
+    }
+
+    #[cfg(all(feature = "tun", not(mobile)))]
+    #[test]
+    #[ignore = "requires root, TUN node and private network namespace"]
+    fn kernel_tun_persistent_attachment_requires_explicit_route_cleanup() {
+        kernel_test(|| tun_lifetime_case(true));
     }
 
     #[test]
