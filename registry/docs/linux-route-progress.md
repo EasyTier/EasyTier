@@ -103,6 +103,16 @@ owned 路由。30 个 manager 测试通过，覆盖中断、确定失败后再�
 
 ## 当前验证
 
+Linux native TUN 的 Public IPv6 前缀和默认路由也已改为 scoped declarations。
+前缀 source 在订阅后读取 CorePacketPlane 的权威 snapshot；broadcast 是
+invalidation，lag 后重新读取。默认路由保持 metric 5，只有 IPv6 address 配置
+成功才发布，地址撤销时清空，task 结束时由 registration Drop 撤销。
+
+NicCtx 根据实际 RouteHandle capability 选择 managed 路径；无该 capability 的
+平台保留原有 IfConfiguer writer。地址、link / MTU 及 OS connected routes 仍由
+设备层负责，registry 不管理它们。57 项 native 路由 / DNS / Host 测试通过；
+完整 TUN address 和 producer 集成受 /dev/net/tun 缺失限制，尚未执行。
+
 声明现在使用 RouteSpec(destination, NonZeroU32 metric)；Additional 可以表达
 具体优先级，ordinary proxy / DNS 保留 metric 65535。同一目标的 contribution
 采用最低 metric，withdraw 后露出余下 contribution。替换仍经过原条目的精确
@@ -148,7 +158,6 @@ unshare --user --map-root-user --net cargo test -p easytier --lib \
 
 ## 仍需完成
 
-- 核对 Linux 上其余路由 writer（包括 Public IPv6）及相关接管边界。
 - 完成规模 / 稳态验证后，再审查未迁移平台的具体 OS 合约和测试条件。
 
 Registry core 的边界不变：只保存声明、管理 membership 并通知 invalidation。

@@ -16,6 +16,7 @@ use crate::common::{
 
 use easytier_core::{
     host::packet::{HostPacket, HostPacketReceiver},
+    host::route::{RouteDemand, RouteSpec},
     instance::CorePacketPlane,
     packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     tunnel::{
@@ -1441,7 +1442,6 @@ impl NicCtx {
         }
     }
 
-    #[cfg_attr(all(target_os = "linux", feature = "linux-netlink"), allow(dead_code))]
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
         let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
@@ -1509,6 +1509,40 @@ impl NicCtx {
     async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
         let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
+        if let Some(handle) = global_ctx.get_route_handle() {
+            let registration = handle
+                .register(RouteDemand::additional([]))
+                .ok_or_else(|| anyhow::anyhow!("route runtime is stopping"))?;
+            // Subscribe before reading the authoritative snapshot. Broadcast
+            // messages invalidate it; lag must not discard membership changes.
+            let mut events = global_ctx.subscribe();
+            self.tasks.spawn(async move {
+                loop {
+                    let latest = packet_plane.public_ipv6_routes().await;
+                    let destinations = latest.into_iter().map(|route| {
+                        cidr::IpCidr::V6(
+                            cidr::Ipv6Cidr::new(route.first_address(), route.network_length())
+                                .expect("valid IPv6 network"),
+                        )
+                    });
+                    if registration
+                        .replace(RouteDemand::additional(destinations))
+                        .is_none()
+                    {
+                        break;
+                    }
+                    loop {
+                        match events.recv().await {
+                            Ok(GlobalCtxEvent::PublicIpv6RoutesUpdated(..))
+                            | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                            Ok(_) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        }
+                    }
+                }
+            });
+            return Ok(());
+        }
         let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
 
@@ -1550,19 +1584,30 @@ impl NicCtx {
         let global_ctx = self.global_ctx.clone();
         let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
+        let default_route = global_ctx
+            .get_route_handle()
+            .map(|handle| {
+                handle
+                    .register(RouteDemand::additional([]))
+                    .ok_or_else(|| anyhow::anyhow!("route runtime is stopping"))
+            })
+            .transpose()?;
 
         let mut current_addr = packet_plane.public_ipv6_addr().await;
         if let Some(addr) = current_addr {
             if let Err(err) = backend.link_up().await {
                 tracing::warn!(?err, "failed to bring public ipv6 nic link up");
             }
-            if let Err(err) = backend
-                .add_ipv6(addr.address(), addr.network_length() as i32)
-                .await
-            {
-                tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
-            }
-            if let Err(err) = backend
+            let configured = match backend.add_ipv6(addr.address(), addr.network_length() as i32).await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
+                    false
+                }
+            };
+            if let Some(registration) = &default_route {
+                let _ = registration.replace(Self::public_ipv6_default_demand(configured));
+            } else if let Err(err) = backend
                 .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
                 .await
             {
@@ -1592,10 +1637,9 @@ impl NicCtx {
                     tracing::warn!(?err, "failed to bring public ipv6 nic link up");
                 }
                 if let Some(old) = old {
-                    if let Err(err) = backend
-                        .remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0)
-                        .await
-                    {
+                    if let Some(registration) = &default_route {
+                        let _ = registration.replace(Self::public_ipv6_default_demand(false));
+                    } else if let Err(err) = backend.remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0).await {
                         tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to remove default public ipv6 route");
                     }
                     if let Err(err) = backend.remove_ipv6(Some(old)).await {
@@ -1603,13 +1647,16 @@ impl NicCtx {
                     }
                 }
                 if let Some(new) = new {
-                    if let Err(err) = backend
-                        .add_ipv6(new.address(), new.network_length() as i32)
-                        .await
-                    {
-                        tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
-                    }
-                    if let Err(err) = backend
+                    let configured = match backend.add_ipv6(new.address(), new.network_length() as i32).await {
+                        Ok(()) => true,
+                        Err(err) => {
+                            tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
+                            false
+                        }
+                    };
+                    if let Some(registration) = &default_route {
+                        let _ = registration.replace(Self::public_ipv6_default_demand(configured));
+                    } else if let Err(err) = backend
                         .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
                         .await
                     {
@@ -1638,6 +1685,19 @@ impl NicCtx {
         }
         self.global_ctx.set_tun_device_ready(self.tun_ifname().await?);
         Ok(())
+    }
+
+    fn public_ipv6_default_demand(configured: bool) -> RouteDemand {
+        let routes = configured
+            .then(|| {
+                RouteSpec::new(
+                    cidr::IpCidr::V6(cidr::Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0).unwrap()),
+                    std::num::NonZeroU32::new(5).unwrap(),
+                )
+            })
+            .into_iter()
+            .collect();
+        RouteDemand::Additional(routes)
     }
 
     pub async fn run(
@@ -1676,8 +1736,9 @@ impl NicCtx {
             self.assign_ipv6_to_tun_device(ipv6_addr).await?;
         }
 
-        #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
-        self.run_proxy_cidrs_route_updater().await?;
+        if self.global_ctx.get_route_handle().is_none() {
+            self.run_proxy_cidrs_route_updater().await?;
+        }
         self.run_public_ipv6_route_updater().await?;
         // Keep the updater running so runtime config patches can enable auto mode
         // without recreating the NIC.
