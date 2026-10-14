@@ -85,6 +85,12 @@ cleanup writer。关闭 TUN 不依赖 route cleanup 完成，Manager 继续读�
 RuntimeHost 十项测试通过，包括超时后完成、锁等待 deadline、任务 panic 和
 Host Drop 后 observer 继续执行。
 
+清理逐项提交结果，不提前清空 installed / unknown。等待 remove 结果时先标为
+uncertain，取消该等待仍保留责任；确定失败保留 installed，成功才删除记录。
+最后再次读取设备事实，避免 fd 在最后一次 I/O 中关闭后仍报告已级联删除的
+owned 路由。30 个 manager 测试通过，覆盖中断、确定失败后再清理、以及最终
+设备事实变化。
+
 ## 当前验证
 
 - native 路由、设备事实、GlobalCtx 与 RuntimeHost 测试：44 项通过。
@@ -107,7 +113,6 @@ unshare --user --map-root-user --net cargo test -p easytier --lib \
 ## 仍需完成
 
 - 增加 Unknown 核实，保留无法证明本方 ownership 的不确定记录。
-- 清理结束前重读设备事实，完整报告失败和 Unknown；中断不得丢失记录。
 - DNS 等依赖实际安装结果的启动链路需要业务层答复，registration 成功本身不是 ready。
 - 核对 Linux 上其余路由 writer（包括 Public IPv6）及相关接管边界。
 - 完成规模 / 稳态验证后，再审查未迁移平台的具体 OS 合约和测试条件。

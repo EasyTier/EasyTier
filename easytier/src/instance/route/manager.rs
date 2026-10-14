@@ -340,30 +340,33 @@ impl<B: RouteBackend> RouteMgr<B> {
         // the OS routes below are already cleaned up.
         self.routes.close();
 
-        let mut uncleaned_routes = Vec::new();
-        let mut newly_unknown = Vec::new();
-
-        // 1. Re-read device fact before cleanup to account for devices that disappeared
         let device_facts = self.global_ctx.tun_devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
 
-        // 2. Remove all remaining installed routes
-        let installed = std::mem::take(&mut self.installed);
-        let unknown = std::mem::take(&mut self.unknown);
-
+        // Keep responsibility in the manager until each result is confirmed.
+        // A dropped cleanup future must retain both unfinished routes and the
+        // uncertainty of the request whose result it stopped waiting for.
+        let installed: Vec<_> = self.installed.difference(&self.unknown).cloned().collect();
         for route in installed {
-            if unknown.contains(&route) {
+            let device_facts = self.global_ctx.tun_devices.snapshot();
+            self.retire_destroyed_devices(&device_facts);
+            if !self.installed.contains(&route) {
                 continue;
             }
+            self.unknown.insert(route.clone());
             match self.backend.remove(&route).await {
-                Ok(Some(())) | Ok(None) => {}
+                Ok(Some(())) | Ok(None) => {
+                    self.installed.remove(&route);
+                    self.unknown.remove(&route);
+                    self.retries.remove(&route);
+                }
                 Err(RouteError::Failed(err)) => {
                     tracing::error!(
                         ?route,
                         ?err,
                         "failed to remove route during shutdown cleanup"
                     );
-                    uncleaned_routes.push(route);
+                    self.unknown.remove(&route);
                 }
                 Err(RouteError::Unknown(err)) => {
                     tracing::error!(
@@ -371,20 +374,20 @@ impl<B: RouteBackend> RouteMgr<B> {
                         ?err,
                         "unknown result removing route during shutdown cleanup"
                     );
-                    newly_unknown.push(route);
                 }
             }
         }
 
-        let mut all_unknown: Vec<Route> = unknown.into_iter().collect();
-        all_unknown.extend(newly_unknown);
-
-        if uncleaned_routes.is_empty() && all_unknown.is_empty() {
+        // Device destruction may have happened while the final request was in
+        // flight. Only owned fd generations prove cascading route removal.
+        let device_facts = self.global_ctx.tun_devices.snapshot();
+        self.retire_destroyed_devices(&device_facts);
+        if self.installed.is_empty() && self.unknown.is_empty() {
             Ok(())
         } else {
             Err(CleanupIncomplete {
-                uncleaned_routes,
-                unknown_routes: all_unknown,
+                uncleaned_routes: self.installed.difference(&self.unknown).cloned().collect(),
+                unknown_routes: self.unknown.iter().cloned().collect(),
                 reason: "shutdown cleanup encountered failures or unknown outcomes".to_string(),
             })
         }
@@ -450,7 +453,7 @@ mod tests {
 
     /// Instrumentation that lets a test park the manager inside a backend call
     /// and prove it reached that await, without guessing with sleeps.
-    struct PausedAdd {
+    struct PausedOperation {
         /// Reports each route that entered `add` before the pause.
         entered: tokio::sync::mpsc::UnboundedSender<Route>,
         /// Releases one paused `add`.
@@ -466,7 +469,8 @@ mod tests {
         remove_error_map: HashMap<Route, RouteError>,
         external_present: BTreeSet<Route>,
         /// When set, `add` reports the route and then waits for a release.
-        paused_add: Option<PausedAdd>,
+        paused_add: Option<PausedOperation>,
+        paused_remove: Option<PausedOperation>,
         /// `add` panics for these routes.
         panic_on_add: BTreeSet<Route>,
     }
@@ -481,7 +485,7 @@ mod tests {
         ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Route>) {
             let (entered, entered_rx) = tokio::sync::mpsc::unbounded_channel();
             let backend = Self {
-                paused_add: Some(PausedAdd { entered, release }),
+                paused_add: Some(PausedOperation { entered, release }),
                 ..Self::default()
             };
             (backend, entered_rx)
@@ -511,6 +515,10 @@ mod tests {
 
         async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
             self.remove_calls.push(route.clone());
+            if let Some(paused) = &self.paused_remove {
+                let _ = paused.entered.send(route.clone());
+                paused.release.notified().await;
+            }
             if let Some(err) = self.remove_error_map.remove(route) {
                 return Err(err);
             }
@@ -520,6 +528,86 @@ mod tests {
                 Ok(None)
             }
         }
+    }
+
+    #[tokio::test]
+    async fn interrupted_cleanup_keeps_pending_and_uncertain_responsibility() {
+        let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
+        let first = test_route("10.0.0.0/24");
+        let second = test_route("10.1.0.0/24");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([
+                first.destination,
+                second.destination,
+            ])))
+            .unwrap();
+        manager.reconcile().await;
+        let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        manager.backend.paused_remove = Some(PausedOperation {
+            entered,
+            release: Arc::new(tokio::sync::Notify::new()),
+        });
+        let mut cleanup = Box::pin(manager.perform_shutdown_cleanup());
+        assert!(futures::poll!(cleanup.as_mut()).is_pending());
+        assert_eq!(entered_rx.try_recv().unwrap(), first);
+        drop(cleanup);
+        assert_eq!(manager.installed, BTreeSet::from([first.clone(), second]));
+        assert_eq!(manager.unknown, BTreeSet::from([first]));
+        assert!(
+            handle
+                .register(RouteDemand::Additional(BTreeSet::new()))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_rechecks_device_destruction_after_a_failed_request() {
+        let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
+        let route = test_route("10.0.0.0/24");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        let ctx = manager.global_ctx.clone();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        manager.backend.paused_remove = Some(PausedOperation {
+            entered,
+            release: release.clone(),
+        });
+        manager.backend.remove_error_map.insert(
+            route.clone(),
+            RouteError::Failed(anyhow::anyhow!("device disappeared")),
+        );
+        let mut cleanup = Box::pin(manager.perform_shutdown_cleanup());
+        assert!(futures::poll!(cleanup.as_mut()).is_pending());
+        assert_eq!(entered_rx.try_recv().unwrap(), route);
+        ctx.set_tun_device_index_for_test(None);
+        release.notify_one();
+        cleanup.await.unwrap();
+        assert!(manager.installed.is_empty());
+        assert!(manager.unknown.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deterministic_cleanup_failure_retains_the_route_for_a_later_attempt() {
+        let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
+        let route = test_route("10.0.0.0/24");
+        let _registration = handle
+            .register(RouteDemand::Additional(BTreeSet::from([route.destination])))
+            .unwrap();
+        manager.reconcile().await;
+        manager.backend.remove_error_map.insert(
+            route.clone(),
+            RouteError::Failed(anyhow::anyhow!("temporary failure")),
+        );
+        let report = manager.perform_shutdown_cleanup().await.unwrap_err();
+        assert_eq!(report.uncleaned_routes, vec![route.clone()]);
+        assert!(report.unknown_routes.is_empty());
+        assert_eq!(manager.installed, BTreeSet::from([route]));
+        manager.perform_shutdown_cleanup().await.unwrap();
+        assert!(manager.installed.is_empty());
+        assert!(manager.backend.routes.is_empty());
     }
 
     #[tokio::test]
