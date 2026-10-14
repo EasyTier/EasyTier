@@ -7,6 +7,71 @@ use super::*;
 const MEMBER: SharedVirtualNicMemberId = uuid::Uuid::from_u128(1);
 const REGISTRATION: SharedVirtualNicMemberRegistrationId = uuid::Uuid::from_u128(10);
 
+#[cfg(target_os = "windows")]
+#[tokio::test]
+#[ignore = "requires Administrator privileges and wintun.dll"]
+async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
+    use crate::{
+        arch::windows::list_interface_firewall_rules,
+        common::config::{ConfigLoader, TomlConfigLoader},
+        instance::test_instance::TestInstance,
+    };
+    use easytier_core::process_runtime::CoreProcessRuntime;
+    use std::time::Duration;
+
+    let name = "et_test_idle_shared";
+    let config = || {
+        let config =
+            TomlConfigLoader::new_from_str("ipv4 = \"198.18.28.1/30\"\nlisteners = []").unwrap();
+        let mut flags = config.get_flags();
+        flags.dev_name = name.to_owned();
+        config.set_flags(flags);
+        config
+    };
+    let registry = TestInstance::new_shared_virtual_nic_registry();
+    let mut first = TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
+        config(),
+        CoreProcessRuntime::new(),
+        registry.clone(),
+    );
+    first.run().await.unwrap();
+    let cached = registry
+        .lock()
+        .await
+        .get_by_dev_name_for_test(name)
+        .unwrap();
+    first.clear_resources().await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let nic = cached.lock().await;
+            if nic.member_registrations.is_empty() && nic.dispatcher.is_none() {
+                break;
+            }
+            drop(nic);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // An independent registry has the same name-allocation boundary as a
+    // separate process. The previous registry deliberately remains alive.
+    let mut second = TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
+        config(),
+        CoreProcessRuntime::new(),
+        TestInstance::new_shared_virtual_nic_registry(),
+    );
+    second.run().await.unwrap();
+    assert_eq!(second.get_global_ctx().get_tun_device_name().unwrap(), name);
+    let rules = list_interface_firewall_rules(name).unwrap();
+    assert!(!rules.is_empty());
+    drop(first);
+    drop(registry);
+    drop(cached);
+    assert_eq!(list_interface_firewall_rules(name).unwrap(), rules);
+    second.clear_resources().await;
+}
+
 fn virtual_nic_config(mtu: u32, netns: Option<&str>) -> VirtualNicConfig {
     VirtualNicConfig::new("et0".to_owned(), mtu, NetNS::new(netns.map(str::to_owned)))
 }

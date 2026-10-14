@@ -5,10 +5,16 @@ use windows::{
         Devices::DeviceAndDriverInstallation::{
             CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CR_NO_SUCH_DEVNODE, CR_SUCCESS,
         },
-        Foundation::{ERROR_ALREADY_EXISTS, GetLastError},
-        System::Threading::CreateMutexW,
+        Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HLOCAL, LocalFree},
+        Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        },
+        System::Threading::{CreateMutexExW, SYNCHRONIZATION_SYNCHRONIZE},
     },
-    core::HSTRING,
+    core::{HSTRING, w},
 };
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 
@@ -18,8 +24,29 @@ fn reserve_name(name: &str) -> anyhow::Result<Option<OwnedHandle>> {
     // Reserve the name by the object's lifetime, without thread ownership or
     // waiting. Windows also closes the handle if the process is terminated.
     let (handle, existed) = unsafe {
-        let handle = CreateMutexW(None, false, &object_name)?;
+        // Service and desktop processes must be able to detect each other's
+        // reservations. Grant SYNCHRONIZE only, without modification rights.
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            w!("D:(A;;0x00100000;;;WD)"),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            ..Default::default()
+        };
+        let result = CreateMutexExW(
+            Some(&attributes),
+            &object_name,
+            0,
+            SYNCHRONIZATION_SYNCHRONIZE.0,
+        );
         let existed = GetLastError() == ERROR_ALREADY_EXISTS;
+        LocalFree(Some(HLOCAL(descriptor.0)));
+        let handle = result?;
         (OwnedHandle::from_raw_handle(handle.0), existed)
     };
     Ok((!existed).then_some(handle))
@@ -88,7 +115,8 @@ mod tests {
     fn explicit_name_reservation_is_case_insensitive_and_released() {
         let name = format!("et_test_reserve_{}", uuid::Uuid::new_v4().simple());
         let reservation = reserve_tun_name(&name).unwrap();
-        assert!(reserve_tun_name(&name.to_uppercase()).is_err());
+        let error = reserve_tun_name(&name.to_uppercase()).unwrap_err();
+        assert!(error.to_string().contains("is already in use"));
         drop(reservation);
         assert!(reserve_tun_name(&name).is_ok());
     }

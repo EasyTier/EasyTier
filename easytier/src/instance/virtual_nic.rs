@@ -273,7 +273,7 @@ pub struct VirtualNic {
     ifname: Option<String>,
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 
-    // Keep the name reserved through firewall cleanup in Drop. The device
+    // Keep the name reserved through firewall cleanup. The device
     // itself may already have disappeared when its forwarding tasks stop.
     #[cfg(target_os = "windows")]
     name_reservation: Option<std::os::windows::io::OwnedHandle>,
@@ -282,22 +282,26 @@ pub struct VirtualNic {
 impl Drop for VirtualNic {
     fn drop(&mut self) {
         #[cfg(target_os = "windows")]
-        {
-            if let Some(ref ifname) = self.ifname {
-                // Try to clean up firewall rules, but don't panic in destructor
-                if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
-                    tracing::warn!(
-                        %error,
-                        "failed to remove firewall rules for interface {}",
-                        ifname
-                    );
-                }
-            }
-        }
+        self.clear_windows_device();
     }
 }
 
 impl VirtualNic {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn clear_windows_device(&mut self) {
+        if let Some(ifname) = self.ifname.take() {
+            // Try to clean up firewall rules, but don't panic in destructor
+            if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(&ifname) {
+                tracing::warn!(
+                    %error,
+                    "failed to remove firewall rules for interface {}",
+                    ifname
+                );
+            }
+        }
+        self.name_reservation.take();
+    }
+
     pub fn new(config: VirtualNicConfig) -> Self {
         Self {
             config,
