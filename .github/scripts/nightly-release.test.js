@@ -2,8 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { test } = require('node:test');
-const { prepare, publish, releaseNotes } = require('./nightly-release.js');
+const { prepare, packageAssets, publish, releaseNotes } = require('./nightly-release.js');
 
 const repository = { owner: 'EasyTier', repo: 'EasyTier' };
 const core = { info() {} };
@@ -16,6 +18,7 @@ function fixture() {
     ancestry: 'ahead',
     publishedComparison: 'ahead',
     tagExists: false,
+    version: '2.7.0',
     releases: [
       { tag_name: 'v2.6.4', published_at: '2026-05-12', html_url: 'stable' },
       { tag_name: 'v2.7.0', published_at: '2026-10-06', prerelease: true, html_url: 'version' },
@@ -35,6 +38,11 @@ function fixture() {
   };
   const repos = {
     async getBranch() { return { data: { commit: { sha: 'main-head' } } }; },
+    async getContent(request) {
+      calls.push(['version', request.ref]);
+      assert.equal(request.path, 'easytier-gui/src-tauri/tauri.conf.json');
+      return { data: { content: Buffer.from(JSON.stringify({ version: state.version })).toString('base64') } };
+    },
     async compareCommitsWithBasehead(request) {
       calls.push(['compare', request.basehead]);
       return { data: { status: request.basehead.startsWith('nightly...') ? state.publishedComparison : state.ancestry } };
@@ -104,11 +112,21 @@ test('nightly selects one main commit and uses the last published version, inclu
   f.state.release = { id: 99, published_at: '2026-10-13' };
   const build = await prepare(f);
   assert.equal(build.sha, 'built');
+  assert.equal(build.version, 'v2.7.0');
+  assert.ok(f.calls.some(call => call[0] === 'version' && call[1] === 'built'));
   assert.deepEqual(build.runs, { core: 1, gui: 2, mobile: 3, test: 4 });
   assert.deepEqual(build.artifacts.core.map(a => a.id), [10, 11]);
   assert.ok(f.calls.some(call => call[0] === 'changelog' && call[1] === 'v2.7.0...built'));
   assert.match(build.body, /Changes since \[v2.7.0\]/);
   assert.ok(build.body.indexOf('2026-10-12') < build.body.indexOf('2026-10-10'));
+});
+
+test('asset versions come from the built commit rather than the changelog baseline', async () => {
+  const f = fixture();
+  f.state.version = '2.8.0-rc.1';
+  assert.equal((await prepare(f)).version, 'v2.8.0-rc.1');
+  f.state.version = '../invalid';
+  await assert.rejects(prepare(f), /valid release version/);
 });
 
 test('nightly waits for every component and the full test run', async () => {
@@ -209,13 +227,93 @@ test('notes date every entry in UTC and sort by timestamp, not input order', () 
 
 async function packageFiles(t, f) {
   const build = await prepare(f);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'easytier-nightly-test-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'easytier-nightly-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const source = path.join(root, 'artifacts');
+  const directory = path.join(root, 'assets');
+  const contents = {
+    'easytier-linux-x86_64': ['easytier-core'],
+    'Easytier-Magisk': ['module.prop', 'bin/easytier-core'],
+    'easytier-gui-windows-x86_64': ['easytier-gui_2.7.0_x64-setup.exe'],
+    'easytier-mobile-android-aarch64': ['app-arm64-release.apk'],
+    ...f.files,
+  };
   for (const artifact of Object.values(build.artifacts).flat()) {
-    await fs.writeFile(path.join(directory, `${artifact.name}.zip`), 'test archive');
+    for (const name of contents[artifact.name]) {
+      const file = path.join(source, artifact.name, name);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, `contents of ${name}`, { mode: 0o644 });
+    }
   }
-  return { ...f, build, directory };
+  await packageAssets({ build, source, directory });
+  return { ...f, build, source, directory };
 }
+
+test('nightly exposes native installers and matches version-release ZIP names and layout', async t => {
+  const f = fixture();
+  f.state.artifacts[1].push({ id: 14, name: 'easytier-web-dashboard' });
+  f.state.artifacts[2].push(
+    { id: 21, name: 'easytier-gui-macos-aarch64' },
+    { id: 22, name: 'easytier-gui-linux-x86_64' },
+  );
+  f.files = {
+    'easytier-web-dashboard': ['index.html', 'assets/app.js'],
+    'easytier-gui-macos-aarch64': ['easytier-gui_2.7.0_aarch64.dmg'],
+    'easytier-gui-linux-x86_64': [
+      'easytier-gui_2.7.0_amd64.deb',
+      'easytier-gui-2.7.0-1.x86_64.rpm',
+      'easytier-gui_2.7.0_amd64.AppImage',
+    ],
+  };
+  const { build, directory } = await packageFiles(t, f);
+  assert.deepEqual(build.assets, [
+    'Easytier-Magisk-v2.7.0.zip',
+    'SHA256SUMS',
+    'app-arm64-release.apk',
+    'easytier-gui-2.7.0-1.x86_64.rpm',
+    'easytier-gui_2.7.0_aarch64.dmg',
+    'easytier-gui_2.7.0_amd64.AppImage',
+    'easytier-gui_2.7.0_amd64.deb',
+    'easytier-gui_2.7.0_x64-setup.exe',
+    'easytier-linux-x86_64-v2.7.0.zip',
+    'easytier-web-dashboard-v2.7.0.zip',
+  ]);
+  for (const [name, entry] of [
+    ['easytier-linux-x86_64', 'easytier-linux-x86_64/easytier-core'],
+    ['easytier-web-dashboard', 'easytier-web-dashboard/assets/app.js'],
+    ['Easytier-Magisk', 'bin/easytier-core'],
+  ]) {
+    const archive = path.join(directory, `${name}-v2.7.0.zip`);
+    const files = execFileSync('unzip', ['-Z1', archive], { encoding: 'utf8' }).trim().split('\n');
+    assert.ok(files.includes(entry));
+    assert.ok(!files.some(file => file.startsWith('Easytier-Magisk/')));
+    assert.match(execFileSync('zipinfo', ['-l', archive], { encoding: 'utf8' }), /-rwxr-xr-x/);
+  }
+  assert.equal(await fs.readFile(path.join(directory, 'app-arm64-release.apk'), 'utf8'),
+    'contents of app-arm64-release.apk');
+  const sums = await fs.readFile(path.join(directory, 'SHA256SUMS'), 'utf8');
+  assert.equal(sums.trim().split('\n').length, build.assets.length - 1);
+  for (const line of sums.trim().split('\n')) {
+    const [checksum, name] = line.split('  ');
+    const data = await fs.readFile(path.join(directory, name));
+    assert.equal(checksum, createHash('sha256').update(data).digest('hex'));
+  }
+});
+
+test('packaging refuses missing, empty or duplicate installer artifacts', async t => {
+  const f = fixture();
+  const args = await packageFiles(t, f);
+  const artifactPath = path.join(args.source, 'easytier-mobile-android-aarch64');
+  await fs.rm(args.directory, { recursive: true });
+  await fs.rm(artifactPath, { recursive: true });
+  await assert.rejects(packageAssets(args), /ENOENT/);
+  await fs.rm(args.directory, { recursive: true });
+  await fs.mkdir(artifactPath);
+  await assert.rejects(packageAssets(args), /Empty artifact/);
+  await fs.rm(args.directory, { recursive: true });
+  await fs.writeFile(path.join(artifactPath, 'easytier-gui_2.7.0_x64-setup.exe'), 'duplicate');
+  await assert.rejects(packageAssets(args), /Duplicate release asset/);
+});
 
 test('reruns publish only the newest artifact for each name, ignoring expired older attempts', async t => {
   const f = fixture();
@@ -226,7 +324,7 @@ test('reruns publish only the newest artifact for each name, ignoring expired ol
   const args = await packageFiles(t, f);
   assert.deepEqual(args.build.artifacts.core.map(a => a.id), [13, 11]);
   await publish(args);
-  assert.equal(f.calls.filter(call => call[0] === 'upload' && call[1] === 'easytier-linux-x86_64.zip').length, 1);
+  assert.equal(f.calls.filter(call => call[0] === 'upload' && call[1] === 'easytier-linux-x86_64-v2.7.0.zip').length, 1);
 });
 
 test('first publication creates one draft, uploads assets and then publishes a prerelease', async t => {
@@ -249,7 +347,7 @@ test('updates keep the release ID and remove obsolete assets only after uploads 
   f.state.release = { id: 99, draft: false, target_commitish: 'first-build' };
   f.state.tagExists = true;
   f.state.assets = [
-    { id: 50, name: 'easytier-linux-x86_64.zip' },
+    { id: 50, name: 'easytier-linux-x86_64-v2.7.0.zip' },
     { id: 51, name: 'retired-platform.zip' },
   ];
   await publish(await packageFiles(t, f));
@@ -263,7 +361,7 @@ test('updates keep the release ID and remove obsolete assets only after uploads 
 test('incomplete packaging cannot mutate the published release', async t => {
   const f = fixture();
   const args = await packageFiles(t, f);
-  await fs.unlink(path.join(args.directory, 'Easytier-Magisk.zip'));
+  await fs.unlink(path.join(args.directory, 'Easytier-Magisk-v2.7.0.zip'));
   await assert.rejects(publish(args), /do not match/);
   assert.ok(!f.calls.some(call => ['create', 'delete', 'upload', 'update'].includes(call[0])));
 });
@@ -285,6 +383,8 @@ test('a retry resumes the initial draft after an upload failure without creating
   f.state.uploadFails = false;
   const retry = await prepare(f);
   assert.equal(retry.release_id, 100);
+  await fs.rm(args.directory, { recursive: true });
+  await packageAssets({ ...args, build: retry });
   await publish({ ...args, build: retry });
   assert.equal(f.calls.filter(call => call[0] === 'create').length, 1);
   assert.equal(f.state.release.draft, false);

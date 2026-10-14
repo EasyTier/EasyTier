@@ -1,5 +1,10 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { createHash } = require('node:crypto');
+const { promisify } = require('node:util');
+
+const exec = promisify(execFile);
 
 const workflows = ['core', 'gui', 'mobile', 'test'];
 
@@ -15,7 +20,7 @@ function releaseNotes(repository, baseline, sha, commits, runs) {
   return [
     '# EasyTier Nightly',
     '',
-    'Development builds from `main`. This prerelease and its download URLs are updated in place.',
+    'Development builds from `main`. This prerelease is updated in place. Asset names follow version releases.',
     '',
     `Commit: [${sha}](${url}/commit/${sha})`,
     `Builds: ${runs.map(run => `[${run.name}](${run.html_url})`).join(' · ')}`,
@@ -112,9 +117,17 @@ async function prepare({ github, context, core, sha }) {
   const commits = await github.paginate(github.rest.repos.compareCommitsWithBasehead, {
     ...repository, basehead: `${baseline.tag_name}...${sha}`, per_page: 100,
   }, response => response.data.commits);
+  const { data: config } = await github.rest.repos.getContent({
+    ...repository, path: 'easytier-gui/src-tauri/tauri.conf.json', ref: sha,
+  });
+  const { version } = JSON.parse(Buffer.from(config.content, 'base64').toString('utf8'));
+  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error('The build must declare a valid release version.');
+  }
 
   return {
     sha,
+    version: `v${version}`,
     release_id: release?.id,
     runs: Object.fromEntries(workflows.map((workflow, index) => [workflow, runs[index].id])),
     artifacts,
@@ -122,11 +135,52 @@ async function prepare({ github, context, core, sha }) {
   };
 }
 
+async function packageAssets({ build, source, directory }) {
+  directory = path.resolve(directory);
+  await fs.mkdir(directory);
+  const assets = [];
+  for (const [workflow, artifacts] of Object.entries(build.artifacts)) {
+    for (const artifact of artifacts) {
+      const artifactPath = path.resolve(source, artifact.name);
+      const files = [];
+      for (const file of await fs.readdir(artifactPath, { recursive: true })) {
+        if ((await fs.stat(path.join(artifactPath, file))).isFile()) files.push(file);
+      }
+      if (!files.length) throw new Error(`Empty artifact: ${artifact.name}`);
+      if (workflow === 'core') {
+        const name = `${artifact.name}-${build.version}.zip`;
+        await exec('chmod', ['-R', '755', artifactPath]);
+        // Match release.yml: only Magisk has its files at the ZIP root.
+        const magisk = artifact.name === 'Easytier-Magisk';
+        await exec('zip', ['-qr', path.join(directory, name), magisk ? '.' : artifact.name], {
+          cwd: magisk ? artifactPath : path.resolve(source),
+        });
+        assets.push(name);
+      } else {
+        for (const file of files) {
+          const name = path.basename(file);
+          if (assets.includes(name)) throw new Error(`Duplicate release asset: ${name}`);
+          await fs.copyFile(path.join(artifactPath, file), path.join(directory, name));
+          assets.push(name);
+        }
+      }
+    }
+  }
+  const checksums = [];
+  for (const name of assets.sort()) {
+    const data = await fs.readFile(path.join(directory, name));
+    if (!data.length) throw new Error(`Empty asset: ${name}`);
+    checksums.push(`${createHash('sha256').update(data).digest('hex')}  ${name}\n`);
+  }
+  await fs.writeFile(path.join(directory, 'SHA256SUMS'), checksums.join(''));
+  build.assets = [...assets, 'SHA256SUMS'].sort();
+}
+
 async function publish({ github, context, core, build, directory }) {
   const repository = context.repo;
-  const names = Object.values(build.artifacts).flat().map(artifact => `${artifact.name}.zip`).sort();
+  const names = build.assets;
   const files = (await fs.readdir(directory)).sort();
-  if (!names.length || JSON.stringify(files) !== JSON.stringify(names)) {
+  if (!names?.length || JSON.stringify(files) !== JSON.stringify(names)) {
     throw new Error('Packaged files do not match the selected nightly artifacts.');
   }
   for (const name of files) {
@@ -160,7 +214,7 @@ async function publish({ github, context, core, build, directory }) {
     await github.rest.repos.uploadReleaseAsset({
       ...repository, release_id: release.id, name,
       data: await fs.readFile(path.join(directory, name)),
-      headers: { 'content-type': 'application/zip' },
+      headers: { 'content-type': name.endsWith('.zip') ? 'application/zip' : 'application/octet-stream' },
     });
   }
   // Remove retired platforms only after all replacement assets are uploaded.
@@ -184,4 +238,4 @@ async function publish({ github, context, core, build, directory }) {
   core.info(`Updated nightly at ${build.sha}: ${release.html_url}`);
 }
 
-module.exports = { prepare, publish, releaseNotes };
+module.exports = { prepare, packageAssets, publish, releaseNotes };
