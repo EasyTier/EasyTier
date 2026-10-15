@@ -681,7 +681,9 @@ mod abi {
 
     #[unsafe(no_mangle)]
     /// WASI command entrypoint used only to initialize the host runtime.
-    pub extern "C" fn _start() {}
+    pub extern "C" fn _start() {
+        crate::wasi::logger::init();
+    }
 
     #[unsafe(no_mangle)]
     /// Allocates a guest-owned ABI buffer and returns its linear-memory offset.
