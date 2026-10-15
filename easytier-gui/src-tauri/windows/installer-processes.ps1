@@ -181,11 +181,22 @@ try {
         $restart = $false
         $controller = $null
         $serviceProcess = $null
+        $startMode = $null
         try {
             $service = Get-AppService
             if ($service -and $service.State -ne 'Stopped') {
                 $controller = New-Object ServiceProcess.ServiceController('easytier-gui')
-                $restart = $RestoreService -ne 0 -and $service.State -ne 'Stop Pending'
+                $restart = $RestoreService -ne 0 -and $service.State -ne 'Stop Pending' -and
+                    $service.StartMode -ne 'Disabled'
+                if ($service.StartMode -ne 'Disabled') {
+                    # Released versions can exit without reporting Stopped,
+                    # which queues SCM recovery even after an explicit stop.
+                    # Keep recovery from starting the old binary during setup.
+                    $originalStartMode = $service.StartMode
+                    $result = $service.ChangeStartMode('Disabled').ReturnValue
+                    if ($result -ne 0) { throw "Could not disable service startup: $result" }
+                    $startMode = if ($originalStartMode -eq 'Auto') { 'Automatic' } else { 'Manual' }
+                }
                 if ($service.ProcessId) {
                     $serviceProcess = [Diagnostics.Process]::GetProcessById($service.ProcessId)
                     # Acquire the handle before stopping, while the PID still exists.
@@ -210,6 +221,10 @@ try {
             # Also restore after cancellation/failure, provided the executable
             # still exists. A completed uninstall must not restart the service.
             try {
+                if ($startMode) {
+                    $result = $service.ChangeStartMode($startMode).ReturnValue
+                    if ($result -ne 0) { throw "Could not restore service startup: $result" }
+                }
                 if ($restart -and (Test-Path -LiteralPath $exePath)) {
                     $controller.Refresh()
                     if ($controller.Status -eq 'StopPending') {

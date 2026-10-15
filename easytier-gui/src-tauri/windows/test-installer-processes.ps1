@@ -68,10 +68,20 @@ using System.Threading;
 
 class FixtureService : ServiceBase
 {
+    static bool legacy;
     public FixtureService() { ServiceName = "easytier-gui"; }
+    protected override void OnStop()
+    {
+        // Model released EasyTier versions that exit without reporting Stopped.
+        if (legacy) Environment.Exit(0);
+    }
     static void Main(string[] args)
     {
-        if (args.Length > 0) ServiceBase.Run(new FixtureService());
+        if (args.Length > 0)
+        {
+            legacy = args[0] == "--legacy";
+            ServiceBase.Run(new FixtureService());
+        }
         else Thread.Sleep(Timeout.Infinite);
     }
 }
@@ -92,22 +102,30 @@ class FixtureService : ServiceBase
     Write-Host 'PASS: close GUI, preserve a different installation'
     if ($GuiOnly) { return }
 
-    New-Service -Name easytier-gui -BinaryPathName "`"$exe`" --service" -StartupType Manual | Out-Null
+    New-Service -Name easytier-gui -BinaryPathName "`"$exe`" --legacy" -StartupType Automatic | Out-Null
     $createdService = $true
+    & "$env:SystemRoot\System32\sc.exe" failure easytier-gui reset= 0 actions= restart/1000 | Out-Null
+    Assert ($LASTEXITCODE -eq 0) 'Could not configure service recovery.'
     Start-TestService
     $gui = Start-Process $exe -PassThru
     $helper = Prepare
+    Start-Sleep -Milliseconds 1500
     Assert ((Get-Service easytier-gui).Status -eq 'Stopped') 'The service was not stopped.'
+    Assert ((Get-WmiObject Win32_Service -Filter "Name='easytier-gui'").StartMode -eq 'Disabled') 'Service recovery was not inhibited.'
     Assert $gui.HasExited 'The GUI alongside the service was not stopped.'
     Move-Item $exe "$exe.old"
     Copy-Item "$exe.old" $exe
     Finish $helper
     $helper = $null
     Assert ((Get-Service easytier-gui).Status -eq 'Running') 'The running service was not restored.'
-    Write-Host 'PASS: stop GUI and service, replace executable, restore service'
+    Assert ((Get-WmiObject Win32_Service -Filter "Name='easytier-gui'").StartMode -eq 'Auto') 'Automatic startup was not restored.'
+    Write-Host 'PASS: stop legacy service despite failure recovery, replace executable, restore service'
 
+    Set-Service easytier-gui -StartupType Disabled
     Stop-Service easytier-gui
     (Get-Service easytier-gui).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(10))
+    Start-Sleep -Milliseconds 1500
+    Set-Service easytier-gui -StartupType Manual
     $helper = Prepare
     Assert (!$helper) 'A stopped service must not start a helper.'
     $gui = Start-Process $exe -PassThru
@@ -127,6 +145,7 @@ class FixtureService : ServiceBase
     $helper.Dispose()
     $helper = $null
     Assert ((Get-Service easytier-gui).Status -eq 'Running') 'Cancellation did not restore the service.'
+    Assert ((Get-WmiObject Win32_Service -Filter "Name='easytier-gui'").StartMode -eq 'Manual') 'Manual startup was not restored.'
     Write-Host 'PASS: restore service when the installer exits'
 
     $helper = Prepare $PID 0
@@ -138,6 +157,7 @@ class FixtureService : ServiceBase
 finally {
     if ($helper -and !$helper.HasExited) { Finish $helper }
     if ($createdService) {
+        Set-Service easytier-gui -StartupType Disabled
         Stop-Service easytier-gui -ErrorAction SilentlyContinue
         & "$env:SystemRoot\System32\sc.exe" delete easytier-gui | Out-Null
     }
