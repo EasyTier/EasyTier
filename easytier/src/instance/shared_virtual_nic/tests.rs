@@ -394,3 +394,128 @@ fn registry_replaces_invalid_devices() {
         &next.shared_nic,
     ));
 }
+
+#[cfg(not(mobile))]
+#[test]
+fn anonymous_devices_are_private_but_reuse_the_same_members_logical_outlet() {
+    let mut registry = SharedVirtualNicRegistry::new();
+    let mut member = |id| {
+        registry.create_member(
+            String::new(),
+            VirtualNicConfig::new(String::new(), 1500, NetNS::new(None)),
+            id,
+            Arc::new(Notify::new()),
+        )
+    };
+    let first = member(MEMBER);
+    let replacement = member(MEMBER);
+    let other = member(uuid::Uuid::new_v4());
+    assert!(Arc::ptr_eq(&first.shared_nic, &replacement.shared_nic));
+    assert!(!Arc::ptr_eq(&first.shared_nic, &other.shared_nic));
+}
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
+#[tokio::test]
+async fn managed_route_projection_preserves_membership_policy_without_writing_routes() {
+    use crate::instance::route::scope::RouteScope;
+    use easytier_core::{
+        config::runtime::CoreRuntimeConfigStore,
+        host::route::{RouteSet, RouteSpec},
+    };
+
+    let mut nic = registered_nic();
+    let recording = RecordingIfConfiger::default();
+    set_ifcfg(&nic, recording.clone()).await;
+    nic.route_writer_active = true;
+    let other = uuid::Uuid::from_u128(2);
+    let other_registration = uuid::Uuid::from_u128(20);
+    nic.member_registrations.insert(other, other_registration);
+    nic.ifcfg
+        .apply_member_claims(other, address_claims("10.51.0.2/24"));
+    nic.managed_route_members.extend([MEMBER, other]);
+    let inputs = registry::Registry::default();
+    let mut bindings = Vec::new();
+    for (member, registration) in [(MEMBER, REGISTRATION), (other, other_registration)] {
+        let scope = RouteScope::new(member);
+        scope
+            .prepare(CoreRuntimeConfigStore::new(
+                Default::default(),
+                Arc::new(Default::default()),
+            ))
+            .unwrap();
+        let binding = scope
+            .attach(&inputs, nic.route_outlet.devices.clone(), registration)
+            .unwrap();
+        scope.mark_ready(scope.attachment().unwrap().id);
+        bindings.push(binding);
+    }
+    let dns = RouteSpec::from(
+        format!("{}/32", crate::instance::dns_server::MAGIC_DNS_FAKE_IP)
+            .parse::<cidr::IpCidr>()
+            .unwrap(),
+    );
+    let requested = inputs
+        .snapshot()
+        .into_iter()
+        .map(|input| (input, RouteSet::from([dns])))
+        .collect::<Vec<_>>();
+    let accepted = nic.project_route_inputs(&requested).await.unwrap();
+    assert_eq!(accepted.scopes.len(), 2);
+    assert!(
+        accepted
+            .scopes
+            .values()
+            .all(|routes| *routes == RouteSet::from([dns]))
+    );
+    assert_eq!(accepted.sources[&dns], Some("10.50.0.2".parse().unwrap()));
+
+    // A shared DNS destination is allowed; another member's address subnet
+    // remains exclusive and a rejected replacement keeps its accepted intent.
+    let mut conflicting = requested.clone();
+    conflicting[1].1 = RouteSet::from([RouteSpec::from(
+        "10.50.0.0/24".parse::<cidr::IpCidr>().unwrap(),
+    )]);
+    let accepted = nic.project_route_inputs(&conflicting).await.unwrap();
+    assert_eq!(accepted.scopes[&conflicting[1].0.id], RouteSet::from([dns]));
+    assert!(nic.is_valid());
+    assert!(recording.routes.lock().unwrap().is_empty());
+
+    // The earlier proposal can acquire a prefix released by a later nonempty
+    // replacement in this same snapshot, without waiting for another signal.
+    let transferred = RouteSpec::from("10.60.0.0/24".parse::<cidr::IpCidr>().unwrap());
+    let retained = RouteSpec::from("10.61.0.0/24".parse::<cidr::IpCidr>().unwrap());
+    let initial = vec![
+        (
+            requested[0].0.clone(),
+            RouteSet::from([dns, transferred, retained]),
+        ),
+        requested[1].clone(),
+    ];
+    nic.project_route_inputs(&initial).await.unwrap();
+    let handoff = vec![
+        (requested[1].0.clone(), RouteSet::from([dns, transferred])),
+        (requested[0].0.clone(), RouteSet::from([dns, retained])),
+    ];
+    let accepted = nic.project_route_inputs(&handoff).await.unwrap();
+    assert_eq!(
+        accepted.scopes[&requested[1].0.id],
+        RouteSet::from([dns, transferred])
+    );
+    assert_eq!(
+        accepted.scopes[&requested[0].0.id],
+        RouteSet::from([dns, retained])
+    );
+
+    nic.remove_member_registration_claims(MEMBER, REGISTRATION)
+        .await
+        .unwrap();
+    nic.project_route_inputs(&requested[1..]).await.unwrap();
+    assert!(!nic.managed_route_members.contains(&MEMBER));
+    assert!(!nic.ifcfg.member_claims.contains_key(&MEMBER));
+    assert!(recording.routes.lock().unwrap().is_empty());
+}

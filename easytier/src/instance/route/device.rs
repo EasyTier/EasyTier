@@ -208,7 +208,10 @@ pub(crate) struct DeviceResource<T> {
 impl<T> DeviceResource<T> {
     /// Shared or borrowed devices retain their existing lifetime authority.
     pub fn untracked(resource: T) -> Self {
-        Self { resource, _lifetime: None }
+        Self {
+            resource,
+            _lifetime: None,
+        }
     }
 
     pub fn new(resource: T, lifetime: TunDeviceLifetime) -> Self {

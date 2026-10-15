@@ -75,7 +75,7 @@ impl NativeInstanceRuntimeHost {
             shared_virtual_nic_registry,
         );
         let event_journal = EventJournal::new(&global_ctx);
-        let route = NativeRouteRuntime::new(global_ctx.clone(), cancel.clone());
+        let route = NativeRouteRuntime::new(global_ctx.clone());
         Arc::new(Self {
             global_ctx,
             event_journal,

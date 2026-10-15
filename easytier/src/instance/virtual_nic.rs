@@ -283,8 +283,6 @@ pub struct VirtualNic {
     #[cfg(target_os = "windows")]
     name_reservation: Option<std::os::windows::io::OwnedHandle>,
     #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
-    device_registration: Option<u64>,
-    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
     device_state: Option<Arc<crate::instance::route::device::TunDeviceState>>,
 }
 
@@ -318,8 +316,6 @@ impl VirtualNic {
             ifcfg: Box::new(IfConfiger::default()),
             #[cfg(target_os = "windows")]
             name_reservation: None,
-            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
-            device_registration: None,
             #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
             device_state: None,
         }
@@ -765,7 +761,6 @@ impl VirtualNic {
             } else {
                 state.attach_external(ifname.clone(), ifindex)
             };
-            self.device_registration = Some(lifetime.registration());
             crate::instance::route::device::DeviceResource::new(dev, lifetime)
         } else {
             crate::instance::route::device::DeviceResource::untracked(dev)
@@ -1125,6 +1120,8 @@ pub struct NicCtx {
     close_notifier: Arc<Notify>,
 
     backend: NicBackend,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+    _route_binding: Option<super::route::scope::RouteScopeLease>,
     tasks: JoinSet<()>,
 
     #[cfg(target_os = "windows")]
@@ -1145,6 +1142,9 @@ impl NicCtx {
     }
 
     pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
+        if self.global_ctx.get_route_handle().is_some() {
+            return None;
+        }
         match self.backend {
             NicBackend::Dedicated(_) => None,
             NicBackend::Shared(_) => Some(self.backend.clone()),
@@ -1166,6 +1166,8 @@ impl NicCtx {
             close_notifier,
 
             backend,
+            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+            _route_binding: None,
             tasks: JoinSet::new(),
 
             #[cfg(target_os = "windows")]
@@ -1187,8 +1189,15 @@ impl NicCtx {
             net_ns: NetNS::new(None),
             ..nic_config
         };
-        // Only an explicitly configured name opts into sharing.
-        let backend = if cfg!(mobile) || !global_ctx.get_flags().dev_name.is_empty() {
+        // Managed Linux NICs use one outlet implementation; anonymous devices
+        // receive a private logical registry key, named devices share it.
+        let backend = if cfg!(all(
+            target_os = "linux",
+            feature = "linux-netlink",
+            not(mobile)
+        )) || cfg!(mobile)
+            || !global_ctx.get_flags().dev_name.is_empty()
+        {
             NicBackend::Shared(registry.lock().await.create_member(
                 nic_config.dev_name.clone(),
                 nic_config,
@@ -1674,18 +1683,17 @@ impl NicCtx {
 
     async fn publish_ready(&self) -> Result<(), Error> {
         #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
-        {
-            let registration = match &self.backend {
-                NicBackend::Dedicated(nic) => nic.lock().await.device_registration,
-                NicBackend::Shared(_) => None,
-            };
-            if let Some(registration) = registration {
-                if let Some(name) = self.global_ctx.tun_devices.mark_ready(registration) {
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceReady(name));
-                }
-                return Ok(());
-            }
+        if let Some(scope) = self.global_ctx.get_route_scope() {
+            let attachment = scope
+                .attachment()
+                .ok_or_else(|| anyhow::anyhow!("route scope is not attached"))?;
+            let active = attachment
+                .devices
+                .snapshot()
+                .active
+                .ok_or_else(|| anyhow::anyhow!("route outlet has no TUN device"))?;
+            attachment.devices.mark_ready(active.registration);
+            scope.mark_ready(attachment.id);
         }
         self.global_ctx
             .set_tun_device_ready(self.tun_ifname().await?);
@@ -1710,6 +1718,15 @@ impl NicCtx {
         ipv4_addr: Option<cidr::Ipv4Inet>,
         ipv6_addr: Option<cidr::Ipv6Inet>,
     ) -> Result<(), Error> {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        if let Some(scope) = self.global_ctx.get_route_scope() {
+            let NicBackend::Shared(member) = &self.backend else {
+                return Err(
+                    anyhow::anyhow!("managed route scope requires a logical NIC outlet").into(),
+                );
+            };
+            self._route_binding = Some(member.attach_route_scope(scope).await?);
+        }
         let tunnel = match self.backend.create_dev().await {
             Ok(ret) => {
                 #[cfg(target_os = "windows")]

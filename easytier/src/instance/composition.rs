@@ -257,14 +257,7 @@ fn configure_runtime_core_host_adapters(
     }
     #[cfg(feature = "proxy-cidr-monitor")]
     {
-        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-        {
-            adapters.proxy_cidr_monitor_enabled = false;
-        }
-        #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
-        {
-            adapters.proxy_cidr_monitor_enabled = true;
-        }
+        adapters.proxy_cidr_monitor_enabled = global_ctx.get_route_handle().is_none();
     }
     #[cfg(feature = "public-ipv6-provider")]
     if host_config.public_ipv6_provider_supported {

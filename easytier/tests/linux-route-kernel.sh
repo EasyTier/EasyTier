@@ -26,7 +26,16 @@ exec unshare --net --mount sh -c '
     mknod /dev/urandom c 1 9
     ip link set lo up
     case "$2" in
-        kernel) exec "$1" instance::route::backend::linux::tests::kernel_ --ignored --nocapture ;;
+        kernel)
+            # Each case creates its own network namespace. A process-wide NIC
+            # runtime must not be reused across those unrelated namespaces.
+            "$1" instance::route::backend::linux::tests::kernel_ --ignored --list |
+                while IFS= read -r route_test_line; do
+                    case "$route_test_line" in
+                        *": test") "$1" "${route_test_line%: test}" --exact --ignored --nocapture ;;
+                    esac
+                done
+            ;;
         dns) exec "$1" instance::dns_server::tests --nocapture --test-threads=1 ;;
     esac
 ' easytier-route-kernel "$route_test_binary" "$route_test_suite"

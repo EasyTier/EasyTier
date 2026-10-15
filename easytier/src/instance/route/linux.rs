@@ -618,7 +618,11 @@ mod tests {
                         .unwrap_err()
                         .is_errno(libc::EEXIST)
                 );
-                assert_eq!(backend.sequence, before + 1, "EEXIST must not trigger a backend query");
+                assert_eq!(
+                    backend.sequence,
+                    before + 1,
+                    "EEXIST must not trigger a backend query"
+                );
                 ip(&[
                     "route",
                     "add",
@@ -683,7 +687,7 @@ mod tests {
     fn kernel_manager_scale_and_incremental_updates() {
         kernel_test(|| async {
             use crate::common::global_ctx::tests::get_mock_global_ctx;
-            use crate::instance::route::RouteMgr;
+            use crate::instance::route::test_support::RouteHarness;
             use easytier_core::{
                 config::{
                     peers::PeerRuntimeSnapshot,
@@ -720,7 +724,7 @@ mod tests {
                     queries: queries.clone(),
                 };
                 let mut manager =
-                    RouteMgr::new(ctx, backend, routes, config, CancellationToken::new());
+                    RouteHarness::new(ctx, backend, routes, config, CancellationToken::new());
                 let mut destinations: BTreeSet<_> = (0..count)
                     .map(|i| IpCidr::new(IpAddr::V4(Ipv4Addr::from(0x0a800000 + i)), 32).unwrap())
                     .collect();
@@ -801,7 +805,7 @@ mod tests {
         use crate::{
             common::global_ctx::tests::get_mock_global_ctx,
             instance::{
-                route::RouteMgr,
+                route::test_support::RouteHarness,
                 virtual_nic::{VirtualNic, VirtualNicConfig},
             },
         };
@@ -874,7 +878,7 @@ mod tests {
             writes: writes.clone(),
             queries: Arc::new(AtomicU32::new(0)),
         };
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             ctx.clone(),
             backend,
             routes,
@@ -966,6 +970,167 @@ mod tests {
         kernel_test(|| tun_lifetime_case(true));
     }
 
+    #[cfg(all(feature = "tun", not(mobile)))]
+    #[test]
+    #[ignore = "requires root, TUN node and private network namespace"]
+    fn kernel_shared_outlet_preserves_other_instances_route_and_reselects_source() {
+        kernel_test(|| async {
+            use crate::{
+                common::config::{ConfigLoader as _, TomlConfig},
+                instance::test_instance::TestInstance,
+            };
+            use easytier_core::host::route::RouteDemand;
+            use easytier_core::process_runtime::CoreProcessRuntime;
+
+            let configs = [TomlConfig::default(), TomlConfig::default()];
+            for (index, config) in configs.iter().enumerate() {
+                config.set_id(uuid::Uuid::from_u128(index as u128 + 1));
+                config.set_ipv4(Some(format!("10.88.{}.1/24", index + 1).parse().unwrap()));
+                let mut flags = config.get_flags();
+                flags.dev_name = "et-shared".to_owned();
+                flags.accept_dns = false;
+                config.set_flags(flags);
+            }
+            let runtime = CoreProcessRuntime::new();
+            let registry = TestInstance::new_shared_virtual_nic_registry();
+            let mut first = TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
+                configs[0].clone(),
+                runtime.clone(),
+                registry.clone(),
+            );
+            let mut second = TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
+                configs[1].clone(),
+                runtime,
+                registry,
+            );
+            first.run().await.unwrap();
+            second.run().await.unwrap();
+            let first_ctx = first.get_global_ctx();
+            let second_ctx = second.get_global_ctx();
+            let first_handle = first_ctx.get_route_handle().unwrap();
+            let second_handle = second_ctx.get_route_handle().unwrap();
+            let prefix = format!("{}/32", crate::instance::dns_server::MAGIC_DNS_FAKE_IP);
+            let destination: IpCidr = prefix.parse().unwrap();
+            let _first_demand = first_handle
+                .register(RouteDemand::additional([destination]))
+                .unwrap();
+            let _second_demand = second_handle
+                .register(RouteDemand::additional([destination]))
+                .unwrap();
+
+            let device = tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    if first_ctx.get_tun_device_index().is_some()
+                        && second_ctx.get_tun_device_index().is_some()
+                    {
+                        break first_ctx.route_device_state().snapshot().active.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("both members must become ready on the shared TUN");
+            assert_eq!(
+                second_ctx
+                    .route_device_state()
+                    .snapshot()
+                    .active
+                    .unwrap()
+                    .registration,
+                device.registration
+            );
+            let route = OsRoute {
+                destination,
+                ifindex: device.id.ifindex,
+                metric: 65535,
+                preferred_source: Some("10.88.1.1".parse().unwrap()),
+            };
+            let required = BTreeSet::from([crate::instance::route::RouteSpec::from(destination)]);
+            let ready = tokio::time::timeout(Duration::from_secs(15), async {
+                first_handle
+                    .wait_ready(&required, device.registration)
+                    .await
+                    .unwrap();
+                second_handle
+                    .wait_ready(&required, device.registration)
+                    .await
+                    .unwrap();
+            })
+            .await;
+            assert!(
+                ready.is_ok(),
+                "one physical route must satisfy both instance scopes: first={:?}, second={:?}, kernel={}",
+                first_handle.status(),
+                second_handle.status(),
+                ip(&["-j", "route", "show", "table", "main"])
+            );
+            let mut checker = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
+            assert_eq!(
+                checker
+                    .existing(&BTreeSet::from([route.clone()]))
+                    .await
+                    .unwrap(),
+                BTreeSet::from([route.clone()])
+            );
+            let rows: serde_json::Value =
+                serde_json::from_str(&ip(&["-j", "route", "show", "exact", &prefix])).unwrap();
+            assert_eq!(rows.as_array().unwrap().len(), 1);
+
+            first.clear_resources().await;
+            assert!(first_handle.status().closed);
+            assert!(!second_handle.status().closed);
+            let remaining = OsRoute {
+                preferred_source: Some("10.88.2.1".parse().unwrap()),
+                ..route.clone()
+            };
+            tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    if checker
+                        .existing(&BTreeSet::from([remaining.clone()]))
+                        .await
+                        .unwrap()
+                        == BTreeSet::from([remaining.clone()])
+                        && second_handle.status().ready == required
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("departing member must not remove the other member's route");
+            assert_eq!(
+                second_ctx
+                    .route_device_state()
+                    .snapshot()
+                    .active
+                    .unwrap()
+                    .registration,
+                device.registration
+            );
+            assert!(
+                checker
+                    .existing(&BTreeSet::from([route]))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let rows: serde_json::Value =
+                serde_json::from_str(&ip(&["-j", "route", "show", "exact", &prefix])).unwrap();
+            assert_eq!(rows.as_array().unwrap().len(), 1);
+
+            second.clear_resources().await;
+            assert!(second_handle.status().closed);
+            assert!(
+                checker
+                    .existing(&BTreeSet::from([remaining]))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        });
+    }
+
     #[cfg(all(feature = "tun", feature = "public-ipv6-provider", not(mobile)))]
     #[test]
     #[ignore = "requires root, TUN node and private network namespace"]
@@ -1023,8 +1188,9 @@ mod tests {
                     loop {
                         if let Some(lease) = client_core.packet_plane().public_ipv6_addr().await {
                             let provider_device =
-                                provider_ctx.tun_devices.snapshot().active.unwrap();
-                            let client_device = client_ctx.tun_devices.snapshot().active.unwrap();
+                                provider_ctx.route_device_state().snapshot().active.unwrap();
+                            let client_device =
+                                client_ctx.route_device_state().snapshot().active.unwrap();
                             let provider_route = OsRoute {
                                 destination: IpCidr::new(
                                     IpAddr::V6(lease.first_address()),
@@ -1078,13 +1244,13 @@ mod tests {
                         && route.metric.get() == 5)
             );
             let provider_claim = provider_ctx
-                .tun_devices
+                .route_device_state()
                 .snapshot()
                 .active
                 .unwrap()
                 .registration;
             let client_claim = client_ctx
-                .tun_devices
+                .route_device_state()
                 .snapshot()
                 .active
                 .unwrap()
@@ -1117,7 +1283,7 @@ mod tests {
             .expect("public IPv6 withdrawal did not remove live-device routes");
             assert_eq!(
                 provider_ctx
-                    .tun_devices
+                    .route_device_state()
                     .snapshot()
                     .active
                     .unwrap()
@@ -1126,7 +1292,7 @@ mod tests {
             );
             assert_eq!(
                 client_ctx
-                    .tun_devices
+                    .route_device_state()
                     .snapshot()
                     .active
                     .unwrap()

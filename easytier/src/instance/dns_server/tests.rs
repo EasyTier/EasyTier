@@ -47,14 +47,12 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
         not(mobile)
     ))]
     let route_runtime = {
-        let routes = easytier_core::host::route::RouteRegistry::default();
-        let handle = easytier_core::host::route::RouteHandle::new(routes.clone());
-        ctx.set_route_handle(Some(handle.clone()));
+        let scope = crate::instance::route::scope::RouteScope::new(ctx.get_id());
+        ctx.set_route_handle(Some(scope.handle()));
+        ctx.set_route_scope(Some(scope.clone()));
         Arc::new(TestRouteRuntime {
             ctx: ctx.clone(),
-            routes,
-            cancel: CancellationToken::new(),
-            task: tokio::sync::Mutex::new(None),
+            scope,
         })
     };
 
@@ -70,9 +68,7 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
         not(mobile)
     ))]
     {
-        adapters.routes = Some(easytier_core::host::route::RouteHandle::new(
-            route_runtime.routes.clone(),
-        ));
+        adapters.routes = Some(route_runtime.scope.handle());
         adapters.instance_runtime = route_runtime;
     }
     let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
@@ -90,11 +86,7 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
 ))]
 struct TestRouteRuntime {
     ctx: ArcGlobalCtx,
-    routes: easytier_core::host::route::RouteRegistry,
-    cancel: CancellationToken,
-    task: tokio::sync::Mutex<
-        Option<tokio::task::JoinHandle<Result<(), crate::instance::route::CleanupIncomplete>>>,
-    >,
+    scope: crate::instance::route::scope::RouteScope,
 }
 
 #[cfg(all(
@@ -110,32 +102,22 @@ impl easytier_core::instance::InstanceRuntimeHost for TestRouteRuntime {
         _packet_plane: Arc<easytier_core::instance::CorePacketPlane>,
         runtime_config: easytier_core::config::runtime::CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn easytier_core::gateway::dhcp::DhcpHost>>> {
-        let backend =
-            crate::instance::route::PlatformRouteBackend::new(self.ctx.net_ns.clone()).await?;
-        let manager = crate::instance::route::RouteMgr::new(
-            self.ctx.clone(),
-            backend,
-            self.routes.clone(),
-            runtime_config,
-            self.cancel.clone(),
-        );
-        *self.task.lock().await = Some(tokio::spawn(manager.run()));
+        self.scope.prepare(runtime_config)?;
         Ok(None)
     }
 
     fn request_shutdown(&self) {
-        self.routes.close();
+        self.scope.close();
         self.ctx.set_route_handle(None);
-        self.cancel.cancel();
+        self.ctx.set_route_scope(None);
     }
 
     async fn shutdown(&self) {
         self.request_shutdown();
-        if let Some(task) = self.task.lock().await.take() {
-            if let Err(err) = tokio::time::timeout(Duration::from_secs(5), task).await {
-                tracing::warn!(?err, "test route manager cleanup timed out");
-            }
-        }
+        tokio::time::timeout(Duration::from_secs(5), self.scope.wait_withdrawn())
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
 

@@ -99,6 +99,7 @@ pub struct GlobalCtx {
     runtime_endpoint_protocols: Option<HashSet<String>>,
 
     route_handle: parking_lot::RwLock<Option<crate::instance::route::RouteHandle>>,
+    route_scope: parking_lot::RwLock<Option<crate::instance::route::scope::RouteScope>>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -217,6 +218,7 @@ impl GlobalCtx {
             runtime_endpoint_protocols,
 
             route_handle: parking_lot::RwLock::new(None),
+            route_scope: parking_lot::RwLock::new(None),
         }
     }
 
@@ -265,7 +267,11 @@ impl GlobalCtx {
     #[cfg(any(feature = "tun", test))]
     pub(crate) fn set_tun_device_error(&self, error: String) {
         self.set_tun_device_name(None);
-        self.tun_devices.mark_unready();
+        if let Some(scope) = self.get_route_scope() {
+            scope.mark_unready();
+        } else {
+            self.tun_devices.mark_unready();
+        }
         self.issue_event(GlobalCtxEvent::TunDeviceError(error));
     }
 
@@ -274,7 +280,11 @@ impl GlobalCtx {
     }
 
     pub fn get_tun_device_index(&self) -> Option<u32> {
-        self.tun_devices
+        let devices = match self.get_route_scope() {
+            Some(scope) => scope.attachment().filter(|binding| binding.ready)?.devices,
+            None => self.tun_devices.clone(),
+        };
+        devices
             .snapshot()
             .active
             .filter(|device| device.ready)
@@ -381,6 +391,20 @@ impl GlobalCtx {
 
     pub fn get_route_handle(&self) -> Option<crate::instance::route::RouteHandle> {
         self.route_handle.read().clone()
+    }
+
+    pub(crate) fn set_route_scope(&self, scope: Option<crate::instance::route::scope::RouteScope>) {
+        *self.route_scope.write() = scope;
+    }
+
+    pub(crate) fn get_route_scope(&self) -> Option<crate::instance::route::scope::RouteScope> {
+        self.route_scope.read().clone()
+    }
+
+    pub(crate) fn route_device_state(&self) -> Arc<crate::instance::route::device::TunDeviceState> {
+        self.get_route_scope()
+            .and_then(|scope| scope.attachment())
+            .map_or_else(|| self.tun_devices.clone(), |attachment| attachment.devices)
     }
 }
 

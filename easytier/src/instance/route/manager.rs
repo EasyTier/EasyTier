@@ -1,36 +1,47 @@
-use std::collections::{BTreeMap, BTreeSet};
+use registry::Registry;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
-use easytier_core::host::route::{RouteRegistry, RouteSpec, RouteStatus};
+use easytier_core::host::route::{RouteSpec, RouteStatus};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use easytier_core::host::route::RouteSet;
 #[cfg(test)]
-use easytier_core::host::route::RouteDemand;
-use easytier_core::{
-    config::runtime::CoreRuntimeConfigStore,
-    host::route::{RouteHandle, resolve_route_demands},
-};
-
-use crate::common::global_ctx::ArcGlobalCtx;
+use easytier_core::host::route::{RouteDemand, RouteRegistry};
 
 use super::backend::RouteBackend;
-use super::device::DeviceFacts;
+use super::device::{DeviceFacts, TunDeviceState};
 use super::model::{CleanupIncomplete, DeviceId, RetryState, Route, RouteError};
+use super::{
+    inputs::{self, ScopeWatch},
+    scope::RouteInput,
+};
 
 const UNKNOWN_PROBE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct RouteMgr<B> {
-    global_ctx: ArcGlobalCtx,
+    devices: Arc<TunDeviceState>,
     backend: B,
 
-    /// Independently owned dynamic route declarations.
-    routes: RouteRegistry,
-    /// Wakes the reconcile loop when a declaration changes.
+    inputs: Registry<RouteInput>,
     changed: watch::Receiver<()>,
-    /// Authoritative manual proxy policy and its existing invalidation signal.
-    runtime_config: CoreRuntimeConfigStore,
-    config_changed: watch::Receiver<u64>,
+    scopes: BTreeMap<u64, ScopeWatch>,
+    retired_scopes: BTreeMap<u64, Arc<RouteInput>>,
+    scope_effects: BTreeMap<u64, BTreeSet<super::OsRoute>>,
     device_changed: watch::Receiver<DeviceFacts>,
+    nic_changed: watch::Receiver<u64>,
+    verified_nic_revision: u64,
+    verify_at: Option<tokio::time::Instant>,
+    #[cfg(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    ))]
+    nic: std::sync::Weak<tokio::sync::Mutex<crate::instance::shared_virtual_nic::SharedVirtualNic>>,
 
     installed: BTreeSet<Route>,
     external: BTreeSet<Route>,
@@ -45,24 +56,34 @@ pub struct RouteMgr<B> {
 }
 
 impl<B: RouteBackend> RouteMgr<B> {
-    pub fn new(
-        global_ctx: ArcGlobalCtx,
+    pub(crate) fn new(
+        devices: Arc<TunDeviceState>,
         backend: B,
-        routes: RouteRegistry,
-        runtime_config: CoreRuntimeConfigStore,
+        inputs: Registry<RouteInput>,
+        nic_changed: watch::Receiver<u64>,
         cancel: CancellationToken,
     ) -> Self {
-        let changed = routes.subscribe();
-        let config_changed = runtime_config.subscribe_service_runtime_changes();
-        let device_changed = global_ctx.tun_devices.subscribe();
+        let changed = inputs.subscribe();
+        let device_changed = devices.subscribe();
         Self {
-            global_ctx,
+            devices,
             backend,
-            routes,
+            inputs,
             changed,
-            runtime_config,
-            config_changed,
+            scopes: BTreeMap::new(),
+            retired_scopes: BTreeMap::new(),
+            scope_effects: BTreeMap::new(),
             device_changed,
+            nic_changed,
+            verified_nic_revision: 0,
+            verify_at: None,
+            #[cfg(all(
+                target_os = "linux",
+                feature = "linux-netlink",
+                feature = "tun",
+                not(mobile)
+            ))]
+            nic: std::sync::Weak::new(),
             installed: BTreeSet::new(),
             external: BTreeSet::new(),
             unknown: BTreeSet::new(),
@@ -74,8 +95,20 @@ impl<B: RouteBackend> RouteMgr<B> {
         }
     }
 
-    pub fn handle(&self) -> RouteHandle {
-        RouteHandle::new(self.routes.clone())
+    #[cfg(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    ))]
+    pub(crate) fn with_nic(
+        mut self,
+        nic: std::sync::Weak<
+            tokio::sync::Mutex<crate::instance::shared_virtual_nic::SharedVirtualNic>,
+        >,
+    ) -> Self {
+        self.nic = nic;
+        self
     }
 
     async fn install_route(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
@@ -169,7 +202,8 @@ impl<B: RouteBackend> RouteMgr<B> {
     fn batch_interrupted(&self) -> bool {
         self.cancel.is_cancelled()
             || self.changed.has_changed().unwrap_or(true)
-            || self.config_changed.has_changed().unwrap_or(true)
+            || self.nic_changed.has_changed().unwrap_or(true)
+            || self.scopes.values().any(ScopeWatch::has_changed)
             || self.device_changed.has_changed().unwrap_or(true)
     }
 
@@ -187,13 +221,19 @@ impl<B: RouteBackend> RouteMgr<B> {
 
     pub fn next_wakeup_time(&self) -> Option<tokio::time::Instant> {
         if self
-            .global_ctx
-            .tun_devices
+            .devices
             .snapshot()
             .active
             .is_some_and(|device| !device.ready)
         {
             return self.unknown_probe_at;
+        }
+        if let Some(verify_at) = self.verify_at {
+            // Ordinary retries are suspended until the NIC revision is
+            // verified; an expired write deadline must not spin this loop.
+            return std::iter::once(verify_at)
+                .chain(self.unknown_probe_at)
+                .min();
         }
         let Some(desired) = &self.desired else {
             return Some(tokio::time::Instant::now());
@@ -214,6 +254,7 @@ impl<B: RouteBackend> RouteMgr<B> {
                     .map_or_else(tokio::time::Instant::now, |retry| retry.next_retry)
             })
             .chain(self.unknown_probe_at)
+            .chain(self.verify_at)
             .min()
     }
 
@@ -241,11 +282,15 @@ impl<B: RouteBackend> RouteMgr<B> {
                         break;
                     }
                 }
-                changed = self.config_changed.changed() => {
-                    if changed.is_err() {
-                        break;
+                _ = self.nic_changed.changed() => {},
+                _ = async {
+                    let changes = self.scopes.values_mut().map(|scope| Box::pin(scope.changed())).collect::<Vec<_>>();
+                    if changes.is_empty() {
+                        std::future::pending::<()>().await;
+                    } else {
+                        futures::future::select_all(changes).await;
                     }
-                }
+                } => {},
                 changed = self.device_changed.changed() => {
                     if changed.is_err() { break; }
                 }
@@ -263,43 +308,146 @@ impl<B: RouteBackend> RouteMgr<B> {
 
     pub async fn reconcile(&mut self) {
         self.reconcile_inner().await;
-        let facts = self.global_ctx.tun_devices.snapshot();
-        let mut status = RouteStatus::default();
-        if let Some(active) = facts.active.filter(|device| device.ready) {
-            status.device_registration = Some(active.registration);
-            let uncertain: BTreeSet<_> =
-                self.unknown.iter().map(|route| route.destination).collect();
-            status.ready = self
-                .installed
-                .union(&self.external)
-                .filter(|route| {
-                    route.interface == active.id && !uncertain.contains(&route.destination)
+        let facts = self.devices.snapshot();
+        let uncertain: BTreeSet<_> = self.unknown.iter().map(|route| route.destination).collect();
+        let ready = if self.verify_at.is_none() && !self.batch_interrupted() {
+            facts
+                .active
+                .as_ref()
+                .filter(|device| device.ready)
+                .map(|active| {
+                    self.installed
+                        .union(&self.external)
+                        .filter(|route| {
+                            route.interface == active.id && !uncertain.contains(&route.destination)
+                        })
+                        .map(|route| {
+                            RouteSpec::new(
+                                route.destination,
+                                std::num::NonZeroU32::new(route.metric).unwrap(),
+                            )
+                        })
+                        .collect::<RouteSet>()
                 })
-                .map(|route| {
-                    RouteSpec::new(
-                        route.destination,
-                        std::num::NonZeroU32::new(route.metric)
-                            .expect("resolved route metric must be nonzero"),
-                    )
+                .unwrap_or_default()
+        } else {
+            RouteSet::new()
+        };
+        for scope in self.scopes.values() {
+            let visible = ready
+                .iter()
+                .filter(|actual| {
+                    scope.input.is_ready()
+                        && scope
+                            .previous
+                            .range(**actual..)
+                            .next()
+                            .is_some_and(|request| request.destination == actual.destination)
                 })
+                .copied()
                 .collect();
+            scope.input.scope.publish_status(
+                scope.input.id,
+                RouteStatus {
+                    device_registration: facts
+                        .active
+                        .as_ref()
+                        .filter(|device| device.ready && scope.input.is_ready())
+                        .map(|device| device.registration),
+                    ready: visible,
+                    closed: false,
+                },
+            );
         }
-        self.routes.publish_status(status);
+        self.complete_withdrawals();
+    }
+
+    fn complete_withdrawals(&mut self) {
+        let needed: BTreeSet<_> = self.desired.iter().flatten().map(Route::os_route).collect();
+        let outstanding: BTreeSet<_> = self
+            .installed
+            .union(&self.unknown)
+            .map(Route::os_route)
+            .collect();
+        for scope in self
+            .scopes
+            .values()
+            .filter(|scope| !scope.input.is_current())
+        {
+            self.retired_scopes
+                .insert(scope.input.id, scope.input.clone());
+        }
+        self.retired_scopes.retain(|id, input| {
+            let pending = self.scope_effects.get(id).is_some_and(|effects| {
+                effects
+                    .iter()
+                    .any(|route| !needed.contains(route) && outstanding.contains(route))
+            });
+            if !pending {
+                input.cleanup.send_replace(true);
+            }
+            pending
+        });
+        let active_ids = self
+            .scopes
+            .keys()
+            .chain(self.retired_scopes.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        self.scope_effects.retain(|id, effects| {
+            effects.retain(|route| needed.contains(route) || outstanding.contains(route));
+            active_ids.contains(id)
+        });
+    }
+
+    async fn verify_owned_routes(&mut self) -> bool {
+        let revision = *self.nic_changed.borrow();
+        if revision == self.verified_nic_revision && self.verify_at.is_none() {
+            return true;
+        }
+        if self
+            .verify_at
+            .is_some_and(|at| at > tokio::time::Instant::now())
+        {
+            return false;
+        }
+        let requested = self.installed.iter().map(Route::os_route).collect();
+        match self.backend.existing(&requested).await {
+            Ok(existing) => {
+                self.installed
+                    .retain(|route| existing.contains(&route.os_route()));
+                self.external.clear();
+                self.verified_nic_revision = revision;
+                self.verify_at = None;
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "unable to verify routes after NIC configuration changed"
+                );
+                self.verify_at = Some(tokio::time::Instant::now() + UNKNOWN_PROBE_DELAY);
+                false
+            }
+        }
     }
 
     async fn reconcile_inner(&mut self) {
         // All baselines precede every snapshot read. Inputs arriving during I/O
         // remain pending and stop the obsolete batch after its current result.
         self.changed.mark_unchanged();
-        self.config_changed.mark_unchanged();
+        self.nic_changed.mark_unchanged();
+        for removed in inputs::synchronize(&mut self.scopes, &self.inputs) {
+            self.retired_scopes.insert(removed.input.id, removed.input);
+        }
         self.device_changed.mark_unchanged();
-        let device_facts = self.global_ctx.tun_devices.snapshot();
+        let device_facts = self.devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
         self.inspect_unknown(false).await;
         if self.batch_interrupted() {
             return;
         }
-        let device_facts = self.global_ctx.tun_devices.snapshot();
+        let device_facts = self.devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
         if device_facts
             .active
@@ -312,24 +460,81 @@ impl<B: RouteBackend> RouteMgr<B> {
         }
         self.current_tun_device = device_facts.active.map(|device| device.id);
 
-        // 2. Combine dynamic declarations with the current configuration policy.
-        let snapshot = self.routes.snapshot();
-        let config = self.runtime_config.snapshot();
-        let cidrs = resolve_route_demands(&snapshot, config.services.manual_routes.as_ref());
-
-        // 3. Compute desired routes from active slots
-        let desired = match &self.current_tun_device {
-            Some(dev) => cidrs
+        let requested = self
+            .scopes
+            .values()
+            .map(|scope| (scope.input.clone(), scope.desired()))
+            .collect::<Vec<_>>();
+        let mut projection = super::projection::RouteProjection::from_inputs(&requested);
+        #[cfg(all(
+            target_os = "linux",
+            feature = "linux-netlink",
+            feature = "tun",
+            not(mobile)
+        ))]
+        match self.nic.upgrade() {
+            Some(nic) => match nic.lock().await.project_route_inputs(&requested).await {
+                Ok(accepted) => projection = accepted,
+                Err(error) => {
+                    tracing::warn!(?error, "route outlet is unavailable");
+                    return;
+                }
+            },
+            None => {
+                // A production outlet cannot bypass NIC membership validation
+                // when its resource has disappeared. Controller-only tests
+                // deliberately omit the concrete NIC adapter.
+                #[cfg(not(test))]
+                return;
+            }
+        }
+        if self.batch_interrupted() || !self.verify_owned_routes().await {
+            return;
+        }
+        let mut effective = projection
+            .scopes
+            .values()
+            .flatten()
+            .copied()
+            .collect::<RouteSet>();
+        let mut destinations = BTreeSet::new();
+        effective.retain(|spec| destinations.insert(spec.destination));
+        let desired: BTreeSet<Route> = match &self.current_tun_device {
+            Some(dev) => effective
                 .into_iter()
                 .map(|spec| Route {
                     destination: spec.destination,
                     interface: dev.clone(),
                     metric: spec.metric.get(),
-                    preferred_source: None,
+                    preferred_source: projection.sources.get(&spec).copied().flatten(),
                 })
                 .collect(),
             None => BTreeSet::new(),
         };
+        for scope in self.scopes.values_mut() {
+            scope.previous = projection
+                .scopes
+                .remove(&scope.input.id)
+                .unwrap_or_default();
+            let effects = self.scope_effects.entry(scope.input.id).or_default();
+            effects.extend(
+                desired
+                    .iter()
+                    .filter(|route| {
+                        scope
+                            .previous
+                            .range(
+                                RouteSpec::new(
+                                    route.destination,
+                                    std::num::NonZeroU32::new(route.metric).unwrap(),
+                                )..,
+                            )
+                            .next()
+                            .is_some_and(|request| request.destination == route.destination)
+                    })
+                    .map(Route::os_route),
+            );
+        }
 
         // Scope external_present and retry_tracker to only currently desired routes
         self.external.retain(|r| desired.contains(r));
@@ -418,12 +623,7 @@ impl<B: RouteBackend> RouteMgr<B> {
 
             match self.install_route(&route).await {
                 Ok(Some(mut actual)) => {
-                    if self
-                        .global_ctx
-                        .tun_devices
-                        .snapshot()
-                        .destroyed(&actual.interface)
-                    {
+                    if self.devices.snapshot().destroyed(&actual.interface) {
                         // The ACK may describe a write after the original
                         // device died and its physical index was reused. Do
                         // not discard this effect as old-generation cascade.
@@ -447,12 +647,7 @@ impl<B: RouteBackend> RouteMgr<B> {
                     tracing::error!(?route, ?err, "unknown result during add; isolating route");
                     blocked.insert(route.destination);
                     let mut route = route;
-                    if self
-                        .global_ctx
-                        .tun_devices
-                        .snapshot()
-                        .destroyed(&route.interface)
-                    {
+                    if self.devices.snapshot().destroyed(&route.interface) {
                         route.interface.host_instance = None;
                     }
                     self.isolate(route);
@@ -465,9 +660,16 @@ impl<B: RouteBackend> RouteMgr<B> {
         // Close the registry before any backend I/O: publishers are revoked
         // synchronously and late declarations are rejected. This does not claim
         // the OS routes below are already cleaned up.
-        self.routes.close();
+        for input in self.inputs.snapshot() {
+            input.revoke();
+        }
+        for scope in self.scopes.values() {
+            scope.input.revoke();
+        }
+        self.inputs.close();
 
-        let device_facts = self.global_ctx.tun_devices.snapshot();
+        self.desired = Some(BTreeSet::new());
+        let device_facts = self.devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
 
         // Keep responsibility in the manager until each result is confirmed.
@@ -475,7 +677,7 @@ impl<B: RouteBackend> RouteMgr<B> {
         // uncertainty of the request whose result it stopped waiting for.
         let installed: Vec<_> = self.installed.difference(&self.unknown).cloned().collect();
         for route in installed {
-            let device_facts = self.global_ctx.tun_devices.snapshot();
+            let device_facts = self.devices.snapshot();
             self.retire_destroyed_devices(&device_facts);
             if !self.installed.contains(&route) {
                 continue;
@@ -507,12 +709,16 @@ impl<B: RouteBackend> RouteMgr<B> {
 
         // Device destruction may have happened while the final request was in
         // flight. Only owned fd generations prove cascading route removal.
-        let device_facts = self.global_ctx.tun_devices.snapshot();
+        let device_facts = self.devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
         self.inspect_unknown(true).await;
-        let device_facts = self.global_ctx.tun_devices.snapshot();
+        let device_facts = self.devices.snapshot();
         self.retire_destroyed_devices(&device_facts);
+        self.complete_withdrawals();
         if self.installed.is_empty() && self.unknown.is_empty() {
+            for scope in self.scopes.values() {
+                scope.input.cleanup.send_replace(true);
+            }
             Ok(())
         } else {
             Err(CleanupIncomplete {
@@ -529,18 +735,26 @@ impl<B> Drop for RouteMgr<B> {
     /// dropping the manager before running, dropping a `run` future that was
     /// never polled, task abort and unwind. It is synchronous and idempotent:
     /// no I/O, no waiting, no cleanup task. Asynchronous backend cleanup stays
-    /// with the host.
+    /// with the logical outlet.
     fn drop(&mut self) {
-        self.routes.close();
+        for input in self.inputs.snapshot() {
+            input.revoke();
+        }
+        for scope in self.scopes.values() {
+            scope.input.revoke();
+        }
+        self.inputs.close();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::RouteHarness;
     use super::*;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::instance::route::OsRoute;
     use cidr::{IpCidr, Ipv4Cidr};
+    use easytier_core::{config::runtime::CoreRuntimeConfigStore, host::route::RouteHandle};
     use std::collections::HashMap;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
@@ -567,13 +781,17 @@ mod tests {
 
     fn test_manager(
         backend: MockRouteBackend,
-    ) -> (RouteMgr<MockRouteBackend>, RouteHandle, CancellationToken) {
+    ) -> (
+        RouteHarness<MockRouteBackend>,
+        RouteHandle,
+        CancellationToken,
+    ) {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_tun_device_index_for_test(Some(TEST_DEVICE_INDEX));
         let cancel_token = CancellationToken::new();
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
-        let manager = RouteMgr::new(
+        let manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,
@@ -581,6 +799,289 @@ mod tests {
             cancel_token.clone(),
         );
         (manager, handle, cancel_token)
+    }
+
+    fn test_outlet(backend: MockRouteBackend) -> (RouteMgr<MockRouteBackend>, watch::Sender<u64>) {
+        let devices = TunDeviceState::new(Arc::new(std::sync::Mutex::new(None)));
+        devices.set_for_test(Some(TEST_DEVICE_INDEX));
+        let (nic_changes, changed) = watch::channel(0);
+        (
+            RouteMgr::new(
+                devices,
+                backend,
+                Registry::default(),
+                changed,
+                CancellationToken::new(),
+            ),
+            nic_changes,
+        )
+    }
+
+    fn attach_scope(
+        manager: &RouteMgr<MockRouteBackend>,
+    ) -> (
+        super::super::scope::RouteScope,
+        super::super::scope::RouteScopeLease,
+    ) {
+        let scope = super::super::scope::RouteScope::new(uuid::Uuid::new_v4());
+        scope.prepare(test_config_store()).unwrap();
+        let lease = scope
+            .attach(
+                &manager.inputs,
+                manager.devices.clone(),
+                uuid::Uuid::new_v4(),
+            )
+            .unwrap();
+        scope.mark_ready(scope.attachment().unwrap().id);
+        (scope, lease)
+    }
+
+    #[tokio::test]
+    async fn outlet_combines_scopes_with_local_manual_policy_and_shared_ownership() {
+        let (mut manager, _nic_changes) = test_outlet(MockRouteBackend::new());
+        let (first, _first_binding) = attach_scope(&manager);
+        let (second, _second_binding) = attach_scope(&manager);
+        let shared = test_route("100.100.100.100/32");
+        let first_auto = test_route("10.1.0.0/24");
+        let second_auto = test_route("10.2.0.0/24");
+        let second_manual = test_route("192.168.2.0/24");
+        let _first_auto = first
+            .handle()
+            .register(RouteDemand::AutoProxy(
+                ["10.1.0.0/24".parse().unwrap()].into(),
+            ))
+            .unwrap();
+        let _second_auto = second
+            .handle()
+            .register(RouteDemand::AutoProxy(
+                ["10.2.0.0/24".parse().unwrap()].into(),
+            ))
+            .unwrap();
+        let _first_dns = first
+            .handle()
+            .register(RouteDemand::additional([shared.destination]))
+            .unwrap();
+        let _second_dns = second
+            .handle()
+            .register(RouteDemand::additional([shared.destination]))
+            .unwrap();
+        second.config().update_services(|services| {
+            services.manual_routes = Some(["192.168.2.0/24".parse().unwrap()].into());
+        });
+        manager.reconcile().await;
+        assert_eq!(
+            manager.backend.routes,
+            BTreeSet::from([
+                shared.os_route(),
+                first_auto.os_route(),
+                second_manual.os_route(),
+            ])
+        );
+        assert_eq!(
+            manager
+                .backend
+                .add_calls
+                .iter()
+                .filter(|route| **route == shared.os_route())
+                .count(),
+            1
+        );
+        assert!(
+            !first
+                .handle()
+                .status()
+                .ready
+                .iter()
+                .any(|route| route.destination == second_manual.destination)
+        );
+
+        // An explicit empty manual set masks only this instance's automatic
+        // proxy declarations, while Additional demands remain in force.
+        first
+            .config()
+            .update_services(|services| services.manual_routes = Some(BTreeSet::new()));
+        second
+            .config()
+            .update_services(|services| services.manual_routes = None);
+        manager.reconcile().await;
+        assert_eq!(
+            manager.backend.routes,
+            BTreeSet::from([shared.os_route(), second_auto.os_route()])
+        );
+
+        first.close();
+        manager.reconcile().await;
+        first.wait_withdrawn().await.unwrap();
+        assert!(
+            second
+                .handle()
+                .status()
+                .ready
+                .iter()
+                .any(|route| route.destination == shared.destination)
+        );
+        assert!(!manager.backend.remove_calls.contains(&shared.os_route()));
+
+        second.close();
+        manager.reconcile().await;
+        second.wait_withdrawn().await.unwrap();
+        assert!(manager.backend.routes.is_empty());
+        assert_eq!(
+            manager
+                .backend
+                .remove_calls
+                .iter()
+                .filter(|route| **route == shared.os_route())
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn old_outlet_cannot_revoke_a_scopes_new_binding_or_declarations() {
+        let (mut old, _old_changes) = test_outlet(MockRouteBackend::new());
+        let (scope, old_binding) = attach_scope(&old);
+        let handle = scope.handle();
+        let _route = handle
+            .register(RouteDemand::additional([
+                test_route("10.1.0.0/24").destination
+            ]))
+            .unwrap();
+        old.reconcile().await;
+
+        let (mut new, _new_changes) = test_outlet(MockRouteBackend::new());
+        new.devices.set_for_test(Some(TEST_DEVICE_INDEX + 1));
+        let _new_binding = scope
+            .attach(&new.inputs, new.devices.clone(), uuid::Uuid::new_v4())
+            .unwrap();
+        let attachment = scope.attachment().unwrap();
+        scope.mark_ready(attachment.id);
+        new.reconcile().await;
+        let status = handle.status();
+        assert_eq!(status.ready.len(), 1);
+        drop(old_binding);
+        old.perform_shutdown_cleanup().await.unwrap();
+        drop(old);
+        assert_eq!(scope.attachment().unwrap().id, attachment.id);
+        assert_eq!(handle.status(), status);
+        assert!(
+            handle
+                .register(RouteDemand::additional(BTreeSet::new()))
+                .is_some()
+        );
+        scope.close();
+        new.reconcile().await;
+        scope.wait_withdrawn().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scope_withdrawal_waits_for_unknown_physical_effect_to_be_absent() {
+        let (mut manager, _nic_changes) = test_outlet(MockRouteBackend::new());
+        let (scope, _binding) = attach_scope(&manager);
+        let route = test_route("10.1.0.0/24");
+        let _registration = scope
+            .handle()
+            .register(RouteDemand::additional([route.destination]))
+            .unwrap();
+        manager.reconcile().await;
+        manager.backend.remove_error_map.insert(
+            route.os_route(),
+            RouteError::Unknown(anyhow::anyhow!("missing ACK")),
+        );
+        scope.close();
+        manager.reconcile().await;
+        let mut withdrawn = Box::pin(scope.wait_withdrawn());
+        assert!(futures::poll!(withdrawn.as_mut()).is_pending());
+        tokio::time::advance(UNKNOWN_PROBE_DELAY).await;
+        manager.reconcile().await;
+        assert!(futures::poll!(withdrawn.as_mut()).is_pending());
+        manager.backend.routes.remove(&route.os_route());
+        tokio::time::advance(UNKNOWN_PROBE_DELAY).await;
+        manager.reconcile().await;
+        withdrawn.await.unwrap();
+        assert!(manager.unknown.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nic_changes_revalidate_owned_receipts_and_query_failure_withholds_readiness() {
+        let (mut manager, nic_changes) = test_outlet(MockRouteBackend::new());
+        let (scope, _binding) = attach_scope(&manager);
+        let route = test_route("10.1.0.0/24");
+        let _registration = scope
+            .handle()
+            .register(RouteDemand::additional([route.destination]))
+            .unwrap();
+        manager.reconcile().await;
+
+        // Removing a preferred source address can also remove its kernel route.
+        manager.backend.routes.clear();
+        nic_changes.send_modify(|revision| *revision += 1);
+        manager.reconcile().await;
+        assert_eq!(manager.backend.add_calls.len(), 2);
+        assert_eq!(manager.installed, BTreeSet::from([route.clone()]));
+        assert_eq!(scope.handle().status().ready.len(), 1);
+
+        let pending = test_route("10.2.0.0/24");
+        let _pending = scope
+            .handle()
+            .register(RouteDemand::additional([pending.destination]))
+            .unwrap();
+        manager.backend.add_error_map.insert(
+            pending.os_route(),
+            RouteError::Failed(anyhow::anyhow!("add failed")),
+        );
+        manager.reconcile().await;
+        assert_eq!(
+            manager.next_wakeup_time(),
+            Some(tokio::time::Instant::now() + Duration::from_millis(100))
+        );
+        manager.backend.inspection_error =
+            Some(RouteError::Failed(anyhow::anyhow!("query failed")));
+        nic_changes.send_modify(|revision| *revision += 1);
+        manager.reconcile().await;
+        assert_eq!(manager.installed, BTreeSet::from([route]));
+        assert!(scope.handle().status().ready.is_empty());
+        assert_eq!(
+            manager.next_wakeup_time(),
+            Some(tokio::time::Instant::now() + UNKNOWN_PROBE_DELAY)
+        );
+        tokio::time::advance(UNKNOWN_PROBE_DELAY).await;
+        manager.reconcile().await;
+        assert_eq!(scope.handle().status().ready.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_outlet_observes_configuration_changes_from_any_scope() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (backend, mut entered) = MockRouteBackend::paused(release.clone());
+        let (manager, _nic_changes) = test_outlet(backend);
+        let (_first, _first_binding) = attach_scope(&manager);
+        let (second, _second_binding) = attach_scope(&manager);
+        let cancel = manager.cancel.clone();
+        let task = tokio::spawn(manager.run());
+        tokio::task::yield_now().await;
+        second.config().update_services(|services| {
+            services.manual_routes = Some(["10.2.0.0/24".parse().unwrap()].into());
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(500), entered.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            test_route("10.2.0.0/24").os_route()
+        );
+        release.notify_one();
+        cancel.cancel();
+        task.await.unwrap().unwrap();
+        assert!(second.attachment().is_none());
+        // The resource writer's shutdown does not revoke instance publishers;
+        // the still-live scope can attach to a replacement outlet.
+        assert!(
+            second
+                .handle()
+                .register(RouteDemand::additional(BTreeSet::new()))
+                .is_some()
+        );
     }
 
     /// Instrumentation that lets a test park the manager inside a backend call
@@ -979,7 +1480,7 @@ mod tests {
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
 
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,
@@ -1033,7 +1534,7 @@ mod tests {
 
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,
@@ -1075,7 +1576,7 @@ mod tests {
 
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             global_ctx.clone(),
             backend,
             routes,
@@ -1265,7 +1766,7 @@ mod tests {
         ctx.tun_devices.mark_ready(device.registration());
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             ctx,
             MockRouteBackend::new(),
             routes,
@@ -1350,7 +1851,7 @@ mod tests {
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
 
-        let manager = RouteMgr::new(
+        let manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,
@@ -1413,7 +1914,7 @@ mod tests {
 
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,
@@ -1459,7 +1960,7 @@ mod tests {
 
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,
@@ -1491,7 +1992,7 @@ mod tests {
 
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,
@@ -1538,7 +2039,7 @@ mod tests {
 
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,
@@ -1786,7 +2287,7 @@ mod tests {
         let (backend, mut entered) = MockRouteBackend::paused(release.clone());
         let (manager, handle, cancel) = test_manager(backend);
         let runtime_config = manager.runtime_config.clone();
-        let mut declarations_changed = manager.routes.subscribe();
+        let mut declarations_changed = manager.routes().subscribe();
         let auto = test_route("10.0.0.0/24");
         let manual = test_route("192.168.1.0/24");
         let _auto_reg = handle
@@ -1867,7 +2368,7 @@ mod tests {
         manager.runtime_config.update_services(|services| {
             services.manual_routes = Some(BTreeSet::from(["192.168.1.0/24".parse().unwrap()]));
         });
-        assert!(manager.routes.is_empty());
+        assert!(manager.routes().is_empty());
         let task = tokio::spawn(manager.run());
         let adding = tokio::time::timeout(Duration::from_millis(500), entered.recv())
             .await
@@ -1893,7 +2394,7 @@ mod tests {
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
 
-        let mut manager = RouteMgr::new(
+        let mut manager = RouteHarness::new(
             global_ctx,
             backend,
             routes,

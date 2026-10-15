@@ -14,7 +14,6 @@ use super::{
 };
 use crate::{
     common::{
-        error::Error as EtError,
         global_ctx::ArcGlobalCtx,
         ifcfg::{IfConfiger, IfConfiguerTrait},
         netns::NetNS,
@@ -390,7 +389,16 @@ async fn register_native_dns_route(
     let reg = handle
         .register(RouteDemand::Additional(required.clone()))
         .context("failed to register fake ip route demand")?;
-    let mut devices = global_ctx.tun_devices.subscribe();
+    let scope = global_ctx
+        .get_route_scope()
+        .context("native DNS route scope is missing")?;
+    let mut bindings = scope.subscribe_attachment();
+    let attachment = bindings
+        .borrow_and_update()
+        .clone()
+        .filter(|attachment| attachment.ready)
+        .context("DNS route scope is no longer attached and ready")?;
+    let mut devices = attachment.devices.subscribe();
     let active = devices
         .borrow_and_update()
         .active
@@ -401,6 +409,12 @@ async fn register_native_dns_route(
     // configuring DNS, and reject a replaced fd even if its name
     // and ifindex were reused. Cancellation drops the local lease.
     tokio::select! {
+        _ = async {
+            loop {
+                if !bindings.borrow_and_update().as_ref().is_some_and(|current| current.id == attachment.id && current.ready) { break; }
+                if bindings.changed().await.is_err() { break; }
+            }
+        } => anyhow::bail!("DNS interface changed while waiting for fake-IP route"),
         result = tokio::time::timeout(Duration::from_secs(10), handle.wait_ready(&required, active.registration)) => {
             result.context("timed out waiting for fake-IP route")??;
         }
@@ -413,17 +427,26 @@ async fn register_native_dns_route(
         } => anyhow::bail!("DNS interface changed while waiting for fake-IP route"),
     }
     anyhow::ensure!(
-        global_ctx
-            .tun_devices
-            .snapshot()
-            .active
-            .is_some_and(|device| device.registration == active.registration && device.ready),
+        scope
+            .attachment()
+            .is_some_and(|current| current.id == attachment.id && current.ready)
+            && attachment
+                .devices
+                .snapshot()
+                .active
+                .is_some_and(|device| device.registration == active.registration && device.ready),
         "DNS interface changed before startup completed"
     );
     Ok(reg)
 }
 
 impl MagicDnsServerInstance {
+    #[cfg(not(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    )))]
     async fn add_fake_ip_route(
         tun_dev_name: &str,
         fake_ip: Ipv4Addr,
@@ -433,7 +456,9 @@ impl MagicDnsServerInstance {
         let ifcfg = IfConfiger::default();
         let _guard = net_ns.guard();
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
-            Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
+            Err(crate::common::error::Error::IOError(err))
+                if err.kind() == io::ErrorKind::AlreadyExists =>
+            {
                 ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
                 ifcfg
                     .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
@@ -496,17 +521,22 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        let route_registration = if manage_fake_ip_route && !tun_inet.contains(&fake_ip) {
+        let (route_registration, legacy_route_installed) = if manage_fake_ip_route
+            && !tun_inet.contains(&fake_ip)
+        {
             #[cfg(all(
                 target_os = "linux",
                 feature = "linux-netlink",
                 feature = "tun",
                 not(mobile)
             ))]
-            if !global_ctx.get_flags().no_tun {
-                Some(register_native_dns_route(&global_ctx, tun_dev.as_deref(), fake_ip).await?)
-            } else {
-                None
+            {
+                let registration = if !global_ctx.get_flags().no_tun {
+                    Some(register_native_dns_route(&global_ctx, tun_dev.as_deref(), fake_ip).await?)
+                } else {
+                    None
+                };
+                (registration, false)
             }
 
             #[cfg(not(all(
@@ -516,18 +546,22 @@ impl MagicDnsServerInstance {
                 not(mobile)
             )))]
             {
-                if let Some(tun_dev_name) = &tun_dev {
+                let installed = if let Some(tun_dev_name) = &tun_dev {
                     let cost = if cfg!(target_os = "windows") {
                         Some(4)
                     } else {
                         None
                     };
-                    Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
-                }
-                None
+                    Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost)
+                        .await?;
+                    true
+                } else {
+                    false
+                };
+                (None, installed)
             }
         } else {
-            None
+            (None, false)
         };
 
         let data = Arc::new(MagicDnsServerInstanceData {
@@ -535,7 +569,7 @@ impl MagicDnsServerInstance {
             tun_dev: tun_dev.clone(),
             net_ns: global_ctx.net_ns.clone(),
             fake_ip,
-            manage_fake_ip_route,
+            manage_fake_ip_route: legacy_route_installed,
             route_store: MagicDnsRecordStore::default(),
             record_apply: tokio::sync::Mutex::new(()),
             system_config: get_system_config(tun_dev.as_deref())?,
@@ -613,19 +647,45 @@ mod route_tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use easytier_core::host::route::{RouteHandle, RouteRegistry, RouteStatus};
 
-    fn fixture() -> (ArcGlobalCtx, RouteRegistry) {
+    struct AttachmentFixture {
+        _inputs: registry::Registry<crate::instance::route::scope::RouteInput>,
+        _lease: crate::instance::route::scope::RouteScopeLease,
+    }
+
+    fn fixture() -> (ArcGlobalCtx, RouteRegistry, AttachmentFixture) {
         let ctx = get_mock_global_ctx();
         // Synthetic device facts let these tests exercise startup ownership
         // without requiring privileged TUN creation.
         ctx.tun_devices.set_for_test(Some(42));
         let routes = RouteRegistry::default();
         ctx.set_route_handle(Some(RouteHandle::new(routes.clone())));
-        (ctx, routes)
+        let scope =
+            crate::instance::route::scope::RouteScope::with_registry(ctx.get_id(), routes.clone());
+        scope
+            .prepare(easytier_core::config::runtime::CoreRuntimeConfigStore::new(
+                Default::default(),
+                Arc::new(Default::default()),
+            ))
+            .unwrap();
+        let inputs = registry::Registry::default();
+        let lease = scope
+            .attach(&inputs, ctx.tun_devices.clone(), uuid::Uuid::new_v4())
+            .unwrap();
+        scope.mark_ready(scope.attachment().unwrap().id);
+        ctx.set_route_scope(Some(scope));
+        (
+            ctx,
+            routes,
+            AttachmentFixture {
+                _inputs: inputs,
+                _lease: lease,
+            },
+        )
     }
 
     #[tokio::test]
     async fn native_dns_waits_for_os_feedback_and_cancellation_withdraws() {
-        let (ctx, routes) = fixture();
+        let (ctx, routes, _attachment) = fixture();
         let active = ctx.tun_devices.snapshot().active.unwrap();
         let mut startup = Box::pin(register_native_dns_route(
             &ctx,
@@ -656,8 +716,42 @@ mod route_tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn native_dns_rejects_scope_rebinding_even_with_the_same_physical_fd() {
+        let (ctx, routes, _attachment) = fixture();
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        let mut startup = Box::pin(register_native_dns_route(
+            &ctx,
+            Some(&active.name),
+            "100.100.100.100".parse().unwrap(),
+        ));
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        let scope = ctx.get_route_scope().unwrap();
+        let replacement_inputs = registry::Registry::default();
+        let _replacement = scope
+            .attach(
+                &replacement_inputs,
+                ctx.tun_devices.clone(),
+                uuid::Uuid::new_v4(),
+            )
+            .unwrap();
+        scope.mark_ready(scope.attachment().unwrap().id);
+        assert!(
+            startup
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("interface changed")
+        );
+        assert!(routes.is_empty());
+        assert_eq!(
+            ctx.tun_devices.snapshot().active.unwrap().registration,
+            active.registration
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn native_dns_rejects_fd_replacement_and_times_out_without_feedback() {
-        let (ctx, routes) = fixture();
+        let (ctx, routes, _attachment) = fixture();
         let active = ctx.tun_devices.snapshot().active.unwrap();
         let mut startup = Box::pin(register_native_dns_route(
             &ctx,
