@@ -780,7 +780,10 @@ mod tests {
     async fn tun_lifetime_case(persistent: bool) {
         use crate::{
             common::global_ctx::tests::get_mock_global_ctx,
-            instance::{route::RouteMgr, virtual_nic::VirtualNic},
+            instance::{
+                route::RouteMgr,
+                virtual_nic::{VirtualNic, VirtualNicConfig},
+            },
         };
         use easytier_core::{
             config::{
@@ -806,7 +809,12 @@ mod tests {
             );
             drop(device);
         }
-        let mut nic = VirtualNic::new(ctx.clone());
+        let mut nic = VirtualNic::new(VirtualNicConfig::new(
+            name.into(),
+            ctx.get_flags().mtu,
+            ctx.net_ns.clone(),
+        ))
+        .with_device_state(ctx.tun_devices.clone());
         let tunnel = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 match nic.create_dev().await {

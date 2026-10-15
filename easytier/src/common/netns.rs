@@ -107,7 +107,7 @@ impl NetNS {
         let mut future = guarden::guard::ContextGuard::new(Box::pin(self.run(f)), |future| {
             self.run(|| drop(future));
         });
-        std::future::poll_fn(|cx| self.run(|| future.as_mut().poll(cx))).await
+        std::future::poll_fn(|cx| self.run(|| future.as_mut().as_mut().poll(cx))).await
     }
 
     pub fn run<F, Ret>(&self, f: F) -> Ret

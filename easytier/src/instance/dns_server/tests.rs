@@ -109,7 +109,7 @@ impl easytier_core::instance::InstanceRuntimeHost for TestRouteRuntime {
         &self,
         _packet_plane: Arc<easytier_core::instance::CorePacketPlane>,
         runtime_config: easytier_core::config::runtime::CoreRuntimeConfigStore,
-    ) -> anyhow::Result<Option<Arc<dyn easytier_core::gateway::dhcp::DhcpIpv4Host>>> {
+    ) -> anyhow::Result<Option<Arc<dyn easytier_core::gateway::dhcp::DhcpHost>>> {
         let backend =
             crate::instance::route::PlatformRouteBackend::new(self.ctx.net_ns.clone()).await?;
         let manager = crate::instance::route::RouteMgr::new(

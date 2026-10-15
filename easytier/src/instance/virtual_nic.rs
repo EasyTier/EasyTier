@@ -1598,7 +1598,10 @@ impl NicCtx {
             if let Err(err) = backend.link_up().await {
                 tracing::warn!(?err, "failed to bring public ipv6 nic link up");
             }
-            let configured = match backend.add_ipv6(addr.address(), addr.network_length() as i32).await {
+            let configured = match backend
+                .add_ipv6(addr.address(), addr.network_length() as i32)
+                .await
+            {
                 Ok(()) => true,
                 Err(err) => {
                     tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
@@ -1678,12 +1681,14 @@ impl NicCtx {
             };
             if let Some(registration) = registration {
                 if let Some(name) = self.global_ctx.tun_devices.mark_ready(registration) {
-                    self.global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady(name));
+                    self.global_ctx
+                        .issue_event(GlobalCtxEvent::TunDeviceReady(name));
                 }
                 return Ok(());
             }
         }
-        self.global_ctx.set_tun_device_ready(self.tun_ifname().await?);
+        self.global_ctx
+            .set_tun_device_ready(self.tun_ifname().await?);
         Ok(())
     }
 
@@ -1707,6 +1712,7 @@ impl NicCtx {
     ) -> Result<(), Error> {
         let tunnel = match self.backend.create_dev().await {
             Ok(ret) => {
+                #[cfg(target_os = "windows")]
                 let ifname = self.tun_ifname().await?;
 
                 #[cfg(target_os = "windows")]

@@ -37,7 +37,6 @@ const RTA_DST: u16 = 1;
 const RTA_SRC: u16 = 2;
 const RTA_OIF: u16 = 4;
 const RTA_PRIORITY: u16 = 6;
-const RTA_PREFSRC: u16 = 7;
 const RTA_TABLE: u16 = 15;
 const RTA_GATEWAY: u16 = 5;
 const RTA_PREFSRC: u16 = 7;

@@ -3,10 +3,8 @@ use std::sync::Arc;
 #[cfg(feature = "web-client")]
 use easytier_core::config::runtime::CoreInstanceRuntimeConfig;
 use easytier_core::{
-    config::runtime::CoreRuntimeConfigStore,
-    gateway::dhcp::DhcpHost,
-    host::packet::HostPacketReceiver,
-    instance::CorePacketPlane,
+    config::runtime::CoreRuntimeConfigStore, gateway::dhcp::DhcpHost,
+    host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -331,7 +329,7 @@ mod tests {
         use std::collections::BTreeSet;
 
         let global_ctx = Arc::new(GlobalCtx::new(TomlConfig::default()));
-        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let runtime_host = runtime_host(global_ctx.clone());
 
         let handle = runtime_host.route_handle().expect("handle must exist");
         let reg = handle
@@ -367,10 +365,10 @@ mod tests {
         use std::collections::BTreeSet;
 
         let global_ctx_a = Arc::new(GlobalCtx::new(TomlConfig::default()));
-        let runtime_host_a = NativeInstanceRuntimeHost::new(global_ctx_a.clone());
+        let runtime_host_a = runtime_host(global_ctx_a.clone());
 
         let global_ctx_b = Arc::new(GlobalCtx::new(TomlConfig::default()));
-        let runtime_host_b = NativeInstanceRuntimeHost::new(global_ctx_b.clone());
+        let runtime_host_b = runtime_host(global_ctx_b.clone());
 
         let handle_a = runtime_host_a.route_handle().unwrap();
         let handle_b = runtime_host_b.route_handle().unwrap();
@@ -420,7 +418,7 @@ mod tests {
         config.set_flags(flags);
 
         let global_ctx = Arc::new(GlobalCtx::new(config));
-        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let runtime_host = runtime_host(global_ctx.clone());
 
         assert!(runtime_host.route_handle().is_none());
         assert!(global_ctx.get_route_handle().is_none());
@@ -435,7 +433,7 @@ mod tests {
     #[test]
     fn builds_without_a_managed_device_producer_provide_no_route_handle() {
         let global_ctx = Arc::new(GlobalCtx::new(TomlConfig::default()));
-        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let runtime_host = runtime_host(global_ctx.clone());
         assert!(runtime_host.route_handle().is_none());
         assert!(global_ctx.get_route_handle().is_none());
     }
