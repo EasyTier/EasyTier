@@ -886,6 +886,88 @@ network_secret = "network-secret"
 
     #[cfg(feature = "management")]
     #[tokio::test]
+    async fn manual_route_patch_preserves_empty_mode_without_restart() {
+        use easytier_proto::api::config::{ConfigPatchAction, InstanceConfigPatch, RoutePatch};
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let config = TomlConfig::new_from_str(
+            "[network_identity]\nnetwork_name = 'manual-routes'\nnetwork_secret = 'secret'",
+        )
+        .unwrap();
+        let instance =
+            CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink))).unwrap();
+        instance.start().await.unwrap();
+        let peer_id = instance.peer_id();
+        let persistence = RecordingConfigPatchPersistence {
+            writes: std::sync::Mutex::new(Vec::new()),
+            fail: AtomicBool::new(true),
+        };
+        let route: cidr::Ipv4Cidr = "10.20.0.0/24".parse().unwrap();
+        let add = RoutePatch {
+            action: ConfigPatchAction::Add as i32,
+            cidr: Some("10.20.0.0/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
+        };
+        let clear = RoutePatch {
+            action: ConfigPatchAction::Clear as i32,
+            ..Default::default()
+        };
+        let failed = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                enable_manual_routes: Some(true),
+                routes: vec![add],
+                ..Default::default()
+            },
+            Some(&persistence),
+        )
+        .await;
+        assert!(failed.is_err());
+        assert_eq!(instance.toml_config().unwrap().get_routes(), None);
+        assert_eq!(
+            instance.runtime_config.snapshot().services.manual_routes,
+            None
+        );
+        assert!(persistence.writes.lock().unwrap().is_empty());
+        persistence.fail.store(false, Ordering::Relaxed);
+
+        for (mode, patches, expected) in [
+            (Some(true), Vec::new(), Some(Vec::new())),
+            (Some(true), vec![add], Some(vec![route])),
+            (Some(true), vec![clear], Some(Vec::new())),
+            (Some(false), Vec::new(), None),
+            // Released callers that omit the new mode keep their old behavior.
+            (None, vec![add], Some(vec![route])),
+            (None, vec![clear], None),
+        ] {
+            crate::management::apply_config_patch(
+                &instance,
+                InstanceConfigPatch {
+                    enable_manual_routes: mode,
+                    routes: patches,
+                    ..Default::default()
+                },
+                Some(&persistence),
+            )
+            .await
+            .unwrap();
+            assert_eq!(instance.toml_config().unwrap().get_routes(), expected);
+            assert_eq!(
+                instance.runtime_config.snapshot().services.manual_routes,
+                expected
+                    .as_ref()
+                    .map(|routes| routes.iter().copied().collect())
+            );
+            let writes = persistence.writes.lock().unwrap();
+            let persisted = TomlConfig::new_from_str(writes.last().unwrap()).unwrap();
+            assert_eq!(persisted.get_routes(), expected);
+            assert_eq!(instance.peer_id(), peer_id);
+            assert_eq!(instance.state(), CoreInstanceState::Running);
+        }
+        instance.stop().await;
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
     async fn managed_credential_patch_is_durable_atomic_and_does_not_restart() {
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
         use easytier_proto::api::{

@@ -91,6 +91,14 @@ model for management readback, while the shared host-aware normalization path
 omits capabilities that the compact runtime cannot execute. Omitted settings
 are silent no-ops and must not be advertised as live network capabilities.
 
+## Embedded logging
+
+Logging belongs to the WASI runtime, which installs its subscriber at module
+startup. The independent logger ABI and process-level `LoggerRpc` control
+the same module-wide level, including before any Instance exists. Instance
+configuration and lifecycle never initialize or reset logging. The Host owns
+the output sink through WASI stdout; output errors do not interrupt Core.
+
 ## Web compatibility Host
 
 The Web compatibility Host runs the portable EasyTier guest in JavaScript

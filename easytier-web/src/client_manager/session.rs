@@ -10,6 +10,7 @@ use anyhow::Context;
 use easytier::proto::{
     api::{
         config::{ConfigRpc, ConfigRpcClientFactory},
+        instance::{PeerManageRpc, PeerManageRpcClientFactory},
         manage::{WebClientService, WebClientServiceClientFactory},
     },
     rpc::bidirect::BidirectRpcManager,
@@ -926,6 +927,7 @@ impl Debug for Session {
 
 pub(super) type SessionRpcClient = Box<dyn WebClientService<Controller = BaseController> + Send>;
 pub(super) type SessionConfigClient = Box<dyn ConfigRpc<Controller = BaseController> + Send>;
+pub(super) type SessionPeerClient = Box<dyn PeerManageRpc<Controller = BaseController> + Send>;
 
 impl Session {
     pub fn new(
@@ -983,6 +985,7 @@ impl Session {
                     data.storage.clone(),
                     self.scoped_rpc_client(),
                     self.scoped_config_client(),
+                    self.scoped_client::<PeerManageRpcClientFactory<BaseController>>(),
                 ),
             )));
     }
