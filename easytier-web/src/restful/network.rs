@@ -531,6 +531,7 @@ impl NetworkApi {
                     support_config_source: false,
                     failed_network_instances: Vec::new(),
                     support_heartbeat_policy: false,
+                    support_manual_routes_patch: false,
                 }),
             };
             machines.push(ListMachineItem {

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ type Options struct {
 	Services            platform.Services
 	PacketQueueCapacity int
 	Management          reactor.ManagementHandler
+	LogWriter           io.Writer
 }
 
 type Host struct {
@@ -102,7 +104,11 @@ func NewHost(ctx context.Context, options Options) (_ *Host, err error) {
 		return nil, fmt.Errorf("compile embedded EasyTier core: %w", err)
 	}
 	defer compiled.Close(contextutil.WithoutCancel(ctx))
-	module, err = runtime.InstantiateModule(ctx, compiled, newModuleConfig())
+	moduleConfig := newModuleConfig()
+	if options.LogWriter != nil {
+		moduleConfig = moduleConfig.WithStdout(options.LogWriter)
+	}
+	module, err = runtime.InstantiateModule(ctx, compiled, moduleConfig)
 	if err != nil {
 		return nil, fmt.Errorf("instantiate embedded EasyTier core: %w", err)
 	}

@@ -1001,135 +1001,24 @@ async fn assert_shared_visibility_stable(
     }
 }
 
-async fn wait_stable_single_visible_peer_on_admins(
-    admin_a_inst: &Instance,
-    admin_c_inst: &Instance,
-    peer_a_id: u32,
-    peer_b_id: u32,
-    timeout: Duration,
-) -> u32 {
-    let start = std::time::Instant::now();
-    let mut stable_winner = None;
-    let mut stable_samples = 0;
-
-    loop {
-        let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
-        let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
-
-        let admin_a_has_a = admin_a_routes.iter().any(|r| r.peer_id == peer_a_id);
-        let admin_a_has_b = admin_a_routes.iter().any(|r| r.peer_id == peer_b_id);
-        let admin_c_has_a = admin_c_routes.iter().any(|r| r.peer_id == peer_a_id);
-        let admin_c_has_b = admin_c_routes.iter().any(|r| r.peer_id == peer_b_id);
-
-        let current_winner = if admin_a_has_a && admin_c_has_a && !admin_a_has_b && !admin_c_has_b {
-            Some(peer_a_id)
-        } else if admin_a_has_b && admin_c_has_b && !admin_a_has_a && !admin_c_has_a {
-            Some(peer_b_id)
-        } else {
-            None
-        };
-
-        println!(
-            "single-visible routes: a={:?} c={:?} winner={:?}",
-            admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
-            admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
-            current_winner
-        );
-
-        match current_winner {
-            Some(winner) if stable_winner == Some(winner) => stable_samples += 1,
-            Some(winner) => {
-                stable_winner = Some(winner);
-                stable_samples = 1;
-            }
-            None => {
-                stable_winner = None;
-                stable_samples = 0;
-            }
-        }
-
-        if stable_samples >= 3 {
-            return stable_winner.unwrap();
-        }
-
-        assert!(
-            start.elapsed() < timeout,
-            "timed out waiting for a stable single visible peer on both admins after {:?}: a_has_a={} a_has_b={} c_has_a={} c_has_b={} a={:?} c={:?}",
-            start.elapsed(),
-            admin_a_has_a,
-            admin_a_has_b,
-            admin_c_has_a,
-            admin_c_has_b,
-            admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
-            admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
-        );
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-}
-
-async fn wait_stable_failover_visibility_on_admins(
+async fn wait_credential_routes_on_admins(
     admin_a_inst: &Instance,
     admin_c_inst: &Instance,
     present_peer_id: u32,
     absent_peer_id: u32,
-    timeout: Duration,
 ) {
-    let start = std::time::Instant::now();
-    let mut stable_samples = 0;
-
-    loop {
-        let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
-        let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
-
-        let admin_a_has_present = admin_a_routes.iter().any(|r| r.peer_id == present_peer_id);
-        let admin_c_has_present = admin_c_routes.iter().any(|r| r.peer_id == present_peer_id);
-        let admin_a_has_absent = admin_a_routes.iter().any(|r| r.peer_id == absent_peer_id);
-        let admin_c_has_absent = admin_c_routes.iter().any(|r| r.peer_id == absent_peer_id);
-
-        let failover_stable = admin_a_has_present
-            && admin_c_has_present
-            && !admin_a_has_absent
-            && !admin_c_has_absent;
-
-        println!(
-            "failover visibility: present={} a_has_present={} c_has_present={} absent={} a_has_absent={} c_has_absent={} stable={} samples={}",
-            present_peer_id,
-            admin_a_has_present,
-            admin_c_has_present,
-            absent_peer_id,
-            admin_a_has_absent,
-            admin_c_has_absent,
-            failover_stable,
-            stable_samples
-        );
-
-        if failover_stable {
-            stable_samples += 1;
-        } else {
-            stable_samples = 0;
-        }
-
-        if stable_samples >= 3 {
-            return;
-        }
-
-        assert!(
-            start.elapsed() < timeout,
-            "timed out waiting for stable failover visibility on both admins after {:?}: present={} a_has_present={} c_has_present={} absent={} a_has_absent={} c_has_absent={} a={:?} c={:?}",
-            start.elapsed(),
-            present_peer_id,
-            admin_a_has_present,
-            admin_c_has_present,
-            absent_peer_id,
-            admin_a_has_absent,
-            admin_c_has_absent,
-            admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
-            admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
-        );
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
+    wait_for_condition(
+        || async {
+            let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+            let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
+            [&admin_a_routes, &admin_c_routes].iter().all(|routes| {
+                routes.iter().any(|r| r.peer_id == present_peer_id)
+                    && !routes.iter().any(|r| r.peer_id == absent_peer_id)
+            })
+        },
+        Duration::from_secs(10),
+    )
+    .await;
 }
 
 /// Test 1: Basic credential node connectivity with and without an admin key pin
@@ -2861,15 +2750,28 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
 
     let cred_left_peer_id = cred_left_inst.as_ref().unwrap().peer_id();
     let cred_right_peer_id = cred_right_inst.as_ref().unwrap().peer_id();
-    let winner_peer_id = wait_stable_single_visible_peer_on_admins(
-        &admin_a_inst,
-        &admin_c_inst,
-        cred_left_peer_id,
-        cred_right_peer_id,
-        Duration::from_secs(60),
+    // Both candidates must be connected before checking election; an absent
+    // route alone could otherwise mean the losing peer has not joined yet.
+    wait_for_condition(
+        || async {
+            admin_a_inst
+                .get_core_instance()
+                .connected_peers()
+                .await
+                .contains(&cred_left_peer_id)
+                && admin_c_inst
+                    .get_core_instance()
+                    .connected_peers()
+                    .await
+                    .contains(&cred_right_peer_id)
+        },
+        Duration::from_secs(10),
     )
     .await;
 
+    // Owner election selects the lowest peer ID. Observing any one peer for
+    // several samples can mistake a partially synced topology for convergence.
+    let winner_peer_id = cred_left_peer_id.min(cred_right_peer_id);
     let (winner_peer_id, winner_ip, loser_peer_id, loser_ip) =
         if winner_peer_id == cred_left_peer_id {
             (
@@ -2887,55 +2789,34 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
             )
         };
 
-    wait_ping_reachability(
-        network.namespace("ns_adm"),
-        winner_ip,
-        true,
-        Duration::from_secs(20),
-    )
-    .await;
-    wait_ping_reachability(
-        network.namespace("ns_c3"),
-        winner_ip,
-        true,
-        Duration::from_secs(20),
-    )
-    .await;
-    wait_ping_reachability(
-        network.namespace("ns_adm"),
-        loser_ip,
-        false,
-        Duration::from_secs(5),
-    )
-    .await;
-    wait_ping_reachability(
-        network.namespace("ns_c3"),
-        loser_ip,
-        false,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    assert_shared_visibility_stable(
-        &network,
-        &admin_a_inst,
-        &admin_c_inst,
-        winner_peer_id,
-        winner_ip,
-        true,
-        "winning credential",
-    )
-    .await;
-    assert_shared_visibility_stable(
-        &network,
-        &admin_a_inst,
-        &admin_c_inst,
-        loser_peer_id,
-        loser_ip,
-        false,
-        "losing credential",
-    )
-    .await;
+    wait_credential_routes_on_admins(&admin_a_inst, &admin_c_inst, winner_peer_id, loser_peer_id)
+        .await;
+    tokio::join!(
+        wait_ping_reachability(
+            network.namespace("ns_adm"),
+            winner_ip,
+            true,
+            Duration::from_secs(10),
+        ),
+        wait_ping_reachability(
+            network.namespace("ns_c3"),
+            winner_ip,
+            true,
+            Duration::from_secs(10),
+        ),
+    );
+    let (admin_a_reaches_loser, admin_c_reaches_loser) = tokio::join!(
+        ping_test(network.namespace("ns_adm"), loser_ip, None),
+        ping_test(network.namespace("ns_c3"), loser_ip, None),
+    );
+    assert!(
+        !admin_a_reaches_loser,
+        "admin_a must not reach the losing peer"
+    );
+    assert!(
+        !admin_c_reaches_loser,
+        "admin_c must not reach the losing peer"
+    );
 
     if winner_peer_id == cred_left_peer_id {
         drop_insts(vec![cred_left_inst.take().unwrap()]).await;
@@ -2943,64 +2824,34 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
         drop_insts(vec![cred_right_inst.take().unwrap()]).await;
     }
 
-    wait_stable_failover_visibility_on_admins(
-        &admin_a_inst,
-        &admin_c_inst,
-        loser_peer_id,
-        winner_peer_id,
-        Duration::from_secs(60),
-    )
-    .await;
-
-    wait_ping_reachability(
-        network.namespace("ns_adm"),
-        loser_ip,
-        true,
-        Duration::from_secs(20),
-    )
-    .await;
-    wait_ping_reachability(
-        network.namespace("ns_c3"),
-        loser_ip,
-        true,
-        Duration::from_secs(20),
-    )
-    .await;
-    wait_ping_reachability(
-        network.namespace("ns_adm"),
-        winner_ip,
-        false,
-        Duration::from_secs(5),
-    )
-    .await;
-    wait_ping_reachability(
-        network.namespace("ns_c3"),
-        winner_ip,
-        false,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    assert_shared_visibility_stable(
-        &network,
-        &admin_a_inst,
-        &admin_c_inst,
-        loser_peer_id,
-        loser_ip,
-        true,
-        "failover credential",
-    )
-    .await;
-    assert_shared_visibility_stable(
-        &network,
-        &admin_a_inst,
-        &admin_c_inst,
-        winner_peer_id,
-        winner_ip,
-        false,
-        "removed winning credential",
-    )
-    .await;
+    wait_credential_routes_on_admins(&admin_a_inst, &admin_c_inst, loser_peer_id, winner_peer_id)
+        .await;
+    tokio::join!(
+        wait_ping_reachability(
+            network.namespace("ns_adm"),
+            loser_ip,
+            true,
+            Duration::from_secs(10),
+        ),
+        wait_ping_reachability(
+            network.namespace("ns_c3"),
+            loser_ip,
+            true,
+            Duration::from_secs(10),
+        ),
+    );
+    let (admin_a_reaches_winner, admin_c_reaches_winner) = tokio::join!(
+        ping_test(network.namespace("ns_adm"), winner_ip, None),
+        ping_test(network.namespace("ns_c3"), winner_ip, None),
+    );
+    assert!(
+        !admin_a_reaches_winner,
+        "admin_a must not reach the removed peer"
+    );
+    assert!(
+        !admin_c_reaches_winner,
+        "admin_c must not reach the removed peer"
+    );
 
     if winner_peer_id == cred_left_peer_id {
         drop_insts(vec![

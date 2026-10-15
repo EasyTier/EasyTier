@@ -10,14 +10,14 @@ use easytier::{
         acl::Acl,
         api::{
             config::{
-                AclPatch, ConfigPatchAction, InstanceConfigPatch, PatchConfigRequest,
-                PortForwardPatch, ProxyNetworkPatch, VpnPortalClientPatch,
+                AclPatch, ConfigPatchAction, GetConfigRequest, InstanceConfigPatch,
+                PatchConfigRequest, PortForwardPatch, ProxyNetworkPatch, RoutePatch,
+                VpnPortalClientPatch,
             },
-            instance::{InstanceIdentifier, instance_identifier},
+            instance::{InstanceIdentifier, ShowNodeInfoRequest, instance_identifier},
             manage::{
-                ConfigSource as RpcConfigSource, GetNetworkInstanceConfigRequest,
-                ManagedCredentialConfig, ManagedCredentialSet, NetworkConfig,
-                RunNetworkInstanceRequest,
+                ConfigSource as RpcConfigSource, ManagedCredentialConfig, ManagedCredentialSet,
+                NetworkConfig, RunNetworkInstanceRequest,
             },
         },
         common::{CompressionAlgoPb, FlagsPatch, Ipv4Inet as RpcIpv4Inet},
@@ -26,7 +26,7 @@ use easytier::{
 };
 use optionize::Retain;
 
-use super::session::{SessionConfigClient, SessionRpcClient};
+use super::session::{SessionConfigClient, SessionPeerClient, SessionRpcClient};
 
 pub(super) enum RuntimeReconcileAction {
     Unchanged(Box<NetworkConfig>),
@@ -284,6 +284,7 @@ fn is_automatic_windows_dev_name(dev_name: &str) -> bool {
 fn web_source_runtime_patch(
     current: &NetworkConfig,
     desired: &NetworkConfig,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<Option<InstanceConfigPatch>> {
     let mut current_base = hot_patch_base(current)?;
     let mut desired_base = hot_patch_base(desired)?;
@@ -299,11 +300,30 @@ fn web_source_runtime_patch(
     }
     let current_hostname = current_base.hostname.take().unwrap_or_default();
     let desired_hostname = desired_base.hostname.take().unwrap_or_default();
+    let mut patch = InstanceConfigPatch::default();
+    if support_manual_routes_patch {
+        let current_mode = current_base.enable_manual_routes.take().unwrap_or_default();
+        let desired_mode = desired_base.enable_manual_routes.take().unwrap_or_default();
+        let current_routes = std::mem::take(&mut current_base.routes);
+        let desired_routes = std::mem::take(&mut desired_base.routes);
+        if current_mode != desired_mode || current_routes != desired_routes {
+            patch.enable_manual_routes = Some(desired_mode);
+            patch.routes.push(RoutePatch {
+                action: ConfigPatchAction::Clear as i32,
+                ..Default::default()
+            });
+            for route in desired_routes {
+                patch.routes.push(RoutePatch {
+                    action: ConfigPatchAction::Add as i32,
+                    cidr: Some(parse_rpc_ipv4_inet(&route)?),
+                });
+            }
+        }
+    }
     if current_base != desired_base {
         return Ok(None);
     }
 
-    let mut patch = InstanceConfigPatch::default();
     if desired.hostname.is_some() && current_hostname != desired_hostname {
         patch.hostname = Some(desired_hostname);
     }
@@ -397,7 +417,9 @@ pub(super) fn ensure_runtime_config_converged(
     desired: &NetworkConfig,
     hostname_applied: bool,
 ) -> anyhow::Result<()> {
-    let patch = web_source_runtime_patch(current, desired)?;
+    // Capability changes how a difference is applied, never whether the
+    // observed configuration matches the desired configuration.
+    let patch = web_source_runtime_patch(current, desired, true)?;
     match patch {
         Some(mut patch) => {
             // Release 2.6.4 omits a configured hostname when it equals
@@ -438,26 +460,83 @@ async fn run_web_source_instance(
 }
 
 pub(super) async fn get_runtime_config(
-    rpc_client: &mut SessionRpcClient,
+    config_client: &mut SessionConfigClient,
+    peer_client: &mut SessionPeerClient,
     inst_id: &str,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<NetworkConfig> {
-    rpc_client
-        .get_network_instance_config(
+    let response = config_client
+        .get_config(
             BaseController::default(),
-            GetNetworkInstanceConfigRequest {
-                inst_id: Some(inst_id.to_string().into()),
+            GetConfigRequest {
+                instance: Some(instance_identifier(inst_id)?),
             },
         )
-        .await?
+        .await?;
+    let mut config = response
         .config
-        .ok_or_else(|| anyhow::anyhow!("runtime returned empty config for {inst_id}"))
+        .ok_or_else(|| anyhow::anyhow!("runtime returned empty config for {inst_id}"))?;
+    if !support_manual_routes_patch && config.routes.is_empty() {
+        // Released 2.6.4 omits the manual-mode bit for routes=[]. Its
+        // instance-scoped ShowNodeInfo retains the original TOML. Clients
+        // with GetConfig.toml_config need no Peer RPC; supporting clients
+        // above already preserve the mode in the typed configuration.
+        let raw = if response.toml_config.is_empty() {
+            peer_client
+                .show_node_info(
+                    BaseController::default(),
+                    ShowNodeInfoRequest {
+                        instance: Some(instance_identifier(inst_id)?),
+                    },
+                )
+                .await?
+                .node_info
+                .ok_or_else(|| anyhow::anyhow!("runtime returned no node info for {inst_id}"))?
+                .config
+        } else {
+            response.toml_config
+        };
+        restore_manual_routes_from_toml(&mut config, inst_id, &raw)?;
+    }
+    Ok(config)
+}
+
+fn restore_manual_routes_from_toml(
+    config: &mut NetworkConfig,
+    inst_id: &str,
+    raw: &str,
+) -> anyhow::Result<()> {
+    // Read only this compatibility field. Parsing a released client's entire
+    // TOML with the current schema would reject unrelated historical fields.
+    #[derive(serde::Deserialize)]
+    struct Routes {
+        instance_id: uuid::Uuid,
+        routes: Option<Vec<cidr::Ipv4Cidr>>,
+    }
+    // Parser diagnostics can include credential-bearing TOML source lines.
+    let observed: Routes = toml::from_str(raw)
+        .map_err(|_| anyhow::anyhow!("runtime returned invalid route TOML for {inst_id}"))?;
+    anyhow::ensure!(
+        observed.instance_id == inst_id.parse::<uuid::Uuid>()?,
+        "runtime returned route TOML for a different instance"
+    );
+    config.enable_manual_routes = observed.routes.as_ref().map(|_| true);
+    config.routes = observed
+        .routes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|route| route.to_string())
+        .collect();
+    Ok(())
 }
 
 pub(super) async fn prepare_web_source_runtime_reconcile(
-    rpc_client: &mut SessionRpcClient,
+    config_client: &mut SessionConfigClient,
+    peer_client: &mut SessionPeerClient,
     inst_id: &str,
     desired_config: NetworkConfig,
     is_running: bool,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<RuntimeReconcileAction> {
     if !is_running {
         return Ok(RuntimeReconcileAction::Run {
@@ -466,16 +545,29 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
         });
     }
 
-    let current_config = get_runtime_config(rpc_client, inst_id).await?;
+    let current_config = get_runtime_config(
+        config_client,
+        peer_client,
+        inst_id,
+        support_manual_routes_patch,
+    )
+    .await?;
 
-    prepare_web_source_runtime_reconcile_from_current(&current_config, desired_config)
+    prepare_web_source_runtime_reconcile_from_current(
+        &current_config,
+        desired_config,
+        support_manual_routes_patch,
+    )
 }
 
 pub(super) fn prepare_web_source_runtime_reconcile_from_current(
     current_config: &NetworkConfig,
     desired_config: NetworkConfig,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<RuntimeReconcileAction> {
-    let Some(patch) = web_source_runtime_patch(current_config, &desired_config)? else {
+    let Some(patch) =
+        web_source_runtime_patch(current_config, &desired_config, support_manual_routes_patch)?
+    else {
         let mut run_config = desired_config;
         if run_config.hostname.is_none() {
             run_config.hostname = current_config.hostname.clone();
@@ -497,16 +589,24 @@ pub(super) fn prepare_web_source_runtime_reconcile_from_current(
 pub(super) async fn apply_web_source_runtime_reconcile(
     rpc_client: &mut SessionRpcClient,
     config_client: &mut SessionConfigClient,
+    peer_client: &mut SessionPeerClient,
     inst_id: &str,
     desired_config: NetworkConfig,
     action: RuntimeReconcileAction,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<NetworkConfig> {
     match action {
         RuntimeReconcileAction::Unchanged(current_config) => Ok(*current_config),
         RuntimeReconcileAction::Run { config, overwrite } => {
             let hostname_applied = config.hostname.is_some();
             run_web_source_instance(rpc_client, inst_id, *config, overwrite).await?;
-            let mut current_config = get_runtime_config(rpc_client, inst_id).await?;
+            let mut current_config = get_runtime_config(
+                config_client,
+                peer_client,
+                inst_id,
+                support_manual_routes_patch,
+            )
+            .await?;
             ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
             restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
@@ -522,7 +622,13 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                     },
                 )
                 .await?;
-            let mut current_config = get_runtime_config(rpc_client, inst_id).await?;
+            let mut current_config = get_runtime_config(
+                config_client,
+                peer_client,
+                inst_id,
+                support_manual_routes_patch,
+            )
+            .await?;
             ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
             restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
@@ -641,7 +747,7 @@ mod tests {
             "0.0.0.0:22121",
         );
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .unwrap()
             .expect("client-only changes must be hot-patchable");
 
@@ -676,7 +782,7 @@ mod tests {
             "0.0.0.0:22121",
         );
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .unwrap()
             .unwrap();
         assert!(patch.vpn_portal_clients.is_empty());
@@ -693,7 +799,7 @@ mod tests {
             "0.0.0.0:22122",
         );
         assert!(
-            web_source_runtime_patch(&current, &desired)
+            web_source_runtime_patch(&current, &desired, false)
                 .unwrap()
                 .is_none()
         );
@@ -710,7 +816,7 @@ mod tests {
             .unwrap()
             .wireguard_private_key = Some("bm90LXRoZS1zYW1lLWtleQ==".to_owned());
         assert!(
-            web_source_runtime_patch(&current, &different_key)
+            web_source_runtime_patch(&current, &different_key, false)
                 .unwrap()
                 .is_none()
         );
@@ -725,12 +831,12 @@ mod tests {
         );
 
         assert!(
-            web_source_runtime_patch(&without_portal, &with_portal)
+            web_source_runtime_patch(&without_portal, &with_portal, false)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            web_source_runtime_patch(&with_portal, &without_portal)
+            web_source_runtime_patch(&with_portal, &without_portal, false)
                 .unwrap()
                 .is_none()
         );
@@ -738,23 +844,23 @@ mod tests {
         let mut disabled = with_portal.clone();
         disabled.vpn_portal_config.as_mut().unwrap().enabled = Some(false);
         assert!(
-            web_source_runtime_patch(&with_portal, &disabled)
+            web_source_runtime_patch(&with_portal, &disabled, false)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            web_source_runtime_patch(&disabled, &with_portal)
+            web_source_runtime_patch(&disabled, &with_portal, false)
                 .unwrap()
                 .is_none()
         );
         assert_eq!(
-            web_source_runtime_patch(&disabled, &disabled).unwrap(),
+            web_source_runtime_patch(&disabled, &disabled, false).unwrap(),
             Some(InstanceConfigPatch::default())
         );
         let mut edited = disabled.clone();
         edited.vpn_portal_config.as_mut().unwrap().clients.clear();
         assert!(
-            web_source_runtime_patch(&disabled, &edited)
+            web_source_runtime_patch(&disabled, &edited, false)
                 .unwrap()
                 .is_none()
         );
@@ -774,7 +880,7 @@ mod tests {
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -796,7 +902,7 @@ mod tests {
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
         let desired = config_with_port_forwards(vec![port_forward(23000, 5174)]);
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -818,7 +924,7 @@ mod tests {
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23000, 5174)]);
         let desired = config_with_port_forwards(vec![port_forward(23000, 5174)]);
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -849,7 +955,7 @@ mod tests {
         current.dev_name = Some("et_3_abcd".to_string());
         let desired = config_with_port_forwards(Vec::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
             .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
@@ -862,7 +968,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
             .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
@@ -875,7 +981,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
             .expect("prepare reconcile");
         let RuntimeReconcileAction::Run { overwrite, .. } = action else {
             panic!("clearing an explicit device name should require a full overwrite");
@@ -891,7 +997,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some("managed-device".to_string());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
             .expect("prepare reconcile");
         let RuntimeReconcileAction::Run { overwrite, .. } = action else {
             panic!("explicit device name should require a full overwrite");
@@ -927,7 +1033,7 @@ mod tests {
         desired_port_forward.proto = "TCP".to_string();
         let desired = config_with_port_forwards(vec![desired_port_forward]);
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -942,7 +1048,7 @@ mod tests {
 
         desired.network_secret = Some("new-secret".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -955,9 +1061,12 @@ mod tests {
         unmanaged_desired.hostname = None;
         unmanaged_desired.network_secret = Some("new-secret".to_string());
 
-        let action =
-            prepare_web_source_runtime_reconcile_from_current(&current, unmanaged_desired.clone())
-                .expect("prepare full overwrite");
+        let action = prepare_web_source_runtime_reconcile_from_current(
+            &current,
+            unmanaged_desired.clone(),
+            false,
+        )
+        .expect("prepare full overwrite");
         let RuntimeReconcileAction::Run { config, overwrite } = action else {
             panic!("non-hot change should require a full overwrite");
         };
@@ -967,9 +1076,12 @@ mod tests {
         let observed_after_run = *config;
         let mut explicit_clear = unmanaged_desired;
         explicit_clear.hostname = Some(String::new());
-        let action =
-            prepare_web_source_runtime_reconcile_from_current(&observed_after_run, explicit_clear)
-                .expect("prepare explicit clear");
+        let action = prepare_web_source_runtime_reconcile_from_current(
+            &observed_after_run,
+            explicit_clear,
+            false,
+        )
+        .expect("prepare explicit clear");
         let RuntimeReconcileAction::Patch(patch) = action else {
             panic!("explicit clear should patch the preserved runtime hostname");
         };
@@ -988,7 +1100,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
             .expect("prepare reconcile");
         let RuntimeReconcileAction::Patch(patch) = action else {
             panic!("managed credential change must use a hot patch");
@@ -996,6 +1108,248 @@ mod tests {
         let managed = patch.managed_credentials.expect("managed credential patch");
         assert_eq!(managed.entries.len(), 1);
         assert_eq!(managed.entries[0].credential_id, "managed");
+    }
+
+    #[test]
+    fn empty_manual_routes_require_overwrite_when_switching_modes() {
+        let automatic = config_with_port_forwards(Vec::new());
+        let mut empty_manual = automatic.clone();
+        empty_manual.enable_manual_routes = Some(true);
+        assert!(empty_manual.routes.is_empty());
+
+        for (current, desired) in [(&automatic, &empty_manual), (&empty_manual, &automatic)] {
+            let action =
+                prepare_web_source_runtime_reconcile_from_current(current, desired.clone(), false)
+                    .expect("prepare mode change");
+            assert!(matches!(
+                action,
+                RuntimeReconcileAction::Run {
+                    overwrite: true,
+                    ..
+                }
+            ));
+        }
+        let action = prepare_web_source_runtime_reconcile_from_current(
+            &empty_manual,
+            empty_manual.clone(),
+            false,
+        )
+        .expect("prepare unchanged empty manual routes");
+        assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
+    }
+
+    #[test]
+    fn manual_route_modes_and_lists_patch_when_supported() {
+        let automatic = config_with_port_forwards(Vec::new());
+        let mut empty = automatic.clone();
+        empty.enable_manual_routes = Some(true);
+        let mut nonempty = empty.clone();
+        nonempty.routes = vec!["10.20.0.0/24".to_owned()];
+        for current in [&automatic, &empty, &nonempty] {
+            for desired in [&automatic, &empty, &nonempty] {
+                let action = prepare_web_source_runtime_reconcile_from_current(
+                    current,
+                    desired.clone(),
+                    true,
+                )
+                .unwrap();
+                if current == desired {
+                    assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
+                    continue;
+                }
+                let RuntimeReconcileAction::Patch(patch) = action else {
+                    panic!("route-only changes must not restart a supporting Core");
+                };
+                assert_eq!(
+                    patch.enable_manual_routes,
+                    Some(desired.enable_manual_routes.unwrap_or_default())
+                );
+                assert_eq!(patch.routes[0].action, ConfigPatchAction::Clear as i32);
+                assert_eq!(patch.routes.len(), desired.routes.len() + 1);
+                for (entry, cidr) in patch.routes.iter().skip(1).zip(&desired.routes) {
+                    assert_eq!(entry.action, ConfigPatchAction::Add as i32);
+                    assert_eq!(
+                        entry.cidr.as_ref(),
+                        Some(&parse_rpc_ipv4_inet(cidr).unwrap())
+                    );
+                }
+                assert!(ensure_runtime_config_converged(current, desired, false).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn raw_route_readback_distinguishes_empty_and_automatic_without_guessing() {
+        let id = "11111111-1111-1111-1111-111111111111";
+        let mut config = config_with_port_forwards(Vec::new());
+        for (routes, expected) in [("routes=[]\n", Some(true)), ("", None)] {
+            let raw = format!("instance_id='{id}'\n{routes}[historical_field]\nunknown=true");
+            restore_manual_routes_from_toml(&mut config, id, &raw).unwrap();
+            assert_eq!(config.enable_manual_routes, expected);
+            assert!(config.routes.is_empty());
+        }
+        for raw in [
+            String::new(),
+            format!("instance_id='{id}'\nroutes='credential-secret-do-not-log'"),
+            "instance_id='22222222-2222-2222-2222-222222222222'\nroutes=[]".to_owned(),
+        ] {
+            let error = restore_manual_routes_from_toml(&mut config, id, &raw).unwrap_err();
+            assert!(!error.to_string().contains("credential-secret"));
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_route_readback_uses_current_rpc_or_released_node_info() {
+        use easytier::proto::api::{
+            config::{ConfigRpc, GetConfigResponse, PatchConfigResponse},
+            instance::*,
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        struct ConfigReader(GetConfigResponse);
+        #[async_trait::async_trait]
+        impl ConfigRpc for ConfigReader {
+            type Controller = BaseController;
+            async fn get_config(
+                &self,
+                _: BaseController,
+                _: GetConfigRequest,
+            ) -> easytier::proto::rpc_types::error::Result<GetConfigResponse> {
+                Ok(self.0.clone())
+            }
+            async fn patch_config(
+                &self,
+                _: BaseController,
+                _: PatchConfigRequest,
+            ) -> easytier::proto::rpc_types::error::Result<PatchConfigResponse> {
+                unreachable!("readback must not patch configuration")
+            }
+        }
+        struct PeerReader {
+            raw: Option<String>,
+            calls: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl PeerManageRpc for PeerReader {
+            type Controller = BaseController;
+            async fn list_peer(
+                &self,
+                _: BaseController,
+                _: ListPeerRequest,
+            ) -> easytier::proto::rpc_types::error::Result<ListPeerResponse> {
+                unreachable!("route configuration readback only uses ShowNodeInfo")
+            }
+            async fn list_public_ipv6_info(
+                &self,
+                _: BaseController,
+                _: ListPublicIpv6InfoRequest,
+            ) -> easytier::proto::rpc_types::error::Result<ListPublicIpv6InfoResponse> {
+                unreachable!("route configuration readback only uses ShowNodeInfo")
+            }
+            async fn list_route(
+                &self,
+                _: BaseController,
+                _: ListRouteRequest,
+            ) -> easytier::proto::rpc_types::error::Result<ListRouteResponse> {
+                unreachable!("route configuration readback only uses ShowNodeInfo")
+            }
+            async fn dump_route(
+                &self,
+                _: BaseController,
+                _: DumpRouteRequest,
+            ) -> easytier::proto::rpc_types::error::Result<DumpRouteResponse> {
+                unreachable!("route configuration readback only uses ShowNodeInfo")
+            }
+            async fn list_foreign_network(
+                &self,
+                _: BaseController,
+                _: ListForeignNetworkRequest,
+            ) -> easytier::proto::rpc_types::error::Result<ListForeignNetworkResponse> {
+                unreachable!("route configuration readback only uses ShowNodeInfo")
+            }
+            async fn list_global_foreign_network(
+                &self,
+                _: BaseController,
+                _: ListGlobalForeignNetworkRequest,
+            ) -> easytier::proto::rpc_types::error::Result<ListGlobalForeignNetworkResponse>
+            {
+                unreachable!("route configuration readback only uses ShowNodeInfo")
+            }
+            async fn get_foreign_network_summary(
+                &self,
+                _: BaseController,
+                _: GetForeignNetworkSummaryRequest,
+            ) -> easytier::proto::rpc_types::error::Result<GetForeignNetworkSummaryResponse>
+            {
+                unreachable!("route configuration readback only uses ShowNodeInfo")
+            }
+            async fn show_node_info(
+                &self,
+                _: BaseController,
+                _: ShowNodeInfoRequest,
+            ) -> easytier::proto::rpc_types::error::Result<ShowNodeInfoResponse> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                let raw = self
+                    .raw
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("Peer RPC unavailable"))?;
+                Ok(ShowNodeInfoResponse {
+                    node_info: Some(NodeInfo {
+                        config: raw,
+                        ..Default::default()
+                    }),
+                })
+            }
+        }
+        let id = "11111111-1111-1111-1111-111111111111";
+        for (has_raw_config, supports_patch) in [(false, false), (true, false), (false, true)] {
+            for manual in [false, true] {
+                let raw = format!(
+                    "instance_id='{id}'\n{}",
+                    if manual { "routes=[]" } else { "" }
+                );
+                let mut config: SessionConfigClient = Box::new(ConfigReader(GetConfigResponse {
+                    config: Some(NetworkConfig {
+                        enable_manual_routes: (supports_patch && manual).then_some(true),
+                        ..config_with_port_forwards(Vec::new())
+                    }),
+                    toml_config: if has_raw_config {
+                        raw.clone()
+                    } else {
+                        String::new()
+                    },
+                }));
+                let calls = Arc::new(AtomicUsize::new(0));
+                let mut peer: SessionPeerClient = Box::new(PeerReader {
+                    raw: (!has_raw_config && !supports_patch).then_some(raw),
+                    calls: calls.clone(),
+                });
+                let observed = get_runtime_config(&mut config, &mut peer, id, supports_patch)
+                    .await
+                    .unwrap();
+                assert_eq!(observed.enable_manual_routes, manual.then_some(true));
+                assert_eq!(
+                    calls.load(Ordering::Relaxed),
+                    usize::from(!has_raw_config && !supports_patch)
+                );
+            }
+        }
+        let mut config: SessionConfigClient = Box::new(ConfigReader(GetConfigResponse {
+            config: Some(config_with_port_forwards(Vec::new())),
+            ..Default::default()
+        }));
+        let mut peer: SessionPeerClient = Box::new(PeerReader {
+            raw: None,
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        assert!(
+            get_runtime_config(&mut config, &mut peer, id, false)
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -1007,7 +1361,7 @@ mod tests {
         desired.enable_manual_routes = Some(true);
         desired.routes = vec!["10.2.0.0/16".to_string(), "10.3.0.0/16".to_string()];
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1025,7 +1379,7 @@ mod tests {
             "10.3.0.0/16".to_string(),
         ];
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1066,7 +1420,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.proxy_cidrs = vec!["10.1.2.0/24->10.1.3.0/24".to_string()];
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1095,7 +1449,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.proxy_cidrs = vec!["10.1.2.0/24".to_string()];
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1106,7 +1460,7 @@ mod tests {
         current.proxy_cidrs = vec!["10.1.2.0/24".to_string()];
         let desired = config_with_port_forwards(Vec::new());
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1127,7 +1481,7 @@ mod tests {
         let mut desired = current.clone();
         desired.disable_relay_data = Some(true);
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1140,7 +1494,7 @@ mod tests {
         let mut desired = current.clone();
         desired.prefer_peer_relay = Some(true);
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1154,7 +1508,7 @@ mod tests {
         let mut desired = current.clone();
         desired.no_tun = Some(true);
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1165,7 +1519,7 @@ mod tests {
         let mut desired = current.clone();
         desired.encryption_algorithm = Some("managed-test-algo".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1176,7 +1530,7 @@ mod tests {
         let mut desired = current.clone();
         desired.data_compress_algo = Some(CompressionAlgoPb::Zstd as i32);
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1197,7 +1551,7 @@ mod tests {
             local_public_key: None,
         });
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1218,7 +1572,7 @@ mod tests {
             local_public_key: None,
         });
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1241,7 +1595,7 @@ mod tests {
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1263,7 +1617,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("desired-host".to_string());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
             .expect("prepare reconcile");
         let RuntimeReconcileAction::Patch(patch) = action else {
             panic!("hostname-only change should use a hot patch");
@@ -1320,7 +1674,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some(String::new());
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1333,7 +1687,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
             .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
@@ -1345,7 +1699,7 @@ mod tests {
         current.hostname = Some("desired-host".to_string());
         let desired = current.clone();
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
             .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
@@ -1357,7 +1711,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("a".repeat(33));
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1370,7 +1724,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("node\u{7}-name".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1384,7 +1738,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("\u{7}\n".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired)
+        let patch = web_source_runtime_patch(&current, &desired, false)
             .expect("build patch")
             .expect("hot patch");
 

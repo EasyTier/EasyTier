@@ -653,9 +653,7 @@ impl NetworkConfigExt for NetworkConfig {
             });
         }
 
-        if let Some(routes) = config.get_routes()
-            && !routes.is_empty()
-        {
+        if let Some(routes) = config.get_routes() {
             result.enable_manual_routes = Some(true);
             result.routes = routes.iter().map(|r| r.to_string()).collect();
         }
@@ -715,6 +713,45 @@ mod tests {
         NetworkConfig {
             networking_method: Some(NetworkingMethod::Standalone as i32),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn manual_routes_preserve_empty_and_automatic_modes() {
+        for routes in [Vec::new(), vec!["10.20.0.0/24".to_owned()]] {
+            for enabled in [None, Some(false), Some(true)] {
+                let mut input = standalone_config();
+                input.enable_manual_routes = enabled;
+                input.routes = routes.clone();
+                let config = input.gen_config().unwrap();
+                let expected = if enabled == Some(true) {
+                    Some(routes.iter().map(|route| route.parse().unwrap()).collect())
+                } else {
+                    None
+                };
+                assert_eq!(config.get_routes(), expected);
+                let readback = NetworkConfig::new_from_config(config.clone()).unwrap();
+                assert_eq!(
+                    readback.enable_manual_routes,
+                    enabled.filter(|value| *value)
+                );
+                assert_eq!(readback.gen_config().unwrap().get_routes(), expected);
+                assert_eq!(
+                    TomlConfigLoader::new_from_str(&config.dump())
+                        .unwrap()
+                        .get_routes(),
+                    expected
+                );
+                #[cfg(feature = "web-client")]
+                {
+                    let projected = super::super::api::network_config_from_toml(&config);
+                    assert_eq!(
+                        projected.enable_manual_routes,
+                        readback.enable_manual_routes
+                    );
+                    assert_eq!(projected.routes, readback.routes);
+                }
+            }
         }
     }
 
