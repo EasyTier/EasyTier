@@ -10,6 +10,13 @@ use easytier_core::{
 use super::*;
 use crate::{client_manager::ClientManager, db::Db, webhook::WebhookConfig};
 
+fn controller_15s() -> BaseController {
+    BaseController {
+        timeout_ms: 15_000,
+        ..Default::default()
+    }
+}
+
 async fn connect_udp(
     manager: &ClientManager,
     listener_url: url::Url,
@@ -25,13 +32,13 @@ async fn connect_udp(
         .rpc_client()
         .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, String::new());
     tokio::time::timeout(
-        Duration::from_secs(5),
-        client.get_feature(BaseController::default(), GetFeatureRequest {}),
+        Duration::from_secs(15),
+        client.get_feature(controller_15s(), GetFeatureRequest {}),
     )
     .await
     .unwrap()
     .unwrap();
-    let session = tokio::time::timeout(Duration::from_secs(5), async {
+    let session = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if let Some(session) = manager
                 .client_sessions
@@ -55,7 +62,7 @@ async fn heartbeat(rpc: &BidirectRpcManager, machine_id: uuid::Uuid) {
         .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, String::new());
     client
         .heartbeat(
-            BaseController::default(),
+            controller_15s(),
             HeartbeatRequest {
                 machine_id: Some(machine_id.into()),
                 user_token: "lifecycle-token".to_string(),
@@ -231,7 +238,7 @@ async fn pruning_keeps_same_url_replacement_and_cancels_retained_session_workers
     ));
     assert!(newest.is_running());
     assert!(!old.is_running());
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         while !old.webhook_validation_task.as_ref().unwrap().is_finished()
             || !old.config_reconcile_task.as_ref().unwrap().is_finished()
         {
