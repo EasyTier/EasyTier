@@ -8,7 +8,7 @@ not the headless lifecycle controller itself.
 - `easytier-core::management::application_client` owns the application-level
   configuration/source rules and the existing pre/post hooks. It accepts an
   already-connected RPC tunnel; it does not create a runtime or instance manager.
-- `ManagementHost` supplies event delivery, the single-TUN platform policy, and
+- `ManagementHost` supplies event delivery, the shared-TUN platform policy, and
   instance-event observation. The GUI adapter remains responsible for Tauri and
   subscribing to the existing `NativeInstanceManager`.
 - `ConfigRepository` supplies durable configuration/desired-enabled storage.
@@ -18,8 +18,9 @@ not the headless lifecycle controller itself.
   There is no new JNI start/stop path, independent instance manager, or runtime.
 
 The extracted rules retain user/web/legacy provenance (including old `webhook`
-values), conservative ownership merging, one Android TUN, coexistence with
-multiple `no_tun` networks, and user/legacy TUN precedence over managed TUNs.
+values) and conservative ownership merging. Multiple user/managed TUN networks
+share the Android VPN alongside `no_tun` networks. Removing a member triggers
+shared TUN reconciliation; the VPN stops only after the last TUN member leaves.
 
 ## Persistence and migration
 
@@ -65,7 +66,7 @@ unknown modes as a local network. The future controller must check mode explicit
 
 UI start/stop/remove commands use a narrow transport around the **same** connected
 RPC manager. Required configuration is saved before start preparation or replacing
-an existing VPN. Disconnect does not require a successful disk write. Once a
+an existing instance. Disconnect does not require a successful disk write. Once a
 runtime operation succeeds, observed running state and the existing post hooks are
 updated before best-effort persistence. Web post-start/remove hooks follow the same
 ordering. Editing a saved profile does not mark an instance running.
@@ -105,13 +106,16 @@ Still required by #2538:
 4. Explicit recovery policy (including permission, locked-device and unsupported
    backend handling); never treat Android force-stop as self-recoverable.
 
-This PR deliberately leaves the UI-backed VPN reconciliation, tile cold-start
-behavior and foreground-service lifecycle unchanged. The snapshot repository
+Native status sampling runs inside the existing VPN reconciliation queue. Newer
+instance changes supersede the pending reconcile, but still inherit the sampled
+native state so a remaining VPN can be stopped after page reconstruction. Native
+start/stop events invalidate older status samples. This PR retains UI ownership of
+VPN reconciliation, tile cold-start behavior and the foreground-service lifecycle. The snapshot repository
 serializes persistence updates; it is not a lifecycle serializer.
 
 ## Validation
 
-- Rust application-client tests cover source compatibility, managed/user priority,
+- Rust application-client tests cover source compatibility, shared managed/user networks,
   TUN candidate selection, `no_tun` coexistence and VPN-stop event selection, plus
   disk/event failures, lost RPC replies, unknown runtime state, and latest-intent retry.
   The GUI's shared connect/reconnect entry point is tested with a real snapshot
@@ -127,7 +131,8 @@ serializes persistence updates; it is not a lifecycle serializer.
   direct Rust mobile command against Kotlin `@Command` names. JavaScript invoke
   identifiers remain unchanged. This is a contract test, not a native bridge smoke test.
 - Frontend tests cover native-first loading, migration/deletion ordering, retries,
-  corrupt data, preference write ordering, and the existing mobile VPN/tile tests.
+  corrupt data, preference write ordering, and mobile VPN/tile behavior, including
+  queued synchronization, superseded cleanup and native start/stop event races.
 - Before release, device-test upgrading a configured installation, process restart,
   managed configuration updates, selection persistence, remote-mode UI operation,
   and storage failure handling. Check that the legacy Android localStorage keys

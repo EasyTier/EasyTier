@@ -12,9 +12,7 @@ use easytier::instance::factory::subscribe_native_instance_event;
 use easytier::instance::factory::{
     attach_mobile_tun_fd, get_mobile_tun_config as native_mobile_tun_config,
 };
-use easytier::proto::api::config::{
-    ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, VpnPortalClientPatch,
-};
+use easytier::proto::api::config::{ConfigPatchAction, VpnPortalClientPatch};
 use easytier::proto::api::instance::{
     GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
     VpnPortalRpcClientFactory, instance_identifier,
@@ -216,8 +214,8 @@ async fn patch_vpn_portal_clients(
 
     let client_manager = get_client_manager!()?;
     client_manager
-        .handle_patch_vpn_portal_clients(
-            app,
+        .patch_vpn_portal_clients(
+            manager::GuiHost(app),
             instance_id,
             vec![VpnPortalClientPatch {
                 action: action as i32,
@@ -328,6 +326,7 @@ async fn update_network_config_state(
 async fn save_network_config(app: AppHandle, cfg: NetworkConfig) -> Result<(), String> {
     get_client_manager!()?
         .save_configuration(&manager::GuiHost(app), cfg)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -734,7 +733,7 @@ mod manager {
             Emitter::emit(&self.0, event, payload)?;
             Ok(())
         }
-        fn single_tun(&self) -> bool {
+        fn shared_tun(&self) -> bool {
             cfg!(target_os = "android")
         }
         async fn observe_instance(&self, instance_id: Uuid) {
@@ -757,10 +756,19 @@ mod manager {
                             let instance_id_str = instance_id_clone.to_string();
                             loop {
                                 match event_receiver.recv().await {
-                                    Ok(GlobalCtxEvent::DhcpIpv4Changed(_, _)) => {
+                                    Ok(
+                                        GlobalCtxEvent::DhcpIpv4Changed(_, _)
+                                        | GlobalCtxEvent::DhcpIpv4Conflicted(_)
+                                        | GlobalCtxEvent::DhcpIpv6Changed(_, _)
+                                        | GlobalCtxEvent::DhcpIpv6Conflicted(_),
+                                    ) => {
                                         let _ = app_clone.emit("dhcp_ip_changed", &instance_id_str);
                                     }
-                                    Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => {
+                                    Ok(
+                                        GlobalCtxEvent::ProxyCidrsUpdated(_, _)
+                                        | GlobalCtxEvent::PublicIpv6Changed(_, _)
+                                        | GlobalCtxEvent::PublicIpv6RoutesUpdated(_, _),
+                                    ) => {
                                         let _ =
                                             app_clone.emit("proxy_cidrs_updated", &instance_id_str);
                                     }

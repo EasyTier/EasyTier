@@ -30,8 +30,6 @@ pub(crate) use forwarded_rpc::{
 pub(crate) use full::WebClientBackend;
 #[cfg(all(feature = "web-client", test))]
 pub(crate) use full::register_web_client_rpc;
-#[cfg(feature = "management")]
-pub use full::{application_client, application_snapshot, remote_client};
 #[cfg(feature = "web-client")]
 pub use full::{
     ConfigFileStorage, ConfigPatchPersistence, ConfigServerEndpoint, InstanceMutationHooks,
@@ -45,6 +43,8 @@ pub use full::{
     call_management_json_rpc, log_level_name, parse_log_level, register_instance_management_rpc,
     register_management_rpc,
 };
+#[cfg(feature = "management")]
+pub use full::{application_client, application_snapshot, remote_client};
 pub use instance_rpc::InstanceManagementRpc;
 pub use rpc_server_hook::ManagementRpcServerHook;
 pub use selector::{

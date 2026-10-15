@@ -8,6 +8,7 @@ use crate::management::remote_client::{ListNetworkProps, RemoteClientManager, St
 use crate::rpc::bidirect::BidirectRpcManager;
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
+use easytier_proto::api::config::{ConfigRpc, ConfigRpcClientFactory, VpnPortalClientPatch};
 use easytier_proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
 use easytier_proto::api::manage::RunNetworkInstanceRequest;
 use easytier_proto::api::manage::{WebClientService, WebClientServiceClientFactory};
@@ -35,7 +36,7 @@ pub struct ManagementStatus {
 #[async_trait::async_trait]
 pub trait ManagementHost: Clone + Send + Sync + 'static {
     fn emit<S: serde::Serialize + Clone>(&self, event: &str, payload: S) -> anyhow::Result<()>;
-    fn single_tun(&self) -> bool;
+    fn shared_tun(&self) -> bool;
     async fn observe_instance(&self, instance_id: Uuid);
 }
 
@@ -73,10 +74,6 @@ impl PersistedConfigSource {
             Self::User | Self::Legacy => ConfigSource::User,
             Self::Web => ConfigSource::Web,
         }
-    }
-
-    fn is_web_like(self) -> bool {
-        matches!(self, Self::Web)
     }
 }
 
@@ -597,11 +594,24 @@ impl<H: ManagementHost> ApplicationClient<H> {
         .await
     }
 
-    pub fn save_configuration(&self, app: &H, config: NetworkConfig) -> anyhow::Result<()> {
+    pub async fn save_configuration(&self, app: &H, config: NetworkConfig) -> anyhow::Result<()> {
+        let _operation = self.operations.lock().await;
         let id = Uuid::parse_str(config.instance_id())?;
         // Editing a profile is not an instance start/stop operation.
         self.storage
             .save_config(app, id, config, PersistedConfigSource::User)
+    }
+
+    pub async fn patch_vpn_portal_clients(
+        &self,
+        app: H,
+        instance_id: Uuid,
+        patches: Vec<VpnPortalClientPatch>,
+    ) -> anyhow::Result<()> {
+        let _operation = self.operations.lock().await;
+        self.handle_patch_vpn_portal_clients(app, instance_id, patches)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
     }
 
     pub fn new(
@@ -644,33 +654,12 @@ impl<H: ManagementHost> ApplicationClient<H> {
             .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
     }
 
-    pub fn get_enabled_instances_with_web_like_tun_ids(
-        &self,
-    ) -> impl Iterator<Item = uuid::Uuid> + '_ {
-        self.storage
-            .network_configs
-            .iter()
-            .filter(|v| self.storage.enabled_networks.contains(v.key()))
-            .filter(|v| !v.config.no_tun())
-            .filter(|v| v.source.is_web_like())
-            .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
-    }
-
-    pub async fn disable_instances_with_tun(&self, app: &H, web_only: bool) -> Result<(), String> {
-        let inst_ids: Vec<uuid::Uuid> = if web_only {
-            self.get_enabled_instances_with_web_like_tun_ids().collect()
-        } else {
-            self.get_enabled_instances_with_tun_ids().collect()
-        };
-        for inst_id in inst_ids {
-            self.stop_confirmed(app, &[inst_id], false).await?;
-        }
-        Ok(())
-    }
-
     pub fn notify_vpn_stop_if_no_tun(&self, app: &H) -> Result<(), String> {
         let has_tun = self.get_enabled_instances_with_tun_ids().any(|_| true);
-        if !has_tun {
+        if has_tun && app.shared_tun() {
+            app.emit("vpn_service_config_changed", "")
+                .map_err(|e| e.to_string())?;
+        } else if !has_tun {
             app.emit("vpn_service_stop", "")
                 .map_err(|e| e.to_string())?;
         }
@@ -684,22 +673,8 @@ impl<H: ManagementHost> ApplicationClient<H> {
         source: PersistedConfigSource,
     ) -> Result<(), String> {
         let instance_id = cfg.get_id();
-        // Validate ownership and persist required configuration before any VPN preparation
-        // or replacement of an existing instance. Storage failure must leave it untouched.
-        if app.single_tun()
-            && !cfg.get_flags().no_tun
-            && source.is_web_like()
-            && self.storage.network_configs.iter().any(|entry| {
-                self.storage.enabled_networks.contains(entry.key())
-                    && !entry.config.no_tun()
-                    && !entry.source.is_web_like()
-            })
-        {
-            return Err(
-                "Android only supports one active TUN network; user-managed VPN remains active"
-                    .into(),
-            );
-        }
+        // Persist required configuration before VPN preparation or instance replacement.
+        // Storage failure must leave the running networks untouched.
         self.storage
             .save_config(
                 app,
@@ -708,27 +683,6 @@ impl<H: ManagementHost> ApplicationClient<H> {
                 source,
             )
             .map_err(|e| e.to_string())?;
-
-        if app.single_tun() && !cfg.get_flags().no_tun {
-            match source {
-                PersistedConfigSource::User | PersistedConfigSource::Legacy => {
-                    self.disable_instances_with_tun(app, false)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                }
-                PersistedConfigSource::Web => {
-                    self.disable_instances_with_tun(app, true)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    if self.get_enabled_instances_with_tun_ids().next().is_some() {
-                        return Err(
-                            "Android only supports one active TUN network; user-managed VPN remains active"
-                                .to_string(),
-                        );
-                    }
-                }
-            }
-        }
 
         if !cfg.get_flags().no_tun {
             app.emit("pre_run_network_instance", instance_id.to_string())
@@ -878,6 +832,17 @@ impl<H: ManagementHost> ApplicationClient<H> {
 impl<H: ManagementHost> RemoteClientManager<H, ApplicationConfig, anyhow::Error>
     for ApplicationClient<H>
 {
+    fn get_config_rpc_client(
+        &self,
+        _: H,
+    ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>> {
+        Some(
+            self.rpc_manager
+                .rpc_client()
+                .scoped_client::<ConfigRpcClientFactory<BaseController>>(1, 1, String::new()),
+        )
+    }
+
     fn get_rpc_client(
         &self,
         _: H,
@@ -1251,7 +1216,7 @@ mod tests {
                 .is_some()
         );
         assert!(!client.management_status().runtime_state_known);
-        // A second start cannot use stale single-TUN state, but stop remains available.
+        // A second start cannot use stale runtime state, but stop remains available.
         assert!(
             client
                 .run_network(&host, config(), PersistedConfigSource::User)
@@ -1356,6 +1321,23 @@ mod tests {
         assert!(!host.0.lock().unwrap().contains(&"vpn_service_stop".into()));
     }
 
+    #[tokio::test]
+    async fn stopping_shared_tun_member_reconciles_survivors_despite_disk_failure() {
+        let (client, _, repository) = fault_client();
+        let host = TestHost::default();
+        let first = add(&client, PersistedConfigSource::User, false);
+        let second = add(&client, PersistedConfigSource::Web, false);
+        repository.fail_enabled.store(true, Ordering::SeqCst);
+        let outcome = client.stop_network(&host, first, false).await.unwrap();
+        assert!(outcome.runtime_applied);
+        assert!(outcome.persistence_warning.is_some());
+        assert!(!client.storage.enabled_networks.contains(&first));
+        assert!(client.storage.enabled_networks.contains(&second));
+        let events = host.0.lock().unwrap();
+        assert!(events.contains(&"vpn_service_config_changed".into()));
+        assert!(!events.contains(&"vpn_service_stop".into()));
+    }
+
     #[derive(Clone, Default)]
     struct TestHost(
         std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -1368,7 +1350,7 @@ mod tests {
             anyhow::ensure!(!self.1.load(Ordering::SeqCst), "event delivery failed");
             Ok(())
         }
-        fn single_tun(&self) -> bool {
+        fn shared_tun(&self) -> bool {
             true
         }
         async fn observe_instance(&self, _: Uuid) {}
@@ -1408,7 +1390,7 @@ mod tests {
         id
     }
     #[tokio::test]
-    async fn tun_candidates_exclude_no_tun_and_preserve_provenance() {
+    async fn tun_candidates_include_user_and_web_but_exclude_no_tun() {
         let client = client();
         let user = add(&client, PersistedConfigSource::User, false);
         let web = add(&client, PersistedConfigSource::Web, false);
@@ -1418,25 +1400,19 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&user));
         assert!(ids.contains(&web));
-        assert_eq!(
-            client
-                .get_enabled_instances_with_web_like_tun_ids()
-                .collect::<Vec<_>>(),
-            vec![web]
-        );
     }
     #[tokio::test]
-    async fn managed_tun_cannot_displace_user_or_legacy_tun() {
+    async fn managed_tun_coexists_with_user_or_legacy_tun() {
         for source in [PersistedConfigSource::User, PersistedConfigSource::Legacy] {
             let client = client();
             let host = TestHost::default();
             let id = add(&client, source, false);
             let cfg = crate::config::toml::TomlConfigLoader::default();
-            let error = client
+            client
                 .pre_run_network_instance_hook(&host, &cfg, PersistedConfigSource::Web)
                 .await
-                .unwrap_err();
-            assert!(error.contains("user-managed VPN remains active"));
+                .unwrap();
+            assert_eq!(client.storage.network_configs.len(), 2);
             assert!(client.storage.enabled_networks.contains(&id));
         }
     }
@@ -1466,7 +1442,7 @@ mod tests {
         host.0.lock().unwrap().clear();
         add(&client, PersistedConfigSource::User, false);
         client.notify_vpn_stop_if_no_tun(&host).unwrap();
-        assert!(host.0.lock().unwrap().is_empty());
+        assert_eq!(*host.0.lock().unwrap(), vec!["vpn_service_config_changed"]);
     }
 
     #[test]
@@ -1512,12 +1488,5 @@ mod tests {
             PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::Web),
             PersistedConfigSource::Web
         );
-    }
-
-    #[test]
-    fn only_web_configs_are_web_like() {
-        assert!(!PersistedConfigSource::Legacy.is_web_like());
-        assert!(!PersistedConfigSource::User.is_web_like());
-        assert!(PersistedConfigSource::Web.is_web_like());
     }
 }
