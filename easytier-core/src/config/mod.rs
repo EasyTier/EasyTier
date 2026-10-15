@@ -50,7 +50,7 @@ use std::{
 
 use anyhow::Context as _;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
-use easytier_proto::{common as common_pb, core_config as pb};
+use easytier_proto::{common as common_pb, core::config as pb};
 use optionize::Optionizable;
 use serde::{Deserialize, Serialize};
 use url::Url;

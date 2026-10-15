@@ -852,7 +852,7 @@ mod tests {
         async fn get_next_hop(&self, _: u32) -> Option<u32> {
             unreachable!()
         }
-        async fn list_routes(&self) -> Vec<crate::proto::core_peer::peer::Route> {
+        async fn list_routes(&self) -> Vec<crate::proto::core::peer::Route> {
             unreachable!()
         }
         async fn list_proxy_cidrs(&self) -> std::collections::BTreeSet<cidr::Ipv4Cidr> {
