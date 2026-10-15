@@ -46,6 +46,12 @@ cli:
   heartbeat_timeout_ms:
     en: "Config-server heartbeat RPC timeout in milliseconds, default is 15000"
     zh-CN: "配置服务心跳 RPC 超时时间，单位毫秒，默认为 15000"
+  latest_version_source:
+    en: "Where the console learns the latest release for the outdated-device indicator: github:<owner>/<repo> (default), url:<endpoint returning {\"tag_name\": ...}>, or static:<version>"
+    zh-CN: "控制台获取最新版本以标记落后设备的来源：github:<owner>/<repo>（默认）、url:<返回 {\"tag_name\": ...} 的端点> 或 static:<版本>"
+  expected_version:
+    en: "Pin the expected version instead of fetching a source; overrides --latest-version-source and never touches the network"
+    zh-CN: "直接指定期望版本而不访问网络来源；覆盖 --latest-version-source"
   disable_registration:
     en: "Disable user registration"
     zh-CN: "禁用用户注册"

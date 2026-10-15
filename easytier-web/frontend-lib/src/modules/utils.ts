@@ -101,6 +101,7 @@ export interface DeviceInfo {
     networks?: Array<DeviceNetwork>;
     online?: boolean;
     last_seen?: string;
+    outdated?: boolean;
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
@@ -113,6 +114,7 @@ export function buildDeviceInfo(device: any): DeviceInfo {
         running_network_count: runningInstances.length,
         report_time: device.info?.report_time,
         easytier_version: device.info?.easytier_version,
+        outdated: device.outdated ?? undefined,
         machine_id: UuidToStr(device.info?.machine_id),
         location: device.location,
         networks: device.networks ?? [],

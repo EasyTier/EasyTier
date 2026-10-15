@@ -179,6 +179,16 @@ const confirmDeleteDevice = async () => {
 };
 
 // 搜索过滤 + 预排序：离线设备始终排在在线设备之后；列排序交给 DataTable
+const latestVersion = ref('');
+
+onMounted(async () => {
+    try {
+        latestVersion.value = (await api?.get_latest_version())?.latest ?? '';
+    } catch (e) {
+        console.error(e);
+    }
+});
+
 const sortedDeviceList = computed(() => {
     const query = search.value.trim().toLocaleLowerCase();
     return (deviceList.value ?? [])
@@ -260,7 +270,11 @@ const locationText = (device: Utils.DeviceInfo) => {
                     </Column>
                     <Column field="running_network_count" :header="t('web.device.networks')" sortable style="width: 7rem" />
                     <Column field="easytier_version" :header="t('web.device.version')" sortable style="width: 7rem">
-                        <template #body="{ data }"><span class="mono-value muted">v{{ (data.easytier_version || '?').split('-')[0] }}</span></template>
+                        <template #body="{ data }">
+                            <span v-if="data.outdated" v-tooltip.top="t('web.console.outdated_hint', { latest: latestVersion || '?' })"
+                                class="mono-value outdated-version">v{{ (data.easytier_version || '?').split('-')[0] }}</span>
+                            <span v-else class="mono-value muted">v{{ (data.easytier_version || '?').split('-')[0] }}</span>
+                        </template>
                     </Column>
                     <Column :header="t('web.device.last_seen')" style="width: 10rem">
                         <template #body="{ data }"><span v-if="!data.online && data.last_seen" class="muted">{{ data.last_seen.replace('T', ' ').slice(5, 16) }}</span><span v-else class="muted">—</span></template>
@@ -293,7 +307,9 @@ const locationText = (device: Utils.DeviceInfo) => {
                                     <span v-if="device.alias && device.hostname" class="preview-secondary mono-value">{{ device.hostname }}</span>
                                 </span>
                             </button>
-                            <span class="mono-value muted shrink-0">v{{ (device.easytier_version || '?').split('-')[0] }}</span>
+                            <span v-if="device.outdated" v-tooltip.top="t('web.console.outdated_hint', { latest: latestVersion || '?' })"
+                                class="mono-value outdated-version shrink-0">v{{ (device.easytier_version || '?').split('-')[0] }}</span>
+                            <span v-else class="mono-value muted shrink-0">v{{ (device.easytier_version || '?').split('-')[0] }}</span>
                         </div>
                         <p class="preview-secondary">{{ locationText(device) }}</p>
                         <div class="device-card-actions">
@@ -374,6 +390,11 @@ const locationText = (device: Utils.DeviceInfo) => {
 </template>
 
 <style scoped>
+/* Outdated device flag: warn color so drift is visible at a glance */
+:deep(.outdated-version) {
+    color: var(--p-yellow-600, #d97706);
+    font-weight: 600;
+}
 .device-card-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));

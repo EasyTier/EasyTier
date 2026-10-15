@@ -205,6 +205,10 @@ struct ListMachineItem {
     online: bool,
     #[serde(default)]
     last_seen: Option<String>,
+    /// True when the device reports an older release than the console's
+    /// latest-known version; false when unknown.
+    #[serde(default)]
+    outdated: bool,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -465,18 +469,29 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Extension(config): Extension<super::ConsoleInfoConfig>,
         Extension(network_service): Extension<Arc<CentralNetworkService>>,
+        Extension(latest_version): Extension<Arc<crate::version_source::LatestVersion>>,
     ) -> Result<Json<ListMachineJsonResp>, HttpHandleError> {
         let user_id = Self::get_user_id(&auth_session)?;
+        let latest = latest_version.latest().await;
         if config.webhook_auth {
             let client_urls = client_mgr.list_machine_by_user_id(user_id).await;
             let mut machines = Vec::with_capacity(client_urls.len());
             for client_url in client_urls {
                 let info = client_mgr.get_heartbeat_requests(&client_url).await;
                 let location = client_mgr.get_machine_location(&client_url).await;
+                let outdated = info
+                    .as_ref()
+                    .map(|info| {
+                        latest.as_deref().is_some_and(|latest| {
+                            crate::version_source::is_outdated(&info.easytier_version, latest)
+                        })
+                    })
+                    .unwrap_or(false);
                 machines.push(ListMachineItem {
                     client_url: Some(client_url),
                     online: info.is_some(),
                     last_seen: info.as_ref().map(|info| info.report_time.clone()),
+                    outdated,
                     info,
                     location,
                     alias: None,
@@ -533,9 +548,13 @@ impl NetworkApi {
                     support_heartbeat_policy: false,
                 }),
             };
+            let outdated = latest.as_deref().is_some_and(|latest| {
+                crate::version_source::is_outdated(&device.easytier_version, latest)
+            });
             machines.push(ListMachineItem {
                 client_url,
                 alias: (!device.alias.is_empty()).then_some(device.alias),
+                outdated,
                 info,
                 location,
                 networks: device_networks
@@ -1066,6 +1085,9 @@ mod tests {
                         State(probe_manager.clone()),
                         Extension(config.clone()),
                         Extension(service.clone()),
+                        Extension(crate::version_source::LatestVersion::new(
+                            crate::version_source::VersionSource::Static("2.7.0".to_owned()),
+                        )),
                     )
                     .await
                     .unwrap()
@@ -1075,6 +1097,9 @@ mod tests {
                         State(probe_manager),
                         Extension(config),
                         Extension(service),
+                        Extension(crate::version_source::LatestVersion::new(
+                            crate::version_source::VersionSource::Static("2.7.0".to_owned()),
+                        )),
                     )
                     .await
                     .unwrap()
