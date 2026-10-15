@@ -107,9 +107,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
         });
     }
 
-    if let Some(routes) = config.get_routes()
-        && !routes.is_empty()
-    {
+    if let Some(routes) = config.get_routes() {
         result.enable_manual_routes = Some(true);
         result.routes = routes.iter().map(ToString::to_string).collect();
     }

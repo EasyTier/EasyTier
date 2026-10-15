@@ -502,6 +502,28 @@ behavior:
 - gateway and connectivity settings;
 - runtime configuration patches.
 
+Manual routing retains three distinct states: absent routes select automatic
+routing, a present empty list installs no remote subnet routes, and a present
+nonempty list selects explicit routes. `NetworkConfig.enable_manual_routes`
+preserves this distinction on readback. `InstanceConfigPatch` applies its
+optional `enable_manual_routes` together with route edits in one route
+sub-patch: true retains an empty manual list and false restores automatic
+routing. Omitting the mode preserves released RoutePatch behavior, including
+returning to automatic routing when the edited list becomes empty. This does
+not change the ordered partial-commit contract of a multi-field patch.
+
+`HeartbeatRequest.support_manual_routes_patch` advertises this complete route
+contract, including typed empty-manual readback, on the WebClient Session.
+The Web controller uses the current authenticated heartbeat to choose route
+patches; observed instance configuration caches contain no capability state.
+Released clients omit the flag and still receive
+full configuration replacements for route changes. For their ambiguous empty
+readback, Web reads the existing `GetConfig.toml_config`, or, when absent, the
+instance-scoped `ShowNodeInfo` TOML used by 2.6.4. It reads only the instance ID
+and route field, requires a matching instance, and confirms the actual mode
+before recording application. Supporting clients use typed readback directly;
+compact clients with raw GetConfig need no Peer management RPC.
+
 Host persistence is an effect following a successful core transaction. A Host
 Adapter must not call back into an instance to obtain a hidden configuration
 snapshot while core is applying an operation.

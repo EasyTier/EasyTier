@@ -24,6 +24,9 @@ message HeartbeatRequest {
   bool support_config_source = 9;
   repeated common.UUID failed_network_instances = 10;
   bool support_heartbeat_policy = 11;
+  // Supports explicit manual mode patches and typed empty-manual readback.
+  // Older peers silently ignore unknown patch fields; missing means false.
+  bool support_manual_routes_patch = 12;
 }
 
 message HeartbeatResponse {
