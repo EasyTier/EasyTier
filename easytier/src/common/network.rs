@@ -20,6 +20,7 @@ struct InterfaceState {
     is_lower_up: bool,
 }
 
+#[cfg(not(mobile))]
 #[cfg(any(
     all(target_os = "linux", not(target_env = "ohos")),
     all(target_os = "macos", not(feature = "macos-ne")),
@@ -123,7 +124,7 @@ fn interface_state(
     })
 }
 
-#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[cfg(all(target_os = "linux", not(target_env = "ohos"), not(mobile)))]
 impl InterfaceFilter {
     async fn is_tun_tap_device(&self) -> bool {
         let path = format!("/sys/class/net/{}/tun_flags", self.iface.name);
