@@ -1,28 +1,23 @@
 use std::collections::BTreeSet;
 
-use super::model::{Route, RouteError};
+use super::model::{OsRoute, RouteError};
 
 #[async_trait::async_trait]
 pub trait RouteBackend: Send + 'static {
-    /// Add a route to the system.
-    /// - Ok(Some(route)): Successfully created by this manager (record in `installed_routes`).
-    /// - Ok(None): Equivalent entry already present in system, not created by us (record in `external_present`).
-    /// - Err(RouteError::Failed(err)): Deterministic failure (track retry with backoff).
-    /// - Err(RouteError::Unknown(err)): Unknown outcome (isolate in `unknown_routes`, never blind retry).
-    async fn add(&mut self, route: &Route) -> Result<Option<Route>, RouteError>;
+    /// OS add with exclusive creation. EEXIST is returned without inspecting,
+    /// adopting, replacing or otherwise interpreting the existing route.
+    async fn add(&mut self, route: &OsRoute) -> Result<(), RouteError>;
 
-    /// Remove a route from the system.
-    /// - Ok(Some(())): Successfully removed by this manager (remove from `installed_routes`).
-    /// - Ok(None): Exact target already absent (remove from `installed_routes`).
-    /// - Err(RouteError::Failed(err)): Deterministic failure (track retry with backoff).
-    /// - Err(RouteError::Unknown(err)): Unknown outcome (isolate in `unknown_routes`, report on stop).
-    async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError>;
+    /// OS delete with the supplied parameters. OS errors, including absence,
+    /// are returned to the caller without ownership or retry policy.
+    async fn remove(&mut self, route: &OsRoute) -> Result<(), RouteError>;
 
-    /// Read-only, complete inspection of the supplied physical route keys.
-    /// Returns only matching input routes; application device generations do
-    /// not participate in OS lookup. Presence never establishes ownership.
-    /// An error must not be interpreted as evidence that any route is absent.
-    async fn existing(&mut self, routes: &BTreeSet<Route>) -> Result<BTreeSet<Route>, RouteError>;
+    /// Read-only query of matching OS routes. No application identities or
+    /// ownership claims are accepted or inferred.
+    async fn existing(
+        &mut self,
+        routes: &BTreeSet<OsRoute>,
+    ) -> Result<BTreeSet<OsRoute>, RouteError>;
 }
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]

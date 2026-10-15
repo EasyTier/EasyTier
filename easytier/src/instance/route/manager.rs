@@ -78,6 +78,32 @@ impl<B: RouteBackend> RouteMgr<B> {
         RouteHandle::new(self.routes.clone())
     }
 
+    async fn install_route(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
+        let os_route = route.os_route();
+        match self.backend.add(&os_route).await {
+            Ok(()) => Ok(Some(route.clone())),
+            Err(error) if error.is_already_exists() => {
+                let requested = BTreeSet::from([os_route]);
+                if self.backend.existing(&requested).await? == requested {
+                    Ok(None)
+                } else {
+                    Err(RouteError::Failed(anyhow::anyhow!(
+                        "route conflict: EEXIST without an equivalent route: {route:?}"
+                    )))
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn remove_route(&mut self, route: &Route) -> Result<(), RouteError> {
+        match self.backend.remove(&route.os_route()).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_not_found() => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     fn retire_destroyed_devices(&mut self, facts: &DeviceFacts) {
         self.installed
             .retain(|route| !facts.destroyed(&route.interface));
@@ -111,9 +137,15 @@ impl<B: RouteBackend> RouteMgr<B> {
         {
             return;
         }
-        match self.backend.existing(&self.unknown).await {
+        let requested = self.unknown.iter().map(Route::os_route).collect();
+        match self.backend.existing(&requested).await {
             Ok(existing) => {
-                let absent: Vec<_> = self.unknown.difference(&existing).cloned().collect();
+                let absent: Vec<_> = self
+                    .unknown
+                    .iter()
+                    .filter(|route| !existing.contains(&route.os_route()))
+                    .cloned()
+                    .collect();
                 for route in absent {
                     self.unknown.remove(&route);
                     self.installed.remove(&route);
@@ -293,6 +325,7 @@ impl<B: RouteBackend> RouteMgr<B> {
                     destination: spec.destination,
                     interface: dev.clone(),
                     metric: spec.metric.get(),
+                    preferred_source: None,
                 })
                 .collect(),
             None => BTreeSet::new(),
@@ -348,8 +381,8 @@ impl<B: RouteBackend> RouteMgr<B> {
             if self.batch_interrupted() {
                 return;
             }
-            match self.backend.remove(&route).await {
-                Ok(Some(())) | Ok(None) => {
+            match self.remove_route(&route).await {
+                Ok(()) => {
                     self.installed.remove(&route);
                     self.retries.remove(&route);
                 }
@@ -383,7 +416,7 @@ impl<B: RouteBackend> RouteMgr<B> {
                 continue;
             }
 
-            match self.backend.add(&route).await {
+            match self.install_route(&route).await {
                 Ok(Some(mut actual)) => {
                     if self
                         .global_ctx
@@ -448,8 +481,8 @@ impl<B: RouteBackend> RouteMgr<B> {
                 continue;
             }
             self.isolate(route.clone());
-            match self.backend.remove(&route).await {
-                Ok(Some(())) | Ok(None) => {
+            match self.remove_route(&route).await {
+                Ok(()) => {
                     self.installed.remove(&route);
                     self.unknown.remove(&route);
                     self.retries.remove(&route);
@@ -506,6 +539,7 @@ impl<B> Drop for RouteMgr<B> {
 mod tests {
     use super::*;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
+    use crate::instance::route::OsRoute;
     use cidr::{IpCidr, Ipv4Cidr};
     use std::collections::HashMap;
     use std::net::Ipv4Addr;
@@ -520,6 +554,7 @@ mod tests {
             destination: IpCidr::from_str(cidr).unwrap(),
             interface: DeviceId::new(TEST_DEVICE_INDEX, Some(1)),
             metric: 65535,
+            preferred_source: None,
         }
     }
 
@@ -552,26 +587,26 @@ mod tests {
     /// and prove it reached that await, without guessing with sleeps.
     struct PausedOperation {
         /// Reports each route that entered `add` before the pause.
-        entered: tokio::sync::mpsc::UnboundedSender<Route>,
+        entered: tokio::sync::mpsc::UnboundedSender<OsRoute>,
         /// Releases one paused `add`.
         release: Arc<tokio::sync::Notify>,
     }
 
     #[derive(Default)]
     struct MockRouteBackend {
-        routes: BTreeSet<Route>,
-        add_calls: Vec<Route>,
-        remove_calls: Vec<Route>,
-        add_error_map: HashMap<Route, RouteError>,
-        remove_error_map: HashMap<Route, RouteError>,
-        external_present: BTreeSet<Route>,
-        inspection_calls: Vec<BTreeSet<Route>>,
+        routes: BTreeSet<OsRoute>,
+        add_calls: Vec<OsRoute>,
+        remove_calls: Vec<OsRoute>,
+        add_error_map: HashMap<OsRoute, RouteError>,
+        remove_error_map: HashMap<OsRoute, RouteError>,
+        external_present: BTreeSet<OsRoute>,
+        inspection_calls: Vec<BTreeSet<OsRoute>>,
         inspection_error: Option<RouteError>,
         /// When set, `add` reports the route and then waits for a release.
         paused_add: Option<PausedOperation>,
         paused_remove: Option<PausedOperation>,
         /// `add` panics for these routes.
-        panic_on_add: BTreeSet<Route>,
+        panic_on_add: BTreeSet<OsRoute>,
     }
 
     impl MockRouteBackend {
@@ -581,7 +616,7 @@ mod tests {
 
         fn paused(
             release: Arc<tokio::sync::Notify>,
-        ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Route>) {
+        ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<OsRoute>) {
             let (entered, entered_rx) = tokio::sync::mpsc::unbounded_channel();
             let backend = Self {
                 paused_add: Some(PausedOperation { entered, release }),
@@ -593,7 +628,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RouteBackend for MockRouteBackend {
-        async fn add(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
+        async fn add(&mut self, route: &OsRoute) -> Result<(), RouteError> {
             self.add_calls.push(route.clone());
             if self.panic_on_add.contains(route) {
                 panic!("mock backend add panic");
@@ -606,13 +641,15 @@ mod tests {
                 return Err(err);
             }
             if self.external_present.contains(route) {
-                return Ok(None);
+                return Err(RouteError::Failed(
+                    std::io::Error::from(std::io::ErrorKind::AlreadyExists).into(),
+                ));
             }
             self.routes.insert(route.clone());
-            Ok(Some(route.clone()))
+            Ok(())
         }
 
-        async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
+        async fn remove(&mut self, route: &OsRoute) -> Result<(), RouteError> {
             self.remove_calls.push(route.clone());
             if let Some(paused) = &self.paused_remove {
                 let _ = paused.entered.send(route.clone());
@@ -622,16 +659,18 @@ mod tests {
                 return Err(err);
             }
             if self.routes.remove(route) {
-                Ok(Some(()))
+                Ok(())
             } else {
-                Ok(None)
+                Err(RouteError::Failed(
+                    std::io::Error::from(std::io::ErrorKind::NotFound).into(),
+                ))
             }
         }
 
         async fn existing(
             &mut self,
-            routes: &BTreeSet<Route>,
-        ) -> Result<BTreeSet<Route>, RouteError> {
+            routes: &BTreeSet<OsRoute>,
+        ) -> Result<BTreeSet<OsRoute>, RouteError> {
             self.inspection_calls.push(routes.clone());
             if let Some(error) = self.inspection_error.take() {
                 return Err(error);
@@ -645,7 +684,8 @@ mod tests {
                         .any(|actual| {
                             actual.destination == route.destination
                                 && actual.metric == route.metric
-                                && actual.interface.ifindex == route.interface.ifindex
+                                && actual.ifindex == route.ifindex
+                                && actual.preferred_source == route.preferred_source
                         })
                 })
                 .cloned()
@@ -672,7 +712,7 @@ mod tests {
         });
         let mut cleanup = Box::pin(manager.perform_shutdown_cleanup());
         assert!(futures::poll!(cleanup.as_mut()).is_pending());
-        assert_eq!(entered_rx.try_recv().unwrap(), first);
+        assert_eq!(entered_rx.try_recv().unwrap(), first.os_route());
         drop(cleanup);
         assert_eq!(manager.installed, BTreeSet::from([first.clone(), second]));
         assert_eq!(manager.unknown, BTreeSet::from([first]));
@@ -696,7 +736,7 @@ mod tests {
             .register(RouteDemand::Additional(BTreeSet::from([preferred_spec])))
             .unwrap();
         manager.backend.remove_error_map.insert(
-            old.clone(),
+            old.os_route(),
             RouteError::Failed(anyhow::anyhow!("temporary delete failure")),
         );
         manager.reconcile().await;
@@ -709,6 +749,7 @@ mod tests {
             manager.installed,
             BTreeSet::from([Route {
                 metric: 5,
+                preferred_source: None,
                 ..old.clone()
             }])
         );
@@ -728,7 +769,7 @@ mod tests {
             .register(RouteDemand::additional(required.clone()))
             .unwrap();
         manager.backend.add_error_map.insert(
-            route.clone(),
+            route.os_route(),
             RouteError::Failed(anyhow::anyhow!("no permission")),
         );
         manager.reconcile().await;
@@ -756,7 +797,7 @@ mod tests {
         let routes = BTreeSet::from([test_route("10.0.0.0/24"), test_route("10.1.0.0/24")]);
         for route in &routes {
             manager.backend.add_error_map.insert(
-                route.clone(),
+                route.os_route(),
                 RouteError::Unknown(anyhow::anyhow!("no ACK")),
             );
         }
@@ -774,7 +815,10 @@ mod tests {
         );
         tokio::time::advance(UNKNOWN_PROBE_DELAY).await;
         manager.reconcile().await;
-        assert_eq!(manager.backend.inspection_calls, vec![routes.clone()]);
+        assert_eq!(
+            manager.backend.inspection_calls,
+            vec![routes.iter().map(Route::os_route).collect::<BTreeSet<_>>()]
+        );
         assert_eq!(manager.installed, routes);
         assert!(manager.unknown.is_empty());
         assert_eq!(manager.next_wakeup_time(), None);
@@ -784,9 +828,9 @@ mod tests {
     async fn unknown_presence_does_not_authorize_adoption_or_removal() {
         let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
         let route = test_route("10.0.0.0/24");
-        manager.backend.routes.insert(route.clone());
+        manager.backend.routes.insert(route.os_route());
         manager.backend.add_error_map.insert(
-            route.clone(),
+            route.os_route(),
             RouteError::Unknown(anyhow::anyhow!("no ACK")),
         );
         let registration = handle
@@ -816,7 +860,7 @@ mod tests {
         let (mut manager, handle, _) = test_manager(MockRouteBackend::new());
         let route = test_route("10.0.0.0/24");
         manager.backend.add_error_map.insert(
-            route.clone(),
+            route.os_route(),
             RouteError::Unknown(anyhow::anyhow!("no ACK")),
         );
         let _registration = handle
@@ -853,7 +897,7 @@ mod tests {
             .unwrap();
         let mut reconcile = Box::pin(manager.reconcile());
         assert!(futures::poll!(reconcile.as_mut()).is_pending());
-        assert_eq!(entered.try_recv().unwrap(), route);
+        assert_eq!(entered.try_recv().unwrap(), route.os_route());
         ctx.set_tun_device_index_for_test(None);
         ctx.set_tun_device_index_for_test(Some(TEST_DEVICE_INDEX));
         release.notify_one();
@@ -891,12 +935,12 @@ mod tests {
             release: release.clone(),
         });
         manager.backend.remove_error_map.insert(
-            route.clone(),
+            route.os_route(),
             RouteError::Failed(anyhow::anyhow!("device disappeared")),
         );
         let mut cleanup = Box::pin(manager.perform_shutdown_cleanup());
         assert!(futures::poll!(cleanup.as_mut()).is_pending());
-        assert_eq!(entered_rx.try_recv().unwrap(), route);
+        assert_eq!(entered_rx.try_recv().unwrap(), route.os_route());
         ctx.set_tun_device_index_for_test(None);
         release.notify_one();
         cleanup.await.unwrap();
@@ -913,7 +957,7 @@ mod tests {
             .unwrap();
         manager.reconcile().await;
         manager.backend.remove_error_map.insert(
-            route.clone(),
+            route.os_route(),
             RouteError::Failed(anyhow::anyhow!("temporary failure")),
         );
         let report = manager.perform_shutdown_cleanup().await.unwrap_err();
@@ -981,10 +1025,11 @@ mod tests {
             destination: IpCidr::V4(Ipv4Cidr::new(fake_ip, 32).unwrap()),
             interface: dev.clone(),
             metric: 65535,
+            preferred_source: None,
         };
 
         // Mark it external present in backend
-        backend.external_present.insert(fake_route.clone());
+        backend.external_present.insert(fake_route.os_route());
 
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
@@ -1064,7 +1109,7 @@ mod tests {
             .unwrap();
         manager.reconcile().await;
         assert_eq!(manager.next_wakeup_time(), None);
-        assert_eq!(manager.backend.add_calls, vec![route]);
+        assert_eq!(manager.backend.add_calls, vec![route.os_route()]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1073,7 +1118,7 @@ mod tests {
         let (mut backend, mut entered) = MockRouteBackend::paused(release.clone());
         let route = test_route("7.7.7.7/32");
         backend.add_error_map.insert(
-            route.clone(),
+            route.os_route(),
             RouteError::Failed(anyhow::anyhow!("temporary failure")),
         );
         let (mut manager, handle, _cancel) = test_manager(backend);
@@ -1082,7 +1127,7 @@ mod tests {
             .unwrap();
         let mut reconcile = Box::pin(manager.reconcile());
         assert!(futures::poll!(reconcile.as_mut()).is_pending());
-        assert_eq!(entered.try_recv().unwrap(), route);
+        assert_eq!(entered.try_recv().unwrap(), route.os_route());
         tokio::time::advance(Duration::from_secs(2)).await;
         release.notify_one();
         reconcile.await;
@@ -1116,7 +1161,7 @@ mod tests {
             .unwrap();
         let mut run = Box::pin(manager.run());
         assert!(futures::poll!(run.as_mut()).is_pending());
-        assert_eq!(entered.try_recv().unwrap(), first);
+        assert_eq!(entered.try_recv().unwrap(), first.os_route());
         registration
             .replace(RouteDemand::additional(BTreeSet::from(
                 [latest.destination],
@@ -1124,7 +1169,7 @@ mod tests {
             .unwrap();
         release.notify_one();
         assert!(futures::poll!(run.as_mut()).is_pending());
-        assert_eq!(entered.try_recv().unwrap(), latest);
+        assert_eq!(entered.try_recv().unwrap(), latest.os_route());
         assert!(entered.try_recv().is_err());
         release.notify_one();
         cancel.cancel();
@@ -1149,7 +1194,7 @@ mod tests {
             ..old.clone()
         };
         manager.backend.remove_error_map.insert(
-            old.clone(),
+            old.os_route(),
             RouteError::Failed(anyhow::anyhow!("temporary removal failure")),
         );
         manager.retries.insert(
@@ -1157,7 +1202,7 @@ mod tests {
             RetryState::new(tokio::time::Instant::now() - Duration::from_secs(1), 100),
         );
         manager.reconcile().await;
-        assert_eq!(manager.backend.add_calls, vec![old]);
+        assert_eq!(manager.backend.add_calls, vec![old.os_route()]);
         assert_eq!(
             manager.next_wakeup_time(),
             Some(tokio::time::Instant::now() + Duration::from_millis(100))
@@ -1201,7 +1246,7 @@ mod tests {
             .tun_devices
             .mark_ready(new.registration());
         manager.reconcile().await;
-        assert_eq!(manager.backend.remove_calls, vec![route.clone()]);
+        assert_eq!(manager.backend.remove_calls, vec![route.os_route()]);
         assert_eq!(
             manager.installed,
             BTreeSet::from([Route {
@@ -1238,7 +1283,7 @@ mod tests {
         drop(device);
         manager.reconcile().await;
         assert!(manager.installed.is_empty());
-        assert_eq!(manager.backend.remove_calls, vec![route]);
+        assert_eq!(manager.backend.remove_calls, vec![route.os_route()]);
     }
 
     #[tokio::test]
@@ -1288,6 +1333,7 @@ mod tests {
                 interface: new.id().clone(),
                 ..route
             }
+            .os_route()
         );
         release.notify_one();
         cancel.cancel();
@@ -1355,12 +1401,13 @@ mod tests {
             destination: IpCidr::V4(Ipv4Cidr::new(fake_ip, 32).unwrap()),
             interface: dev.clone(),
             metric: 65535,
+            preferred_source: None,
         };
 
         // Simulate Unknown error on add
-        backend.routes.insert(route.clone());
+        backend.routes.insert(route.os_route());
         backend.add_error_map.insert(
-            route.clone(),
+            route.os_route(),
             RouteError::Unknown(anyhow::anyhow!("timeout")),
         );
 
@@ -1405,9 +1452,10 @@ mod tests {
             destination: IpCidr::V4(Ipv4Cidr::new(fake_ip, 32).unwrap()),
             interface: dev.clone(),
             metric: 65535,
+            preferred_source: None,
         };
 
-        backend.external_present.insert(route.clone());
+        backend.external_present.insert(route.os_route());
 
         let routes = RouteRegistry::default();
         let handle = RouteHandle::new(routes.clone());
@@ -1628,7 +1676,7 @@ mod tests {
             .await
             .expect("manager never reached the paused backend await")
             .expect("backend hook closed");
-        assert_eq!(adding, route);
+        assert_eq!(adding, route.os_route());
 
         task.abort();
         let join = task.await;
@@ -1658,7 +1706,7 @@ mod tests {
     async fn test_backend_panic_closes_registry() {
         let route = test_route("7.7.7.7/32");
         let mut backend = MockRouteBackend::new();
-        backend.panic_on_add.insert(route.clone());
+        backend.panic_on_add.insert(route.os_route());
         let (manager, handle, _cancel) = test_manager(backend);
         let reg = handle
             .register(RouteDemand::additional(BTreeSet::from([route.destination])))
@@ -1703,7 +1751,7 @@ mod tests {
             .await
             .expect("manager never reached the paused backend await")
             .expect("backend hook closed");
-        assert_eq!(adding, first);
+        assert_eq!(adding, first.os_route());
 
         // Update the source while reconcile is parked inside the backend.
         reg.replace(RouteDemand::additional(BTreeSet::from([
@@ -1719,7 +1767,7 @@ mod tests {
             .await
             .expect("an update during reconcile must not wait for the device poll")
             .expect("backend hook closed");
-        assert_eq!(adding, second);
+        assert_eq!(adding, second.os_route());
         release.notify_one();
 
         cancel.cancel();
@@ -1753,7 +1801,7 @@ mod tests {
             .await
             .expect("manager never reached the paused backend await")
             .expect("backend hook closed");
-        assert_eq!(adding, auto);
+        assert_eq!(adding, auto.os_route());
 
         runtime_config.update_services(|services| {
             services.manual_routes = Some(BTreeSet::from(["192.168.1.0/24".parse().unwrap()]));
@@ -1765,7 +1813,7 @@ mod tests {
             .await
             .expect("configuration changes must wake the manager before the device poll")
             .expect("backend hook closed");
-        assert_eq!(adding, manual);
+        assert_eq!(adding, manual.os_route());
         release.notify_one();
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(5), task)
@@ -1801,7 +1849,10 @@ mod tests {
             services.manual_routes = Some(BTreeSet::from(["192.168.1.0/24".parse().unwrap()]));
         });
         assert!(futures::poll!(run.as_mut()).is_pending());
-        assert_eq!(entered.try_recv().unwrap(), test_route("192.168.1.0/24"));
+        assert_eq!(
+            entered.try_recv().unwrap(),
+            test_route("192.168.1.0/24").os_route()
+        );
 
         release.notify_one();
         cancel.cancel();
@@ -1822,7 +1873,7 @@ mod tests {
             .await
             .expect("initial configuration must be applied on the first pass")
             .expect("backend hook closed");
-        assert_eq!(adding, test_route("192.168.1.0/24"));
+        assert_eq!(adding, test_route("192.168.1.0/24").os_route());
         release.notify_one();
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(5), task)

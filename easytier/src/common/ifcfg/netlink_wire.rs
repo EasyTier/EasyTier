@@ -424,6 +424,10 @@ impl RouteMessage {
         Ok(self.u32_attribute(RTA_PRIORITY)?.unwrap_or(0))
     }
 
+    pub(crate) fn preferred_source(&self) -> io::Result<Option<IpAddr>> {
+        route_ip_attribute(self.family, &self.attributes, RTA_PREFSRC)
+    }
+
     pub(crate) fn table(&self) -> io::Result<u32> {
         Ok(self.u32_attribute(RTA_TABLE)?.unwrap_or(self.table.into()))
     }
@@ -436,7 +440,7 @@ impl RouteMessage {
         self.scope
     }
 
-    /// A destination-only, directly attached route without source selection,
+    /// A destination-only, directly attached route without source-prefix selection,
     /// a gateway, multipath, nexthop indirection or encapsulation.
     pub(crate) fn is_direct(&self) -> bool {
         self.src_len == 0
@@ -447,7 +451,6 @@ impl RouteMessage {
                     attribute.kind & NLA_TYPE_MASK,
                     RTA_SRC
                         | RTA_GATEWAY
-                        | RTA_PREFSRC
                         | RTA_MULTIPATH
                         | RTA_VIA
                         | RTA_ENCAP_TYPE

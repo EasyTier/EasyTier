@@ -25,7 +25,7 @@ use crate::common::{
     netns::{NetNS, ROOT_NETNS_NAME},
 };
 
-use super::{Route, RouteBackend, RouteError};
+use super::{OsRoute, RouteBackend, RouteError};
 
 /// One writer's reusable socket, bound to its network namespace at creation.
 /// Readiness and ACK waiting stay on the async runtime; only socket setup uses
@@ -146,7 +146,8 @@ impl PlatformRouteBackend {
         })
     }
 
-    async fn contains(&mut self, route: &Route) -> Result<bool, RouteError> {
+    #[cfg(test)]
+    async fn contains(&mut self, route: &OsRoute) -> Result<bool, RouteError> {
         Ok(self
             .existing(&BTreeSet::from([route.clone()]))
             .await?
@@ -166,38 +167,31 @@ impl PlatformRouteBackend {
 
 #[async_trait::async_trait]
 impl RouteBackend for PlatformRouteBackend {
-    async fn add(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
+    async fn add(&mut self, route: &OsRoute) -> Result<(), RouteError> {
         let request = route_request(
             route,
             RTM_NEWROUTE,
             NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL,
         )?;
-        match self.request(request, ReplyKind::Ack).await {
-            Ok(_) => Ok(Some(route.clone())),
-            Err(RequestFailure::Kernel(libc::EEXIST)) => {
-                if self.contains(route).await? {
-                    Ok(None)
-                } else {
-                    Err(RouteError::Failed(anyhow::anyhow!(
-                        "route conflict: EEXIST without an equivalent route: {route:?}"
-                    )))
-                }
-            }
-            Err(error) => Err(error.into_route_error(true)),
-        }
+        self.request(request, ReplyKind::Ack)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.into_route_error(true))
     }
 
-    async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
+    async fn remove(&mut self, route: &OsRoute) -> Result<(), RouteError> {
         let request = route_request(route, RTM_DELROUTE, NLM_F_REQUEST | NLM_F_ACK)?;
-        match self.request(request, ReplyKind::Ack).await {
-            Ok(_) => Ok(Some(())),
-            Err(RequestFailure::Kernel(libc::ESRCH | libc::ENOENT)) => Ok(None),
-            Err(error) => Err(error.into_route_error(true)),
-        }
+        self.request(request, ReplyKind::Ack)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.into_route_error(true))
     }
 
-    async fn existing(&mut self, routes: &BTreeSet<Route>) -> Result<BTreeSet<Route>, RouteError> {
-        let mut requested = BTreeMap::<_, Vec<&Route>>::new();
+    async fn existing(
+        &mut self,
+        routes: &BTreeSet<OsRoute>,
+    ) -> Result<BTreeSet<OsRoute>, RouteError> {
+        let mut requested = BTreeMap::<_, Vec<&OsRoute>>::new();
         let mut families = BTreeSet::new();
         for route in routes {
             requested
@@ -230,13 +224,13 @@ fn family(destination: IpCidr) -> u8 {
 }
 
 fn route_request(
-    route: &Route,
+    route: &OsRoute,
     message_type: u16,
     flags: u16,
 ) -> Result<MessageBuilder, RouteError> {
     // Linux treats a zero delete priority as a wildcard. Resolve defaults
-    // before constructing Route, and never emit an ambiguous delete request.
-    if route.metric == 0 || route.interface.ifindex == 0 {
+    // before constructing OsRoute, and never emit an ambiguous delete request.
+    if route.metric == 0 || route.ifindex == 0 {
         return Err(RouteError::Failed(anyhow::anyhow!(
             "route metric and interface index must be nonzero"
         )));
@@ -246,13 +240,18 @@ fn route_request(
             route.destination.first_address(),
             route.destination.network_length(),
         )
-        .oif(route.interface.ifindex)
+        .oif(route.ifindex)
         .priority(route.metric)
         .table(libc::RT_TABLE_MAIN.into())
         .static_protocol()
         .universe_scope()
-        .route_type(RouteType::Unicast)
-        .build();
+        .route_type(RouteType::Unicast);
+    let message = if let Some(source) = route.preferred_source {
+        message.preferred_source(source)
+    } else {
+        message
+    }
+    .build();
     let mut request = MessageBuilder::new(message_type, flags);
     let mut bytes = Vec::new();
     message
@@ -262,11 +261,16 @@ fn route_request(
     Ok(request)
 }
 
-fn physical_key(route: &Route) -> (IpCidr, u32, u32) {
-    (route.destination, route.interface.ifindex, route.metric)
+fn physical_key(route: &OsRoute) -> (IpCidr, u32, u32, Option<IpAddr>) {
+    (
+        route.destination,
+        route.ifindex,
+        route.metric,
+        route.preferred_source,
+    )
 }
 
-fn direct_key(message: &RouteMessage) -> io::Result<Option<(IpCidr, u32, u32)>> {
+fn direct_key(message: &RouteMessage) -> io::Result<Option<(IpCidr, u32, u32, Option<IpAddr>)>> {
     if message.table()? != u32::from(libc::RT_TABLE_MAIN)
         || message.protocol() != libc::RTPROT_STATIC
         || message.scope() != libc::RT_SCOPE_UNIVERSE
@@ -286,11 +290,16 @@ fn direct_key(message: &RouteMessage) -> io::Result<Option<(IpCidr, u32, u32)>> 
     let destination = message.destination().copied().unwrap_or(unspecified);
     let destination = IpCidr::new(destination, message.dst_len())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(Some((destination, ifindex, message.priority()?)))
+    Ok(Some((
+        destination,
+        ifindex,
+        message.priority()?,
+        message.preferred_source()?,
+    )))
 }
 
 #[cfg(test)]
-fn equivalent(message: &RouteMessage, route: &Route) -> io::Result<bool> {
+fn equivalent(message: &RouteMessage, route: &OsRoute) -> io::Result<bool> {
     Ok(direct_key(message)? == Some(physical_key(route)))
 }
 
@@ -400,7 +409,6 @@ impl RequestFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance::route::DeviceId;
     use std::{future::Future, os::fd::AsRawFd, process::Command};
 
     use std::sync::{
@@ -415,28 +423,29 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl RouteBackend for CountedBackend {
-        async fn add(&mut self, route: &Route) -> Result<Option<Route>, RouteError> {
+        async fn add(&mut self, route: &OsRoute) -> Result<(), RouteError> {
             self.writes.fetch_add(1, Ordering::Relaxed);
             self.backend.add(route).await
         }
-        async fn remove(&mut self, route: &Route) -> Result<Option<()>, RouteError> {
+        async fn remove(&mut self, route: &OsRoute) -> Result<(), RouteError> {
             self.writes.fetch_add(1, Ordering::Relaxed);
             self.backend.remove(route).await
         }
         async fn existing(
             &mut self,
-            routes: &BTreeSet<Route>,
-        ) -> Result<BTreeSet<Route>, RouteError> {
+            routes: &BTreeSet<OsRoute>,
+        ) -> Result<BTreeSet<OsRoute>, RouteError> {
             self.queries.fetch_add(1, Ordering::Relaxed);
             self.backend.existing(routes).await
         }
     }
 
-    fn route(destination: &str, ifindex: u32, metric: u32) -> Route {
-        Route {
+    fn route(destination: &str, ifindex: u32, metric: u32) -> OsRoute {
+        OsRoute {
             destination: destination.parse().unwrap(),
-            interface: DeviceId::new(ifindex, None),
+            ifindex,
             metric,
+            preferred_source: None,
         }
     }
 
@@ -516,8 +525,9 @@ mod tests {
                 assert!(
                     !equivalent(
                         &message,
-                        &Route {
+                        &OsRoute {
                             metric: 5,
+                            preferred_source: None,
                             ..route.clone()
                         }
                     )
@@ -526,8 +536,8 @@ mod tests {
                 assert!(
                     !equivalent(
                         &message,
-                        &Route {
-                            interface: DeviceId::new(8, None),
+                        &OsRoute {
+                            ifindex: 8,
                             ..route.clone()
                         }
                     )
@@ -599,8 +609,16 @@ mod tests {
             let fd = backend.socket.get_ref().as_raw_fd();
             for destination in ["10.71.0.0/24", "2001:db8:71::/64"] {
                 let route = route(destination, ifindex, 65535);
-                assert_eq!(backend.add(&route).await.unwrap(), Some(route.clone()));
-                assert_eq!(backend.add(&route).await.unwrap(), None);
+                backend.add(&route).await.unwrap();
+                let before = backend.sequence;
+                assert!(
+                    backend
+                        .add(&route)
+                        .await
+                        .unwrap_err()
+                        .is_errno(libc::EEXIST)
+                );
+                assert_eq!(backend.sequence, before + 1, "EEXIST must not trigger a backend query");
                 ip(&[
                     "route",
                     "add",
@@ -629,8 +647,9 @@ mod tests {
                     "table",
                     "123",
                 ]);
-                assert_eq!(backend.remove(&route).await.unwrap(), Some(()));
-                assert_eq!(backend.remove(&route).await.unwrap(), None);
+                backend.remove(&route).await.unwrap();
+                let error = backend.remove(&route).await.unwrap_err();
+                assert!(error.is_errno(libc::ESRCH) || error.is_errno(libc::ENOENT));
                 let main = serde_json::from_str::<serde_json::Value>(&ip(&[
                     "-j",
                     "route",
@@ -759,10 +778,11 @@ mod tests {
                     .existing(
                         &destinations
                             .into_iter()
-                            .map(|destination| Route {
+                            .map(|destination| OsRoute {
                                 destination,
-                                interface: device.id().clone(),
+                                ifindex: device.id().ifindex,
                                 metric: 65535,
+                                preferred_source: None,
                             })
                             .collect(),
                     )
@@ -861,10 +881,11 @@ mod tests {
             config,
             CancellationToken::new(),
         );
-        let target = Route {
+        let target = OsRoute {
             destination: "100.100.100.101/32".parse().unwrap(),
-            interface: active.id.clone(),
+            ifindex: active.id.ifindex,
             metric: 65535,
+            preferred_source: None,
         };
         let registration = handle
             .register(RouteDemand::additional([target.destination]))
@@ -1004,19 +1025,21 @@ mod tests {
                             let provider_device =
                                 provider_ctx.tun_devices.snapshot().active.unwrap();
                             let client_device = client_ctx.tun_devices.snapshot().active.unwrap();
-                            let provider_route = Route {
+                            let provider_route = OsRoute {
                                 destination: IpCidr::new(
                                     IpAddr::V6(lease.first_address()),
                                     lease.network_length(),
                                 )
                                 .unwrap(),
-                                interface: provider_device.id,
+                                ifindex: provider_device.id.ifindex,
                                 metric: 65535,
+                                preferred_source: None,
                             };
-                            let default_route = Route {
+                            let default_route = OsRoute {
                                 destination: "::/0".parse().unwrap(),
-                                interface: client_device.id,
+                                ifindex: client_device.id.ifindex,
                                 metric: 5,
+                                preferred_source: None,
                             };
                             let mut checker =
                                 PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
@@ -1127,7 +1150,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires namespace privileges; creates a private network namespace"]
-    fn kernel_inspection_batches_families_and_keeps_requested_generations() {
+    fn kernel_inspection_batches_families_without_application_identity() {
         kernel_test(|| async {
             let ifindex = dummy("et-route");
             let mut backend = PlatformRouteBackend::new(NetNS::new(None)).await.unwrap();
@@ -1135,14 +1158,9 @@ mod tests {
             let v6 = route("2001:db8:71::/64", ifindex, 65535);
             backend.add(&v4).await.unwrap();
             backend.add(&v6).await.unwrap();
-            let generated = Route {
-                interface: DeviceId::new(ifindex, Some(42)),
-                ..v4.clone()
-            };
             let wanted = BTreeSet::from([
                 v4.clone(),
                 v6.clone(),
-                generated.clone(),
                 route("10.72.0.0/24", ifindex, 65535),
                 route("2001:db8:72::/64", ifindex, 65535),
                 route("10.71.0.0/24", ifindex, 5),
@@ -1150,7 +1168,7 @@ mod tests {
             let before = backend.sequence;
             assert_eq!(
                 backend.existing(&wanted).await.unwrap(),
-                BTreeSet::from([v4, v6, generated])
+                BTreeSet::from([v4, v6])
             );
             assert_eq!(backend.sequence - before, 2, "one dump per family");
             let before = backend.sequence;
@@ -1216,7 +1234,7 @@ mod tests {
             backend.send(&request, &mut false).await.unwrap();
             // The first ACK is deliberately left queued. It must not be used
             // as the second request's success indication.
-            assert_eq!(backend.add(&second).await.unwrap(), Some(second.clone()));
+            backend.add(&second).await.unwrap();
             assert!(backend.contains(&first).await.unwrap());
             backend.timeout = Duration::from_millis(50);
             let request = route_request(&first, RTM_DELROUTE, NLM_F_REQUEST).unwrap();
@@ -1233,7 +1251,7 @@ mod tests {
                 !backend.contains(&first).await.unwrap(),
                 "the timed-out delete actually reached the kernel"
             );
-            assert_eq!(backend.remove(&second).await.unwrap(), Some(()));
+            backend.remove(&second).await.unwrap();
         });
     }
 
@@ -1261,7 +1279,7 @@ mod tests {
                 "scope",
                 "global",
             ]);
-            assert_eq!(backend.remove(&owned).await.unwrap(), Some(()));
+            backend.remove(&owned).await.unwrap();
             let other = serde_json::from_str::<serde_json::Value>(&ip(&[
                 "-j",
                 "route",

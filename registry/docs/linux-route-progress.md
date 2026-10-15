@@ -33,9 +33,15 @@
 表示确定失败；发送后超时、读取或解码失败表示 Unknown。发送前的本地失败
 不产生已提交操作；只读核实失败也不产生新的写操作责任。
 
-创建保持 CREATE | EXCL，不覆盖外部路由。EEXIST 后通过 dump 核实完整参数，
-只有等价的 direct route 才返回 external-present；其他情况返回冲突。
+创建保持 CREATE | EXCL，不覆盖外部路由。Backend 原样返回 EEXIST；Manager
+再通过只读查询核实完整参数，只有等价的 direct route 才记为 external-present；
+其他情况返回冲突。
 核实不会将观察到的外部条目认领为本方安装记录。
+
+Backend 的输入是只含 OS 参数的 `OsRoute`，不再接受应用 device generation。
+add/delete 只返回操作结果及 OS 错误；等价性解释、absent 归一化、ownership、
+重试和 Unknown 责任全部由 Manager 承担。preferred source 作为 OS 参数编码并
+参与查询匹配，不包含成员选择策略。
 
 创建和删除使用同一组已解析参数：地址族、目标 / 前缀、OIF、非零 metric、
 main table、static protocol、universe scope、unicast type。正常删除不 dump。
