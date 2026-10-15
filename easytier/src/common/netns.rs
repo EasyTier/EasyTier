@@ -1,6 +1,8 @@
 use easytier_core::socket::SocketContext;
 use futures::Future;
 
+mod platform;
+
 #[cfg(target_os = "linux")]
 use nix::sched::{CloneFlags, setns};
 #[cfg(target_os = "linux")]
