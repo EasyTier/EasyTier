@@ -254,6 +254,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
                     ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/32").unwrap().into()),
                     ..Default::default()
                 }],
+                ..Default::default()
             },
         )
         .await
@@ -270,6 +271,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
                     ipv4_addr: Some(Ipv4Inet::from_str("1.1.1.1/32").unwrap().into()),
                     ..Default::default()
                 }],
+                ..Default::default()
             },
         )
         .await
@@ -318,6 +320,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
             UpdateDnsRecordRequest {
                 zone: DEFAULT_ET_DNS_ZONE.to_string(),
                 routes: vec![],
+                ..Default::default()
             },
         )
         .await

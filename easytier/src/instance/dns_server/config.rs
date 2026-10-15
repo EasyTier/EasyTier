@@ -1,7 +1,10 @@
+use anyhow::{Context, ensure};
+use easytier_core::config::toml::DnsConfig;
 use hickory_proto::rr;
 use hickory_proto::rr::RData;
+use hickory_proto::serialize::txt::Parser;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::time::Duration;
@@ -127,6 +130,75 @@ impl TryFrom<&Record> for rr::Record {
     }
 }
 
+pub(super) type ConfiguredZones = BTreeMap<String, Vec<rr::Record>>;
+
+#[derive(Default)]
+pub(super) struct ConfiguredRecordStore {
+    pub clients: BTreeMap<String, ConfiguredZones>,
+    // Route zones remain authoritative after their last route disappears.
+    pub route_zones: BTreeSet<String>,
+    pub applied_domains: BTreeSet<String>,
+    pub system_closed: bool,
+}
+
+pub(super) fn dns_origin(name: &str) -> anyhow::Result<String> {
+    ensure!(!name.is_empty(), "DNS zone origin must not be empty");
+    let mut name: rr::Name = name.parse().context("invalid DNS zone origin")?;
+    ensure!(
+        !name.is_root()
+            && name
+                .iter()
+                .flatten()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+        "DNS zone origin must be a domain name"
+    );
+    name.set_fqdn(true);
+    Ok(rr::LowerName::new(&name).to_string())
+}
+
+pub(super) fn parse_records(config: Option<&DnsConfig>) -> anyhow::Result<ConfiguredZones> {
+    let mut zones = ConfiguredZones::new();
+    for zone in config.into_iter().flat_map(|config| &config.zone) {
+        let origin = dns_origin(&zone.origin)?;
+        let name: rr::Name = origin.parse()?;
+        for record in &zone.records {
+            ensure!(
+                !record
+                    .lines()
+                    .any(|line| line.trim_start().starts_with('$')),
+                "zone file directives are not supported in DNS records"
+            );
+        }
+        let content = format!(
+            "$ORIGIN {origin}\n$TTL {}\n{}\n",
+            zone.ttl.unwrap_or_default(),
+            // Hickory 0.25 carries an explicit record TTL into later records.
+            zone.records
+                .join(&format!("\n$TTL {}\n", zone.ttl.unwrap_or_default()))
+        );
+        let (_, records) = Parser::new(content, None, Some(name.clone()))
+            .parse()
+            .with_context(|| format!("invalid DNS records for zone {origin}"))?;
+        let output = zones.entry(origin).or_default();
+        for record in records
+            .values()
+            .flat_map(|set| set.records_without_rrsigs())
+        {
+            ensure!(
+                name.zone_of(record.name()),
+                "DNS record {} is outside zone {name}",
+                record.name()
+            );
+            ensure!(
+                record.dns_class() == rr::DNSClass::IN,
+                "DNS records must use class IN"
+            );
+            output.push(record.clone());
+        }
+    }
+    Ok(zones)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +261,71 @@ ttl = "61s"
         assert_eq!(record.ttl.as_secs(), 61);
 
         Ok(())
+    }
+    use easytier_core::config::toml::DnsZoneConfig;
+
+    fn config(records: &[&str]) -> DnsConfig {
+        DnsConfig {
+            zone: vec![DnsZoneConfig {
+                origin: "EXAMPLE.test".to_owned(),
+                ttl: Some(60),
+                records: records.iter().map(|record| (*record).to_owned()).collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn custom_records_parse_common_types_and_ttls() {
+        let config = config(&[
+            "nas IN A 10.0.0.8",
+            "nas IN AAAA fd00::8",
+            "alias 120 IN CNAME nas",
+            "@ IN TXT \"local records\"",
+        ]);
+        let zones = parse_records(Some(&config)).unwrap();
+        let records = &zones["example.test."];
+        assert_eq!(records.len(), 4);
+        for record in records {
+            assert!(
+                record.name().to_string().ends_with(".example.test.")
+                    || record.name().to_string() == "example.test."
+            );
+            assert_eq!(
+                record.ttl(),
+                if record.record_type() == rr::RecordType::CNAME {
+                    120
+                } else {
+                    60
+                }
+            );
+        }
+        let mut config = config;
+        config.zone[0].ttl = Some(0);
+        let zones = parse_records(Some(&config)).unwrap();
+        assert_eq!(zones["example.test."][0].ttl(), 0);
+    }
+
+    #[test]
+    fn custom_records_reject_invalid_records_and_directives() {
+        for record in [
+            "nas IN A not-an-address",
+            "outside.invalid. IN A 10.0.0.8",
+            "$INCLUDE /etc/hosts",
+            "nas IN A 10.0.0.8\n$ORIGIN other.test.",
+        ] {
+            assert!(
+                parse_records(Some(&config(&[record]))).is_err(),
+                "accepted {record}"
+            );
+        }
+        for origin in ["", ".", "../escape", "/tmp/escape"] {
+            let mut config = config(&[]);
+            config.zone[0].origin = origin.to_owned();
+            assert!(
+                parse_records(Some(&config)).is_err(),
+                "accepted origin {origin}"
+            );
+        }
+        assert!(parse_records(None).unwrap().is_empty());
     }
 }

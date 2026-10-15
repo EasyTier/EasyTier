@@ -106,6 +106,8 @@ message NetworkConfig {
   optional VpnPortalConfig vpn_portal_config = 69;
   repeated ManagedCredentialConfig managed_credentials = 71;
   optional bool prefer_peer_relay = 72;
+  // DNS configuration: contents of the [dns] table, without its outer header.
+  optional string dns = 73;
   // Bootstrap subnet used when DHCP has not learned a subnet from peers.
   optional string dhcp_ipv4_cidr = 74;
   optional bool dhcpv6 = 75;

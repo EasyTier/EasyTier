@@ -115,6 +115,7 @@ pub trait NetworkConfigExt {
 ))]
 const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "hostname",
+    "dns",
     "instance_id",
     "ipv4",
     "ipv6_public_addr_provider",
@@ -251,6 +252,13 @@ impl NetworkConfigExt for NetworkConfig {
                 .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
         );
         cfg.set_hostname(self.hostname.clone());
+        cfg.set_dns(
+            self.dns
+                .as_deref()
+                .map(toml::from_str)
+                .transpose()
+                .context("invalid DNS configuration")?,
+        );
         cfg.set_dhcp(self.dhcp.unwrap_or(self.dhcp_ipv4_cidr.is_some()));
         if cfg.get_dhcp()
             && let Some(cidr) = &self.dhcp_ipv4_cidr
@@ -558,6 +566,7 @@ impl NetworkConfigExt for NetworkConfig {
         };
 
         result.instance_id = Some(config.get_id().to_string());
+        result.dns = config.get_dns().as_ref().map(toml::to_string).transpose()?;
         if config.get_hostname() != default_config.get_hostname() {
             result.hostname = Some(config.get_hostname());
         }
@@ -697,6 +706,73 @@ mod tests {
 
     use super::*;
     use easytier_proto::common::Flags;
+
+    #[test]
+    fn dns_records_survive_toml_and_both_management_projections() {
+        for dns in [
+            "",
+            "[dns]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = ['nas IN A 10.0.0.8', 'nas IN AAAA fd00::8']\n",
+        ] {
+            let config = TomlConfigLoader::new_from_str(dns).unwrap();
+            let expected = config.get_dns();
+            for api in [
+                NetworkConfig::new_from_config(&config).unwrap(),
+                super::super::api::network_config_from_toml(&config),
+            ] {
+                #[cfg(feature = "browser-config")]
+                {
+                    let json = serde_json::to_value(&api).unwrap();
+                    if let Some(expected) = &expected {
+                        let dns = json["dns"]
+                            .as_str()
+                            .expect("DNS management input must stay a TOML string");
+                        assert_eq!(
+                            &toml::from_str::<super::super::toml::DnsConfig>(dns).unwrap(),
+                            expected
+                        );
+                    } else {
+                        assert!(json.get("dns").is_none());
+                    }
+                }
+                let restored = api.gen_config().unwrap();
+                assert_eq!(restored.get_dns(), expected);
+                #[cfg(feature = "config-write")]
+                assert_eq!(
+                    TomlConfigLoader::new_from_str(&restored.dump())
+                        .unwrap()
+                        .get_dns(),
+                    expected
+                );
+            }
+            #[cfg(feature = "browser-config")]
+            {
+                let api = NetworkConfig::new_from_config(&config).unwrap();
+                let merged = merge_network_config_toml(dns, &api).unwrap();
+                assert_eq!(
+                    TomlConfigLoader::new_from_str(&merged).unwrap().get_dns(),
+                    expected
+                );
+            }
+            config.set_hostname(Some("changed".to_owned()));
+            assert_eq!(config.get_dns(), expected);
+        }
+    }
+
+    #[test]
+    fn dns_management_input_rejects_invalid_toml() {
+        let config = NetworkConfig {
+            dns: Some("zone = [".to_owned()),
+            ..Default::default()
+        };
+        assert!(
+            config
+                .gen_config()
+                .unwrap_err()
+                .to_string()
+                .contains("invalid DNS configuration")
+        );
+    }
 
     fn api_portal_config() -> manage::VpnPortalConfig {
         manage::VpnPortalConfig {
