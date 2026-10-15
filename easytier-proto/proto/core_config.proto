@@ -54,3 +54,16 @@ message TrafficConfig {
   optional uint64 instance_recv_bps_limit = 2;
   optional uint64 foreign_relay_bps_limit = 3;
 }
+
+// Raw file/management input. Domain parsing and defaults belong to Raw -> Parsed.
+// Future generators may rename these messages, preserving field numbers, types
+// and collection wrapper nesting. Tag 1 remains available for DNS activation.
+message DnsConfigRaw { RepeatedDnsZoneConfigRaw zone = 2; }
+
+message RepeatedDnsZoneConfigRaw { repeated DnsZoneConfigRaw items = 1; }
+
+message DnsZoneConfigRaw {
+  string origin = 1;
+  optional uint32 ttl = 2;
+  common.RepeatedString records = 3;
+}

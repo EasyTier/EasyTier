@@ -178,6 +178,16 @@ fn main() -> anyhow::Result<()> {
         )
         .field_attribute(".common.CompressionAlgoPb.Invalid", "#[strum(disabled)]");
 
+    let repeated_types = [
+        ".common.RepeatedString",
+        ".core_config.RepeatedDnsZoneConfigRaw",
+    ];
+    for ty in repeated_types {
+        config
+            .type_attribute(ty, "#[derive(serde::Serialize, serde::Deserialize)]")
+            .type_attribute(ty, "#[serde(transparent)]");
+    }
+
     let mut descriptor_set = config.load_fds(&proto_files, &["proto/"])?;
     // What protoc wrote (this set carries every file, imports included), read
     // before anything else may touch it: the annotations are extension fields,
@@ -240,6 +250,7 @@ fn main() -> anyhow::Result<()> {
     pbjson_build::Builder::new()
         .register_descriptors(&descriptors)?
         .preserve_proto_field_names()
+        .exclude(repeated_types)
         .btree_map(["."])
         .build(&["."])?;
 

@@ -87,7 +87,10 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.enable_udp_broadcast_relay = flags.enable_udp_broadcast_relay;
     result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
     result.enable_magic_dns = flags.accept_dns;
-    result.tld_dns_zone = flags.tld_dns_zone;
+    #[allow(deprecated)]
+    {
+        result.tld_dns_zone = flags.tld_dns_zone;
+    }
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
     result.data_compress_algo = flags.data_compress_algo;
     result.encryption_algorithm = flags.encryption_algorithm;
@@ -116,6 +119,7 @@ pub trait NetworkConfigExt {
 ))]
 const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "hostname",
+    "dns",
     "instance_id",
     "ipv4",
     "ipv6_public_addr_provider",
@@ -244,6 +248,7 @@ impl NetworkConfigExt for NetworkConfig {
     #[allow(deprecated)]
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
         let cfg = TomlConfigLoader::default();
+        cfg.set_dns(self.dns.clone());
         cfg.set_id(
             self.instance_id
                 .clone()
@@ -514,6 +519,7 @@ impl NetworkConfigExt for NetworkConfig {
                 }
             }),
             accept_dns: self.enable_magic_dns,
+            #[allow(deprecated)]
             tld_dns_zone: self.tld_dns_zone.clone(),
             mtu: self
                 .mtu
@@ -559,6 +565,7 @@ impl NetworkConfigExt for NetworkConfig {
             ..Default::default()
         };
 
+        result.dns = config.get_dns();
         result.instance_id = Some(config.get_id().to_string());
         if config.get_hostname() != default_config.get_hostname() {
             result.hostname = Some(config.get_hostname());
@@ -697,6 +704,116 @@ mod tests {
 
     use super::*;
     use easytier_proto::common::Flags;
+
+    #[test]
+    fn dns_records_survive_toml_and_form_edits() {
+        for dns in [
+            "",
+            "[dns]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = ['nas IN A 10.0.0.8', 'nas IN AAAA fd00::8']\n",
+        ] {
+            let config = TomlConfigLoader::new_from_str(dns).unwrap();
+            let expected = config.get_dns();
+            config.set_hostname(Some("changed".to_owned()));
+            assert_eq!(config.get_dns(), expected);
+            #[cfg(feature = "config-write")]
+            assert_eq!(
+                TomlConfigLoader::new_from_str(&config.dump())
+                    .unwrap()
+                    .get_dns(),
+                expected
+            );
+            #[cfg(feature = "browser-config")]
+            {
+                let api = NetworkConfig::new_from_config(&config).unwrap();
+                let merged = merge_network_config_toml(dns, &api).unwrap();
+                let restored = TomlConfigLoader::new_from_str(&merged).unwrap();
+                assert_eq!(restored.get_dns(), expected);
+                assert_eq!(restored.get_hostname(), "changed");
+            }
+        }
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn dns_raw_presence_survives_management_json_and_file_roundtrips() {
+        for input in [
+            "",
+            "[dns]\n",
+            "[dns]\nzone = []\n",
+            "[[dns.zone]]\norigin = 'example.test.'\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = []\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = ['@ IN A 192.0.2.1']\n",
+        ] {
+            let config = TomlConfigLoader::new_from_str(input).unwrap();
+            let expected = config.get_dns();
+            let network = NetworkConfig::new_from_config(&config).unwrap();
+            assert_eq!(network.dns, expected, "{input}");
+            let json = serde_json::to_value(&network).unwrap();
+            if let Some(records) = expected.as_ref().and_then(|dns| dns.zone.as_ref()) {
+                assert_eq!(
+                    json["dns"]["zone"].as_array().unwrap().len(),
+                    records.items.len()
+                );
+            }
+            let network: NetworkConfig = serde_json::from_value(json).unwrap();
+            let restored = network.gen_config().unwrap();
+            assert_eq!(restored.get_dns(), expected, "{input}");
+            assert_eq!(
+                TomlConfigLoader::new_from_str(&restored.dump())
+                    .unwrap()
+                    .get_dns(),
+                expected
+            );
+            let merged = merge_network_config_toml(input, &network).unwrap();
+            assert_eq!(
+                TomlConfigLoader::new_from_str(&merged).unwrap().get_dns(),
+                expected
+            );
+            #[cfg(feature = "web-client")]
+            assert_eq!(
+                crate::config::api::network_config_from_toml(&config).dns,
+                expected
+            );
+        }
+        let missing = TomlConfigLoader::new_from_str("[dns]\n")
+            .unwrap()
+            .get_dns()
+            .unwrap();
+        let empty = TomlConfigLoader::new_from_str("[dns]\nzone = []\n")
+            .unwrap()
+            .get_dns()
+            .unwrap();
+        assert!(missing.zone.is_none());
+        assert!(empty.zone.unwrap().items.is_empty());
+
+        let input = "[[dns.zone]]\norigin = 'example.test.'\nrecords = []\n";
+        let mut network =
+            NetworkConfig::new_from_config(TomlConfigLoader::new_from_str(input).unwrap()).unwrap();
+        network.dns = None;
+        let cleared = merge_network_config_toml(input, &network).unwrap();
+        assert!(
+            TomlConfigLoader::new_from_str(&cleared)
+                .unwrap()
+                .get_dns()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn dns_file_input_rejects_unknown_fields_and_invalid_shapes() {
+        for input in [
+            "[dns]\nzoen = []\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecrods = []\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = {}\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nttl = -1\n",
+        ] {
+            assert!(
+                TomlConfigLoader::new_from_str(input).is_err(),
+                "accepted {input}"
+            );
+        }
+    }
 
     fn api_portal_config() -> manage::VpnPortalConfig {
         manage::VpnPortalConfig {
@@ -932,21 +1049,6 @@ mod tests {
     }
 
     #[test]
-    fn magic_dns_zone_round_trips_missing_default_and_custom_values() {
-        for zone in [None, Some("et.net."), Some("nas.internal.")] {
-            let input = NetworkConfig {
-                tld_dns_zone: zone.map(str::to_owned),
-                ..standalone_config()
-            };
-            let config = input.gen_config().unwrap();
-            let config = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
-            assert_eq!(config.get_flags().tld_dns_zone, zone.unwrap_or("et.net."));
-            let output = NetworkConfig::new_from_config(&config).unwrap();
-            assert_eq!(output.tld_dns_zone.as_deref(), zone);
-        }
-    }
-
-    #[test]
     fn vpn_portal_api_config_round_trips_through_toml_model() {
         let input = NetworkConfig {
             vpn_portal_config: Some(api_portal_config()),
@@ -1060,22 +1162,6 @@ mod tests {
         .unwrap();
 
         assert!(config.get_vpn_portal_config().is_none());
-    }
-
-    #[cfg(feature = "browser-config")]
-    #[test]
-    fn browser_merge_updates_and_clears_magic_dns_zone() {
-        let original = "[flags]\ntld_dns_zone = \"old.internal.\"\n";
-        for zone in [None, Some("et.net."), Some("nas.internal.")] {
-            let input = NetworkConfig {
-                tld_dns_zone: zone.map(str::to_owned),
-                ..standalone_config()
-            };
-            let merged = merge_network_config_toml(original, &input).unwrap();
-            let output = TomlConfigLoader::new_from_str(&merged).unwrap();
-            assert_eq!(output.get_flags().tld_dns_zone, zone.unwrap_or("et.net."));
-            assert_eq!(output.get_flags_patch().tld_dns_zone.as_deref(), zone);
-        }
     }
 
     #[cfg(feature = "browser-config")]
