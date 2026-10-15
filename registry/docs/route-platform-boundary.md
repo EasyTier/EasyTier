@@ -8,7 +8,7 @@ Linux 实测与提交记录见 [实施进度](/home/luna/EasyTier-route/registry
 
 | 模式 | RouteHandle | 实际路由 writer / owner | 当前行为 |
 | --- | --- | --- | --- |
-| Linux desktop + tun + netlink | 有，no_tun 时无 | NativeRouteRuntime / RouteMgr | scoped 声明、配置 policy、ACK、退避、Unknown 核实、applied-state、清理 |
+| Linux desktop + tun + netlink | 有，no_tun 时无 | SharedVirtualNic 的 RouteOutlet / RouteMgr | 实例 scope、出口聚合、ACK、退避、Unknown 核实、applied-state、清理 |
 | Linux netlink-only、无 tun | 无 | 可独立使用 backend library；Host 不启动 controller | 不接受没有设备事实来源的 native registration |
 | Windows desktop | 无 | NicCtx / IfConfiguer / IP Helper | 保留既有调用和 Windows cost |
 | macOS desktop / FreeBSD | 无 | NicCtx / IfConfiguer / route 命令 | 保留既有命令；尚未提供新 backend 合约 |
@@ -22,6 +22,10 @@ OHOS 的 target_os 是 Linux，但实际 fd / VPN ownership 属于移动端 Host
 该误接入已修正，DNS 和测试 Host 的 cfg 与 consumer 条件保持一致。
 
 ## Linux 的实际边界
+
+一个逻辑 NIC 只有一个路由 writer；每实例保留独立 RouteScope 和配置策略。
+named TUN 的成员共享物理效果责任，匿名设备使用实例私有逻辑出口。具体
+ownership、binding 和成员退出语义见 [出口设计](route-outlet-ownership.md)。
 
 - ConfigStore 只保存权威配置和既有通知。manual_routes 不再拥有 Registration。
   Manager 在注册 / 配置 / 设备通知后读取 snapshot。None 使用 auto union，
@@ -43,7 +47,7 @@ OHOS 的 target_os 是 Linux，但实际 fd / VPN ownership 属于移动端 Host
   Unknown，不能从 timeout 推断确定失败。不存在应用 generation 的内核 CAS；
   fd 在 add 中失效时保留物理 key 的 uncertain 责任。
 - fd close、Registry close、route cleanup completion 是三个不同事件。清理未完成
-  的原 writer 由 Host 和 guarden observer 保留；五秒等待 timeout 不 abort，也
+  的原 writer 由出口和 guarden observer 保留；Host 的五秒等待 timeout 不 abort，也
   不生成第二个 writer。runtime 本身销毁后不承诺继续执行异步清理。
 - IPv4/IPv6 address、link、MTU 和 connected route 是设备 / OS 的职责。Public
   IPv6 source 只发布其额外前缀和显式 default route，不接管地址配置。

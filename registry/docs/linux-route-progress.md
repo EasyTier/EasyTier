@@ -3,6 +3,10 @@
 目标：将已有实验改动整理为可独立审查的提交，继续完成 Linux 路由管理，
 然后审查跨平台接入。本文记录实现和验证，不把尚未完成的项目视为已有能力。
 
+2026-10-15 的当前 ownership 已调整为每个逻辑 NIC 一个 writer、每个实例一个
+输入 scope；见 [出口设计](route-outlet-ownership.md) 和本文末尾验证。下面保留
+各阶段的实施记录，其中早期“Host 拥有 writer”的描述已被该设计替代。
+
 ## 提交历史
 
 原有 registry 大提交与工作树修改已重建为九个依赖有序的本地提交：
@@ -218,3 +222,54 @@ check 和本机 mobile cfg 编译通过。非 Linux backend 尚未迁移或在�
 
 Registry core 的边界不变：只保存声明、管理 membership 并通知 invalidation。
 平台 I/O、设备事实、反馈、retry、reconciliation 和 shutdown 都在路由领域层。
+
+## 2026-10-15：逻辑出口与实例 scope
+
+已在 `refactor/route` 工作树完成以下重构，基于 main `da6d721b`：
+
+- Backend 只接收 OsRoute 和返回 OS 结果；EEXIST 等价核实、absent 归一化、
+  ownership、retry、Unknown 和 cleanup 全部在 Manager。
+- SharedVirtualNic 的 RouteOutlet 拥有唯一 RouteMgr；named NIC 的各成员共享
+  writer，匿名设备的逻辑 key 按实例隔离。
+- NativeRouteRuntime 只拥有实例 RouteScope。manual policy 仍直接读取同一份
+  ConfigStore；动态声明和 applied feedback 保持按实例隔离。
+- NicCtx 拥有 non-Clone binding lease。旧 lease / writer / outlet 不能关闭
+  重绑定后的 scope；未被 writer 消费的 binding 也能在出口关闭时安全撤销。
+- 共享 NIC 继续验证成员网段与 DNS 特例，再形成出口 effective routes。
+  同快照内非空声明释放前缀后，会重新验证被阻塞的成员，避免依赖无关后续通知。
+- 地址和成员配置使 route revision 失效后，Manager 核实已有 receipts，
+  处理内核随 preferred source 地址删除而自动删除 route 的情况。核实失败
+  暂停写入和 ready，并保留退避，过期的普通 retry 不会制造忙循环。
+- 每个 scope 的 withdrawal completion 独立于 entry removal 和 physical
+  cleanup。退出一个实例不会停止其他实例的 writer 或撤销其仍需要的 route。
+
+最终 Linux native 合约测试 125 项通过：route / outlet / scope 56、Host 8、
+shared NIC / dispatcher / ifcfg 58、DNS startup lifecycle 3。十项 privileged
+kernel_ 全部在隔离 fixture 中通过；三个真实 DNS 数据流测试全部通过。
+默认 library 测试目标已编译，无本轮新增 warning。
+
+新 kernel 场景启动两个生产 NativeHost，在同一个实际 named TUN 上各声明
+标准 DNS host route：两份 scope 的 ready 都成立，内核只存在一条 route。
+首个实例退出后，实际 fd registration 不变，route 的 preferred source 换为
+余下实例；最后实例退出后 route 被清理。另保留原 Public IPv6、persistent /
+nonpersistent TUN、Unknown ACK、netns 和外部路由保护场景。
+
+fixture 为每个 kernel_ case 启动独立测试进程，避免进程级 shared NIC runtime
+被错误地复用于另一个 case 创建的 namespace。DNS suite 继续在同一隔离
+namespace 内串行执行。宿主 /dev 与网络不变。
+
+规模测试仍覆盖 100 / 1,000 / 10,000 条；10000 条本机实测：初次约 165ms，
+10 次相同输入约 506ms，单条替换约 50ms，shutdown 约 1.61s。断言继续检查
+相同输入无 OS 写入 / inspection、单条替换仅一删一加和最终内核为空。
+新 scope feedback / contribution 查询使用有序范围查找，未保留初稿中的
+逐路由全表扫描。这是一次本机采样，不作为稳定性能保证。
+
+netlink-only 的 no-TUN library check 和 no-TUN Host 5 项测试通过，仍有
+feature-dependent dead-code / unused warnings。本机 `--cfg mobile` library 编译
+通过；检查中发现 main 的 desktop interface helper 少两处 cfg gate，已单独
+补齐，与路由 writer 改动分开提交。此检查仅验证本机 Linux 编译分支，不等同
+真实 Android / OHOS SDK 或设备验证。Windows / BSD /
+delegated VPN 路径没有迁移到此 controller。
+
+所有本轮 Rust 文件通过 stable rustfmt 检查，fixture 通过 `sh -n`，
+`git diff --check` 通过。详细 ownership 与并发 invariant 见出口设计文档。

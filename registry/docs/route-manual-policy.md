@@ -1,6 +1,7 @@
 # 路由管理：manual policy 与动态声明的边界
 
-本次实现只调整路由输入和更新传播，并修复两个 registry 合约问题。
+manual policy 的 authority / 通知模型保持如下设计。2026-10-15 已将实际 writer
+改为按逻辑出口管理，每实例输入保留在 RouteScope；见 [出口 ownership](route-outlet-ownership.md)。
 
 ## 状态与 ownership
 
@@ -27,14 +28,15 @@ auto 集合；`Some(empty)` 抑制 auto。`Additional` 始终参与最终结果�
 Instance 创建配置 Store
   → InstanceRuntimeHost::prepare(packet_plane, runtime_config)
   → NativeRouteRuntime::prepare(runtime_config)
-  → RouteMgr 持有同一个 Store 并订阅 service changes
+  → 实例 RouteScope 持有同一个 Store
+  → 出口 RouteMgr 订阅所有成员 scope 的 service changes
 
 配置写入 → 提交完整快照 → Store 发送既有 service-change 通知
 动态声明写入 / Drop → 提交 membership / payload → registry 通知
 ```
 
-RouteMgr 同时等待两份通知，直接读取 Store 和 registry 的当前快照。
-没有新增转发任务、配置 callback、route-specific signal 或 policy trait。
+RouteMgr 同时等待各 scope 的这两份通知，分别读取 Store 和 registry 的当前快照。
+配置链路没有新增转发任务、callback、专用配置 signal 或 policy trait。
 读取初始快照不依赖通知，manual routes 在 registry 为空时也能生效。
 
 两个 watch 都必须在读取输入之前确认 baseline；backend I/O 期间发生的更新
@@ -44,19 +46,19 @@ RouteMgr 同时等待两份通知，直接读取 Store 和 registry 的当前快
 配置和动态声明是独立输入，没有跨 Store / registry 的原子事务保证。
 每个快照自身一致；连续更新允许合并，manager 最终消费最新输入。
 无关 service 配置也可以唤醒 manager，但路由差集为空时不会重复写 kernel。
-原有设备轮询和 retry timer 保留。
+设备变化由事实通知唤醒；只有 pending 操作、retry 和 Unknown 核实需要 timer。
 
 ## Side effect 与 shutdown
 
 Registry 只保存声明，配置 Store 只保存配置。effective CIDRs、desired routes、
 installed / external / unknown 状态、retry 和 backend 操作都留在 RouteMgr。
 
-Host cancellation 仍然是 manager 的停机信号。registry close 撤销动态声明并
-拒绝后续 registration / replace；配置 Store 可以被其他组件继续持有，
-后续配置写入不会重新启动已停止的 RouteMgr。
+Host cancellation 关闭本实例 scope，registry close 撤销动态声明并拒绝后续
+registration / replace。公共出口 manager 继续服务其他实例；只有出口关闭才
+停止这个 writer。配置 Store 可以被其他组件继续持有，写入不会重新打开已关闭 scope。
 
-本次没有改变 kernel route 匹配、设备 generation、unknown 状态恢复或异步
-cleanup supervision。它们需要分别按路由领域 invariant 重构。
+manual policy 与 OS responsibility 是独立边界。出口级 writer、设备 generation、
+Unknown 和异步 cleanup supervision 的当前合约见出口 ownership 文档。
 
 ## Registry 合约修复
 
@@ -85,13 +87,15 @@ Registry 测试覆盖 payload panic 前的通知和 metadata-only Debug，并继
   仍有 feature-dependent unused / dead-code 警告。
 - 所有修改的 Rust 文件通过已安装 stable rustfmt 的格式检查；`git diff --check` 通过。
 
-没有执行真实 kernel / TUN 集成测试或跨平台 target 编译。
+以上是早期 manual policy 改动的验证记录。后续真实 kernel / TUN 和 DNS
+验证见 [实施进度](linux-route-progress.md)，不把此处历史计数当作最终状态。
 
 ## Rust 调用点迁移
 
 - `CoreRuntimeConfigStore::new(services, peer)` 不再接收 registration。
 - `InstanceRuntimeHost::prepare(packet_plane, runtime_config)` 接收实例的 Store clone。
-- `RouteMgr::new(global_ctx, backend, routes, runtime_config, cancel)` 订阅该 Store。
+- `RouteScope::prepare(runtime_config)` 保留同一份 Store，NicCtx 持有出口 binding。
+- `RouteMgr` 接收出口设备 facts 和 scope membership，不再持有某个 GlobalCtx。
 - `resolve_route_demands(demands, manual_routes.as_ref())` 直接返回 `RouteSet`。
 - `RouteDemand::ManualProxy` 被移除，manual policy 的唯一来源是配置快照。
 
