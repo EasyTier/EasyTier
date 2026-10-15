@@ -31,6 +31,9 @@ message InstanceConfigPatch {
   repeated VpnPortalClientPatch vpn_portal_clients = 15;
   api.manage.ManagedCredentialSet managed_credentials = 16;
   optional bool prefer_peer_relay = 17;
+  // Applies with routes: true preserves an empty manual list; false restores
+  // automatic routes. Omission preserves legacy RoutePatch behavior.
+  optional bool enable_manual_routes = 18;
 }
 
 message VpnPortalClientPatch {
@@ -89,6 +92,10 @@ message GetConfigRequest {
 message GetConfigResponse {
   api.manage.NetworkConfig config = 1;
   string toml_config = 2;
+  // Supports explicit manual mode patches and typed empty-manual readback.
+  // Older peers silently ignore unknown patch fields, so controllers must
+  // check this before patching the manual route mode or an empty manual list.
+  bool supports_manual_routes_patch = 3;
 }
 
 service ConfigRpc {

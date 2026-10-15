@@ -63,7 +63,7 @@ where
         validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
-        let result = patch_routes(&candidate, patch.routes);
+        let result = patch_routes(&candidate, patch.routes, patch.enable_manual_routes);
         validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
@@ -455,15 +455,25 @@ fn patch_proxy_networks(
     Ok(())
 }
 
-fn patch_routes(config: &TomlConfig, patches: Vec<RoutePatch>) -> anyhow::Result<()> {
-    if patches.is_empty() {
+fn patch_routes(
+    config: &TomlConfig,
+    patches: Vec<RoutePatch>,
+    enable_manual_routes: Option<bool>,
+) -> anyhow::Result<()> {
+    if patches.is_empty() && enable_manual_routes.is_none() {
         return Ok(());
     }
     let mut current = config.get_routes().unwrap_or_default();
     let patches = patches.into_iter().map(Into::into).collect::<Vec<_>>();
     trace_patchables(&patches);
     config::patch_vec(&mut current, patches);
-    config.set_routes((!current.is_empty()).then_some(current));
+    // Mode and list form one configuration update. An explicit mode supports
+    // empty manual routes; callers omitting it retain the released semantics.
+    config.set_routes(
+        enable_manual_routes
+            .unwrap_or(!current.is_empty())
+            .then_some(current),
+    );
     Ok(())
 }
 
