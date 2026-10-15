@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use anyhow::Context as _;
 use easytier::proto::{
     api::manage::{
         DeleteNetworkInstanceRequest, DeleteNetworkInstanceResponse,
@@ -230,7 +231,7 @@ impl ReconcileCache {
 
 #[derive(Default)]
 struct SessionRuntimeConfigCache {
-    entries: HashMap<String, runtime_reconcile::RuntimeConfig>,
+    entries: HashMap<String, NetworkConfig>,
 }
 
 impl SessionRuntimeConfigCache {
@@ -238,6 +239,7 @@ impl SessionRuntimeConfigCache {
         &self,
         inst_id: &str,
         desired_config: NetworkConfig,
+        support_manual_routes_patch: bool,
     ) -> anyhow::Result<Option<runtime_reconcile::RuntimeReconcileAction>> {
         let Some(observed_config) = self.entries.get(inst_id) else {
             return Ok(None);
@@ -246,11 +248,12 @@ impl SessionRuntimeConfigCache {
         runtime_reconcile::prepare_web_source_runtime_reconcile_from_current(
             observed_config,
             desired_config,
+            support_manual_routes_patch,
         )
         .map(Some)
     }
 
-    fn remember(&mut self, inst_id: &str, observed_config: runtime_reconcile::RuntimeConfig) {
+    fn remember(&mut self, inst_id: &str, observed_config: NetworkConfig) {
         self.entries.insert(inst_id.to_string(), observed_config);
     }
 
@@ -1001,6 +1004,7 @@ async fn reconcile_desired_runtime_configs(
                     &config.network_instance_id,
                     &desired_config,
                     &mut cache.runtime_configs,
+                    round.req.support_manual_routes_patch,
                 )
                 .await
                 {
@@ -1062,20 +1066,24 @@ async fn reconcile_running_web_config(
 
     let operation_started_at = std::time::Instant::now();
     let ret = async {
-        let action =
-            match runtime_config_cache.plan(&config.network_instance_id, desired_config.clone())? {
-                Some(action) => action,
-                None => {
-                    runtime_reconcile::prepare_web_source_runtime_reconcile(
-                        &mut clients.config,
-                        &mut clients.peer,
-                        &config.network_instance_id,
-                        desired_config.clone(),
-                        true,
-                    )
-                    .await?
-                }
-            };
+        let action = match runtime_config_cache.plan(
+            &config.network_instance_id,
+            desired_config.clone(),
+            round.req.support_manual_routes_patch,
+        )? {
+            Some(action) => action,
+            None => {
+                runtime_reconcile::prepare_web_source_runtime_reconcile(
+                    &mut clients.config,
+                    &mut clients.peer,
+                    &config.network_instance_id,
+                    desired_config.clone(),
+                    true,
+                    round.req.support_manual_routes_patch,
+                )
+                .await?
+            }
+        };
         if !SessionRpcService::runtime_heartbeat_is_current(session_data, &round.req).await {
             anyhow::bail!("webhook session is no longer current before runtime reconcile apply");
         }
@@ -1093,6 +1101,7 @@ async fn reconcile_running_web_config(
             &config.network_instance_id,
             desired_config.clone(),
             action,
+            round.req.support_manual_routes_patch,
         )
         .await?;
         runtime_config_cache.remember(&config.network_instance_id, observed_config);
@@ -1200,10 +1209,15 @@ async fn remember_web_runtime_config_after_run(
     inst_id: &str,
     desired_config: &NetworkConfig,
     runtime_config_cache: &mut SessionRuntimeConfigCache,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<()> {
-    let observed_config =
-        runtime_reconcile::get_runtime_config(&mut clients.config, &mut clients.peer, inst_id)
-            .await?;
+    let observed_config = runtime_reconcile::get_runtime_config(
+        &mut clients.config,
+        &mut clients.peer,
+        inst_id,
+        support_manual_routes_patch,
+    )
+    .await?;
     remember_if_runtime_matches_desired(
         inst_id,
         desired_config,
@@ -1215,19 +1229,11 @@ async fn remember_web_runtime_config_after_run(
 fn remember_if_runtime_matches_desired(
     inst_id: &str,
     desired_config: &NetworkConfig,
-    observed_config: runtime_reconcile::RuntimeConfig,
+    observed_config: NetworkConfig,
     runtime_config_cache: &mut SessionRuntimeConfigCache,
 ) -> anyhow::Result<()> {
-    let action = runtime_reconcile::prepare_web_source_runtime_reconcile_from_current(
-        &observed_config,
-        desired_config.clone(),
-    )?;
-    if !matches!(
-        action,
-        runtime_reconcile::RuntimeReconcileAction::Unchanged(_)
-    ) {
-        anyhow::bail!("runtime config still differs after managed run");
-    }
+    runtime_reconcile::ensure_runtime_config_converged(&observed_config, desired_config, false)
+        .context("runtime config still differs after managed run")?;
     runtime_config_cache.remember(inst_id, observed_config);
     Ok(())
 }
@@ -1309,13 +1315,6 @@ fn record_applied_config_revision(
 
 #[cfg(test)]
 mod tests {
-    fn legacy_runtime_config(config: NetworkConfig) -> runtime_reconcile::RuntimeConfig {
-        runtime_reconcile::RuntimeConfig {
-            config,
-            supports_manual_routes_patch: false,
-        }
-    }
-
     use easytier::proto::api::manage::{NetworkingMethod, PortForwardConfig};
 
     use super::*;
@@ -1772,7 +1771,7 @@ mod tests {
         let mut cache = ReconcileCache::default();
         cache.runtime_configs.remember(
             "managed",
-            legacy_runtime_config(config_with_port_forwards(vec![port_forward(23000, 5174)])),
+            config_with_port_forwards(vec![port_forward(23000, 5174)]),
         );
 
         cache.reset_if_runtime_config_cache_epoch_changed(0);
@@ -1785,7 +1784,7 @@ mod tests {
         let mut cache = ReconcileCache::default();
         cache.runtime_configs.remember(
             "managed",
-            legacy_runtime_config(config_with_port_forwards(vec![port_forward(23000, 5174)])),
+            config_with_port_forwards(vec![port_forward(23000, 5174)]),
         );
 
         cache.reset_if_runtime_config_cache_epoch_changed(1);
@@ -1858,27 +1857,32 @@ mod tests {
     fn session_runtime_config_cache_misses_unknown_instance() {
         let cache = SessionRuntimeConfigCache::default();
         let action = cache
-            .plan("missing", config_with_port_forwards(Vec::new()))
+            .plan("missing", config_with_port_forwards(Vec::new()), false)
             .expect("prepare action");
 
         assert!(action.is_none());
     }
 
     #[test]
-    fn session_runtime_config_cache_preserves_manual_route_patch_support() {
+    fn session_runtime_config_cache_uses_current_heartbeat_route_support() {
         let automatic = config_with_port_forwards(Vec::new());
         let mut manual = automatic.clone();
         manual.enable_manual_routes = Some(true);
-        for supported in [false, true] {
-            let mut cache = SessionRuntimeConfigCache::default();
-            cache.remember(
-                "managed",
-                runtime_reconcile::RuntimeConfig {
-                    config: automatic.clone(),
-                    supports_manual_routes_patch: supported,
-                },
-            );
-            let action = cache.plan("managed", manual.clone()).unwrap().unwrap();
+        let mut cache = SessionRuntimeConfigCache::default();
+        cache.remember("managed", automatic);
+        for supported in [false, true, false] {
+            let heartbeat = HeartbeatRequest {
+                support_manual_routes_patch: supported,
+                ..Default::default()
+            };
+            let action = cache
+                .plan(
+                    "managed",
+                    manual.clone(),
+                    heartbeat.support_manual_routes_patch,
+                )
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 matches!(action, runtime_reconcile::RuntimeReconcileAction::Patch(_)),
                 supported
@@ -1898,9 +1902,9 @@ mod tests {
         let mut cache = SessionRuntimeConfigCache::default();
         let config = config_with_port_forwards(vec![port_forward(23000, 5174)]);
 
-        cache.remember("managed", legacy_runtime_config(config.clone()));
+        cache.remember("managed", config.clone());
         let action = cache
-            .plan("managed", config)
+            .plan("managed", config, false)
             .expect("prepare action")
             .expect("cached action");
 
@@ -1915,23 +1919,23 @@ mod tests {
         let mut cache = SessionRuntimeConfigCache::default();
         let mut observed = config_with_port_forwards(Vec::new());
         observed.hostname = Some("runtime-host".to_string());
-        cache.remember("managed", legacy_runtime_config(observed));
+        cache.remember("managed", observed);
 
         let unmanaged_desired = config_with_port_forwards(Vec::new());
         let action = cache
-            .plan("managed", unmanaged_desired)
+            .plan("managed", unmanaged_desired, false)
             .expect("prepare unmanaged hostname action")
             .expect("cached action");
         let runtime_reconcile::RuntimeReconcileAction::Unchanged(observed) = action else {
             panic!("unmanaged hostname should preserve the observed config");
         };
-        assert_eq!(observed.config.hostname.as_deref(), Some("runtime-host"));
+        assert_eq!(observed.hostname.as_deref(), Some("runtime-host"));
         cache.remember("managed", *observed);
 
         let mut explicit_clear = config_with_port_forwards(Vec::new());
         explicit_clear.hostname = Some(String::new());
         let action = cache
-            .plan("managed", explicit_clear)
+            .plan("managed", explicit_clear, false)
             .expect("prepare explicit clear action")
             .expect("cached action");
         let runtime_reconcile::RuntimeReconcileAction::Patch(patch) = action else {
@@ -1948,9 +1952,9 @@ mod tests {
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
 
-        cache.remember("managed", legacy_runtime_config(current));
+        cache.remember("managed", current);
         let action = cache
-            .plan("managed", desired)
+            .plan("managed", desired, false)
             .expect("prepare action")
             .expect("cached action");
 
@@ -1964,8 +1968,8 @@ mod tests {
     fn session_runtime_config_cache_retain_desired_removes_stale_entries() {
         let mut cache = SessionRuntimeConfigCache::default();
         let config = config_with_port_forwards(Vec::new());
-        cache.remember("keep", legacy_runtime_config(config.clone()));
-        cache.remember("drop", legacy_runtime_config(config));
+        cache.remember("keep", config.clone());
+        cache.remember("drop", config);
 
         cache.retain_desired(&HashSet::from(["keep".to_string()]));
 
@@ -1977,12 +1981,12 @@ mod tests {
     fn session_runtime_config_cache_forget_removes_observed_config() {
         let mut cache = SessionRuntimeConfigCache::default();
         let config = config_with_port_forwards(Vec::new());
-        cache.remember("managed", legacy_runtime_config(config.clone()));
+        cache.remember("managed", config.clone());
 
         cache.forget("managed");
 
         let action = cache
-            .plan("managed", config)
+            .plan("managed", config, false)
             .expect("prepare action after remove");
         assert!(action.is_none());
     }
@@ -1992,15 +1996,10 @@ mod tests {
         let mut cache = SessionRuntimeConfigCache::default();
         let config = config_with_port_forwards(vec![port_forward(23000, 5174)]);
 
-        remember_if_runtime_matches_desired(
-            "managed",
-            &config,
-            legacy_runtime_config(config.clone()),
-            &mut cache,
-        )
-        .expect("remember observed config after run");
+        remember_if_runtime_matches_desired("managed", &config, config.clone(), &mut cache)
+            .expect("remember observed config after run");
         let action = cache
-            .plan("managed", config)
+            .plan("managed", config, false)
             .expect("prepare action after run")
             .expect("cached action");
 
@@ -2017,20 +2016,15 @@ mod tests {
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
 
-        let err = remember_if_runtime_matches_desired(
-            "managed",
-            &desired,
-            legacy_runtime_config(current),
-            &mut cache,
-        )
-        .expect_err("expected stale run result not to be cached");
+        let err = remember_if_runtime_matches_desired("managed", &desired, current, &mut cache)
+            .expect_err("expected stale run result not to be cached");
 
         assert!(
             err.to_string()
                 .contains("runtime config still differs after managed run")
         );
         let action = cache
-            .plan("managed", desired)
+            .plan("managed", desired, false)
             .expect("prepare action after stale run result");
         assert!(action.is_none());
     }
@@ -2042,13 +2036,8 @@ mod tests {
         let mut desired = observed.clone();
         desired.hostname = Some("device-host".to_string());
 
-        let err = remember_if_runtime_matches_desired(
-            "managed",
-            &desired,
-            legacy_runtime_config(observed),
-            &mut cache,
-        )
-        .expect_err("missing run must not trust an omitted hostname");
+        let err = remember_if_runtime_matches_desired("managed", &desired, observed, &mut cache)
+            .expect_err("missing run must not trust an omitted hostname");
 
         assert!(
             err.to_string()
@@ -2068,9 +2057,9 @@ mod tests {
         assert_eq!(observed.hostname.as_deref(), Some("device-host"));
 
         let mut cache = SessionRuntimeConfigCache::default();
-        cache.remember("managed", legacy_runtime_config(observed));
+        cache.remember("managed", observed);
         let action = cache
-            .plan("managed", desired)
+            .plan("managed", desired, false)
             .expect("prepare action after restore")
             .expect("cached action");
 

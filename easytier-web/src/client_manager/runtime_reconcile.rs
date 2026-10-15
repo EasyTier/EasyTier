@@ -28,14 +28,8 @@ use optionize::Retain;
 
 use super::session::{SessionConfigClient, SessionPeerClient, SessionRpcClient};
 
-#[derive(Clone)]
-pub(super) struct RuntimeConfig {
-    pub config: NetworkConfig,
-    pub supports_manual_routes_patch: bool,
-}
-
 pub(super) enum RuntimeReconcileAction {
-    Unchanged(Box<RuntimeConfig>),
+    Unchanged(Box<NetworkConfig>),
     Run {
         config: Box<NetworkConfig>,
         overwrite: bool,
@@ -290,7 +284,7 @@ fn is_automatic_windows_dev_name(dev_name: &str) -> bool {
 fn web_source_runtime_patch(
     current: &NetworkConfig,
     desired: &NetworkConfig,
-    supports_manual_routes_patch: bool,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<Option<InstanceConfigPatch>> {
     let mut current_base = hot_patch_base(current)?;
     let mut desired_base = hot_patch_base(desired)?;
@@ -307,7 +301,7 @@ fn web_source_runtime_patch(
     let current_hostname = current_base.hostname.take().unwrap_or_default();
     let desired_hostname = desired_base.hostname.take().unwrap_or_default();
     let mut patch = InstanceConfigPatch::default();
-    if supports_manual_routes_patch {
+    if support_manual_routes_patch {
         let current_mode = current_base.enable_manual_routes.take().unwrap_or_default();
         let desired_mode = desired_base.enable_manual_routes.take().unwrap_or_default();
         let current_routes = std::mem::take(&mut current_base.routes);
@@ -469,7 +463,8 @@ pub(super) async fn get_runtime_config(
     config_client: &mut SessionConfigClient,
     peer_client: &mut SessionPeerClient,
     inst_id: &str,
-) -> anyhow::Result<RuntimeConfig> {
+    support_manual_routes_patch: bool,
+) -> anyhow::Result<NetworkConfig> {
     let response = config_client
         .get_config(
             BaseController::default(),
@@ -481,7 +476,7 @@ pub(super) async fn get_runtime_config(
     let mut config = response
         .config
         .ok_or_else(|| anyhow::anyhow!("runtime returned empty config for {inst_id}"))?;
-    if !response.supports_manual_routes_patch && config.routes.is_empty() {
+    if !support_manual_routes_patch && config.routes.is_empty() {
         // Released 2.6.4 omits the manual-mode bit for routes=[]. Its
         // instance-scoped ShowNodeInfo retains the original TOML. Clients
         // with GetConfig.toml_config need no Peer RPC; supporting clients
@@ -503,10 +498,7 @@ pub(super) async fn get_runtime_config(
         };
         restore_manual_routes_from_toml(&mut config, inst_id, &raw)?;
     }
-    Ok(RuntimeConfig {
-        config,
-        supports_manual_routes_patch: response.supports_manual_routes_patch,
-    })
+    Ok(config)
 }
 
 fn restore_manual_routes_from_toml(
@@ -544,6 +536,7 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
     inst_id: &str,
     desired_config: NetworkConfig,
     is_running: bool,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<RuntimeReconcileAction> {
     if !is_running {
         return Ok(RuntimeReconcileAction::Run {
@@ -552,21 +545,28 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
         });
     }
 
-    let current_config = get_runtime_config(config_client, peer_client, inst_id).await?;
+    let current_config = get_runtime_config(
+        config_client,
+        peer_client,
+        inst_id,
+        support_manual_routes_patch,
+    )
+    .await?;
 
-    prepare_web_source_runtime_reconcile_from_current(&current_config, desired_config)
+    prepare_web_source_runtime_reconcile_from_current(
+        &current_config,
+        desired_config,
+        support_manual_routes_patch,
+    )
 }
 
 pub(super) fn prepare_web_source_runtime_reconcile_from_current(
-    current: &RuntimeConfig,
+    current_config: &NetworkConfig,
     desired_config: NetworkConfig,
+    support_manual_routes_patch: bool,
 ) -> anyhow::Result<RuntimeReconcileAction> {
-    let current_config = &current.config;
-    let Some(patch) = web_source_runtime_patch(
-        current_config,
-        &desired_config,
-        current.supports_manual_routes_patch,
-    )?
+    let Some(patch) =
+        web_source_runtime_patch(current_config, &desired_config, support_manual_routes_patch)?
     else {
         let mut run_config = desired_config;
         if run_config.hostname.is_none() {
@@ -578,7 +578,9 @@ pub(super) fn prepare_web_source_runtime_reconcile_from_current(
         });
     };
     if patch == InstanceConfigPatch::default() {
-        return Ok(RuntimeReconcileAction::Unchanged(Box::new(current.clone())));
+        return Ok(RuntimeReconcileAction::Unchanged(Box::new(
+            current_config.clone(),
+        )));
     }
 
     Ok(RuntimeReconcileAction::Patch(Box::new(patch)))
@@ -591,24 +593,22 @@ pub(super) async fn apply_web_source_runtime_reconcile(
     inst_id: &str,
     desired_config: NetworkConfig,
     action: RuntimeReconcileAction,
-) -> anyhow::Result<RuntimeConfig> {
+    support_manual_routes_patch: bool,
+) -> anyhow::Result<NetworkConfig> {
     match action {
         RuntimeReconcileAction::Unchanged(current_config) => Ok(*current_config),
         RuntimeReconcileAction::Run { config, overwrite } => {
             let hostname_applied = config.hostname.is_some();
             run_web_source_instance(rpc_client, inst_id, *config, overwrite).await?;
-            let mut current_config =
-                get_runtime_config(config_client, peer_client, inst_id).await?;
-            ensure_runtime_config_converged(
-                &current_config.config,
-                &desired_config,
-                hostname_applied,
-            )?;
-            restore_omitted_hostname(
-                &mut current_config.config,
-                &desired_config,
-                hostname_applied,
-            );
+            let mut current_config = get_runtime_config(
+                config_client,
+                peer_client,
+                inst_id,
+                support_manual_routes_patch,
+            )
+            .await?;
+            ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
+            restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
         }
         RuntimeReconcileAction::Patch(patch) => {
@@ -622,18 +622,15 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                     },
                 )
                 .await?;
-            let mut current_config =
-                get_runtime_config(config_client, peer_client, inst_id).await?;
-            ensure_runtime_config_converged(
-                &current_config.config,
-                &desired_config,
-                hostname_applied,
-            )?;
-            restore_omitted_hostname(
-                &mut current_config.config,
-                &desired_config,
-                hostname_applied,
-            );
+            let mut current_config = get_runtime_config(
+                config_client,
+                peer_client,
+                inst_id,
+                support_manual_routes_patch,
+            )
+            .await?;
+            ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
+            restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
         }
     }
@@ -650,13 +647,6 @@ mod tests {
     };
 
     use super::*;
-
-    fn legacy_runtime_config(config: NetworkConfig) -> RuntimeConfig {
-        RuntimeConfig {
-            config,
-            supports_manual_routes_patch: false,
-        }
-    }
 
     fn config_with_port_forwards(port_forwards: Vec<PortForwardConfig>) -> NetworkConfig {
         NetworkConfig {
@@ -965,11 +955,8 @@ mod tests {
         current.dev_name = Some("et_3_abcd".to_string());
         let desired = config_with_port_forwards(Vec::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
-            desired,
-        )
-        .expect("prepare reconcile");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
+            .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
     }
@@ -981,11 +968,8 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
-            desired,
-        )
-        .expect("prepare reconcile");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
+            .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
     }
@@ -997,11 +981,8 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
-            desired,
-        )
-        .expect("prepare reconcile");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
+            .expect("prepare reconcile");
         let RuntimeReconcileAction::Run { overwrite, .. } = action else {
             panic!("clearing an explicit device name should require a full overwrite");
         };
@@ -1016,11 +997,8 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some("managed-device".to_string());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
-            desired,
-        )
-        .expect("prepare reconcile");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
+            .expect("prepare reconcile");
         let RuntimeReconcileAction::Run { overwrite, .. } = action else {
             panic!("explicit device name should require a full overwrite");
         };
@@ -1084,8 +1062,9 @@ mod tests {
         unmanaged_desired.network_secret = Some("new-secret".to_string());
 
         let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
+            &current,
             unmanaged_desired.clone(),
+            false,
         )
         .expect("prepare full overwrite");
         let RuntimeReconcileAction::Run { config, overwrite } = action else {
@@ -1098,8 +1077,9 @@ mod tests {
         let mut explicit_clear = unmanaged_desired;
         explicit_clear.hostname = Some(String::new());
         let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(observed_after_run.clone()),
+            &observed_after_run,
             explicit_clear,
+            false,
         )
         .expect("prepare explicit clear");
         let RuntimeReconcileAction::Patch(patch) = action else {
@@ -1120,11 +1100,8 @@ mod tests {
             ..Default::default()
         }];
 
-        let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
-            desired,
-        )
-        .expect("prepare reconcile");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
+            .expect("prepare reconcile");
         let RuntimeReconcileAction::Patch(patch) = action else {
             panic!("managed credential change must use a hot patch");
         };
@@ -1141,11 +1118,9 @@ mod tests {
         assert!(empty_manual.routes.is_empty());
 
         for (current, desired) in [(&automatic, &empty_manual), (&empty_manual, &automatic)] {
-            let action = prepare_web_source_runtime_reconcile_from_current(
-                &legacy_runtime_config(current.clone()),
-                desired.clone(),
-            )
-            .expect("prepare mode change");
+            let action =
+                prepare_web_source_runtime_reconcile_from_current(current, desired.clone(), false)
+                    .expect("prepare mode change");
             assert!(matches!(
                 action,
                 RuntimeReconcileAction::Run {
@@ -1155,8 +1130,9 @@ mod tests {
             ));
         }
         let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(empty_manual.clone()),
+            &empty_manual,
             empty_manual.clone(),
+            false,
         )
         .expect("prepare unchanged empty manual routes");
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
@@ -1171,13 +1147,12 @@ mod tests {
         nonempty.routes = vec!["10.20.0.0/24".to_owned()];
         for current in [&automatic, &empty, &nonempty] {
             for desired in [&automatic, &empty, &nonempty] {
-                let observed = RuntimeConfig {
-                    config: current.clone(),
-                    supports_manual_routes_patch: true,
-                };
-                let action =
-                    prepare_web_source_runtime_reconcile_from_current(&observed, desired.clone())
-                        .unwrap();
+                let action = prepare_web_source_runtime_reconcile_from_current(
+                    current,
+                    desired.clone(),
+                    true,
+                )
+                .unwrap();
                 if current == desired {
                     assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
                     continue;
@@ -1346,18 +1321,16 @@ mod tests {
                     } else {
                         String::new()
                     },
-                    supports_manual_routes_patch: supports_patch,
                 }));
                 let calls = Arc::new(AtomicUsize::new(0));
                 let mut peer: SessionPeerClient = Box::new(PeerReader {
                     raw: (!has_raw_config && !supports_patch).then_some(raw),
                     calls: calls.clone(),
                 });
-                let observed = get_runtime_config(&mut config, &mut peer, id)
+                let observed = get_runtime_config(&mut config, &mut peer, id, supports_patch)
                     .await
                     .unwrap();
-                assert_eq!(observed.config.enable_manual_routes, manual.then_some(true));
-                assert_eq!(observed.supports_manual_routes_patch, supports_patch);
+                assert_eq!(observed.enable_manual_routes, manual.then_some(true));
                 assert_eq!(
                     calls.load(Ordering::Relaxed),
                     usize::from(!has_raw_config && !supports_patch)
@@ -1373,7 +1346,7 @@ mod tests {
             calls: Arc::new(AtomicUsize::new(0)),
         });
         assert!(
-            get_runtime_config(&mut config, &mut peer, id)
+            get_runtime_config(&mut config, &mut peer, id, false)
                 .await
                 .is_err()
         );
@@ -1644,11 +1617,8 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("desired-host".to_string());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
-            desired,
-        )
-        .expect("prepare reconcile");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
+            .expect("prepare reconcile");
         let RuntimeReconcileAction::Patch(patch) = action else {
             panic!("hostname-only change should use a hot patch");
         };
@@ -1717,11 +1687,8 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
-            desired,
-        )
-        .expect("prepare reconcile");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
+            .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
     }
@@ -1732,11 +1699,8 @@ mod tests {
         current.hostname = Some("desired-host".to_string());
         let desired = current.clone();
 
-        let action = prepare_web_source_runtime_reconcile_from_current(
-            &legacy_runtime_config(current.clone()),
-            desired,
-        )
-        .expect("prepare reconcile");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
+            .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
     }

@@ -435,6 +435,7 @@ fn build_heartbeat_request(
             .map(Into::into)
             .collect(),
         support_heartbeat_policy: true,
+        support_manual_routes_patch: true,
     }
 }
 
@@ -748,6 +749,8 @@ mod tests {
             vec![failed]
         );
         assert!(request.support_heartbeat_policy);
+        assert!(request.support_manual_routes_patch);
+        assert!(!HeartbeatRequest::default().support_manual_routes_patch);
     }
 
     #[test]

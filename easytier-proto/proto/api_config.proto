@@ -92,10 +92,6 @@ message GetConfigRequest {
 message GetConfigResponse {
   api.manage.NetworkConfig config = 1;
   string toml_config = 2;
-  // Supports explicit manual mode patches and typed empty-manual readback.
-  // Older peers silently ignore unknown patch fields, so controllers must
-  // check this before patching the manual route mode or an empty manual list.
-  bool supports_manual_routes_patch = 3;
 }
 
 service ConfigRpc {

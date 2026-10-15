@@ -819,7 +819,6 @@ network_secret = "network-secret"
             response.config.unwrap().hostname.as_deref(),
             Some("patched-in-core")
         );
-        assert!(response.supports_manual_routes_patch);
 
         let secret = BASE64_STANDARD.encode([9u8; 32]);
         rpc.patch_config(

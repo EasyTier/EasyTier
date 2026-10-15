@@ -43,7 +43,6 @@ where
         Ok(GetConfigResponse {
             config: Some(network_config_from_toml(&config)),
             toml_config: config.dump(),
-            supports_manual_routes_patch: true,
         })
     }
 }

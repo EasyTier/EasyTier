@@ -512,9 +512,11 @@ routing. Omitting the mode preserves released RoutePatch behavior, including
 returning to automatic routing when the edited list becomes empty. This does
 not change the ordered partial-commit contract of a multi-field patch.
 
-`ConfigRpc.GetConfig.supports_manual_routes_patch` advertises this complete
-route contract, including typed empty-manual readback. The Web controller uses
-route patches only when this flag is true. Released clients still receive
+`HeartbeatRequest.support_manual_routes_patch` advertises this complete route
+contract, including typed empty-manual readback, on the WebClient Session.
+The Web controller uses the current authenticated heartbeat to choose route
+patches; observed instance configuration caches contain no capability state.
+Released clients omit the flag and still receive
 full configuration replacements for route changes. For their ambiguous empty
 readback, Web reads the existing `GetConfig.toml_config`, or, when absent, the
 instance-scoped `ShowNodeInfo` TOML used by 2.6.4. It reads only the instance ID
