@@ -14,7 +14,6 @@ use super::{
 };
 use crate::{
     common::{
-        error::Error as EtError,
         global_ctx::ArcGlobalCtx,
         ifcfg::{IfConfiger, IfConfiguerTrait},
         netns::NetNS,
@@ -42,16 +41,26 @@ use easytier_core::gateway::magic_dns::{
     MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsResolverRegistration,
     MagicDnsRoute,
 };
+use easytier_core::host::route::RouteDemand;
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
+use easytier_core::host::route::RouteSpec;
 use easytier_core::instance::CorePacketPlane;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use registry::Registration;
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
+    #[allow(dead_code)]
     tun_dev: Option<String>,
     net_ns: NetNS,
     fake_ip: Ipv4Addr,
@@ -336,7 +345,9 @@ pub struct MagicDnsServerInstance {
     _rpc_server: StandAloneServer<RuntimeRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     packet_filter: MagicDnsResolverRegistration,
+    #[allow(dead_code)]
     tun_inet: Ipv4Inet,
+    _route_registration: Option<Registration<RouteDemand>>,
 }
 
 fn get_system_config(
@@ -359,7 +370,83 @@ fn get_system_config(
     Ok(None)
 }
 
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
+async fn register_native_dns_route(
+    global_ctx: &ArcGlobalCtx,
+    tun_dev: Option<&str>,
+    fake_ip: Ipv4Addr,
+) -> anyhow::Result<Registration<RouteDemand>> {
+    let handle = global_ctx
+        .get_route_handle()
+        .context("route handle missing for native route runtime")?;
+    let cidr = cidr::Ipv4Cidr::new(fake_ip, 32)?;
+    let required = std::collections::BTreeSet::from([RouteSpec::from(cidr::IpCidr::V4(cidr))]);
+    let reg = handle
+        .register(RouteDemand::Additional(required.clone()))
+        .context("failed to register fake ip route demand")?;
+    let scope = global_ctx
+        .get_route_scope()
+        .context("native DNS route scope is missing")?;
+    let mut bindings = scope.subscribe_attachment();
+    let attachment = bindings
+        .borrow_and_update()
+        .clone()
+        .filter(|attachment| attachment.ready)
+        .context("DNS route scope is no longer attached and ready")?;
+    let mut devices = attachment.devices.subscribe();
+    let active = devices
+        .borrow_and_update()
+        .active
+        .clone()
+        .filter(|device| device.ready && tun_dev == Some(device.name.as_str()))
+        .context("DNS interface is no longer the selected ready TUN")?;
+    // Membership is desired state. Wait for the OS result before
+    // configuring DNS, and reject a replaced fd even if its name
+    // and ifindex were reused. Cancellation drops the local lease.
+    tokio::select! {
+        _ = async {
+            loop {
+                if !bindings.borrow_and_update().as_ref().is_some_and(|current| current.id == attachment.id && current.ready) { break; }
+                if bindings.changed().await.is_err() { break; }
+            }
+        } => anyhow::bail!("DNS interface changed while waiting for fake-IP route"),
+        result = tokio::time::timeout(Duration::from_secs(10), handle.wait_ready(&required, active.registration)) => {
+            result.context("timed out waiting for fake-IP route")??;
+        }
+        _ = async {
+            loop {
+                let current = devices.borrow_and_update().active.clone();
+                if !current.is_some_and(|device| device.registration == active.registration && device.ready) { break; }
+                if devices.changed().await.is_err() { break; }
+            }
+        } => anyhow::bail!("DNS interface changed while waiting for fake-IP route"),
+    }
+    anyhow::ensure!(
+        scope
+            .attachment()
+            .is_some_and(|current| current.id == attachment.id && current.ready)
+            && attachment
+                .devices
+                .snapshot()
+                .active
+                .is_some_and(|device| device.registration == active.registration && device.ready),
+        "DNS interface changed before startup completed"
+    );
+    Ok(reg)
+}
+
 impl MagicDnsServerInstance {
+    #[cfg(not(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    )))]
     async fn add_fake_ip_route(
         tun_dev_name: &str,
         fake_ip: Ipv4Addr,
@@ -369,7 +456,9 @@ impl MagicDnsServerInstance {
         let ifcfg = IfConfiger::default();
         let _guard = net_ns.guard();
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
-            Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
+            Err(crate::common::error::Error::IOError(err))
+                if err.kind() == io::ErrorKind::AlreadyExists =>
+            {
                 ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
                 ifcfg
                     .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
@@ -432,24 +521,55 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        if manage_fake_ip_route
+        let (route_registration, legacy_route_installed) = if manage_fake_ip_route
             && !tun_inet.contains(&fake_ip)
-            && let Some(tun_dev_name) = &tun_dev
         {
-            let cost = if cfg!(target_os = "windows") {
-                Some(4)
-            } else {
-                None
-            };
-            Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
-        }
+            #[cfg(all(
+                target_os = "linux",
+                feature = "linux-netlink",
+                feature = "tun",
+                not(mobile)
+            ))]
+            {
+                let registration = if !global_ctx.get_flags().no_tun {
+                    Some(register_native_dns_route(&global_ctx, tun_dev.as_deref(), fake_ip).await?)
+                } else {
+                    None
+                };
+                (registration, false)
+            }
+
+            #[cfg(not(all(
+                target_os = "linux",
+                feature = "linux-netlink",
+                feature = "tun",
+                not(mobile)
+            )))]
+            {
+                let installed = if let Some(tun_dev_name) = &tun_dev {
+                    let cost = if cfg!(target_os = "windows") {
+                        Some(4)
+                    } else {
+                        None
+                    };
+                    Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost)
+                        .await?;
+                    true
+                } else {
+                    false
+                };
+                (None, installed)
+            }
+        } else {
+            (None, false)
+        };
 
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
             tun_dev: tun_dev.clone(),
             net_ns: global_ctx.net_ns.clone(),
             fake_ip,
-            manage_fake_ip_route,
+            manage_fake_ip_route: legacy_route_installed,
             route_store: MagicDnsRecordStore::default(),
             record_apply: tokio::sync::Mutex::new(()),
             system_config: get_system_config(tun_dev.as_deref())?,
@@ -485,6 +605,7 @@ impl MagicDnsServerInstance {
             data,
             packet_filter,
             tun_inet,
+            _route_registration: route_registration,
         })
     }
 
@@ -496,7 +617,8 @@ impl MagicDnsServerInstance {
             }
         }
 
-        if self.data.manage_fake_ip_route
+        if self._route_registration.is_none()
+            && self.data.manage_fake_ip_route
             && !self.tun_inet.contains(&self.data.fake_ip)
             && let Some(tun_dev_name) = &self.data.tun_dev
         {
@@ -510,5 +632,148 @@ impl MagicDnsServerInstance {
 impl Drop for MagicDnsServerInstance {
     fn drop(&mut self) {
         println!("MagicDnsServerInstance dropped");
+    }
+}
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
+mod route_tests {
+    use super::*;
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
+    use easytier_core::host::route::{RouteHandle, RouteRegistry, RouteStatus};
+
+    struct AttachmentFixture {
+        _inputs: registry::Registry<crate::instance::route::scope::RouteInput>,
+        _lease: crate::instance::route::scope::RouteScopeLease,
+    }
+
+    fn fixture() -> (ArcGlobalCtx, RouteRegistry, AttachmentFixture) {
+        let ctx = get_mock_global_ctx();
+        // Synthetic device facts let these tests exercise startup ownership
+        // without requiring privileged TUN creation.
+        ctx.tun_devices.set_for_test(Some(42));
+        let routes = RouteRegistry::default();
+        ctx.set_route_handle(Some(RouteHandle::new(routes.clone())));
+        let scope =
+            crate::instance::route::scope::RouteScope::with_registry(ctx.get_id(), routes.clone());
+        scope
+            .prepare(easytier_core::config::runtime::CoreRuntimeConfigStore::new(
+                Default::default(),
+                Arc::new(Default::default()),
+            ))
+            .unwrap();
+        let inputs = registry::Registry::default();
+        let lease = scope
+            .attach(&inputs, ctx.tun_devices.clone(), uuid::Uuid::new_v4())
+            .unwrap();
+        scope.mark_ready(scope.attachment().unwrap().id);
+        ctx.set_route_scope(Some(scope));
+        (
+            ctx,
+            routes,
+            AttachmentFixture {
+                _inputs: inputs,
+                _lease: lease,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn native_dns_waits_for_os_feedback_and_cancellation_withdraws() {
+        let (ctx, routes, _attachment) = fixture();
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        let mut startup = Box::pin(register_native_dns_route(
+            &ctx,
+            Some(&active.name),
+            "100.100.100.100".parse().unwrap(),
+        ));
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        assert_eq!(routes.len(), 1);
+        drop(startup);
+        assert!(routes.is_empty());
+        let mut startup = Box::pin(register_native_dns_route(
+            &ctx,
+            Some(&active.name),
+            "100.100.100.100".parse().unwrap(),
+        ));
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        routes.publish_status(RouteStatus {
+            device_registration: Some(active.registration),
+            ready: std::collections::BTreeSet::from([RouteSpec::from(
+                "100.100.100.100/32".parse::<cidr::IpCidr>().unwrap(),
+            )]),
+            closed: false,
+        });
+        let registration = startup.await.unwrap();
+        assert_eq!(routes.len(), 1);
+        drop(registration);
+        assert!(routes.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn native_dns_rejects_scope_rebinding_even_with_the_same_physical_fd() {
+        let (ctx, routes, _attachment) = fixture();
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        let mut startup = Box::pin(register_native_dns_route(
+            &ctx,
+            Some(&active.name),
+            "100.100.100.100".parse().unwrap(),
+        ));
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        let scope = ctx.get_route_scope().unwrap();
+        let replacement_inputs = registry::Registry::default();
+        let _replacement = scope
+            .attach(
+                &replacement_inputs,
+                ctx.tun_devices.clone(),
+                uuid::Uuid::new_v4(),
+            )
+            .unwrap();
+        scope.mark_ready(scope.attachment().unwrap().id);
+        assert!(
+            startup
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("interface changed")
+        );
+        assert!(routes.is_empty());
+        assert_eq!(
+            ctx.tun_devices.snapshot().active.unwrap().registration,
+            active.registration
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn native_dns_rejects_fd_replacement_and_times_out_without_feedback() {
+        let (ctx, routes, _attachment) = fixture();
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        let mut startup = Box::pin(register_native_dns_route(
+            &ctx,
+            Some(&active.name),
+            "100.100.100.100".parse().unwrap(),
+        ));
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        ctx.tun_devices.set_for_test(Some(42));
+        assert!(
+            startup
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("interface changed")
+        );
+        assert!(routes.is_empty());
+        let active = ctx.tun_devices.snapshot().active.unwrap();
+        let error =
+            register_native_dns_route(&ctx, Some(&active.name), "100.100.100.100".parse().unwrap())
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(routes.is_empty());
     }
 }

@@ -214,6 +214,7 @@ impl AttachedPeerRuntime {
             Arc::new(()),
             None,
             Arc::new(()),
+            None,
         )?);
         if let Err(error) = peer_manager
             .follow_network_policy(network_runtime_config, config.groups)
@@ -611,6 +612,7 @@ mod tests {
                 Arc::new(()),
                 None,
                 Arc::new(()),
+                None,
             )
             .unwrap(),
         );

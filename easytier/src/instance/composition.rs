@@ -77,6 +77,7 @@ pub(super) fn compose_native_core_instance(
         runtime_host.clone(),
         host_config,
     );
+    adapters.routes = runtime_host.route_handle();
     adapters.instance_runtime = runtime_host;
     NativeCoreInstance::from_toml(toml_config, adapters)
 }
@@ -256,7 +257,7 @@ fn configure_runtime_core_host_adapters(
     }
     #[cfg(feature = "proxy-cidr-monitor")]
     {
-        adapters.proxy_cidr_monitor_enabled = true;
+        adapters.proxy_cidr_monitor_enabled = global_ctx.get_route_handle().is_none();
     }
     #[cfg(feature = "public-ipv6-provider")]
     if host_config.public_ipv6_provider_supported {

@@ -16,6 +16,7 @@ use crate::common::{
 
 use easytier_core::{
     host::packet::{HostPacket, HostPacketReceiver},
+    host::route::{RouteDemand, RouteSpec},
     instance::CorePacketPlane,
     packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     tunnel::{
@@ -39,6 +40,10 @@ use tokio_util::bytes::Bytes;
 #[cfg(target_os = "windows")]
 use tokio_util::task::AbortOnDropHandle;
 use tun::{AbstractDevice, AsyncDevice, Configuration, Layer};
+#[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+type NativeTunDevice = crate::instance::route::device::DeviceResource<AsyncDevice>;
+#[cfg(not(all(target_os = "linux", feature = "linux-netlink", not(mobile))))]
+type NativeTunDevice = AsyncDevice;
 use zerocopy::{NativeEndian, NetworkEndian};
 
 #[cfg(target_os = "windows")]
@@ -49,7 +54,7 @@ use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicMem
 pin_project! {
     pub struct TunStream {
         #[pin]
-        l: BiLock<AsyncDevice>,
+        l: BiLock<NativeTunDevice>,
         cur_buf: BytesMut,
         has_packet_info: bool,
         payload_offset: usize,
@@ -57,7 +62,7 @@ pin_project! {
 }
 
 impl TunStream {
-    pub fn new(l: BiLock<AsyncDevice>, has_packet_info: bool) -> Self {
+    fn new(l: BiLock<NativeTunDevice>, has_packet_info: bool) -> Self {
         let mut payload_offset = ZCPacketType::NIC.get_packet_offsets().payload_offset;
         if has_packet_info {
             payload_offset -= 4;
@@ -201,7 +206,7 @@ impl ZCPacketToBytes for TunZCPacketToBytes {
 pin_project! {
     pub struct TunAsyncWrite {
         #[pin]
-        l: BiLock<AsyncDevice>,
+        l: BiLock<NativeTunDevice>,
     }
 }
 
@@ -277,6 +282,8 @@ pub struct VirtualNic {
     // itself may already have disappeared when its forwarding tasks stop.
     #[cfg(target_os = "windows")]
     name_reservation: Option<std::os::windows::io::OwnedHandle>,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+    device_state: Option<Arc<crate::instance::route::device::TunDeviceState>>,
 }
 
 impl Drop for VirtualNic {
@@ -309,7 +316,18 @@ impl VirtualNic {
             ifcfg: Box::new(IfConfiger::default()),
             #[cfg(target_os = "windows")]
             name_reservation: None,
+            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+            device_state: None,
         }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+    pub(crate) fn with_device_state(
+        mut self,
+        state: Arc<crate::instance::route::device::TunDeviceState>,
+    ) -> Self {
+        self.device_state = Some(state);
+        self
     }
 
     /// Check and create TUN device node if necessary on Linux systems
@@ -629,6 +647,8 @@ impl VirtualNic {
         ));
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        let dev = crate::instance::route::device::DeviceResource::untracked(dev);
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -646,6 +666,25 @@ impl VirtualNic {
 
     pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
+
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        let destroy_on_close = {
+            use std::os::fd::AsRawFd;
+            let mut request: nix::libc::ifreq = unsafe { std::mem::zeroed() };
+            if unsafe {
+                nix::libc::ioctl(
+                    dev.as_raw_fd(),
+                    nix::libc::TUNGETIFF as nix::libc::Ioctl,
+                    &mut request,
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            // Attaching a persistent TUN does not grant authority to infer its
+            // destruction from this descriptor closing.
+            unsafe { request.ifr_ifru.ifru_flags as i32 & nix::libc::IFF_PERSIST == 0 }
+        };
 
         #[cfg(not(target_os = "freebsd"))]
         let ifname = dev.tun_name()?;
@@ -712,6 +751,20 @@ impl VirtualNic {
         }
 
         let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        let dev = if let Some(state) = &self.device_state {
+            let ifindex = self.config.net_ns.run(|| {
+                crate::common::ifcfg::netlink::NetlinkIfConfiger::get_interface_index(&ifname)
+            })?;
+            let lifetime = if destroy_on_close {
+                state.attach(ifname.clone(), ifindex)
+            } else {
+                state.attach_external(ifname.clone(), ifindex)
+            };
+            crate::instance::route::device::DeviceResource::new(dev, lifetime)
+        } else {
+            crate::instance::route::device::DeviceResource::untracked(dev)
+        };
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -1067,6 +1120,8 @@ pub struct NicCtx {
     close_notifier: Arc<Notify>,
 
     backend: NicBackend,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+    _route_binding: Option<super::route::scope::RouteScopeLease>,
     tasks: JoinSet<()>,
 
     #[cfg(target_os = "windows")]
@@ -1087,6 +1142,9 @@ impl NicCtx {
     }
 
     pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
+        if self.global_ctx.get_route_handle().is_some() {
+            return None;
+        }
         match self.backend {
             NicBackend::Dedicated(_) => None,
             NicBackend::Shared(_) => Some(self.backend.clone()),
@@ -1108,6 +1166,8 @@ impl NicCtx {
             close_notifier,
 
             backend,
+            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+            _route_binding: None,
             tasks: JoinSet::new(),
 
             #[cfg(target_os = "windows")]
@@ -1129,8 +1189,15 @@ impl NicCtx {
             net_ns: NetNS::new(None),
             ..nic_config
         };
-        // Only an explicitly configured name opts into sharing.
-        let backend = if cfg!(mobile) || !global_ctx.get_flags().dev_name.is_empty() {
+        // Managed Linux NICs use one outlet implementation; anonymous devices
+        // receive a private logical registry key, named devices share it.
+        let backend = if cfg!(all(
+            target_os = "linux",
+            feature = "linux-netlink",
+            not(mobile)
+        )) || cfg!(mobile)
+            || !global_ctx.get_flags().dev_name.is_empty()
+        {
             NicBackend::Shared(registry.lock().await.create_member(
                 nic_config.dev_name.clone(),
                 nic_config,
@@ -1138,7 +1205,10 @@ impl NicCtx {
                 close_notifier.clone(),
             ))
         } else {
-            NicBackend::Dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config))))
+            let nic = VirtualNic::new(nic_config);
+            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+            let nic = nic.with_device_state(global_ctx.tun_devices.clone());
+            NicBackend::Dedicated(Arc::new(Mutex::new(nic)))
         };
 
         Self::new_with_backend(
@@ -1295,6 +1365,7 @@ impl NicCtx {
         }
     }
 
+    #[cfg_attr(all(target_os = "linux", feature = "linux-netlink"), allow(dead_code))]
     async fn apply_route_changes(
         backend: &NicBackend,
         cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
@@ -1447,6 +1518,40 @@ impl NicCtx {
     async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
         let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
+        if let Some(handle) = global_ctx.get_route_handle() {
+            let registration = handle
+                .register(RouteDemand::additional([]))
+                .ok_or_else(|| anyhow::anyhow!("route runtime is stopping"))?;
+            // Subscribe before reading the authoritative snapshot. Broadcast
+            // messages invalidate it; lag must not discard membership changes.
+            let mut events = global_ctx.subscribe();
+            self.tasks.spawn(async move {
+                loop {
+                    let latest = packet_plane.public_ipv6_routes().await;
+                    let destinations = latest.into_iter().map(|route| {
+                        cidr::IpCidr::V6(
+                            cidr::Ipv6Cidr::new(route.first_address(), route.network_length())
+                                .expect("valid IPv6 network"),
+                        )
+                    });
+                    if registration
+                        .replace(RouteDemand::additional(destinations))
+                        .is_none()
+                    {
+                        break;
+                    }
+                    loop {
+                        match events.recv().await {
+                            Ok(GlobalCtxEvent::PublicIpv6RoutesUpdated(..))
+                            | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                            Ok(_) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        }
+                    }
+                }
+            });
+            return Ok(());
+        }
         let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
 
@@ -1488,19 +1593,33 @@ impl NicCtx {
         let global_ctx = self.global_ctx.clone();
         let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
+        let default_route = global_ctx
+            .get_route_handle()
+            .map(|handle| {
+                handle
+                    .register(RouteDemand::additional([]))
+                    .ok_or_else(|| anyhow::anyhow!("route runtime is stopping"))
+            })
+            .transpose()?;
 
         let mut current_addr = packet_plane.public_ipv6_addr().await;
         if let Some(addr) = current_addr {
             if let Err(err) = backend.link_up().await {
                 tracing::warn!(?err, "failed to bring public ipv6 nic link up");
             }
-            if let Err(err) = backend
+            let configured = match backend
                 .add_ipv6(addr.address(), addr.network_length() as i32)
                 .await
             {
-                tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
-            }
-            if let Err(err) = backend
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
+                    false
+                }
+            };
+            if let Some(registration) = &default_route {
+                let _ = registration.replace(Self::public_ipv6_default_demand(configured));
+            } else if let Err(err) = backend
                 .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
                 .await
             {
@@ -1530,10 +1649,9 @@ impl NicCtx {
                     tracing::warn!(?err, "failed to bring public ipv6 nic link up");
                 }
                 if let Some(old) = old {
-                    if let Err(err) = backend
-                        .remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0)
-                        .await
-                    {
+                    if let Some(registration) = &default_route {
+                        let _ = registration.replace(Self::public_ipv6_default_demand(false));
+                    } else if let Err(err) = backend.remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0).await {
                         tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to remove default public ipv6 route");
                     }
                     if let Err(err) = backend.remove_ipv6(Some(old)).await {
@@ -1541,13 +1659,16 @@ impl NicCtx {
                     }
                 }
                 if let Some(new) = new {
-                    if let Err(err) = backend
-                        .add_ipv6(new.address(), new.network_length() as i32)
-                        .await
-                    {
-                        tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
-                    }
-                    if let Err(err) = backend
+                    let configured = match backend.add_ipv6(new.address(), new.network_length() as i32).await {
+                        Ok(()) => true,
+                        Err(err) => {
+                            tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
+                            false
+                        }
+                    };
+                    if let Some(registration) = &default_route {
+                        let _ = registration.replace(Self::public_ipv6_default_demand(configured));
+                    } else if let Err(err) = backend
                         .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
                         .await
                     {
@@ -1560,13 +1681,55 @@ impl NicCtx {
         Ok(())
     }
 
+    async fn publish_ready(&self) -> Result<(), Error> {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        if let Some(scope) = self.global_ctx.get_route_scope() {
+            let attachment = scope
+                .attachment()
+                .ok_or_else(|| anyhow::anyhow!("route scope is not attached"))?;
+            let active = attachment
+                .devices
+                .snapshot()
+                .active
+                .ok_or_else(|| anyhow::anyhow!("route outlet has no TUN device"))?;
+            attachment.devices.mark_ready(active.registration);
+            scope.mark_ready(attachment.id);
+        }
+        self.global_ctx
+            .set_tun_device_ready(self.tun_ifname().await?);
+        Ok(())
+    }
+
+    fn public_ipv6_default_demand(configured: bool) -> RouteDemand {
+        let routes = configured
+            .then(|| {
+                RouteSpec::new(
+                    cidr::IpCidr::V6(cidr::Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0).unwrap()),
+                    std::num::NonZeroU32::new(5).unwrap(),
+                )
+            })
+            .into_iter()
+            .collect();
+        RouteDemand::Additional(routes)
+    }
+
     pub async fn run(
         &mut self,
         ipv4_addr: Option<cidr::Ipv4Inet>,
         ipv6_addr: Option<cidr::Ipv6Inet>,
     ) -> Result<(), Error> {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+        if let Some(scope) = self.global_ctx.get_route_scope() {
+            let NicBackend::Shared(member) = &self.backend else {
+                return Err(
+                    anyhow::anyhow!("managed route scope requires a logical NIC outlet").into(),
+                );
+            };
+            self._route_binding = Some(member.attach_route_scope(scope).await?);
+        }
         let tunnel = match self.backend.create_dev().await {
             Ok(ret) => {
+                #[cfg(target_os = "windows")]
                 let ifname = self.tun_ifname().await?;
 
                 #[cfg(target_os = "windows")]
@@ -1574,7 +1737,6 @@ impl NicCtx {
                     let _ = RegistryManager::reg_change_catrgory_in_profile(&ifname);
                 }
 
-                self.global_ctx.set_tun_device_ready(ifname);
                 ret
             }
             Err(err) => {
@@ -1597,11 +1759,15 @@ impl NicCtx {
             self.assign_ipv6_to_tun_device(ipv6_addr).await?;
         }
 
-        self.run_proxy_cidrs_route_updater().await?;
+        if self.global_ctx.get_route_handle().is_none() {
+            self.run_proxy_cidrs_route_updater().await?;
+        }
         self.run_public_ipv6_route_updater().await?;
         // Keep the updater running so runtime config patches can enable auto mode
         // without recreating the NIC.
         self.run_public_ipv6_addr_updater().await?;
+
+        self.publish_ready().await?;
 
         Ok(())
     }

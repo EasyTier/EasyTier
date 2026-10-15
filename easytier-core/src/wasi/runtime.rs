@@ -25,6 +25,7 @@ impl InstanceRuntimeHost for WasiInstanceRuntimeHost {
     async fn prepare(
         &self,
         _packet_plane: std::sync::Arc<CorePacketPlane>,
+        _runtime_config: crate::config::runtime::CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<std::sync::Arc<dyn DhcpHost>>> {
         Ok(Some(std::sync::Arc::new(WasiInstanceRuntimeHost)))
     }

@@ -39,14 +39,98 @@ pub async fn prepare_env(
 
 async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPacketReceiver) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
-    let adapters = runtime_core_host_adapters(
+
+    #[cfg(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    ))]
+    let route_runtime = {
+        let scope = crate::instance::route::scope::RouteScope::new(ctx.get_id());
+        ctx.set_route_handle(Some(scope.handle()));
+        ctx.set_route_scope(Some(scope.clone()));
+        Arc::new(TestRouteRuntime {
+            ctx: ctx.clone(),
+            scope,
+        })
+    };
+
+    let mut adapters = runtime_core_host_adapters(
         ctx.clone(),
         CoreProcessRuntime::new(),
         Arc::new(HostPacketChannelSink::new(packet_sink)),
     );
+    #[cfg(all(
+        target_os = "linux",
+        feature = "linux-netlink",
+        feature = "tun",
+        not(mobile)
+    ))]
+    {
+        adapters.routes = Some(route_runtime.scope.handle());
+        adapters.instance_runtime = route_runtime;
+    }
     let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
     core_instance.start().await.unwrap();
     (core_instance, HostPacketReceiver::new(packet_receiver))
+}
+
+/// Tests create their TUN separately, but use the core's actual configuration
+/// authority when starting the route manager through the Host lifecycle.
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
+struct TestRouteRuntime {
+    ctx: ArcGlobalCtx,
+    scope: crate::instance::route::scope::RouteScope,
+}
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
+#[async_trait::async_trait]
+impl easytier_core::instance::InstanceRuntimeHost for TestRouteRuntime {
+    async fn prepare(
+        &self,
+        _packet_plane: Arc<easytier_core::instance::CorePacketPlane>,
+        runtime_config: easytier_core::config::runtime::CoreRuntimeConfigStore,
+    ) -> anyhow::Result<Option<Arc<dyn easytier_core::gateway::dhcp::DhcpHost>>> {
+        self.scope.prepare(runtime_config)?;
+        Ok(None)
+    }
+
+    fn request_shutdown(&self) {
+        self.scope.close();
+        self.ctx.set_route_handle(None);
+        self.ctx.set_route_scope(None);
+    }
+
+    async fn shutdown(&self) {
+        self.request_shutdown();
+        tokio::time::timeout(Duration::from_secs(5), self.scope.wait_withdrawn())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "tun",
+    not(mobile)
+))]
+impl Drop for TestRouteRuntime {
+    fn drop(&mut self) {
+        easytier_core::instance::InstanceRuntimeHost::request_shutdown(self);
+    }
 }
 
 pub async fn prepare_env_with_tld_dns_zone(
