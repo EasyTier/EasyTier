@@ -24,11 +24,12 @@ use crate::client_manager::{
 };
 
 async fn recv_latest_heartbeat(
-    heartbeat_waiter: &mut broadcast::Receiver<HeartbeatRequest>,
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    heartbeat_waiter: &mut broadcast::Receiver<()>,
 ) -> Option<HeartbeatRequest> {
-    let mut req = loop {
+    loop {
         match heartbeat_waiter.recv().await {
-            Ok(req) => break req,
+            Ok(()) => break,
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 tracing::warn!(
                     skipped,
@@ -40,21 +41,23 @@ async fn recv_latest_heartbeat(
                 return None;
             }
         }
-    };
+    }
 
     // Drop any heartbeat backlog accumulated while the previous reconcile
     // round was doing DB/RPC IO. The newest heartbeat has the freshest
     // runtime instance list, which is all this task needs.
     loop {
         match heartbeat_waiter.try_recv() {
-            Ok(next_req) => req = next_req,
+            Ok(()) => {}
             Err(broadcast::error::TryRecvError::Empty) => break,
             Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
             Err(broadcast::error::TryRecvError::Closed) => return None,
         }
     }
 
-    Some(req)
+    // Notifications can be delayed by validation or publication IO. Read the
+    // current heartbeat instead of replaying the snapshot taken before that IO.
+    session_data.upgrade()?.read().await.req()
 }
 
 struct SessionClients {
@@ -65,7 +68,7 @@ struct SessionClients {
 
 pub(super) async fn reconcile_network_configs_on_heartbeat(
     session_data: std::sync::Weak<RwLock<SessionData>>,
-    mut heartbeat_waiter: broadcast::Receiver<HeartbeatRequest>,
+    mut heartbeat_waiter: broadcast::Receiver<()>,
     storage: WeakRefStorage,
     rpc_client: SessionRpcClient,
     config_client: SessionConfigClient,
@@ -78,7 +81,7 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
     };
     let mut cache = ReconcileCache::default();
     loop {
-        let Some(req) = recv_latest_heartbeat(&mut heartbeat_waiter).await else {
+        let Some(req) = recv_latest_heartbeat(&session_data, &mut heartbeat_waiter).await else {
             return;
         };
         let Some(storage) = storage.upgrade() else {

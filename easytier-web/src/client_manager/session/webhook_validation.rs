@@ -408,6 +408,7 @@ pub(super) async fn apply_success(
         validation_notify,
         runtime_req,
         session_epoch,
+        notify_runtime,
     ) = {
         let mut data = session_data.write().await;
         let Some(runtime_req) = data.req.clone() else {
@@ -436,6 +437,7 @@ pub(super) async fn apply_success(
             return;
         }
 
+        let notify_runtime = !data.auth_state.is_authorized();
         let previous_connected_binding_version = data.webhook_connected_binding_version;
         let client_url = data.client_url.clone();
         let is_new_storage_token = data.storage_token.is_none();
@@ -520,6 +522,7 @@ pub(super) async fn apply_success(
             validation_notify,
             runtime_req,
             data.session_epoch,
+            notify_runtime,
         )
     };
 
@@ -541,7 +544,9 @@ pub(super) async fn apply_success(
         .await;
     }
 
-    let _ = notifier.send(runtime_req);
+    if notify_runtime {
+        let _ = notifier.send(());
+    }
 }
 
 async fn wait_webhook_connection_transition(
@@ -562,6 +567,87 @@ async fn wait_webhook_connection_transition(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unchanged_validation_does_not_repeat_runtime_notifications() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage.db().auto_create_user("token").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        {
+            let mut data = session_data.write().await;
+            data.storage = storage.weak_ref();
+            data.auth_state = SessionAuthState::Init;
+        }
+        let mut notifications = session_data.read().await.heartbeat_waiter();
+        for attempt in 0..100 {
+            let (input, epoch) = {
+                let data = session_data.read().await;
+                (
+                    WebhookValidationInput {
+                        storage: storage.clone(),
+                        webhook_config: data.webhook_config.clone(),
+                        client_url: data.client_url.clone(),
+                        applied_config_revision: (attempt > 0).then(|| "current".to_owned()),
+                        applied_config_revision_known: attempt > 0,
+                        failed_instance_ids: Vec::new(),
+                        req: data.req.clone().unwrap(),
+                        machine_id,
+                    },
+                    data.webhook_validation_change_epoch,
+                )
+            };
+            apply_success(
+                &Arc::downgrade(&session_data),
+                input,
+                WebhookHeartbeatValidation {
+                    config_revision: "current".to_owned(),
+                    binding_version: if attempt == 99 { 2 } else { 1 },
+                },
+                user_id,
+                epoch,
+            )
+            .await;
+            if attempt == 0 {
+                notifications
+                    .try_recv()
+                    .expect("initial authentication wakes runtime");
+                let data = session_data.read().await;
+                let mut runtime = data.managed_runtime();
+                runtime.applied_config_revision = Some("current".to_owned());
+                runtime.applied_config_revision_known = true;
+            } else {
+                assert!(matches!(
+                    notifications.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ));
+            }
+        }
+        // A fresh heartbeat still wakes the reconciler after repeated success.
+        let instance_id = uuid::Uuid::new_v4();
+        let mut fresh = session_data.read().await.req.clone().unwrap();
+        fresh.running_network_instances = vec![instance_id.into()];
+        SessionRpcService {
+            data: session_data.clone(),
+            heartbeat_policy: super::super::HeartbeatPolicy::default(),
+        }
+        .handle_heartbeat(fresh)
+        .await
+        .unwrap();
+        notifications
+            .try_recv()
+            .expect("fresh heartbeat wakes runtime");
+        assert_eq!(
+            session_data
+                .read()
+                .await
+                .req
+                .as_ref()
+                .unwrap()
+                .running_network_instances,
+            vec![instance_id.into()]
+        );
+    }
 
     async fn validation_session(machine_id: uuid::Uuid) -> Arc<RwLock<SessionData>> {
         let storage = Storage::new(crate::db::Db::memory_db().await);

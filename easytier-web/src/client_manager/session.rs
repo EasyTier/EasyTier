@@ -135,7 +135,7 @@ pub struct SessionData {
     binding_version: Option<u64>,
     managed_runtime: SharedManagedRuntimeState,
     direct_run_failed_instance_ids: HashSet<String>,
-    notifier: broadcast::Sender<HeartbeatRequest>,
+    notifier: broadcast::Sender<()>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
     heartbeat_count: std::sync::atomic::AtomicU32,
@@ -185,7 +185,7 @@ impl SessionData {
         self.req.clone()
     }
 
-    pub fn heartbeat_waiter(&self) -> broadcast::Receiver<HeartbeatRequest> {
+    pub fn heartbeat_waiter(&self) -> broadcast::Receiver<()> {
         self.notifier.subscribe()
     }
 
@@ -749,12 +749,12 @@ impl SessionRpcService {
                 );
             }
             let runtime_notify = (authorized && data.storage_token.is_some())
-                .then(|| (data.notifier.clone(), runtime_req));
+                .then(|| data.notifier.clone());
             (notify, runtime_notify)
         };
 
-        if let Some((notifier, runtime_req)) = runtime_notify {
-            let _ = notifier.send(runtime_req);
+        if let Some(notifier) = runtime_notify {
+            let _ = notifier.send(());
         }
         if let Some(notify) = notify {
             notify.notify_one();
@@ -859,7 +859,7 @@ impl SessionRpcService {
 
         let report_time = Self::heartbeat_report_timestamp(&runtime_req);
         storage.update_session_client(storage_token, report_time, true, session_epoch);
-        let _ = notifier.send(runtime_req);
+        let _ = notifier.send(());
         if let Some(notify) = validation_notify {
             notify.notify_one();
         }
@@ -1061,10 +1061,10 @@ impl Session {
             {
                 return;
             }
-            data.req.clone().map(|req| (data.notifier.clone(), req))
+            data.req.as_ref().map(|_| data.notifier.clone())
         };
-        if let Some((notifier, req)) = notify {
-            let _ = notifier.send(req);
+        if let Some(notifier) = notify {
+            let _ = notifier.send(());
         }
     }
 
@@ -1082,10 +1082,10 @@ impl Session {
             runtime.runtime_config_epoch = runtime.runtime_config_epoch.wrapping_add(1);
             runtime.runtime_config_cache_epoch = runtime.runtime_config_cache_epoch.wrapping_add(1);
             drop(runtime);
-            data.req.clone().map(|req| (data.notifier.clone(), req))
+            data.req.as_ref().map(|_| data.notifier.clone())
         };
-        if let Some((notifier, req)) = notify {
-            let _ = notifier.send(req);
+        if let Some(notifier) = notify {
+            let _ = notifier.send(());
         }
     }
 
@@ -1805,7 +1805,7 @@ mod tests {
         assert_eq!(data.binding_version, Some(1));
         assert_eq!(data.webhook_connected_binding_version, Some(1));
         drop(data);
-        assert_eq!(heartbeat_waiter.recv().await.unwrap().user_token, "token");
+        heartbeat_waiter.recv().await.unwrap();
         assert!(
             storage
                 .db()
