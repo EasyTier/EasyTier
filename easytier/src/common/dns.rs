@@ -118,12 +118,14 @@ impl SystemDnsResolver {
                 .acquire_owned()
                 .await
                 .context("system DNS lookup slot closed")?;
-            tokio::spawn(async move {
-                let _permit = permit;
-                system_lookup.await
-            })
-            .await
-            .context("system DNS lookup task failed")?
+            crate::host_runtime::native_host_runtime()
+                .shared_executor()?
+                .spawn(async move {
+                    let _permit = permit;
+                    system_lookup.await
+                })
+                .await
+                .context("system DNS lookup task failed")?
         };
 
         match tokio::time::timeout(self.timeout, system_attempt).await {

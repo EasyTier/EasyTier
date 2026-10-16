@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     io,
     net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -21,6 +24,7 @@ use easytier_core::{
 
 use crate::{
     common::{
+        native_executor::NativeExecutor,
         netns::{NetNS, NetNsId, PlatformNamespace},
         network::{collect_interfaces, collect_local_ip_addrs},
     },
@@ -33,22 +37,73 @@ use crate::{
 
 /// Process-wide directory and owner of native services.
 /// Instance I/O uses a capability bound to one canonical NetNS.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NativeHostRuntime {
     namespaces: Mutex<HashMap<NetNsId, Arc<NetNS>>>,
     default_namespace: OnceLock<Arc<NetNS>>,
+    shared: OnceLock<Result<NativeExecutor, String>>,
+    shared_initialization: Mutex<()>,
+    closing: AtomicBool,
 }
 
 static NATIVE_HOST_RUNTIME: OnceLock<Arc<NativeHostRuntime>> = OnceLock::new();
 
 pub(crate) fn native_host_runtime() -> Arc<NativeHostRuntime> {
     NATIVE_HOST_RUNTIME
-        .get_or_init(|| Arc::new(NativeHostRuntime::default()))
+        .get_or_init(|| Arc::new(NativeHostRuntime::new()))
         .clone()
 }
 
 impl NativeHostRuntime {
+    fn new() -> Self {
+        Self {
+            namespaces: Mutex::new(HashMap::new()),
+            default_namespace: OnceLock::new(),
+            shared: OnceLock::new(),
+            shared_initialization: Mutex::new(()),
+            closing: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn shared_executor(&self) -> io::Result<tokio::runtime::Handle> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(io::Error::other("native host runtime is closing"));
+        }
+        let result = if let Some(shared) = self.shared.get() {
+            shared
+        } else {
+            let _initialization = self.shared_initialization.lock().unwrap();
+            if self.closing.load(Ordering::Acquire) {
+                return Err(io::Error::other("native host runtime is closing"));
+            }
+            self.shared
+                .get_or_init(|| NativeExecutor::shared().map_err(|error| error.to_string()))
+        };
+        result
+            .as_ref()
+            .map(NativeExecutor::handle)
+            .map_err(|error| io::Error::other(error.clone()))
+    }
+
+    // Called only after domain services have completed physical cleanup.
+    pub(crate) fn request_executor_shutdown(&self) {
+        self.closing.store(true, Ordering::Release);
+        let _initialization = self.shared_initialization.lock().unwrap();
+        if let Some(Ok(shared)) = self.shared.get() {
+            shared.request_shutdown();
+        }
+    }
+
+    pub(crate) async fn wait_executor_stopped(&self) {
+        if let Some(Ok(shared)) = self.shared.get() {
+            shared.wait_stopped().await;
+        }
+    }
+
     pub(crate) fn intern_namespace(&self, platform: PlatformNamespace) -> io::Result<Arc<NetNS>> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(io::Error::other("native host runtime is closing"));
+        }
         let candidate = Arc::new(NetNS::from_platform(platform));
         let namespace = {
             let mut entries = self.namespaces.lock().unwrap();
@@ -336,6 +391,71 @@ impl DnsRecordResolver for NativeHostRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shared_reactor_survives_the_instance_that_first_initialized_it() {
+        use std::time::Duration;
+        let host = Arc::new(NativeHostRuntime::new());
+        let first = NativeExecutor::new(false, 1).unwrap();
+        let first_handle = first.handle();
+        let namespace = NetNS::current().unwrap();
+        let initialize_host = host.clone();
+        let socket = first_handle
+            .spawn(async move {
+                let shared = initialize_host.shared_executor().unwrap();
+                shared
+                    .spawn(async move {
+                        namespace
+                            .run(|| {
+                                let socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
+                                socket.set_nonblocking(true)?;
+                                tokio::net::UdpSocket::from_std(socket)
+                            })
+                            .unwrap()
+                            .unwrap()
+                    })
+                    .await
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+        // Use a synchronous socket construction in the domain, and ensure the
+        // async resource was actually registered on the shared runtime.
+        let address = socket.local_addr().unwrap();
+        let shared_id = host.shared_executor().unwrap().id();
+        assert_ne!(shared_id, first_handle.id());
+        first.request_shutdown();
+        tokio::time::timeout(Duration::from_secs(5), first.wait_stopped())
+            .await
+            .unwrap();
+        let second = NativeExecutor::new(false, 1).unwrap();
+        let socket = Arc::new(socket);
+        let receive = socket.clone();
+        let receive = second.handle().spawn(async move {
+            let mut packet = [0; 32];
+            let length = receive.recv_from(&mut packet).await.unwrap().0;
+            packet[..length].to_vec()
+        });
+        let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        sender
+            .send_to(b"after-first-runtime", address)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), receive)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"after-first-runtime"
+        );
+        assert_eq!(host.shared_executor().unwrap().id(), shared_id);
+        drop(socket);
+        host.request_executor_shutdown();
+        tokio::time::timeout(Duration::from_secs(5), host.wait_executor_stopped())
+            .await
+            .unwrap();
+        assert!(host.shared_executor().is_err());
+    }
 
     #[test]
     fn native_host_runtime_is_process_wide() {

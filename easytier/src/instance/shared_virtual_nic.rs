@@ -2,16 +2,13 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     net::{Ipv4Addr, Ipv6Addr},
     sync::{
-        Arc, LazyLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 use cidr::{Ipv4Inet, Ipv6Inet};
-use tokio::{
-    runtime::{Builder, Runtime},
-    sync::{Mutex, Notify},
-};
+use tokio::sync::{Mutex, Notify};
 
 use crate::common::error::Error;
 use easytier_core::tunnel::Tunnel;
@@ -36,15 +33,12 @@ pub type SharedVirtualNicMemberId = uuid::Uuid;
 pub(super) type SharedVirtualNicMemberRegistrationId = uuid::Uuid;
 pub(crate) type ArcSharedVirtualNicRegistry = Arc<Mutex<SharedVirtualNicRegistry>>;
 
-// The shared device and its cleanup must outlive every member's executor.
-static SHARED_VIRTUAL_NIC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-    Builder::new_multi_thread()
-        .worker_threads(if cfg!(mobile) { 1 } else { 2 })
-        .thread_name("easytier-shared-tun")
-        .enable_all()
-        .build()
-        .expect("failed to build shared virtual nic runtime")
-});
+// The host owns this driver independently of all instance runtimes.
+fn shared_virtual_nic_runtime() -> tokio::runtime::Handle {
+    crate::host_runtime::native_host_runtime()
+        .shared_executor()
+        .expect("native shared executor is unavailable")
+}
 
 pub struct SharedVirtualNic {
     nic: Arc<Mutex<VirtualNic>>,
@@ -537,7 +531,7 @@ impl Drop for SharedVirtualNicMemberRegistration {
         let member_id = self.member_id;
         let registration_id = self.registration_id;
 
-        SHARED_VIRTUAL_NIC_RUNTIME.spawn(async move {
+        shared_virtual_nic_runtime().spawn(async move {
             let mut shared_nic = shared_nic.lock().await;
             if let Err(err) = shared_nic
                 .remove_member_registration_claims(member_id, registration_id)
@@ -599,7 +593,7 @@ impl SharedVirtualNicMember {
     ) -> Result<(), Error> {
         claims.mtu = Some(self.configured_mtu);
         let member = self.clone();
-        SHARED_VIRTUAL_NIC_RUNTIME
+        shared_virtual_nic_runtime()
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
                 shared_nic
@@ -626,7 +620,7 @@ impl SharedVirtualNicMember {
 
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
         let member = self.clone();
-        SHARED_VIRTUAL_NIC_RUNTIME
+        shared_virtual_nic_runtime()
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
                 shared_nic
@@ -657,7 +651,7 @@ impl SharedVirtualNicMember {
         replace_tun_fd: bool,
     ) -> Result<Box<dyn Tunnel>, Error> {
         let member = self.clone();
-        SHARED_VIRTUAL_NIC_RUNTIME
+        shared_virtual_nic_runtime()
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
                 shared_nic
@@ -783,7 +777,7 @@ impl SharedVirtualNicMember {
         // Complete OS changes and commit their claims even if the caller is cancelled.
         // Holding the registration also defers member cleanup until the commit.
         let member = self.clone();
-        SHARED_VIRTUAL_NIC_RUNTIME
+        shared_virtual_nic_runtime()
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
                 let mut claims = shared_nic.ifcfg.claims_of(member.member_id);
