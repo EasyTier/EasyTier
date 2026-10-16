@@ -40,6 +40,7 @@ use crate::{
 #[derive(Debug)]
 pub struct NativeHostRuntime {
     namespaces: Mutex<HashMap<NetNsId, Arc<NetNS>>>,
+    default_platform: io::Result<PlatformNamespace>,
     default_namespace: OnceLock<Arc<NetNS>>,
     shared: OnceLock<Result<NativeExecutor, String>>,
     shared_initialization: Mutex<()>,
@@ -58,6 +59,7 @@ impl NativeHostRuntime {
     fn new() -> Self {
         Self {
             namespaces: Mutex::new(HashMap::new()),
+            default_platform: PlatformNamespace::process_default(),
             default_namespace: OnceLock::new(),
             shared: OnceLock::new(),
             shared_initialization: Mutex::new(()),
@@ -119,7 +121,11 @@ impl NativeHostRuntime {
         if let Some(namespace) = self.default_namespace.get() {
             return Ok(namespace.clone());
         }
-        let candidate = NetNS::current()?;
+        let platform = self
+            .default_platform
+            .as_ref()
+            .map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
+        let candidate = self.intern_namespace(platform.clone())?;
         let _ = self.default_namespace.set(candidate);
         Ok(self.default_namespace.get().unwrap().clone())
     }
@@ -391,6 +397,24 @@ impl DnsRecordResolver for NativeHostRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "run inside an isolated user+network namespace"]
+    fn process_default_is_not_the_first_callers_temporary_domain() {
+        let original = NetNS::current().unwrap();
+        let temporary = crate::common::netns::isolated_namespace_for_test().unwrap();
+        temporary
+            .run(|| {
+                let host = NativeHostRuntime::new();
+                assert_ne!(NetNS::current().unwrap().id(), original.id());
+                assert_eq!(
+                    host.capture_default_namespace().unwrap().id(),
+                    original.id()
+                );
+            })
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn shared_reactor_survives_the_instance_that_first_initialized_it() {

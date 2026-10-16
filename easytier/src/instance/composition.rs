@@ -26,7 +26,6 @@ use crate::{
         config::{ConfigLoader as _, TomlConfig},
         global_ctx::GlobalCtx,
     },
-    host_runtime::native_host_runtime,
     instance::config::{
         compact_runtime_core_host_config, runtime_core_host_config, runtime_peer_credential_storage,
     },
@@ -59,7 +58,6 @@ pub(super) fn compose_native_core_instance(
     } else {
         runtime_core_host_config()
     };
-    native_host_runtime().capture_default_namespace()?;
     let configured_namespace = toml_config.get_netns();
     let namespace = crate::common::netns::NetNS::resolve_config(
         if host_config.ignore_unsupported_config && !cfg!(target_os = "linux") {

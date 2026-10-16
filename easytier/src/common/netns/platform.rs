@@ -82,6 +82,14 @@ pub(crate) struct PlatformNamespace {
 }
 
 impl PlatformNamespace {
+    pub(crate) fn process_default() -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        return Self::open_path(Path::new("/proc/self/ns/net"));
+
+        #[cfg(not(target_os = "linux"))]
+        Self::current()
+    }
+
     pub(crate) fn current() -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         return Self::open_path(Path::new("/proc/thread-self/ns/net"));
