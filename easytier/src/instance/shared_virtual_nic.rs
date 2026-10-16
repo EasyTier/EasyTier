@@ -41,6 +41,7 @@ fn shared_virtual_nic_runtime() -> tokio::runtime::Handle {
 }
 
 pub struct SharedVirtualNic {
+    managed_routes: bool,
     nic: Arc<Mutex<VirtualNic>>,
     ifcfg: SharedIfConfig,
     valid: Arc<AtomicBool>,
@@ -53,6 +54,7 @@ pub struct SharedVirtualNic {
 impl SharedVirtualNic {
     pub fn new(config: VirtualNicConfig) -> Self {
         Self {
+            managed_routes: config.routes_managed(),
             nic: Arc::new(Mutex::new(VirtualNic::new(config))),
             ifcfg: SharedIfConfig::default(),
             valid: Arc::new(AtomicBool::new(true)),
@@ -69,6 +71,101 @@ impl SharedVirtualNic {
 
     pub fn is_valid(&self) -> bool {
         self.valid.load(Ordering::Acquire)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    pub(crate) fn prepare_managed_routes(
+        &self,
+        member: SharedVirtualNicMemberId,
+        registration: SharedVirtualNicMemberRegistrationId,
+        routes: &easytier_core::host::route::RouteSet,
+    ) -> anyhow::Result<SharedIfConfigClaims> {
+        anyhow::ensure!(
+            self.managed_routes,
+            "NIC routes are controlled by the legacy backend"
+        );
+        anyhow::ensure!(self.is_valid(), "NIC is invalid");
+        anyhow::ensure!(
+            self.is_current_member_registration(member, registration),
+            "NIC member registration changed"
+        );
+        let mut claims = self.ifcfg.claims_of(member);
+        claims.ipv4_routes.clear();
+        claims.ipv6_routes.clear();
+        let assigned = self.ifcfg.effective();
+        for route in routes {
+            crate::instance::route::validate_tun_spec(route).map_err(anyhow::Error::msg)?;
+            if let Some(source) = route.preferred_source {
+                anyhow::ensure!(
+                    match source {
+                        std::net::IpAddr::V4(ip) => assigned
+                            .ipv4_addresses
+                            .iter()
+                            .any(|address| address.address() == ip),
+                        std::net::IpAddr::V6(ip) => assigned
+                            .ipv6_addresses
+                            .iter()
+                            .any(|address| address.address() == ip),
+                    },
+                    "preferred source is not a known assigned address"
+                );
+            }
+            match route.destination {
+                cidr::IpCidr::V4(prefix) => {
+                    claims.ipv4_routes.insert(SharedIpv4Route::new(
+                        prefix.first_address(),
+                        prefix.network_length(),
+                        None,
+                    ));
+                }
+                cidr::IpCidr::V6(prefix) => {
+                    claims.ipv6_routes.insert(SharedIpv6Route::new(
+                        prefix.first_address(),
+                        prefix.network_length(),
+                        None,
+                    ));
+                }
+            }
+        }
+        // Withdrawal must work even when historical claims are conflicting.
+        if !routes.is_empty() {
+            self.ifcfg.ensure_disjoint(member, &claims)?;
+        }
+        Ok(claims)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    pub(crate) async fn commit_managed_routes(
+        &mut self,
+        member: SharedVirtualNicMemberId,
+        registration: SharedVirtualNicMemberRegistrationId,
+        claims: SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        if !self.managed_routes || !self.is_current_member_registration(member, registration) {
+            return Err(anyhow::anyhow!("NIC member registration changed").into());
+        }
+        self.sync_dispatcher_sources_for_claims(member, &claims)
+            .await?;
+        self.ifcfg.apply_member_claims(member, claims);
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    pub(crate) fn managed_source_hint(
+        &self,
+        route: &easytier_core::host::route::RouteSpec,
+    ) -> Option<std::net::IpAddr> {
+        if let cidr::IpCidr::V4(prefix) = route.destination {
+            self.ifcfg
+                .ipv4_route_source_hint(&SharedIpv4Route::new(
+                    prefix.first_address(),
+                    prefix.network_length(),
+                    None,
+                ))
+                .map(std::net::IpAddr::V4)
+        } else {
+            None
+        }
     }
 
     #[cfg(test)]
@@ -266,21 +363,23 @@ impl SharedVirtualNic {
             .collect();
         let nic = self.nic.lock().await;
 
-        for route in delta
-            .ipv4_routes
-            .removed
-            .iter()
-            .chain(changed_routes.iter().copied())
-        {
-            let source_hint = self.ifcfg.ipv4_route_source_hint(route);
-            ignore_removed_ifcfg_not_found(
-                remove_shared_ipv4_route(&nic, route, source_hint).await,
-            )?;
-        }
-        for route in &delta.ipv6_routes.removed {
-            ignore_removed_ifcfg_not_found(
-                nic.remove_ipv6_route(route.address, route.prefix).await,
-            )?;
+        if !self.managed_routes {
+            for route in delta
+                .ipv4_routes
+                .removed
+                .iter()
+                .chain(changed_routes.iter().copied())
+            {
+                let source_hint = self.ifcfg.ipv4_route_source_hint(route);
+                ignore_removed_ifcfg_not_found(
+                    remove_shared_ipv4_route(&nic, route, source_hint).await,
+                )?;
+            }
+            for route in &delta.ipv6_routes.removed {
+                ignore_removed_ifcfg_not_found(
+                    nic.remove_ipv6_route(route.address, route.prefix).await,
+                )?;
+            }
         }
         for ip in &delta.ipv4_addresses.removed {
             ignore_removed_ifcfg_not_found(nic.remove_ip(Some(*ip)).await)?;
@@ -296,26 +395,27 @@ impl SharedVirtualNic {
             nic.add_ipv6(ip.address(), ip.network_length() as i32)
                 .await?;
         }
-        for route in delta
-            .ipv4_routes
-            .added
-            .iter()
-            .chain(changed_routes.iter().copied())
-        {
-            add_shared_ipv4_route(&nic, route, next_ifcfg).await?;
+        if !self.managed_routes {
+            for route in delta
+                .ipv4_routes
+                .added
+                .iter()
+                .chain(changed_routes.iter().copied())
+            {
+                add_shared_ipv4_route(&nic, route, next_ifcfg).await?;
+            }
+            for route in &delta.ipv6_routes.added {
+                nic.add_ipv6_route_with_cost(route.address, route.prefix, route.cost)
+                    .await?;
+            }
         }
-        for route in &delta.ipv6_routes.added {
-            nic.add_ipv6_route_with_cost(route.address, route.prefix, route.cost)
-                .await?;
-        }
-
         if old_effective.mtu != next_effective.mtu {
             nic.set_mtu(next_effective.mtu.unwrap_or_else(|| nic.configured_mtu()))
                 .await?;
         }
 
         #[cfg(target_os = "linux")]
-        if !delta.ipv4_addresses.removed.is_empty() {
+        if !self.managed_routes && !delta.ipv4_addresses.removed.is_empty() {
             for route in &next_effective.ipv4_routes {
                 ignore_added_ifcfg_already_exists(
                     add_shared_ipv4_route(&nic, route, next_ifcfg).await,
@@ -324,7 +424,7 @@ impl SharedVirtualNic {
         }
 
         #[cfg(target_os = "linux")]
-        if !delta.ipv6_addresses.removed.is_empty() {
+        if !self.managed_routes && !delta.ipv6_addresses.removed.is_empty() {
             for route in &next_effective.ipv6_routes {
                 ignore_added_ifcfg_already_exists(
                     nic.add_ipv6_route_with_cost(route.address, route.prefix, route.cost)
@@ -557,6 +657,9 @@ pub struct SharedVirtualNicMember {
 }
 
 impl SharedVirtualNicMember {
+    pub(crate) fn registration_id(&self) -> SharedVirtualNicMemberRegistrationId {
+        self.registration.registration_id
+    }
     fn new(
         member_id: SharedVirtualNicMemberId,
         configured_mtu: u32,
@@ -780,8 +883,15 @@ impl SharedVirtualNicMember {
         shared_virtual_nic_runtime()
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
-                let mut claims = shared_nic.ifcfg.claims_of(member.member_id);
+                let previous = shared_nic.ifcfg.claims_of(member.member_id);
+                let mut claims = previous.clone();
                 update(&mut claims);
+                if shared_nic.managed_routes
+                    && (claims.ipv4_routes != previous.ipv4_routes
+                        || claims.ipv6_routes != previous.ipv6_routes)
+                {
+                    return Err(anyhow::anyhow!("route mutations belong to RouteController").into());
+                }
                 shared_nic
                     .apply_member_claims_for_registration(
                         member.member_id,
@@ -801,13 +911,13 @@ pub struct SharedVirtualNicRegistry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum SharedVirtualNicRegistryKey {
+pub(crate) enum SharedVirtualNicRegistryKey {
     Named(String),
     Anonymous(uuid::Uuid),
 }
 
 impl SharedVirtualNicRegistryKey {
-    fn new(dev_name: String, member: uuid::Uuid) -> Self {
+    pub(crate) fn new(dev_name: String, member: uuid::Uuid) -> Self {
         if dev_name.is_empty() {
             return Self::Anonymous(member);
         }

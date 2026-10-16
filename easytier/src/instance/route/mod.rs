@@ -13,6 +13,25 @@ pub(crate) use linux::PlatformRouteBackend;
 pub(crate) const METRIC_DIRECT: NonZeroU32 = NonZeroU32::new(65535).unwrap();
 pub(crate) const METRIC_PUBLIC_IPV6_DEFAULT: NonZeroU32 = NonZeroU32::new(5).unwrap();
 
+pub(crate) fn validate_tun_spec(
+    spec: &easytier_core::host::route::RouteSpec,
+) -> Result<NonZeroU32, &'static str> {
+    use easytier_core::host::route::{DeviceSelector, RouteAction};
+    if !matches!(
+        &spec.action,
+        RouteAction::Unicast {
+            device: Some(DeviceSelector::InstanceTun),
+            via: None
+        }
+    ) {
+        return Err("only directly attached instance TUN routes are supported");
+    }
+    if spec.table.is_some_and(|table| table != 254) {
+        return Err("non-main route tables are not supported yet");
+    }
+    NonZeroU32::new(spec.metric).ok_or("Linux route metric must be nonzero")
+}
+
 /// Resolved parameters for the initially supported, static, directly attached
 /// unicast route. Device generations and application ownership stay outside.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

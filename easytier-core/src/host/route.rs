@@ -394,7 +394,9 @@ impl RouteInputs {
         self.changed();
     }
 
-    fn close(&self) {
+    /// Native controller administrative close. Business publishers only receive
+    /// the weak RouteHandle and cannot access this driver-side capability.
+    pub fn close(&self) {
         let claims = {
             let mut state = self.state.lock();
             if state.closed {

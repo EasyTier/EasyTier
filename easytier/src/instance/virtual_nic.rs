@@ -247,6 +247,8 @@ pub struct VirtualNicConfig {
     dev_name: String,
     mtu: u32,
     net_ns: PlatformNamespace,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    route_device: Option<Arc<crate::instance::route::device::DeviceState>>,
 }
 
 impl VirtualNicConfig {
@@ -255,11 +257,29 @@ impl VirtualNicConfig {
             dev_name,
             mtu,
             net_ns: net_ns.platform().clone(),
+            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            route_device: None,
         }
     }
 
     pub fn mtu(&self) -> u32 {
         self.mtu
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    pub(crate) fn with_route_device(
+        mut self,
+        device: Arc<crate::instance::route::device::DeviceState>,
+    ) -> Self {
+        self.route_device = Some(device);
+        self
+    }
+
+    pub(crate) fn routes_managed(&self) -> bool {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        return self.route_device.is_some();
+        #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+        false
     }
 }
 
@@ -283,6 +303,9 @@ impl Drop for VirtualNic {
 }
 
 impl VirtualNic {
+    pub(crate) fn routes_managed(&self) -> bool {
+        self.config.routes_managed()
+    }
     #[cfg(target_os = "windows")]
     pub(crate) fn clear_windows_device(&mut self) {
         if let Some(ifname) = self.ifname.take() {
@@ -775,6 +798,9 @@ impl VirtualNic {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
+        if self.routes_managed() {
+            return Err(anyhow::anyhow!("route mutations belong to RouteController").into());
+        }
         self.ifcfg
             .add_ipv4_route_with_source_hint(self.ifname(), address, cidr, cost, source_hint)
             .await?;
@@ -782,6 +808,9 @@ impl VirtualNic {
     }
 
     pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        if self.routes_managed() {
+            return Err(anyhow::anyhow!("route mutations belong to RouteController").into());
+        }
         self.ifcfg
             .remove_ipv4_route(self.ifname(), address, cidr)
             .await?;
@@ -795,6 +824,9 @@ impl VirtualNic {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
+        if self.routes_managed() {
+            return Err(anyhow::anyhow!("route mutations belong to RouteController").into());
+        }
         self.ifcfg
             .remove_ipv4_route_with_cost_and_source_hint(
                 self.ifname(),
@@ -817,6 +849,9 @@ impl VirtualNic {
         cidr: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
+        if self.routes_managed() {
+            return Err(anyhow::anyhow!("route mutations belong to RouteController").into());
+        }
         self.ifcfg
             .add_ipv6_route(self.ifname(), address, cidr, cost)
             .await?;
@@ -824,6 +859,9 @@ impl VirtualNic {
     }
 
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        if self.routes_managed() {
+            return Err(anyhow::anyhow!("route mutations belong to RouteController").into());
+        }
         self.ifcfg
             .remove_ipv6_route(self.ifname(), address, cidr)
             .await?;
