@@ -17,6 +17,7 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,
+        _runtime_config: easytier_core::config::runtime::CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         self.prepare_runtime(packet_plane).await
     }
