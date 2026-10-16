@@ -870,20 +870,28 @@ mod tests {
             let suffix = rand::thread_rng().gen_range(10000..99999);
             let capture_name = format!("elbc{suffix}");
             let sender_name = format!("elbs{suffix}");
+            // Assign MACs at creation so udev does not replace them after readback.
             run_ip(&[
                 "link",
                 "add",
                 &capture_name,
+                "address",
+                "02:00:00:00:00:01",
                 "type",
                 "veth",
                 "peer",
                 "name",
                 &sender_name,
+                "address",
+                "02:00:00:00:00:02",
             ])?;
 
             let setup_result = (|| {
                 run_ip(&["link", "set", "dev", &capture_name, "up"])?;
                 run_ip(&["link", "set", "dev", &sender_name, "up"])?;
+                // A single-device GETLINK synchronizes pending linkwatch work,
+                // activating the first endpoint's TX queue before any test sends.
+                run_ip(&["link", "show", "dev", &capture_name])?;
                 let interfaces = datalink::interfaces();
                 let find_mac = |name: &str| {
                     interfaces
