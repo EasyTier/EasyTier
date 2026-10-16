@@ -1,0 +1,110 @@
+name: Diagnose BPF frame loss
+
+on:
+  push:
+    branches: ["diagnose/bpf-2710"]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: tests
+          run-id: 38779708035
+          github-token: ${{ github.token }}
+      - name: Prepare original CI binary
+        run: |
+          mkdir -p diagnostics
+          tar --zstd -xf tests.tar.zst target/debug/deps/easytier-0ae75d7f69396f6c
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq strace tcpdump
+          uname -a > diagnostics/environment.txt
+          systemctl is-active systemd-udevd systemd-networkd NetworkManager >> diagnostics/environment.txt || true
+          sudo ip -ts -s -d monitor link > diagnostics/links.log &
+          sudo tcpdump -i any -U -w diagnostics/frames.pcap 'tcp port 23456' > diagnostics/tcpdump.log 2>&1 &
+      - name: Build send observation hook
+        run: |
+          cat > diagnostics/send-observer.c <<'EOF'
+          #define _GNU_SOURCE
+          #include <dlfcn.h>
+          #include <stdio.h>
+          #include <sys/socket.h>
+          #include <netpacket/packet.h>
+          #include <net/if.h>
+          #include <errno.h>
+          #include <time.h>
+          static void read_value(const char *name, const char *key, char *out) {
+              char path[256];
+              snprintf(path, sizeof(path), "/sys/class/net/%s/%s", name, key);
+              FILE *f = fopen(path, "r");
+              if (f) { if (!fgets(out, 64, f)) out[0] = 0; fclose(f); }
+          }
+          ssize_t sendto(int fd, const void *buf, size_t len, int flags,
+                         const struct sockaddr *addr, socklen_t addrlen) {
+              static ssize_t (*real_sendto)(int,const void*,size_t,int,const struct sockaddr*,socklen_t);
+              if (!real_sendto) real_sendto = dlsym(RTLD_NEXT, "sendto");
+              ssize_t ret = real_sendto(fd, buf, len, flags, addr, addrlen);
+              int saved_errno = errno;
+              if (addr && addr->sa_family == AF_PACKET) {
+                  const struct sockaddr_ll *ll = (const struct sockaddr_ll *)addr;
+                  char name[IF_NAMESIZE] = {0}, drops[64] = {0}, state[64] = {0}, carrier[64] = {0};
+                  char packets[64] = {0};
+                  struct timespec timestamp;
+                  clock_gettime(CLOCK_REALTIME, &timestamp);
+                  if_indextoname(ll->sll_ifindex, name);
+                  read_value(name, "statistics/tx_dropped", drops);
+                  read_value(name, "operstate", state);
+                  read_value(name, "carrier", carrier);
+                  read_value(name, "statistics/tx_packets", packets);
+                  fprintf(stderr, "SEND_OBSERVE time=%ld.%09ld dev=%s len=%zu ret=%zd errno=%d tx_dropped=%s operstate=%s carrier=%s tx_packets=%s\n", timestamp.tv_sec, timestamp.tv_nsec, name, len, ret, saved_errno, drops, state, carrier, packets);
+              }
+              errno = saved_errno;
+              return ret;
+          }
+          EOF
+          gcc -shared -fPIC -O2 diagnostics/send-observer.c -ldl -o diagnostics/send-observer.so
+      - name: Repeat original test with post-send observation
+        run: |
+          sudo -E python3 -u - <<'PY'
+          import os, pathlib, subprocess, time
+          root = pathlib.Path.cwd()
+          env = os.environ.copy()
+          env['EASYTIER_LINUX_BPF_INTEGRATION'] = 'required'
+          env['LD_PRELOAD'] = str(root / 'diagnostics/send-observer.so')
+          binary = str(root / 'target/debug/deps/easytier-0ae75d7f69396f6c')
+          case = 'socket::fake_tcp::netfilter::linux_bpf::tests::linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface'
+          start = time.monotonic()
+          failures = 0
+          timeouts = 0
+          for i in range(1, 3001):
+              result = subprocess.run([binary, case, '--exact', '--nocapture'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              if i <= 3 or result.returncode:
+                  (root / f'diagnostics/attempt-{i}.log').write_text(result.stdout)
+              if result.returncode:
+                  failures += 1
+                  print('REPRODUCED', i, 'elapsed', time.monotonic() - start, flush=True)
+                  print(result.stdout, flush=True)
+                  if 'timed out waiting for Ethernet frame' in result.stdout:
+                      timeouts += 1
+                  elif 'assertion `left == right` failed' not in result.stdout:
+                      break
+                  if timeouts == 3:
+                      break
+              if i % 100 == 0:
+                  print('PASS', i, 'elapsed', time.monotonic() - start, flush=True)
+          else:
+              print('COMPLETED 3000 ATTEMPTS', flush=True)
+          print('TOTAL FAILURES', failures, 'TIMEOUTS', timeouts, flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bpf-diagnostics
+          path: diagnostics
