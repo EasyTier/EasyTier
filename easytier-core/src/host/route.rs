@@ -534,6 +534,7 @@ impl RouteHandle {
     pub fn publish(&self, demand: RouteDemand) -> Result<RouteClaim, RouteInputError> {
         demand.validate()?;
         let inputs = self.inputs.upgrade().ok_or(RouteInputError::Closed)?;
+        let demand = Arc::new(demand);
         let id = {
             let mut state = inputs.state.lock();
             if state.closed {
@@ -546,7 +547,7 @@ impl RouteHandle {
             state.invalidate();
             state.next_claim = next;
             let id = RouteClaimId(next);
-            state.claims.insert(id, Arc::new(demand));
+            state.claims.insert(id, demand);
             id
         };
         inputs.changed();
@@ -566,24 +567,44 @@ impl RouteClaim {
     pub fn replace(&self, demand: RouteDemand) -> Result<(), RouteInputError> {
         demand.validate()?;
         let inputs = self.inputs.upgrade().ok_or(RouteInputError::Closed)?;
-        let old = {
-            let mut state = inputs.state.lock();
-            if state.closed {
-                return Err(RouteInputError::Closed);
-            }
-            if state
-                .claims
-                .get(&self.id)
-                .is_some_and(|current| **current == demand)
-            {
-                return Ok(());
-            }
-            state.invalidate();
-            state.claims.insert(self.id, Arc::new(demand))
-        };
-        drop(old);
-        inputs.changed();
-        Ok(())
+        let demand = Arc::new(demand);
+        loop {
+            let current = {
+                let state = inputs.state.lock();
+                if state.closed {
+                    return Err(RouteInputError::Closed);
+                }
+                state
+                    .claims
+                    .get(&self.id)
+                    .cloned()
+                    .ok_or(RouteInputError::Closed)?
+            };
+            // Route sets can be large. Compare outside the input lock, then
+            // recheck publication identity before committing that comparison.
+            let unchanged = *current == *demand;
+            let old = {
+                let mut state = inputs.state.lock();
+                if state.closed {
+                    return Err(RouteInputError::Closed);
+                }
+                if !state
+                    .claims
+                    .get(&self.id)
+                    .is_some_and(|value| Arc::ptr_eq(value, &current))
+                {
+                    continue;
+                }
+                if unchanged {
+                    return Ok(());
+                }
+                state.invalidate();
+                state.claims.insert(self.id, demand)
+            };
+            drop(old);
+            inputs.changed();
+            return Ok(());
+        }
     }
 
     pub async fn wait_ready(&self, device: Option<DeviceEpoch>) -> Result<(), RouteWaitError> {
@@ -929,6 +950,36 @@ mod tests {
             Err(RouteInputError::AlreadyBound)
         );
         assert!(inputs.is_current(&snapshot));
+    }
+
+    #[test]
+    fn concurrent_equal_replacements_commit_one_actual_publication_change() {
+        let owner = owner();
+        let inputs = owner.inputs();
+        let claim = Arc::new(owner.handle().publish(additional("198.18.0.1/32")).unwrap());
+        let before = inputs.snapshot();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let threads = (0..2)
+            .map(|_| {
+                let claim = claim.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claim.replace(additional("198.18.0.2/32")).unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let after = inputs.snapshot();
+        assert_eq!(after.stamp, before.stamp + 1);
+        assert_eq!(after.claims.len(), 1);
+        assert_eq!(
+            after.claims.values().next().unwrap().as_ref(),
+            &additional("198.18.0.2/32")
+        );
     }
 
     #[test]
