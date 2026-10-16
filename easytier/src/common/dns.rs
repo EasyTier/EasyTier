@@ -176,13 +176,20 @@ impl RuntimeDnsIoContext {
 
 #[cfg(feature = "dns-resolver")]
 #[derive(Clone)]
-struct RuntimeDnsIoProvider {
+pub(crate) struct RuntimeDnsIoProvider {
     inner: TokioRuntimeProvider,
     context: RuntimeDnsIoContext,
 }
 
 #[cfg(feature = "dns-resolver")]
 impl RuntimeDnsIoProvider {
+    pub(crate) fn in_namespace(namespace: PlatformNamespace, socket_mark: Option<u32>) -> Self {
+        Self::new(RuntimeDnsIoContext {
+            namespace,
+            socket_mark,
+        })
+    }
+
     fn new(context: RuntimeDnsIoContext) -> Self {
         Self {
             inner: TokioRuntimeProvider::new(),

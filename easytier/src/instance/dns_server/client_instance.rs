@@ -12,14 +12,14 @@ use crate::proto::{
     magic_dns::{
         HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory, UpdateDnsRecordRequest,
     },
-    rpc::standalone::{RuntimeRpcClient, runtime_rpc_client},
+    rpc::standalone::{NamespaceRpcClient, namespace_rpc_client},
     rpc_types::controller::BaseController,
 };
 
 use super::MAGIC_DNS_INSTANCE_ADDR;
 
 pub struct MagicDnsClientInstance {
-    rpc_client: RuntimeRpcClient,
+    rpc_client: NamespaceRpcClient,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,
     route_source: Arc<CorePacketPlane>,
     tasks: JoinSet<()>,
@@ -70,8 +70,12 @@ impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
 }
 
 impl MagicDnsClientInstance {
-    pub(crate) async fn new(route_source: Arc<CorePacketPlane>) -> Result<Self, anyhow::Error> {
-        let mut rpc_client = runtime_rpc_client(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
+    pub(crate) async fn new(
+        route_source: Arc<CorePacketPlane>,
+        namespace: Arc<crate::common::netns::NetNS>,
+    ) -> Result<Self, anyhow::Error> {
+        let mut rpc_client =
+            namespace_rpc_client(namespace, MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
         let rpc_stub = rpc_client
             .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>("".to_string())
             .await?;

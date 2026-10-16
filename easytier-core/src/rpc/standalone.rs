@@ -215,6 +215,11 @@ where
         self.inflight_server
             .load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Cancel serving and wait until the bound listener has been released.
+    pub async fn shutdown(&mut self) {
+        self.tasks.shutdown().await;
+    }
 }
 
 pub struct StandAloneClient<C: TunnelDialer> {
