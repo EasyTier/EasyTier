@@ -29,6 +29,8 @@ jobs:
           systemctl is-active systemd-udevd systemd-networkd NetworkManager >> diagnostics/environment.txt || true
           sudo ip -ts -s -d monitor link > diagnostics/links.log &
           sudo tcpdump -i any -U -w diagnostics/frames.pcap 'tcp port 23456' > diagnostics/tcpdump.log 2>&1 &
+          sudo bash -c 'echo "p:bpf_noop noop_enqueue" >> /sys/kernel/tracing/kprobe_events; echo 1 > /sys/kernel/tracing/events/kprobes/bpf_noop/enable' || true
+          sudo cat /sys/kernel/tracing/trace_pipe > diagnostics/kernel-trace.log &
       - name: Build send observation hook
         run: |
           cat > diagnostics/send-observer.c <<'EOF'
@@ -40,6 +42,10 @@ jobs:
           #include <net/if.h>
           #include <errno.h>
           #include <time.h>
+          static ssize_t (*real_sendto)(int,const void*,size_t,int,const struct sockaddr*,socklen_t);
+          __attribute__((constructor)) static void initialize(void) {
+              real_sendto = dlsym(RTLD_NEXT, "sendto");
+          }
           static void read_value(const char *name, const char *key, char *out) {
               char path[256];
               snprintf(path, sizeof(path), "/sys/class/net/%s/%s", name, key);
@@ -48,8 +54,6 @@ jobs:
           }
           ssize_t sendto(int fd, const void *buf, size_t len, int flags,
                          const struct sockaddr *addr, socklen_t addrlen) {
-              static ssize_t (*real_sendto)(int,const void*,size_t,int,const struct sockaddr*,socklen_t);
-              if (!real_sendto) real_sendto = dlsym(RTLD_NEXT, "sendto");
               ssize_t ret = real_sendto(fd, buf, len, flags, addr, addrlen);
               int saved_errno = errno;
               if (addr && addr->sa_family == AF_PACKET) {
@@ -102,6 +106,34 @@ jobs:
           else:
               print('COMPLETED 3000 ATTEMPTS', flush=True)
           print('TOTAL FAILURES', failures, 'TIMEOUTS', timeouts, flush=True)
+          PY
+      - name: Repeat unmodified binary until the original timeout
+        run: |
+          sudo -E python3 -u - <<'PY'
+          import os, pathlib, subprocess, time
+          root = pathlib.Path.cwd()
+          env = os.environ.copy()
+          env['EASYTIER_LINUX_BPF_INTEGRATION'] = 'required'
+          binary = str(root / 'target/debug/deps/easytier-0ae75d7f69396f6c')
+          case = 'socket::fake_tcp::netfilter::linux_bpf::tests::linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface'
+          start = time.monotonic()
+          failures = 0
+          for i in range(1, 10001):
+              result = subprocess.run([binary, case, '--exact', '--nocapture'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              if result.returncode:
+                  failures += 1
+                  (root / f'diagnostics/baseline-{i}.log').write_text(result.stdout)
+                  if 'timed out waiting for Ethernet frame' in result.stdout:
+                      print('ORIGINAL TIMEOUT', i, 'elapsed', time.monotonic() - start, flush=True)
+                      print(result.stdout, flush=True)
+                      break
+                  if 'assertion `left == right` failed' not in result.stdout:
+                      print('UNEXPECTED', i, result.stdout, flush=True)
+                      break
+              if i % 500 == 0:
+                  print('BASELINE', i, 'failures', failures, 'elapsed', time.monotonic() - start, flush=True)
+          else:
+              print('NO ORIGINAL TIMEOUT IN 10000 ATTEMPTS', flush=True)
           PY
       - uses: actions/upload-artifact@v4
         if: always()
