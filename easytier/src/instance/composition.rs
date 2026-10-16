@@ -22,7 +22,10 @@ use crate::common::global_ctx::GlobalCtxEvent;
 use crate::instance::public_ipv6_provider::runtime_public_ipv6_provider_platform;
 use crate::{
     common::global_ctx::ArcGlobalCtx,
-    common::{config::TomlConfig, global_ctx::GlobalCtx},
+    common::{
+        config::{ConfigLoader as _, TomlConfig},
+        global_ctx::GlobalCtx,
+    },
     host_runtime::native_host_runtime,
     instance::config::{
         compact_runtime_core_host_config, runtime_core_host_config, runtime_peer_credential_storage,
@@ -31,8 +34,6 @@ use crate::{
     instance::runtime_host::NativeInstanceRuntimeHost,
 };
 
-#[cfg(feature = "tun")]
-use super::shared_virtual_nic::ArcSharedVirtualNicRegistry;
 use super::{
     host::{NativeInstanceHost, native_instance_host},
     runtime_executor::NativeInstanceExecutor,
@@ -50,27 +51,32 @@ pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 pub(super) fn compose_native_core_instance(
     toml_config: TomlConfig,
     process_runtime: Arc<CoreProcessRuntime>,
-    #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     compact_runtime: bool,
     executor: Option<NativeInstanceExecutor>,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
-    let host_config = if compact_runtime {
+    let mut host_config = if compact_runtime {
         compact_runtime_core_host_config()
     } else {
         runtime_core_host_config()
     };
+    native_host_runtime().capture_default_namespace()?;
+    let configured_namespace = toml_config.get_netns();
+    let namespace = crate::common::netns::NetNS::resolve_config(
+        if host_config.ignore_unsupported_config && !cfg!(target_os = "linux") {
+            None
+        } else {
+            configured_namespace.as_deref()
+        },
+    )?;
+    host_config.socket_namespace = Some(namespace.token());
     let normalized = CoreInstanceConfig::from_toml_with_host(&toml_config, &host_config)?;
     let global_ctx = Arc::new(GlobalCtx::new_with_runtime_config(
         toml_config.clone(),
         &normalized,
         &host_config,
+        namespace,
     ));
-    let runtime_host = NativeInstanceRuntimeHost::new_with_executor(
-        global_ctx.clone(),
-        #[cfg(feature = "tun")]
-        shared_virtual_nic_registry,
-        executor,
-    );
+    let runtime_host = NativeInstanceRuntimeHost::new_with_executor(global_ctx.clone(), executor);
     let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
         global_ctx.clone(),
         process_runtime,
@@ -190,7 +196,7 @@ pub(crate) fn runtime_core_host_adapters(
     packet_sink: Arc<dyn PacketSink>,
 ) -> CoreHostAdapters<NativeInstanceHost> {
     let host = native_instance_host(global_ctx.clone());
-    let runtime_dns = native_host_runtime();
+    let runtime_dns = global_ctx.net_ns.clone();
     let adapters = CoreHostAdapters::new(host, runtime_dns, packet_sink, process_runtime);
     configure_runtime_core_host_adapters(global_ctx, adapters, runtime_core_host_config())
 }
@@ -202,7 +208,7 @@ pub(crate) fn runtime_core_host_adapters_with_packet_egress(
     packet_egress: Arc<dyn PacketEgressHost>,
 ) -> CoreHostAdapters<NativeInstanceHost> {
     let host = native_instance_host(global_ctx.clone());
-    let runtime_dns = native_host_runtime();
+    let runtime_dns = global_ctx.net_ns.clone();
     let adapters =
         CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
     configure_runtime_core_host_adapters(global_ctx, adapters, runtime_core_host_config())
@@ -215,7 +221,7 @@ fn runtime_core_host_adapters_with_packet_egress_and_config(
     host_config: easytier_core::instance::CoreInstanceHostConfig,
 ) -> CoreHostAdapters<NativeInstanceHost> {
     let host = native_instance_host(global_ctx.clone());
-    let runtime_dns = native_host_runtime();
+    let runtime_dns = global_ctx.net_ns.clone();
     let adapters =
         CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
     configure_runtime_core_host_adapters(global_ctx, adapters, host_config)
@@ -224,12 +230,13 @@ fn runtime_core_host_adapters_with_packet_egress_and_config(
 fn configure_runtime_core_host_adapters(
     global_ctx: ArcGlobalCtx,
     mut adapters: CoreHostAdapters<NativeInstanceHost>,
-    host_config: easytier_core::instance::CoreInstanceHostConfig,
+    mut host_config: easytier_core::instance::CoreInstanceHostConfig,
 ) -> CoreHostAdapters<NativeInstanceHost> {
     #[cfg(test)]
     adapters.replace_stun_provider(Arc::new(crate::common::stun::MockStunInfoCollector {
         udp_nat_type: crate::proto::common::NatType::Unknown,
     }));
+    host_config.socket_namespace = Some(global_ctx.net_ns.token());
     adapters.config = host_config.clone();
     adapters.credential_storage = (!host_config.ignore_unsupported_config)
         .then(|| runtime_peer_credential_storage(&global_ctx))
@@ -240,7 +247,9 @@ fn configure_runtime_core_host_adapters(
         adapters.wrapped_transports = runtime_wrapped_transport_engines(&host_config);
     }
     adapters.protocol = Some(runtime_client_protocol_upgrader(global_ctx.clone()));
-    adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory));
+    adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory::new(
+        global_ctx.net_ns.clone(),
+    )));
     adapters.server_protocol = Some(runtime_server_protocol_upgrader(global_ctx.clone()));
     #[cfg(feature = "upnp")]
     if host_config.upnp_enabled {
@@ -252,7 +261,9 @@ fn configure_runtime_core_host_adapters(
     }
     #[cfg(feature = "icmp-proxy")]
     {
-        adapters.icmp_proxy_host = Some(Arc::new(crate::gateway::icmp_proxy::RuntimeIcmpProxyHost));
+        adapters.icmp_proxy_host = Some(Arc::new(
+            crate::gateway::icmp_proxy::RuntimeIcmpProxyHost::new(global_ctx.net_ns.clone()),
+        ));
     }
     #[cfg(feature = "proxy-cidr-monitor")]
     {
@@ -289,7 +300,7 @@ pub(crate) fn runtime_one_shot_manual_connector(
 ) -> anyhow::Result<ManualTunnelConnector<NativeInstanceHost>> {
     let normalized = CoreInstanceConfig::from_toml_with_host(config, &runtime_core_host_config())?;
     let host = native_instance_host(global_ctx.clone());
-    let runtime_dns = native_host_runtime();
+    let runtime_dns = global_ctx.net_ns.clone();
     let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
     Ok(process_runtime.manual_connector(

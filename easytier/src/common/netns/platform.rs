@@ -41,6 +41,38 @@ impl std::fmt::Display for NetNsId {
     }
 }
 
+impl NetNsId {
+    pub(crate) fn from_token(token: &str) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            let parse = || {
+                let (device, inode) = token.strip_prefix("native-netns:")?.split_once(':')?;
+                Some(Self {
+                    device: device.parse().ok()?,
+                    inode: inode.parse().ok()?,
+                })
+            };
+            parse().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid native namespace token",
+                )
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            if token == "native-netns:default" {
+                Ok(Self {})
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid native namespace token",
+                ))
+            }
+        }
+    }
+}
+
 /// Cloning pins the same kernel namespace, without retaining its service owner.
 #[derive(Clone, Debug)]
 pub(crate) struct PlatformNamespace {
@@ -76,27 +108,56 @@ impl PlatformNamespace {
 
     #[cfg(target_os = "linux")]
     fn open_path(path: &Path) -> io::Result<Self> {
-        let file = File::open(path)?;
+        let file = Arc::new(File::open(path)?);
+        let id = NetNsId::of(&file.metadata()?);
         // SAFETY: the ioctl takes no argument and only queries this open fd.
         let namespace_type =
             unsafe { nix::libc::ioctl(file.as_raw_fd(), nix::libc::NS_GET_NSTYPE) };
         if namespace_type < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if namespace_type != nix::libc::CLONE_NEWNET {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(nix::libc::ENOTTY) {
+                return Err(error);
+            }
+            // NS_GET_NSTYPE was added in Linux 4.11. The current network
+            // namespace is already known without requiring CAP_SYS_ADMIN.
+            if id != NetNsId::of(&std::fs::metadata("/proc/thread-self/ns/net")?) {
+                // On older kernels setns validates the type. Use a disposable
+                // thread so validation never changes the caller's namespace.
+                let probe = file.clone();
+                std::thread::Builder::new()
+                    .name("easytier-netns-probe".to_owned())
+                    .spawn(move || {
+                        nix::sched::setns(probe.as_ref(), nix::sched::CloneFlags::CLONE_NEWNET)
+                    })?
+                    .join()
+                    .map_err(|_| io::Error::other("namespace validation thread panicked"))??;
+            }
+        } else if namespace_type != nix::libc::CLONE_NEWNET {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "file is not a network namespace",
             ));
         }
-        Ok(Self {
-            id: NetNsId::of(&file.metadata()?),
-            file: Arc::new(file),
-        })
+        Ok(Self { id, file })
     }
 
     pub(crate) fn id(&self) -> NetNsId {
         self.id
+    }
+
+    pub(crate) fn validate_context(
+        &self,
+        context: &easytier_core::socket::SocketContext,
+    ) -> io::Result<()> {
+        if let Some(namespace) = &context.netns
+            && NetNsId::from_token(namespace.token())? != self.id
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "socket context belongs to a different network namespace",
+            ));
+        }
+        Ok(())
     }
 
     /// Run only the synchronous resource-creation/query portion of an operation.

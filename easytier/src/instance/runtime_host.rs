@@ -9,8 +9,6 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::ArcGlobalCtx;
-#[cfg(feature = "tun")]
-use crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry;
 
 mod dhcp;
 mod event_journal;
@@ -46,21 +44,12 @@ pub(crate) struct NativeInstanceRuntimeHost {
 
 impl NativeInstanceRuntimeHost {
     #[cfg(test)]
-    pub(crate) fn new(
-        global_ctx: ArcGlobalCtx,
-        #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
-    ) -> Arc<Self> {
-        Self::new_with_executor(
-            global_ctx,
-            #[cfg(feature = "tun")]
-            shared_virtual_nic_registry,
-            None,
-        )
+    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Arc<Self> {
+        Self::new_with_executor(global_ctx, None)
     }
 
     pub(super) fn new_with_executor(
         global_ctx: ArcGlobalCtx,
-        #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
         executor: Option<NativeInstanceExecutor>,
     ) -> Arc<Self> {
         let cancel = CancellationToken::new();
@@ -68,7 +57,7 @@ impl NativeInstanceRuntimeHost {
             global_ctx.clone(),
             cancel.clone(),
             #[cfg(feature = "tun")]
-            shared_virtual_nic_registry,
+            global_ctx.net_ns.nics.clone(),
         );
         let event_journal = EventJournal::new(&global_ctx);
         Arc::new(Self {
@@ -198,13 +187,7 @@ mod tests {
     };
 
     fn runtime_host(global_ctx: ArcGlobalCtx) -> Arc<NativeInstanceRuntimeHost> {
-        NativeInstanceRuntimeHost::new(
-            global_ctx,
-            #[cfg(feature = "tun")]
-            Arc::new(tokio::sync::Mutex::new(
-                crate::instance::shared_virtual_nic::SharedVirtualNicRegistry::new(),
-            )),
-        )
+        NativeInstanceRuntimeHost::new(global_ctx)
     }
 
     #[cfg(feature = "web-client")]

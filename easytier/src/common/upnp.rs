@@ -10,10 +10,7 @@ use easytier_core::connectivity::hole_punch::port_mapping::{
     ActiveUdpPortMapping as CoreActiveUdpPortMapping, UdpPortMappingAttemptError,
     UdpPortMappingBackend, UdpPortMappingLifecycle,
 };
-use natpmp::{
-    Protocol as NatPmpProtocol, Response as NatPmpResponse, get_default_gateway,
-    new_natpmp_async_with,
-};
+use natpmp::{Protocol as NatPmpProtocol, Response as NatPmpResponse, new_natpmp_async_with};
 use tokio::net::UdpSocket;
 
 use crate::igd_next::{
@@ -28,16 +25,48 @@ const NAT_PMP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const UPNP_LEASE_DURATION_SECS: u32 = 300;
 const UPNP_DESCRIPTION: &str = "EasyTier udp hole punch";
 
+fn mapping_gateway() -> anyhow::Result<Ipv4Addr> {
+    #[cfg(target_os = "linux")]
+    {
+        // netdev reads /proc/net, whose view belongs to the process leader.
+        // This adapter deliberately runs in a different namespace on one thread.
+        let routes = std::fs::read_to_string("/proc/thread-self/net/route")?;
+        routes
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                if fields.len() < 8 {
+                    return None;
+                }
+                let destination = u32::from_str_radix(fields[1], 16).ok()?;
+                let gateway = u32::from_str_radix(fields[2], 16).ok()?;
+                let flags = u32::from_str_radix(fields[3], 16).ok()?;
+                let metric = fields[6].parse::<u32>().ok()?;
+                let mask = u32::from_str_radix(fields[7], 16).ok()?;
+                (destination == 0 && mask == 0 && gateway != 0 && flags & 3 == 3)
+                    .then_some((metric, Ipv4Addr::from(gateway.to_ne_bytes())))
+            })
+            .min_by_key(|(metric, _)| *metric)
+            .map(|(_, address)| address)
+            .ok_or_else(|| anyhow!("no IPv4 default gateway in the bound namespace"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        natpmp::get_default_gateway().map_err(Into::into)
+    }
+}
+
 async fn new_protected_natpmp(
     gateway: Option<Ipv4Addr>,
 ) -> anyhow::Result<natpmp::NatpmpAsync<UdpSocket>> {
-    let gateway = gateway
-        .map(Ok)
-        .unwrap_or_else(|| get_default_gateway().map_err(anyhow::Error::from))?;
+    let gateway = gateway.map(Ok).unwrap_or_else(mapping_gateway)?;
     let gateway_addr = SocketAddr::V4(SocketAddrV4::new(gateway, natpmp::NATPMP_PORT));
-    let socket = crate::socket::udp::create_udp_socket(
+    let namespace = super::netns::PlatformNamespace::current()?;
+    let socket = crate::socket::udp::create_udp_socket_in_namespace(
         &easytier_core::socket::udp::UdpBindOptions::direct_connect()
             .with_local_addr(Some("0.0.0.0:0".parse().unwrap())),
+        &namespace,
     )
     .await
     .context("create protected nat-pmp socket")?;
@@ -115,7 +144,7 @@ impl ActiveUdpPortMapping {
         net_ns: &NetNS,
         local_listener: &url::Url,
     ) -> anyhow::Result<(Gateway, SocketAddr)> {
-        let _g = net_ns.guard();
+        let _ = net_ns;
         let gateway = search_gateway(SearchOptions {
             timeout: Some(UPNP_SEARCH_TIMEOUT),
             single_search_timeout: Some(UPNP_SEARCH_RESPONSE_TIMEOUT),
@@ -216,7 +245,7 @@ impl CoreActiveUdpPortMapping for ActiveUdpPortMapping {
 }
 
 pub(crate) async fn establish_udp_port_mapping(
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     backend: UdpPortMappingBackend,
     local_listener: url::Url,
 ) -> Result<Box<dyn CoreActiveUdpPortMapping>, UdpPortMappingAttemptError> {
@@ -244,130 +273,104 @@ pub(crate) async fn establish_udp_port_mapping(
 }
 
 pub(crate) fn spawn_udp_port_mapping_lifecycle(
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     local_listener: url::Url,
     lifecycle: UdpPortMappingLifecycle,
 ) {
-    if should_run_port_mapping_in_dedicated_thread(&net_ns) {
-        tokio::task::spawn_blocking(move || {
-            let _g = net_ns.guard();
-            match tokio::runtime::Builder::new_current_thread()
+    #[cfg(target_os = "linux")]
+    tokio::task::spawn_blocking(move || {
+        let result = net_ns.run(|| -> anyhow::Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime.block_on(lifecycle),
-                Err(err) => tracing::error!(
-                    ?err,
-                    %local_listener,
-                    "failed to build runtime for udp port mapping renew task"
-                ),
-            }
+                .build()?;
+            runtime.block_on(lifecycle);
+            Ok(())
         });
-    } else {
+        if !matches!(result, Ok(Ok(()))) {
+            tracing::error!(?result, %local_listener, "UDP mapping lifecycle stopped");
+        }
+    });
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (net_ns, local_listener);
         tokio::spawn(lifecycle);
     }
 }
 
+// Only this third-party adapter needs an ambient namespace across async work.
+// Its runtime and every poll are confined to the same blocking OS thread.
+async fn run_mapping_operation<T, F, Fut>(
+    namespace: std::sync::Arc<NetNS>,
+    operation: F,
+) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<T>> + 'static,
+{
+    #[cfg(target_os = "linux")]
+    {
+        tokio::task::spawn_blocking(move || {
+            namespace.run(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("build namespace-confined port mapping runtime")?;
+                runtime.block_on(operation())
+            })?
+        })
+        .await
+        .context("join namespace-confined port mapping task")?
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = namespace;
+        operation().await
+    }
+}
+
 async fn discover_igd_gateway_in_netns(
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     local_listener: url::Url,
 ) -> anyhow::Result<(Gateway, SocketAddr)> {
-    if !should_run_port_mapping_in_dedicated_thread(&net_ns) {
-        return ActiveUdpPortMapping::discover_igd_gateway(&net_ns, &local_listener).await;
-    }
-
-    tokio::task::spawn_blocking(move || {
-        let _g = net_ns.guard();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build runtime for igd gateway discovery")?
-            .block_on(ActiveUdpPortMapping::discover_igd_gateway(
-                &net_ns,
-                &local_listener,
-            ))
+    run_mapping_operation(net_ns.clone(), move || async move {
+        ActiveUdpPortMapping::discover_igd_gateway(&net_ns, &local_listener).await
     })
     .await
-    .context("join igd gateway discovery task")?
 }
 
 async fn establish_igd_mapping_in_netns(
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     local_listener: url::Url,
     gateway: Gateway,
     local_addr: SocketAddr,
 ) -> anyhow::Result<ActiveUdpPortMapping> {
-    if !should_run_port_mapping_in_dedicated_thread(&net_ns) {
-        return ActiveUdpPortMapping::establish_via_igd(&local_listener, gateway, local_addr).await;
-    }
-
-    tokio::task::spawn_blocking(move || {
-        let _g = net_ns.guard();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build runtime for igd mapping establishment")?
-            .block_on(ActiveUdpPortMapping::establish_via_igd(
-                &local_listener,
-                gateway,
-                local_addr,
-            ))
+    run_mapping_operation(net_ns, move || async move {
+        ActiveUdpPortMapping::establish_via_igd(&local_listener, gateway, local_addr).await
     })
     .await
-    .context("join igd mapping establishment task")?
 }
 
 async fn discover_nat_pmp_gateway_in_netns(
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     local_listener: url::Url,
 ) -> anyhow::Result<(Ipv4Addr, SocketAddr)> {
-    if !should_run_port_mapping_in_dedicated_thread(&net_ns) {
-        return ActiveUdpPortMapping::discover_nat_pmp_gateway(&local_listener).await;
-    }
-
-    tokio::task::spawn_blocking(move || {
-        let _g = net_ns.guard();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build runtime for nat-pmp gateway discovery")?
-            .block_on(ActiveUdpPortMapping::discover_nat_pmp_gateway(
-                &local_listener,
-            ))
+    run_mapping_operation(net_ns, move || async move {
+        ActiveUdpPortMapping::discover_nat_pmp_gateway(&local_listener).await
     })
     .await
-    .context("join nat-pmp gateway discovery task")?
 }
 
 async fn establish_nat_pmp_mapping_in_netns(
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     local_listener: url::Url,
     gateway: Ipv4Addr,
     local_addr: SocketAddr,
 ) -> anyhow::Result<ActiveUdpPortMapping> {
-    if !should_run_port_mapping_in_dedicated_thread(&net_ns) {
-        return ActiveUdpPortMapping::establish_via_nat_pmp(&local_listener, gateway, local_addr)
-            .await;
-    }
-
-    tokio::task::spawn_blocking(move || {
-        let _g = net_ns.guard();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build runtime for nat-pmp mapping establishment")?
-            .block_on(ActiveUdpPortMapping::establish_via_nat_pmp(
-                &local_listener,
-                gateway,
-                local_addr,
-            ))
+    run_mapping_operation(net_ns, move || async move {
+        ActiveUdpPortMapping::establish_via_nat_pmp(&local_listener, gateway, local_addr).await
     })
     .await
-    .context("join nat-pmp mapping establishment task")?
-}
-
-fn should_run_port_mapping_in_dedicated_thread(net_ns: &NetNS) -> bool {
-    net_ns.name().is_some()
 }
 
 async fn add_udp_mapping_port_igd(
@@ -537,9 +540,12 @@ async fn resolve_internal_addr(
     let ip = if host.is_unspecified() {
         let options = easytier_core::socket::udp::UdpBindOptions::default()
             .with_local_addr(Some("0.0.0.0:0".parse().unwrap()));
-        let udp = crate::socket::udp::create_udp_socket(&options)
-            .await
-            .context("create protected probe socket for gateway route")?;
+        let udp = crate::socket::udp::create_udp_socket_in_namespace(
+            &options,
+            &super::netns::PlatformNamespace::current()?,
+        )
+        .await
+        .context("create protected probe socket for gateway route")?;
         udp.connect(gateway_addr)
             .await
             .with_context(|| format!("connect probe socket to gateway {gateway_addr}"))?;

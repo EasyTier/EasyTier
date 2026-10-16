@@ -14,7 +14,7 @@ use easytier_core::connectivity::hole_punch::port_mapping::{
 use crate::common::{netns::NetNS, upnp};
 
 struct RuntimeUdpHolePunchPlatform {
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
 }
 
 #[async_trait]
@@ -36,6 +36,8 @@ impl UdpPortMappingPlatform for RuntimeUdpHolePunchPlatform {
     }
 }
 
-pub(crate) fn runtime_udp_hole_punch_platform(net_ns: NetNS) -> Arc<dyn UdpPortMappingPlatform> {
+pub(crate) fn runtime_udp_hole_punch_platform(
+    net_ns: std::sync::Arc<NetNS>,
+) -> Arc<dyn UdpPortMappingPlatform> {
     Arc::new(RuntimeUdpHolePunchPlatform { net_ns })
 }

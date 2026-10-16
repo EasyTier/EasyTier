@@ -28,12 +28,8 @@ async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
         config.set_flags(flags);
         config
     };
-    let registry = TestInstance::new_shared_virtual_nic_registry();
-    let mut first = TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
-        config(),
-        CoreProcessRuntime::new(),
-        registry.clone(),
-    );
+    let registry = TestInstance::current_shared_virtual_nic_registry();
+    let mut first = TestInstance::new_with_process_runtime(config(), CoreProcessRuntime::new());
     first.run().await.unwrap();
     assert_eq!(list_interface_firewall_rules(name).unwrap().len(), 8);
     let cached = registry
@@ -56,13 +52,9 @@ async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
     .unwrap();
     assert!(list_interface_firewall_rules(name).unwrap().is_empty());
 
-    // An independent registry has the same name-allocation boundary as a
-    // separate process. The previous registry deliberately remains alive.
-    let mut second = TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
-        config(),
-        CoreProcessRuntime::new(),
-        TestInstance::new_shared_virtual_nic_registry(),
-    );
+    // The process directory remains alive, but a retired entry must release
+    // the device name and its OS resources before the next instance starts.
+    let mut second = TestInstance::new_with_process_runtime(config(), CoreProcessRuntime::new());
     second.run().await.unwrap();
     assert_eq!(second.get_global_ctx().get_tun_device_name().unwrap(), name);
     let rules = list_interface_firewall_rules(name).unwrap();
@@ -359,20 +351,43 @@ fn create_member(
 }
 
 #[test]
-fn registry_shares_devices_only_within_the_same_name_and_namespace() {
+fn registry_shares_named_devices_but_isolates_anonymous_members() {
     let mut registry = SharedVirtualNicRegistry::new();
-    let first = create_member(&mut registry, "et0", 1400, Some("net-a"));
-    for (name, netns, shared) in [
-        ("et0", Some("net-a"), true),
-        ("et0", Some("net-b"), false),
-        ("et1", Some("net-a"), false),
-        ("et0", None, false),
-    ] {
-        let next = create_member(&mut registry, name, 1300, netns);
-        assert_eq!(Arc::ptr_eq(&first.shared_nic, &next.shared_nic), shared);
-        assert_eq!(next.configured_mtu, 1300);
-    }
+    let first = create_member(&mut registry, "et0", 1400, None);
+    let same = create_member(&mut registry, "et0", 1300, None);
+    let other = create_member(&mut registry, "et1", 1300, None);
+    assert!(Arc::ptr_eq(&first.shared_nic, &same.shared_nic));
+    assert!(!Arc::ptr_eq(&first.shared_nic, &other.shared_nic));
+    assert_eq!(same.configured_mtu, 1300);
     assert_eq!(first.configured_mtu, 1400);
+    let anonymous_a = create_member(&mut registry, "", 1400, None);
+    let anonymous_b = create_member(&mut registry, "", 1400, None);
+    assert!(!Arc::ptr_eq(
+        &anonymous_a.shared_nic,
+        &anonymous_b.shared_nic
+    ));
+}
+
+#[tokio::test]
+async fn pending_registration_prevents_retirement_and_last_drop_allows_compaction() {
+    let mut registry = SharedVirtualNicRegistry::new();
+    let first = create_member(&mut registry, "et0", 1400, None);
+    let nic = first.shared_nic.clone();
+    let mut locked = nic.lock().await;
+    drop(first); // Cleanup is blocked on this NIC lock, but releases its lifetime synchronously.
+    let next = create_member(&mut registry, "et0", 1400, None);
+    assert!(Arc::ptr_eq(&nic, &next.shared_nic));
+    locked.shutdown_dispatcher_if_idle().await;
+    assert!(locked.is_valid());
+    assert_eq!(*locked.lifetimes.lock().unwrap(), Some(1));
+    drop(next);
+    locked.shutdown_dispatcher_if_idle().await;
+    assert_eq!(*locked.lifetimes.lock().unwrap(), None);
+    assert!(!locked.is_valid());
+    drop(locked);
+    let replacement = create_member(&mut registry, "et0", 1400, None);
+    assert!(!Arc::ptr_eq(&nic, &replacement.shared_nic));
+    assert_eq!(registry.nics.len(), 1);
 }
 
 #[test]

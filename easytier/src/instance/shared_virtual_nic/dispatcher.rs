@@ -3257,6 +3257,8 @@ mod tests {
                     control_sender,
                 });
                 let table = shared_nic.member_tunnel_table.clone();
+                let lifetimes = shared_nic.lifetimes.clone();
+                *lifetimes.lock().unwrap() = Some(1);
                 let shared_nic = Arc::new(tokio::sync::Mutex::new(shared_nic));
                 let member = SharedVirtualNicMember::new(
                     member_id,
@@ -3264,6 +3266,7 @@ mod tests {
                     shared_nic.clone(),
                     Arc::new(Notify::new()),
                     table,
+                    lifetimes,
                 );
                 shared_nic
                     .lock()

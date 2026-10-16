@@ -16,6 +16,8 @@ pub(crate) const NLM_F_CREATE: u16 = 0x400;
 
 pub(crate) const NLMSG_ERROR: u16 = 2;
 pub(crate) const NLMSG_DONE: u16 = 3;
+pub(crate) const RTM_NEWLINK: u16 = 16;
+pub(crate) const RTM_GETLINK: u16 = 18;
 pub(crate) const RTM_NEWADDR: u16 = 20;
 pub(crate) const RTM_DELADDR: u16 = 21;
 pub(crate) const RTM_NEWROUTE: u16 = 24;
@@ -43,6 +45,50 @@ const RTA_TABLE: u16 = 15;
 const NDA_DST: u16 = 1;
 const NTF_PROXY: u8 = 0x08;
 const NUD_PERMANENT: u16 = 0x80;
+
+#[derive(Clone, Debug)]
+pub(crate) struct LinkMessage {
+    pub(crate) index: u32,
+    pub(crate) flags: u32,
+    pub(crate) name: String,
+    pub(crate) kind: Option<String>,
+}
+
+impl NetlinkDecode for LinkMessage {
+    const MESSAGE_TYPE: u16 = RTM_NEWLINK;
+
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() < 16 {
+            return Err(invalid_data("truncated interface header"));
+        }
+        let index = u32::try_from(read_i32(&bytes[4..])?)
+            .map_err(|_| invalid_data("invalid interface index"))?;
+        let attributes = parse_attributes(&bytes[16..])?;
+        let string = |bytes: &[u8]| -> io::Result<String> {
+            let value = std::ffi::CStr::from_bytes_with_nul(bytes)
+                .map_err(|_| invalid_data("invalid interface string attribute"))?;
+            Ok(value.to_string_lossy().into_owned())
+        };
+        let name = attributes
+            .iter()
+            .find(|attribute| attribute.kind == 3)
+            .ok_or_else(|| invalid_data("interface has no name"))?;
+        let kind = match attributes.iter().find(|attribute| attribute.kind == 18) {
+            Some(info) => parse_attributes(&info.value)?
+                .iter()
+                .find(|attribute| attribute.kind == 1)
+                .map(|attribute| string(&attribute.value))
+                .transpose()?,
+            None => None,
+        };
+        Ok(Self {
+            index,
+            flags: read_u32(&bytes[8..])?,
+            name: string(&name.value)?,
+            kind,
+        })
+    }
+}
 
 fn align4(len: usize) -> Option<usize> {
     len.checked_add(3).map(|len| len & !3)
@@ -610,6 +656,24 @@ impl NetlinkEncode for NeighborMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_decode_reads_nested_driver_kind_and_rejects_partial_attributes() {
+        let mut bytes = vec![0; 16];
+        bytes[4..8].copy_from_slice(&17_i32.to_ne_bytes());
+        bytes[8..12].copy_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
+        Attribute::new(3, b"et0\0").write_to(&mut bytes).unwrap();
+        let mut info = Vec::new();
+        Attribute::new(1, b"tun\0").write_to(&mut info).unwrap();
+        Attribute::new(18, info).write_to(&mut bytes).unwrap();
+        let link = LinkMessage::from_bytes(&bytes).unwrap();
+        assert_eq!(link.index, 17);
+        assert_eq!(link.name, "et0");
+        assert_eq!(link.kind.as_deref(), Some("tun"));
+        assert_eq!(link.flags, libc::IFF_UP as u32);
+        bytes.pop();
+        assert!(LinkMessage::from_bytes(&bytes).is_err());
+    }
 
     fn encode<T: NetlinkEncode>(message: &T) -> Vec<u8> {
         let mut bytes = Vec::new();

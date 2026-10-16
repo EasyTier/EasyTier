@@ -23,7 +23,7 @@ use easytier_core::{
         PortalClientConfig, PortalClientConfigPlan, PortalHost, PortalListener, PortalSession,
     },
     socket::{
-        ListenerConnectionCounter, NetNamespace, SocketContext, SocketListener,
+        ListenerConnectionCounter, SocketContext, SocketListener,
         udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
     },
 };
@@ -197,7 +197,7 @@ impl WireGuardPortalHost {
     ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
         let context = SocketContext::default()
             .with_socket_mark(self.global_ctx.get_flags().socket_mark)
-            .with_netns(self.global_ctx.net_ns.name().map(NetNamespace::new));
+            .with_netns(Some(self.global_ctx.net_ns.token()));
         runtime
             .bind_udp(
                 UdpBindOptions::port_bound_listener(address)

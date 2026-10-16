@@ -10,24 +10,33 @@ use easytier_core::{
 };
 use socket2::Socket;
 
-use crate::common::netns::NetNS;
+use crate::common::netns::{NetNS, PlatformNamespace};
 
-#[derive(Debug, Default)]
-pub(crate) struct RuntimeIcmpProxyHost;
+#[derive(Debug)]
+pub(crate) struct RuntimeIcmpProxyHost {
+    namespace: PlatformNamespace,
+}
 
 impl RuntimeIcmpProxyHost {
-    fn create_raw_socket(context: &SocketContext) -> Result<Socket, std::io::Error> {
-        let _guard = NetNS::from_socket_context(context).guard();
-        let socket = Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::RAW,
-            Some(socket2::Protocol::ICMPV4),
-        )?;
-        socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
-            Ipv4Addr::UNSPECIFIED,
-            0,
-        )))?;
-        Ok(socket)
+    pub(crate) fn new(namespace: Arc<NetNS>) -> Self {
+        Self {
+            namespace: namespace.platform().clone(),
+        }
+    }
+    fn create_raw_socket(&self, context: &SocketContext) -> Result<Socket, std::io::Error> {
+        self.namespace.validate_context(context)?;
+        self.namespace.run(|| {
+            let socket = Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::RAW,
+                Some(socket2::Protocol::ICMPV4),
+            )?;
+            socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
+                Ipv4Addr::UNSPECIFIED,
+                0,
+            )))?;
+            Ok(socket)
+        })?
     }
 }
 
@@ -69,7 +78,7 @@ impl IcmpProxyHost for RuntimeIcmpProxyHost {
         &self,
         context: SocketContext,
     ) -> Result<Arc<dyn IcmpProxySocket>, ProxyRuntimeError> {
-        let socket = Self::create_raw_socket(&context).inspect_err(|error| {
+        let socket = self.create_raw_socket(&context).inspect_err(|error| {
             tracing::warn!(?error, "create ICMP socket failed");
         })?;
         Ok(Arc::new(RuntimeIcmpSocket {

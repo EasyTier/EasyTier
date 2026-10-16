@@ -50,6 +50,7 @@ pub struct SharedVirtualNic {
     nic: Arc<Mutex<VirtualNic>>,
     ifcfg: SharedIfConfig,
     valid: Arc<AtomicBool>,
+    lifetimes: Arc<std::sync::Mutex<Option<usize>>>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
     member_registrations: BTreeMap<SharedVirtualNicMemberId, SharedVirtualNicMemberRegistrationId>,
     dispatcher: Option<SharedVirtualNicDispatcher>,
@@ -61,6 +62,7 @@ impl SharedVirtualNic {
             nic: Arc::new(Mutex::new(VirtualNic::new(config))),
             ifcfg: SharedIfConfig::default(),
             valid: Arc::new(AtomicBool::new(true)),
+            lifetimes: Arc::new(std::sync::Mutex::new(Some(0))),
             member_tunnel_table: SharedVirtualNicMemberTunnelTable::default(),
             member_registrations: BTreeMap::new(),
             dispatcher: None,
@@ -151,6 +153,7 @@ impl SharedVirtualNic {
         registration_id: SharedVirtualNicMemberRegistrationId,
     ) -> Result<(), Error> {
         if !self.is_current_member_registration(member_id, registration_id) {
+            self.shutdown_dispatcher_if_idle().await;
             return Ok(());
         }
 
@@ -235,6 +238,12 @@ impl SharedVirtualNic {
         }
 
         self.shutdown_dispatcher().await;
+        // A member may have reserved its registration while shutdown awaited.
+        let mut lifetimes = self.lifetimes.lock().unwrap();
+        if *lifetimes == Some(0) {
+            *lifetimes = None;
+            self.mark_invalid();
+        }
     }
 
     async fn invalidate_and_shutdown_dispatcher(&mut self) {
@@ -501,6 +510,7 @@ struct SharedVirtualNicMemberRegistration {
     registration_id: SharedVirtualNicMemberRegistrationId,
     shared_nic: Arc<Mutex<SharedVirtualNic>>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
+    lifetimes: Arc<std::sync::Mutex<Option<usize>>>,
 }
 
 impl SharedVirtualNicMemberRegistration {
@@ -512,6 +522,15 @@ impl SharedVirtualNicMemberRegistration {
 
 impl Drop for SharedVirtualNicMemberRegistration {
     fn drop(&mut self) {
+        {
+            let mut lifetimes = self.lifetimes.lock().unwrap();
+            let count = lifetimes
+                .as_mut()
+                .expect("live registration cannot belong to a retired NIC");
+            *count = count
+                .checked_sub(1)
+                .expect("shared NIC registration count underflow");
+        }
         self.member_tunnel_table
             .unregister(self.member_id, self.registration_id);
         let shared_nic = self.shared_nic.clone();
@@ -550,6 +569,7 @@ impl SharedVirtualNicMember {
         shared_nic: Arc<Mutex<SharedVirtualNic>>,
         close_notifier: Arc<Notify>,
         member_tunnel_table: SharedVirtualNicMemberTunnelTable,
+        lifetimes: Arc<std::sync::Mutex<Option<usize>>>,
     ) -> Self {
         let registration_id = uuid::Uuid::new_v4();
         Self {
@@ -562,6 +582,7 @@ impl SharedVirtualNicMember {
                 registration_id,
                 shared_nic: shared_nic.clone(),
                 member_tunnel_table,
+                lifetimes,
             }),
         }
     }
@@ -786,29 +807,49 @@ pub struct SharedVirtualNicRegistry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct SharedVirtualNicRegistryKey {
-    net_ns: Option<String>,
-    dev_name: String,
+enum SharedVirtualNicRegistryKey {
+    Named(String),
+    Anonymous(uuid::Uuid),
 }
 
 impl SharedVirtualNicRegistryKey {
-    fn new(dev_name: String, config: &VirtualNicConfig) -> Self {
-        Self {
-            net_ns: config.net_ns_name(),
-            dev_name,
+    fn new(dev_name: String, member: uuid::Uuid) -> Self {
+        if dev_name.is_empty() {
+            return Self::Anonymous(member);
         }
+        #[cfg(target_os = "windows")]
+        let dev_name = dev_name.to_lowercase();
+        Self::Named(dev_name)
     }
 }
 
 struct SharedVirtualNicRegistryEntry {
+    lifetimes: Arc<std::sync::Mutex<Option<usize>>>,
     nic: Arc<Mutex<SharedVirtualNic>>,
     valid: Arc<AtomicBool>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
 }
 
 impl SharedVirtualNicRegistryEntry {
+    fn reserve_registration(&self) -> bool {
+        let mut lifetimes = self.lifetimes.lock().unwrap();
+        if !self.is_valid() {
+            return false;
+        }
+        match lifetimes.as_mut() {
+            Some(count) => {
+                *count = count
+                    .checked_add(1)
+                    .expect("shared NIC registration count overflow");
+                true
+            }
+            None => false,
+        }
+    }
+
     fn new(nic: SharedVirtualNic) -> Self {
         Self {
+            lifetimes: nic.lifetimes.clone(),
             valid: nic.valid_flag(),
             member_tunnel_table: nic.member_tunnel_table(),
             nic: Arc::new(Mutex::new(nic)),
@@ -837,9 +878,9 @@ impl SharedVirtualNicRegistry {
     pub(crate) fn get(
         &self,
         dev_name: &str,
-        config: &VirtualNicConfig,
+        _config: &VirtualNicConfig,
     ) -> Option<Arc<Mutex<SharedVirtualNic>>> {
-        let key = SharedVirtualNicRegistryKey::new(dev_name.to_owned(), config);
+        let key = SharedVirtualNicRegistryKey::new(dev_name.to_owned(), uuid::Uuid::nil());
         self.nics
             .get(&key)
             .filter(|entry| entry.is_valid())
@@ -851,7 +892,10 @@ impl SharedVirtualNicRegistry {
         let mut matches = self
             .nics
             .iter()
-            .filter(|(key, entry)| key.dev_name == dev_name && entry.is_valid())
+            .filter(|(key, entry)| {
+                matches!(key, SharedVirtualNicRegistryKey::Named(name) if name == dev_name)
+                    && entry.is_valid()
+            })
             .map(|(_, entry)| entry.nic());
         let first = matches.next()?;
         if matches.next().is_some() {
@@ -864,11 +908,19 @@ impl SharedVirtualNicRegistry {
         &mut self,
         dev_name: String,
         config: VirtualNicConfig,
+        member: uuid::Uuid,
     ) -> &SharedVirtualNicRegistryEntry {
-        let key = SharedVirtualNicRegistryKey::new(dev_name, &config);
-        let needs_new_entry = self.nics.get(&key).is_none_or(|entry| !entry.is_valid());
+        // Only explicit completion can retire an entry; weak references do not prove teardown.
+        self.nics
+            .retain(|_, entry| entry.lifetimes.lock().unwrap().is_some());
+        let key = SharedVirtualNicRegistryKey::new(dev_name, member);
+        let needs_new_entry = self
+            .nics
+            .get(&key)
+            .is_none_or(|entry| !entry.reserve_registration());
         if needs_new_entry {
             let entry = SharedVirtualNicRegistryEntry::new(SharedVirtualNic::new(config));
+            assert!(entry.reserve_registration());
             self.nics.insert(key.clone(), entry);
         }
 
@@ -885,13 +937,14 @@ impl SharedVirtualNicRegistry {
         close_notifier: Arc<Notify>,
     ) -> SharedVirtualNicMember {
         let configured_mtu = config.mtu();
-        let entry = self.get_or_create_entry(dev_name, config);
+        let entry = self.get_or_create_entry(dev_name, config, member_id);
         SharedVirtualNicMember::new(
             member_id,
             configured_mtu,
             entry.nic(),
             close_notifier,
             entry.member_tunnel_table(),
+            entry.lifetimes.clone(),
         )
     }
 }

@@ -253,25 +253,29 @@ pub async fn drop_insts(insts: Vec<Instance>) {
 
 pub async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     use crate::common::netns::{NetNS, ROOT_NETNS_NAME};
-    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
-    let code = tokio::process::Command::new("ip")
-        .args([
-            "netns",
-            "exec",
-            from_netns,
-            "ping",
-            "-c",
-            "1",
-            "-s",
-            payload_size.unwrap_or(56).to_string().as_str(),
-            "-W",
-            "1",
-            target_ip.to_string().as_str(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
+    let namespace = NetNS::new(Some(ROOT_NETNS_NAME.to_owned()));
+    let mut child = namespace
+        .run(|| {
+            tokio::process::Command::new("ip")
+                .args([
+                    "netns",
+                    "exec",
+                    from_netns,
+                    "ping",
+                    "-c",
+                    "1",
+                    "-s",
+                    payload_size.unwrap_or(56).to_string().as_str(),
+                    "-W",
+                    "1",
+                    target_ip.to_string().as_str(),
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        })
+        .unwrap()
         .unwrap();
+    let code = child.wait().await.unwrap();
     code.code().unwrap() == 0
 }

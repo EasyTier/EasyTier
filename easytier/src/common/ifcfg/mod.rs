@@ -10,8 +10,8 @@
 mod darwin;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 mod netlink;
-#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
-mod netlink_wire;
+#[cfg(target_os = "linux")]
+pub(crate) mod netlink_wire;
 #[cfg(target_os = "windows")]
 mod win;
 #[cfg(target_os = "windows")]
@@ -235,6 +235,18 @@ pub type IfConfiger = windows::WindowsIfConfiger;
     target_os = "freebsd",
 )))]
 pub type IfConfiger = DummyIfConfiger;
+
+pub(crate) fn in_namespace(namespace: super::netns::PlatformNamespace) -> IfConfiger {
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    {
+        netlink::NetlinkIfConfiger::in_namespace(namespace)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+    {
+        let _ = namespace;
+        IfConfiger::default()
+    }
+}
 
 #[cfg(target_os = "windows")]
 pub use windows::RegistryManager;

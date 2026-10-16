@@ -237,7 +237,7 @@ mod tests {
         let runtime = super::super::NativeTunRuntime::new(
             global_ctx.clone(),
             cancel.clone(),
-            TestInstance::new_shared_virtual_nic_registry(),
+            TestInstance::current_shared_virtual_nic_registry(),
         );
         let (_sender, receiver) = tokio::sync::mpsc::channel(1);
         runtime

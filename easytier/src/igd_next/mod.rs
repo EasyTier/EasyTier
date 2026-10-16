@@ -34,7 +34,7 @@ use errors::GetExternalIpError;
 pub(crate) use errors::GetGenericPortMappingEntryError;
 use errors::{AddPortError, HttpTransportError, RemovePortError, RequestError, SearchError};
 
-use crate::socket::{tcp::connect_tcp, udp::RuntimeUdpSocketFactory};
+use crate::socket::{tcp::connect_tcp_in_namespace, udp::RuntimeUdpSocketFactory};
 
 const DEFAULT_SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -206,7 +206,12 @@ async fn send_http_request_inner(
     soap_action: Option<&str>,
     body: String,
 ) -> Result<Bytes, HttpTransportError> {
-    let stream = connect_tcp(TcpConnectOptions::direct_connect(addr)).await?;
+    let stream = connect_tcp_in_namespace(
+        TcpConnectOptions::direct_connect(addr),
+        &crate::common::netns::PlatformNamespace::current()
+            .map_err(easytier_core::tunnel::TunnelError::from)?,
+    )
+    .await?;
     let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
     let body = Bytes::from(body);
     let mut request = Request::builder()

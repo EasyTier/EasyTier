@@ -2,31 +2,28 @@ use std::{net::IpAddr, sync::Arc};
 
 use easytier_core::{
     connectivity::composite::{ConnectorEnvironment, ConnectorHostAdapter},
-    socket::{NetNamespace, SocketContext},
+    socket::SocketContext,
 };
 
-use crate::{
-    common::global_ctx::ArcGlobalCtx,
-    host_runtime::{NativeHostRuntime, native_host_runtime},
-};
+use crate::{common::global_ctx::ArcGlobalCtx, common::netns::NetNS};
 
-pub type NativeInstanceHost = ConnectorHostAdapter<NativeHostRuntime, NativeInstanceEnvironment>;
+pub type NativeInstanceHost = ConnectorHostAdapter<NetNS, NativeInstanceEnvironment>;
 
 /// Instance facts queried by portable connector policy.
 ///
 /// This Adapter never creates or operates sockets. Mechanical network I/O is
-/// owned by the process-wide [`NativeHostRuntime`] composed beside it.
+/// owned by the canonical [`NetNS`] selected during composition.
 pub struct NativeInstanceEnvironment {
     global_ctx: ArcGlobalCtx,
-    runtime: Arc<NativeHostRuntime>,
+    runtime: Arc<NetNS>,
     socket_context: SocketContext,
 }
 
 impl NativeInstanceEnvironment {
-    fn new(global_ctx: ArcGlobalCtx, runtime: Arc<NativeHostRuntime>) -> Self {
+    fn new(global_ctx: ArcGlobalCtx, runtime: Arc<NetNS>) -> Self {
         let socket_context = SocketContext::default()
             .with_socket_mark(global_ctx.get_flags().socket_mark)
-            .with_netns(global_ctx.net_ns.name().map(NetNamespace::new));
+            .with_netns(Some(global_ctx.net_ns.token()));
         Self {
             global_ctx,
             runtime,
@@ -36,7 +33,7 @@ impl NativeInstanceEnvironment {
 }
 
 pub(crate) fn native_instance_host(global_ctx: ArcGlobalCtx) -> Arc<NativeInstanceHost> {
-    let runtime = native_host_runtime();
+    let runtime = global_ctx.net_ns.clone();
     Arc::new(ConnectorHostAdapter::new(
         runtime.clone(),
         Arc::new(NativeInstanceEnvironment::new(global_ctx, runtime)),

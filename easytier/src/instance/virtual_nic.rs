@@ -11,7 +11,7 @@ use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     ifcfg::{IfConfiger, IfConfiguerTrait},
-    netns::NetNS,
+    netns::{NetNS, PlatformNamespace},
 };
 
 use easytier_core::{
@@ -246,24 +246,20 @@ impl AsyncWrite for TunAsyncWrite {
 pub struct VirtualNicConfig {
     dev_name: String,
     mtu: u32,
-    net_ns: NetNS,
+    net_ns: PlatformNamespace,
 }
 
 impl VirtualNicConfig {
-    pub fn new(dev_name: String, mtu: u32, net_ns: NetNS) -> Self {
+    pub fn new(dev_name: String, mtu: u32, net_ns: std::sync::Arc<NetNS>) -> Self {
         Self {
             dev_name,
             mtu,
-            net_ns,
+            net_ns: net_ns.platform().clone(),
         }
     }
 
     pub fn mtu(&self) -> u32 {
         self.mtu
-    }
-
-    pub fn net_ns_name(&self) -> Option<String> {
-        self.net_ns.name()
     }
 }
 
@@ -303,10 +299,11 @@ impl VirtualNic {
     }
 
     pub fn new(config: VirtualNicConfig) -> Self {
+        let ifcfg = Box::new(crate::common::ifcfg::in_namespace(config.net_ns.clone()));
         Self {
             config,
             ifname: None,
-            ifcfg: Box::new(IfConfiger::default()),
+            ifcfg,
             #[cfg(target_os = "windows")]
             name_reservation: None,
         }
@@ -595,8 +592,7 @@ impl VirtualNic {
 
         config.up();
 
-        let _g = self.config.net_ns.guard();
-        Ok(tun::create(&config)?)
+        Ok(self.config.net_ns.run(|| tun::create(&config))??)
     }
 
     #[cfg(any(mobile, all(test, unix)))]
@@ -695,7 +691,6 @@ impl VirtualNic {
 
         {
             // set mtu by ourselves, rust-tun does not handle it correctly on windows
-            let _g = self.config.net_ns.guard();
             self.ifcfg.set_mtu(ifname.as_str(), self.config.mtu).await?;
         }
 
@@ -755,7 +750,6 @@ impl VirtualNic {
     }
 
     pub async fn link_up(&self) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg.set_link_status(self.ifname(), true).await?;
         Ok(())
     }
@@ -781,7 +775,6 @@ impl VirtualNic {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv4_route_with_source_hint(self.ifname(), address, cidr, cost, source_hint)
             .await?;
@@ -789,7 +782,6 @@ impl VirtualNic {
     }
 
     pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .remove_ipv4_route(self.ifname(), address, cidr)
             .await?;
@@ -803,7 +795,6 @@ impl VirtualNic {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .remove_ipv4_route_with_cost_and_source_hint(
                 self.ifname(),
@@ -826,7 +817,6 @@ impl VirtualNic {
         cidr: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv6_route(self.ifname(), address, cidr, cost)
             .await?;
@@ -834,7 +824,6 @@ impl VirtualNic {
     }
 
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .remove_ipv6_route(self.ifname(), address, cidr)
             .await?;
@@ -842,19 +831,16 @@ impl VirtualNic {
     }
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg.remove_ip(self.ifname(), ip).await?;
         Ok(())
     }
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg.remove_ipv6(self.ifname(), ip).await?;
         Ok(())
     }
 
     pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv4_ip(self.ifname(), ip, cidr as u8)
             .await?;
@@ -862,7 +848,6 @@ impl VirtualNic {
     }
 
     pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv6_ip(self.ifname(), ip, cidr as u8)
             .await?;
@@ -870,7 +855,6 @@ impl VirtualNic {
     }
 
     pub async fn set_mtu(&self, mtu: u32) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg.set_mtu(self.ifname(), mtu).await?;
         Ok(())
     }
@@ -893,7 +877,7 @@ impl VirtualNic {
     }
 
     pub fn get_ifcfg(&self) -> IfConfiger {
-        IfConfiger::default()
+        crate::common::ifcfg::in_namespace(self.config.net_ns.clone())
     }
 }
 
@@ -1126,19 +1110,17 @@ impl NicCtx {
         #[cfg(mobile)]
         let nic_config = VirtualNicConfig {
             dev_name: String::new(),
-            net_ns: NetNS::new(None),
+            net_ns: global_ctx.net_ns.platform().clone(),
             ..nic_config
         };
         // Only an explicitly configured name opts into sharing.
-        let backend = if cfg!(mobile) || !global_ctx.get_flags().dev_name.is_empty() {
+        let backend = {
             NicBackend::Shared(registry.lock().await.create_member(
                 nic_config.dev_name.clone(),
                 nic_config,
-                global_ctx.get_id(),
+                global_ctx.run_key(),
                 close_notifier.clone(),
             ))
-        } else {
-            NicBackend::Dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config))))
         };
 
         Self::new_with_backend(
@@ -1733,18 +1715,14 @@ mod tests {
         use easytier_core::process_runtime::CoreProcessRuntime;
 
         let process = CoreProcessRuntime::new();
-        let registry = TestInstance::new_shared_virtual_nic_registry();
+        let registry = TestInstance::current_shared_virtual_nic_registry();
         let new_instance = |config: TomlConfigLoader| {
             if let Some(dev_name) = dev_name {
                 let mut flags = config.get_flags();
                 flags.dev_name = dev_name.to_owned();
                 config.set_flags(flags);
             }
-            TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
-                config,
-                process.clone(),
-                registry.clone(),
-            )
+            TestInstance::new_with_process_runtime(config, process.clone())
         };
         let config =
             TomlConfigLoader::new_from_str("ipv4 = \"198.18.26.1/30\"\nlisteners = []").unwrap();
@@ -1857,11 +1835,14 @@ mod tests {
         let net_ns = NetNS::new(Some(namespace.clone()));
         // Avoid DAD probes and use an unowned source to test destination claims.
         {
-            let _guard = net_ns.guard();
-            std::fs::write("/proc/sys/net/ipv6/conf/default/accept_dad", "0").unwrap();
-            // Keep automatic link-local traffic out of the member packet streams.
-            std::fs::write("/proc/sys/net/ipv6/conf/default/addr_gen_mode", "1").unwrap();
-            let ifcfg = IfConfiger::default();
+            net_ns
+                .run(|| {
+                    std::fs::write("/proc/sys/net/ipv6/conf/default/accept_dad", "0").unwrap();
+                    // Keep automatic link-local traffic out of the member packet streams.
+                    std::fs::write("/proc/sys/net/ipv6/conf/default/addr_gen_mode", "1").unwrap();
+                })
+                .unwrap();
+            let ifcfg = crate::common::ifcfg::in_namespace(net_ns.platform().clone());
             ifcfg.set_link_status("lo", true).await.unwrap();
             ifcfg
                 .add_ipv6_ip("lo", "fdff::1".parse().unwrap(), 128)
@@ -1907,12 +1888,13 @@ mod tests {
             net_ns
                 .run(|| IfConfiger::list_addresses(&ifname))
                 .unwrap()
+                .unwrap()
                 .contains(&"fd00::1/64".parse().unwrap())
         );
         // Linux completes IPv6 address activation asynchronously, even without DAD probes.
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                match net_ns.run(|| UdpSocket::bind("[fd00::1]:0")) {
+                match net_ns.run(|| UdpSocket::bind("[fd00::1]:0")).unwrap() {
                     Ok(_) => break,
                     Err(err) if err.kind() == std::io::ErrorKind::AddrNotAvailable => {
                         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1948,9 +1930,12 @@ mod tests {
                 loop {
                     // Do not race an updater's OS change and dispatcher publication.
                     let guard = shared_nic.lock().await;
-                    let sent = net_ns.run(|| {
-                        UdpSocket::bind((source, 0))?.send_to(b"mobile-ipv6", (destination, 12345))
-                    });
+                    let sent = net_ns
+                        .run(|| {
+                            UdpSocket::bind((source, 0))?
+                                .send_to(b"mobile-ipv6", (destination, 12345))
+                        })
+                        .unwrap();
                     drop(guard);
                     if sent.is_ok() {
                         break;

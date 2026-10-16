@@ -1,4 +1,4 @@
-#[cfg(not(mobile))]
+#[cfg(all(not(mobile), not(target_os = "linux")))]
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -8,20 +8,17 @@ use tokio::sync::Mutex;
 
 use crate::proto::peer_rpc::GetIpListResponse;
 
-use super::netns::NetNS;
+use super::netns::PlatformNamespace;
 
-#[cfg(not(mobile))]
+#[cfg(all(not(mobile), not(target_os = "linux")))]
 #[derive(Clone, Copy, Debug, Default)]
 struct InterfaceState {
     is_point_to_point: bool,
     is_loopback: bool,
     is_up: bool,
-    #[cfg(target_os = "linux")]
-    is_lower_up: bool,
 }
 
 #[cfg(any(
-    all(target_os = "linux", not(target_env = "ohos")),
     all(target_os = "macos", not(feature = "macos-ne")),
     target_os = "freebsd"
 ))]
@@ -32,16 +29,12 @@ fn collect_interface_states() -> HashMap<String, InterfaceState> {
 
         for interface in interfaces {
             let flags = interface.flags;
-            #[cfg(target_os = "linux")]
-            let is_lower_up = flags.contains(InterfaceFlags::IFF_LOWER_UP);
             states.insert(
                 interface.interface_name,
                 InterfaceState {
                     is_point_to_point: flags.contains(InterfaceFlags::IFF_POINTOPOINT),
                     is_loopback: flags.contains(InterfaceFlags::IFF_LOOPBACK),
                     is_up: flags.contains(InterfaceFlags::IFF_UP),
-                    #[cfg(target_os = "linux")]
-                    is_lower_up,
                 },
             );
         }
@@ -49,9 +42,8 @@ fn collect_interface_states() -> HashMap<String, InterfaceState> {
     states
 }
 
-#[cfg(not(mobile))]
+#[cfg(all(not(mobile), not(target_os = "linux")))]
 #[cfg(not(any(
-    all(target_os = "linux", not(target_env = "ohos")),
     all(target_os = "macos", not(feature = "macos-ne")),
     target_os = "freebsd"
 )))]
@@ -103,13 +95,13 @@ pub(crate) fn ip_mask_to_prefix(mask: IpAddr) -> Result<u8, ()> {
     }
 }
 
-#[cfg(not(mobile))]
+#[cfg(all(not(mobile), not(target_os = "linux")))]
 struct InterfaceFilter {
     iface: NetworkInterface,
     state: InterfaceState,
 }
 
-#[cfg(not(mobile))]
+#[cfg(all(not(mobile), not(target_os = "linux")))]
 fn interface_state(
     iface: &NetworkInterface,
     states: &HashMap<String, InterfaceState>,
@@ -117,46 +109,8 @@ fn interface_state(
     states.get(&iface.name).copied().unwrap_or(InterfaceState {
         is_loopback: iface.internal,
         is_up: true,
-        #[cfg(target_os = "linux")]
-        is_lower_up: true,
         ..Default::default()
     })
-}
-
-#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-impl InterfaceFilter {
-    async fn is_tun_tap_device(&self) -> bool {
-        let path = format!("/sys/class/net/{}/tun_flags", self.iface.name);
-        tokio::fs::metadata(&path).await.is_ok()
-    }
-
-    async fn has_valid_ip(&self) -> bool {
-        self.iface
-            .addr
-            .iter()
-            .map(|ip| ip.ip())
-            .any(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
-    }
-
-    async fn filter_iface(&self) -> bool {
-        tracing::trace!(
-            "filter linux iface: {:?}, is_point_to_point: {}, is_loopback: {}, is_up: {}, is_lower_up: {}, is_tun: {}, has_valid_ip: {}",
-            self.iface,
-            self.state.is_point_to_point,
-            self.state.is_loopback,
-            self.state.is_up,
-            self.state.is_lower_up,
-            self.is_tun_tap_device().await,
-            self.has_valid_ip().await
-        );
-
-        !self.state.is_point_to_point
-            && !self.state.is_loopback
-            && self.state.is_up
-            && self.state.is_lower_up
-            && !self.is_tun_tap_device().await
-            && self.has_valid_ip().await
-    }
 }
 
 // Cache for networksetup command output
@@ -287,18 +241,27 @@ pub async fn local_ipv6() -> std::io::Result<std::net::Ipv6Addr> {
     }
 }
 
-pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
+pub(crate) async fn collect_interfaces(
+    namespace: PlatformNamespace,
+    filter: bool,
+) -> Vec<NetworkInterface> {
     #[cfg(target_os = "linux")]
     {
-        run_in_namespace(net_ns, move || async move {
-            collect_interfaces_in_current_namespace(filter).await
+        match tokio::task::spawn_blocking(move || {
+            namespace.run(|| collect_linux_interfaces(filter))
         })
         .await
+        {
+            Ok(Ok(interfaces)) => interfaces,
+            result => {
+                tracing::warn!(?result, "failed to collect interfaces in bound namespace");
+                Vec::new()
+            }
+        }
     }
-
     #[cfg(not(target_os = "linux"))]
     {
-        let _g = net_ns.guard();
+        let _ = namespace;
         collect_interfaces_in_current_namespace(filter).await
     }
 }
@@ -336,7 +299,7 @@ fn convert_pnet_interface(iface: pnet_datalink::NetworkInterface) -> NetworkInte
     }
 }
 
-async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInterface> {
+fn enumerate_interfaces() -> Vec<NetworkInterface> {
     let ifaces = match NetworkInterface::show() {
         Ok(ifaces) => ifaces,
         Err(error) => {
@@ -357,6 +320,12 @@ async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInt
             return Vec::new();
         }
     };
+    ifaces
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInterface> {
+    let ifaces = enumerate_interfaces();
     #[cfg(mobile)]
     {
         let _ = filter;
@@ -385,40 +354,180 @@ async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInt
 }
 
 #[cfg(target_os = "linux")]
-async fn run_in_namespace<T, F, Fut>(net_ns: NetNS, operation: F) -> T
-where
-    T: Send + 'static,
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = T> + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build namespace-local runtime");
-        net_ns.run(|| runtime.block_on(operation()))
-    })
-    .await
-    .expect("namespace-local network operation panicked")
+fn collect_linux_interfaces(filter: bool) -> Vec<NetworkInterface> {
+    let ifaces = enumerate_interfaces();
+    #[cfg(mobile)]
+    {
+        let _ = filter;
+        ifaces
+    }
+    #[cfg(not(mobile))]
+    {
+        if !filter {
+            return ifaces;
+        }
+        let links = match read_link_interfaces() {
+            Ok(links) => links,
+            Err(error) => {
+                tracing::warn!(%error, "cannot classify interfaces in current namespace");
+                return Vec::new();
+            }
+        };
+        ifaces
+            .into_iter()
+            .filter(|iface| {
+                use nix::net::if_::InterfaceFlags;
+                let Some(link) = links.get(&iface.index) else {
+                    return false;
+                };
+                let flags = InterfaceFlags::from_bits_retain(link.flags as _);
+                link.name == iface.name
+                    && link.kind.as_deref() != Some("tun")
+                    && !flags
+                        .intersects(InterfaceFlags::IFF_POINTOPOINT | InterfaceFlags::IFF_LOOPBACK)
+                    && flags.contains(InterfaceFlags::IFF_UP | InterfaceFlags::IFF_LOWER_UP)
+                    && iface.addr.iter().any(|ip| {
+                        !ip.ip().is_loopback()
+                            && !ip.ip().is_unspecified()
+                            && !ip.ip().is_multicast()
+                    })
+            })
+            .collect()
+    }
 }
 
-#[tracing::instrument(skip(net_ns))]
-pub(crate) async fn collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
+#[cfg(all(target_os = "linux", not(mobile)))]
+fn read_link_interfaces()
+-> std::io::Result<std::collections::HashMap<u32, super::ifcfg::netlink_wire::LinkMessage>> {
+    use super::ifcfg::netlink_wire::{
+        LinkMessage, MessageBuilder, MessageIter, NLM_F_DUMP, NLM_F_DUMP_INTR, NLM_F_REQUEST,
+        NLMSG_DONE, NLMSG_ERROR, NetlinkDecode, RTM_GETLINK, RTM_NEWLINK, netlink_error_code,
+    };
+    use nix::sys::{
+        socket::{self, AddressFamily, MsgFlags, NetlinkAddr, SockFlag, SockProtocol, SockType},
+        time::{TimeVal, TimeValLike},
+    };
+    use std::os::fd::AsRawFd;
+    let socket = socket::socket(
+        AddressFamily::Netlink,
+        SockType::Raw,
+        SockFlag::SOCK_CLOEXEC,
+        SockProtocol::NetlinkRoute,
+    )?;
+    socket::setsockopt(
+        &socket,
+        socket::sockopt::ReceiveTimeout,
+        &TimeVal::seconds(3),
+    )?;
+    socket::connect(socket.as_raw_fd(), &NetlinkAddr::new(0, 0))?;
+    let mut request = MessageBuilder::new(RTM_GETLINK, NLM_F_REQUEST | NLM_F_DUMP);
+    request.append_bytes(&[0; 16]);
+    socket::send(socket.as_raw_fd(), &request.finish()?, MsgFlags::empty())?;
+    let mut links = std::collections::HashMap::new();
+    let mut buffer = [0_u8; 65536];
+    loop {
+        let length = socket::recv(socket.as_raw_fd(), &mut buffer, MsgFlags::MSG_TRUNC)?;
+        if length == 0 || length > buffer.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "truncated interface dump",
+            ));
+        }
+        for frame in MessageIter::new(&buffer[..length]) {
+            let (header, payload) = frame?;
+            if header.flags & NLM_F_DUMP_INTR != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "interrupted interface dump",
+                ));
+            }
+            if header.message_type == NLMSG_ERROR {
+                let errno = netlink_error_code(payload)?;
+                if errno != 0 {
+                    return Err(std::io::Error::from_raw_os_error(errno.abs()));
+                }
+            } else if header.message_type == NLMSG_DONE {
+                if !payload.is_empty() {
+                    let errno = netlink_error_code(payload)?;
+                    if errno != 0 {
+                        return Err(std::io::Error::from_raw_os_error(errno.abs()));
+                    }
+                }
+                return Ok(links);
+            } else if header.message_type == RTM_NEWLINK {
+                let link = LinkMessage::from_bytes(payload)?;
+                links.insert(link.index, link);
+            }
+        }
+    }
+}
+
+#[tracing::instrument(skip(namespace))]
+pub(crate) async fn collect_local_ip_addrs(namespace: PlatformNamespace) -> GetIpListResponse {
     #[cfg(target_os = "linux")]
     {
-        return run_in_namespace(net_ns, || async {
-            collect_local_ip_addrs_in_current_namespace().await
-        })
-        .await;
+        match tokio::task::spawn_blocking(move || namespace.run(collect_linux_ip_addrs)).await {
+            Ok(Ok(addresses)) => addresses,
+            result => {
+                tracing::warn!(?result, "failed to collect IP addresses in bound namespace");
+                GetIpListResponse::default()
+            }
+        }
     }
-
     #[cfg(not(target_os = "linux"))]
     {
-        let _g = net_ns.guard();
+        let _ = namespace;
         collect_local_ip_addrs_in_current_namespace().await
     }
 }
 
+#[cfg(target_os = "linux")]
+fn collect_linux_ip_addrs() -> GetIpListResponse {
+    let mut ret = GetIpListResponse::default();
+    for iface in collect_linux_interfaces(true) {
+        for ip in iface.addr {
+            if let IpAddr::V4(ip) = ip.ip()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+            {
+                ret.interface_ipv4s.push(ip.into());
+            }
+        }
+    }
+    for iface in collect_linux_interfaces(false) {
+        for ip in iface.addr {
+            if let IpAddr::V6(ip) = ip.ip()
+                && !ip.is_multicast()
+                && !ip.is_loopback()
+                && !ip.is_unicast_link_local()
+            {
+                ret.interface_ipv6s.push(ip.into());
+            }
+        }
+    }
+    for (bind, remote) in [
+        ("0.0.0.0:0", "8.8.8.8:80"),
+        ("[::]:0", "[2001:4860:4860::8888]:80"),
+    ] {
+        let probe = || -> std::io::Result<IpAddr> {
+            let socket = std::net::UdpSocket::bind(bind)?;
+            socket.connect(remote)?;
+            Ok(socket.local_addr()?.ip())
+        };
+        match probe() {
+            Ok(IpAddr::V4(ip)) if !ret.interface_ipv4s.contains(&ip.into()) => {
+                ret.interface_ipv4s.push(ip.into())
+            }
+            Ok(IpAddr::V6(ip)) if !ret.interface_ipv6s.contains(&ip.into()) => {
+                ret.interface_ipv6s.push(ip.into())
+            }
+            _ => {}
+        }
+    }
+    ret
+}
+
+#[cfg(not(target_os = "linux"))]
 async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
     let mut ret = GetIpListResponse::default();
 
@@ -487,14 +596,16 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn namespace_operation_does_not_migrate_between_os_threads() {
-        let (before, after) = run_in_namespace(NetNS::new(None), || async {
-            let before = std::thread::current().id();
-            tokio::task::yield_now().await;
-            (before, std::thread::current().id())
-        })
-        .await;
+    async fn bound_interface_query_does_not_change_the_callers_namespace() {
+        let namespace = PlatformNamespace::current().unwrap();
+        let expected = namespace.id();
+        assert!(!collect_interfaces(namespace, false).await.is_empty());
+        assert_eq!(PlatformNamespace::current().unwrap().id(), expected);
+    }
 
-        assert_eq!(before, after);
+    #[cfg(all(target_os = "linux", not(mobile)))]
+    #[test]
+    fn interface_classification_queries_the_current_namespace_without_sysfs() {
+        assert!(!read_link_interfaces().unwrap().is_empty());
     }
 }

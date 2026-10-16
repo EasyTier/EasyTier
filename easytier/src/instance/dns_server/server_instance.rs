@@ -14,10 +14,7 @@ use super::{
 };
 use crate::{
     common::{
-        error::Error as EtError,
-        global_ctx::ArcGlobalCtx,
-        ifcfg::{IfConfiger, IfConfiguerTrait},
-        netns::NetNS,
+        error::Error as EtError, global_ctx::ArcGlobalCtx, ifcfg::IfConfiguerTrait, netns::NetNS,
     },
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
@@ -53,7 +50,7 @@ use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, tim
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
     tun_dev: Option<String>,
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     fake_ip: Ipv4Addr,
     manage_fake_ip_route: bool,
     route_store: MagicDnsRecordStore,
@@ -366,8 +363,7 @@ impl MagicDnsServerInstance {
         net_ns: &NetNS,
         cost: Option<i32>,
     ) -> Result<(), anyhow::Error> {
-        let ifcfg = IfConfiger::default();
-        let _guard = net_ns.guard();
+        let ifcfg = crate::common::ifcfg::in_namespace(net_ns.platform().clone());
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
             Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
                 ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
@@ -381,8 +377,7 @@ impl MagicDnsServerInstance {
     }
 
     async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, net_ns: &NetNS) {
-        let ifcfg = IfConfiger::default();
-        let _guard = net_ns.guard();
+        let ifcfg = crate::common::ifcfg::in_namespace(net_ns.platform().clone());
         if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
             tracing::warn!(
                 ?err,

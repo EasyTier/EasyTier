@@ -40,6 +40,8 @@ const MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK: usize = 3;
 /// normalization path for both initial construction and runtime patching.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreInstanceHostConfig {
+    /// Host-bound runtime domain; never persisted as the configured namespace name.
+    pub socket_namespace: Option<NetNamespace>,
     pub hostname_fallback: Option<String>,
     pub host_routing: HostRoutingPolicy,
     pub force_exit_node: bool,
@@ -66,6 +68,7 @@ pub struct CoreInstanceHostConfig {
 impl Default for CoreInstanceHostConfig {
     fn default() -> Self {
         Self {
+            socket_namespace: None,
             hostname_fallback: None,
             host_routing: HostRoutingPolicy::default(),
             force_exit_node: false,
@@ -184,7 +187,11 @@ impl CoreInstanceConfig {
         let network_name = identity.network_name.clone();
         let socket_context = SocketContext::default()
             .with_socket_mark(flags.socket_mark)
-            .with_netns(config.get_netns().map(NetNamespace::new));
+            .with_netns(
+                host.socket_namespace
+                    .clone()
+                    .or_else(|| config.get_netns().map(NetNamespace::new)),
+            );
         let hostname = match config.get_hostname() {
             hostname if !hostname.is_empty() => hostname,
             _ => host.hostname_fallback.clone().unwrap_or_default(),
@@ -412,6 +419,36 @@ impl CoreInstanceConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bound_namespace_is_runtime_context_and_preserves_the_configured_name() {
+        use super::*;
+        let config = TomlConfig::default();
+        config.set_netns(Some("configured-namespace".to_owned()));
+        let token = NetNamespace::new("opaque-host-domain");
+        let host = CoreInstanceHostConfig {
+            socket_namespace: Some(token.clone()),
+            ..Default::default()
+        };
+        let parsed = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
+        assert_eq!(
+            parsed.connectivity.manual.tcp_bind.context.netns,
+            Some(token.clone())
+        );
+        assert_eq!(
+            parsed.connectivity.direct.udp_bind.context.netns,
+            Some(token.clone())
+        );
+        assert_eq!(
+            parsed
+                .connectivity
+                .endpoint_discovery
+                .dns_record_context
+                .netns,
+            Some(token)
+        );
+        assert_eq!(config.get_netns().as_deref(), Some("configured-namespace"));
+    }
+
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     use super::*;
