@@ -5400,14 +5400,45 @@ pub async fn dhcpv6_three_node_connectivity(#[case] dhcp_ipv4: bool, #[case] sta
     for address in &addresses {
         assert_eq!(address.network(), "fd42:1234::/64".parse().unwrap());
     }
+    // DHCP can temporarily assign the same IPv4 address to multiple peers.
+    // Wait for conflict resolution and route propagation in both directions
+    // before opening connections; IPv6 readiness alone does not imply this.
     wait_for_condition(
         || async {
-            insts[0]
-                .get_core_instance()
-                .route_snapshots()
-                .await
+            let ipv4_addresses = insts
                 .iter()
-                .all(|route| route.ipv6_addr.is_some())
+                .map(|inst| inst.get_global_ctx().get_ipv4())
+                .collect::<Vec<_>>();
+            if (dhcp_ipv4 || static_ipv4)
+                && ipv4_addresses
+                    .iter()
+                    .flatten()
+                    .map(|address| address.address())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != insts.len()
+            {
+                return false;
+            }
+            for inst in &insts {
+                let routes = inst.get_core_instance().route_snapshots().await;
+                if routes.len() != insts.len() - 1 {
+                    return false;
+                }
+                for (index, peer) in insts.iter().enumerate() {
+                    if peer.peer_id() == inst.peer_id() {
+                        continue;
+                    }
+                    if !routes.iter().any(|route| {
+                        route.peer_id == peer.peer_id()
+                            && route.ipv6_addr == Some(addresses[index].into())
+                            && route.ipv4_addr == ipv4_addresses[index].map(Into::into)
+                    }) {
+                        return false;
+                    }
+                }
+            }
+            true
         },
         Duration::from_secs(15),
     )
