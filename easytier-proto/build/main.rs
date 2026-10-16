@@ -130,6 +130,7 @@ fn main() -> anyhow::Result<()> {
             ".common.UUID",
             ".api.manage.ManagedCredentialConfig",
             ".api.manage.VpnPortalConfig",
+            ".peer_rpc.PeerConnNoiseMsg2Pb",
         ])
         .type_attribute(
             ".common.CompressionAlgoPb",

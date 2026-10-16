@@ -356,7 +356,7 @@ pub(super) struct ClassifiedUdpSessionAccept {
 
 #[derive(Debug, Clone)]
 pub(super) struct UdpSessionRegistryEntry {
-    pub(super) incoming: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
+    pub(super) incoming: Arc<parking_lot::Mutex<RingSocketSender<UdpSessionDatagram>>>,
     pub(super) close: watch::Sender<bool>,
 }
 
@@ -730,7 +730,7 @@ impl UdpSessionSocket for UdpSession {
 
 pub(super) struct UdpSessionRingParts {
     pub(super) session_recv_rx: RingSocketReceiver<UdpSessionDatagram>,
-    pub(super) session_recv_tx: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
+    pub(super) session_recv_tx: Arc<parking_lot::Mutex<RingSocketSender<UdpSessionDatagram>>>,
     pub(super) session_send_tx: RingSocketSender<UdpSessionOutbound>,
     pub(super) session_send_rx: RingSocketReceiver<UdpSessionOutbound>,
     pub(super) close_tx: watch::Sender<bool>,
@@ -749,7 +749,7 @@ pub(super) fn create_udp_session_rings() -> UdpSessionRingParts {
     let (close_tx, close_rx) = watch::channel(false);
     UdpSessionRingParts {
         session_recv_rx,
-        session_recv_tx: Arc::new(StdMutex::new(session_recv_tx)),
+        session_recv_tx: Arc::new(parking_lot::Mutex::new(session_recv_tx)),
         session_send_tx,
         session_send_rx,
         close_tx,
@@ -908,13 +908,13 @@ async fn close_udp_session_on_shutdown(
 }
 
 pub(super) fn dispatch_payload_to_session(
-    incoming: &Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
+    incoming: &Arc<parking_lot::Mutex<RingSocketSender<UdpSessionDatagram>>>,
     payload: impl Into<UdpSessionDatagram>,
     policy: UdpSessionEnqueuePolicy,
 ) -> bool {
     let payload = payload.into();
     let result = {
-        let mut incoming = incoming.lock().unwrap();
+        let mut incoming = incoming.lock();
         match policy {
             UdpSessionEnqueuePolicy::Lossy => incoming.try_send(payload),
             UdpSessionEnqueuePolicy::Reliable => incoming.force_send(payload),
@@ -983,7 +983,7 @@ mod tests {
     async fn forward_identity_socket_to_udp_session<S>(
         socket: Arc<S>,
         peer_addr: SocketAddr,
-        incoming: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
+        incoming: Arc<parking_lot::Mutex<RingSocketSender<UdpSessionDatagram>>>,
         mut shutdown: watch::Receiver<bool>,
         close: UdpSessionClose,
     ) where

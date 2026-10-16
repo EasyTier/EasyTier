@@ -262,6 +262,12 @@ function allFieldFixture() {
     disable_relay_data: true,
     enable_udp_broadcast_relay: true,
     socket_mark: 1234,
+    fec: {
+      enabled: true,
+      force_peer: true,
+      max_repair_percent: 30,
+      udp_payload_mtu: 1600,
+    },
   }
 }
 

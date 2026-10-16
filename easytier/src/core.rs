@@ -332,6 +332,28 @@ struct NetworkOptions {
     )]
     vpn_portal_client_groups: Vec<String>,
 
+    #[arg(long, env = "ET_FEC", num_args = 0..=1, default_missing_value = "true",
+        help = "Enable adaptive sliding-window UDP forward error correction for new connections")]
+    fec: Option<bool>,
+
+    #[arg(long, env = "ET_FEC_FORCE_PEER", num_args = 0..=1, default_missing_value = "true",
+        help = "Request the peer to send UDP FEC on new connections")]
+    fec_force_peer: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_FEC_MAX_REPAIR_PERCENT",
+        help = "Maximum adaptive FEC repair byte budget as a percentage of source bytes (1..=100), allowing a bounded initial burst"
+    )]
+    fec_max_repair_percent: Option<u32>,
+
+    #[arg(
+        long,
+        env = "ET_FEC_UDP_PAYLOAD_MTU",
+        help = "Complete FEC UDP payload budget in bytes, excluding IP/UDP headers (576..=8192)"
+    )]
+    fec_udp_payload_mtu: Option<u32>,
+
     #[arg(
         long,
         env = "ET_EXIT_NODES",
@@ -924,6 +946,22 @@ impl NetworkOptions {
             no_tun: Some(true),
             ..Default::default()
         });
+
+        if self.fec.is_some()
+            || self.fec_force_peer.is_some()
+            || self.fec_max_repair_percent.is_some()
+            || self.fec_udp_payload_mtu.is_some()
+        {
+            let mut fec = cfg.get_fec_config();
+            fec.enabled = self.fec.unwrap_or(fec.enabled);
+            fec.force_peer = self.fec_force_peer.unwrap_or(fec.force_peer);
+            fec.max_repair_percent = self
+                .fec_max_repair_percent
+                .unwrap_or(fec.max_repair_percent);
+            fec.udp_payload_mtu = self.fec_udp_payload_mtu.unwrap_or(fec.udp_payload_mtu);
+            fec.validate()?;
+            cfg.set_fec_config(fec);
+        }
 
         if !self.exit_nodes.is_empty() {
             cfg.set_exit_nodes(self.exit_nodes.clone());
@@ -1722,6 +1760,57 @@ mod tests {
                 "accepted {value}"
             );
         }
+    }
+
+    #[test]
+    fn fec_cli_overrides_feed_normalization_without_changing_unset_policy() {
+        let config = TomlConfigLoader::new_from_str(
+            "ipv4 = '10.0.0.1/24'\n[flags]\nmtu = 1320\n[fec]\nmax_repair_percent = 40\n",
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from(["easytier-core", "--fec", "--fec-udp-payload-mtu", "576"])
+            .unwrap();
+        cli.network_options.merge_into(&config).unwrap();
+        let normalized = easytier_core::instance::CoreInstanceConfig::from_toml(&config).unwrap();
+        assert!(normalized.peer.snapshot.fec.enabled);
+        assert_eq!(normalized.peer.snapshot.fec.max_repair_percent, 40);
+        assert_eq!(normalized.peer.snapshot.fec.udp_payload_mtu, 576);
+        assert_eq!(config.get_flags().mtu, 1320);
+        let cli = Cli::try_parse_from(["easytier-core", "--fec=false"]).unwrap();
+        cli.network_options.merge_into(&config).unwrap();
+        let normalized = easytier_core::instance::CoreInstanceConfig::from_toml(&config).unwrap();
+        assert!(!normalized.peer.snapshot.fec.enabled);
+        assert_eq!(config.get_flags().mtu, 1320);
+    }
+
+    #[test]
+    fn fec_force_peer_cli_is_independent_of_local_sending() {
+        let config = TomlConfigLoader::default();
+        let cli = Cli::try_parse_from(["easytier-core", "--fec-force-peer"]).unwrap();
+        cli.network_options.merge_into(&config).unwrap();
+        let normalized = easytier_core::instance::CoreInstanceConfig::from_toml(&config).unwrap();
+        assert!(normalized.peer.snapshot.fec.force_peer);
+        assert!(!normalized.peer.snapshot.fec.enabled);
+        let cli = Cli::try_parse_from(["easytier-core", "--fec"]).unwrap();
+        cli.network_options.merge_into(&config).unwrap();
+        assert!(config.get_fec_config().force_peer);
+        assert!(config.get_fec_config().enabled);
+        let cli = Cli::try_parse_from(["easytier-core", "--fec-force-peer=false"]).unwrap();
+        cli.network_options.merge_into(&config).unwrap();
+        assert!(!config.get_fec_config().force_peer);
+        assert!(config.get_fec_config().enabled);
+    }
+
+    #[test]
+    fn fec_cli_does_not_narrow_large_values_or_imply_enablement() {
+        let config = TomlConfigLoader::default();
+        let cli = Cli::try_parse_from(["easytier-core", "--fec-max-repair-percent", "4294967295"])
+            .unwrap();
+        cli.network_options.merge_into(&config).unwrap();
+        assert!(!config.get_fec_config().enabled);
+        assert_eq!(config.get_fec_config().max_repair_percent, u32::MAX);
+        let cli = Cli::try_parse_from(["easytier-core", "--fec"]).unwrap();
+        assert!(cli.network_options.merge_into(&config).is_err());
     }
 
     #[test]
