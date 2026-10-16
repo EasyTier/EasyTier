@@ -6,6 +6,7 @@ use cidr::IpCidr;
 
 pub(crate) mod device;
 mod linux;
+mod manager;
 
 pub(crate) use linux::PlatformRouteBackend;
 
