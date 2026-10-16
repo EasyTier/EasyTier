@@ -1,4 +1,4 @@
-name: Diagnose BPF frame loss
+name: Validate BPF veth initialization
 
 on:
   push:
@@ -14,15 +14,32 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+      - name: Wait for the fixed test artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 180); do
+            if gh api repos/EasyTier/EasyTier/actions/runs/38868755556/artifacts --jq '.artifacts[].name' | grep -qx tests; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
       - uses: actions/download-artifact@v4
         with:
           name: tests
-          run-id: 38779708035
+          run-id: 38868755556
           github-token: ${{ github.token }}
-      - name: Prepare original CI binary
+      - name: Prepare fixed CI binary
         run: |
           mkdir -p diagnostics
-          tar --zstd -xf tests.tar.zst target/debug/deps/easytier-0ae75d7f69396f6c
+          tar --zstd -xf tests.tar.zst
+          python3 - <<'PY'
+          import pathlib, re
+          binaries = [p for p in pathlib.Path('target/debug/deps').iterdir() if re.fullmatch(r'easytier-[0-9a-f]+', p.name)]
+          assert len(binaries) == 1, binaries
+          pathlib.Path('diagnostics/binary-path').write_text(str(binaries[0].resolve()))
+          PY
           sudo apt-get update -qq
           sudo apt-get install -y -qq strace tcpdump
           uname -a > diagnostics/environment.txt
@@ -74,7 +91,7 @@ jobs:
           }
           EOF
           gcc -shared -fPIC -O2 diagnostics/send-observer.c -ldl -o diagnostics/send-observer.so
-      - name: Repeat original test with post-send observation
+      - name: Repeat fixed test with post-send observation
         run: |
           sudo -E python3 -u - <<'PY'
           import os, pathlib, subprocess, time
@@ -82,7 +99,7 @@ jobs:
           env = os.environ.copy()
           env['EASYTIER_LINUX_BPF_INTEGRATION'] = 'required'
           env['LD_PRELOAD'] = str(root / 'diagnostics/send-observer.so')
-          binary = str(root / 'target/debug/deps/easytier-0ae75d7f69396f6c')
+          binary = (root / 'diagnostics/binary-path').read_text()
           case = 'socket::fake_tcp::netfilter::linux_bpf::tests::linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface'
           start = time.monotonic()
           failures = 0
@@ -106,19 +123,20 @@ jobs:
           else:
               print('COMPLETED 20 ATTEMPTS', flush=True)
           print('TOTAL FAILURES', failures, 'TIMEOUTS', timeouts, flush=True)
+          assert failures == 0
           PY
-      - name: Repeat unmodified binary until the original timeout
+      - name: Repeat fixed binary without observation hooks
         run: |
           sudo -E python3 -u - <<'PY'
           import os, pathlib, subprocess, time
           root = pathlib.Path.cwd()
           env = os.environ.copy()
           env['EASYTIER_LINUX_BPF_INTEGRATION'] = 'required'
-          binary = str(root / 'target/debug/deps/easytier-0ae75d7f69396f6c')
+          binary = (root / 'diagnostics/binary-path').read_text()
           case = 'socket::fake_tcp::netfilter::linux_bpf::tests::linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface'
           start = time.monotonic()
           failures = 0
-          for i in range(1, 21):
+          for i in range(1, 3001):
               result = subprocess.run([binary, case, '--exact', '--nocapture'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
               if result.returncode:
                   failures += 1
@@ -133,9 +151,10 @@ jobs:
               if i % 500 == 0:
                   print('BASELINE', i, 'failures', failures, 'elapsed', time.monotonic() - start, flush=True)
           else:
-              print('NO ORIGINAL TIMEOUT IN 20 ATTEMPTS', flush=True)
+              print('COMPLETED 3000 FIXED ATTEMPTS', flush=True)
+          assert failures == 0
           PY
-      - name: Reproduce under worker scheduling pressure
+      - name: Validate fixed fixture under worker scheduling pressure
         run: |
           cat > diagnostics/cpu-pressure.c <<'EOF'
           #define _GNU_SOURCE
@@ -152,47 +171,37 @@ jobs:
               if (sched_setscheduler(0, SCHED_FIFO, &param)) { perror("scheduler"); return 1; }
               struct timespec start, now;
               clock_gettime(CLOCK_MONOTONIC, &start);
-              do { clock_gettime(CLOCK_MONOTONIC, &now); } while (now.tv_sec - start.tv_sec < 90);
+              do { clock_gettime(CLOCK_MONOTONIC, &now); } while (now.tv_sec - start.tv_sec < 300);
               return 0;
           }
           EOF
           gcc -O2 diagnostics/cpu-pressure.c -o diagnostics/cpu-pressure
-          mkdir -p diagnostics/sync-bin
-          cat > diagnostics/sync-bin/ip <<'EOF'
-          #!/bin/sh
-          /usr/sbin/ip "$@" || exit $?
-          if [ "$1 $2 $3 $5" = "link set dev up" ]; then
-              case "$4" in
-                  elbs*) /usr/sbin/ip link show dev "elbc${4#elbs}" >/dev/null ;;
-              esac
-          fi
-          EOF
-          chmod +x diagnostics/sync-bin/ip
           sudo -E python3 -u - <<'PY'
           import os, pathlib, subprocess, time
           root = pathlib.Path.cwd()
           env = os.environ.copy()
           env['EASYTIER_LINUX_BPF_INTEGRATION'] = 'required'
           env['LD_PRELOAD'] = str(root / 'diagnostics/send-observer.so')
-          binary = str(root / 'target/debug/deps/easytier-0ae75d7f69396f6c')
+          binary = (root / 'diagnostics/binary-path').read_text()
           case = 'socket::fake_tcp::netfilter::linux_bpf::tests::linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface'
-          original_path = env['PATH']
           hogs = []
           try:
               os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(50))
               for cpu in sorted(os.sched_getaffinity(0)):
                   hogs.append(subprocess.Popen([str(root / 'diagnostics/cpu-pressure'), str(cpu)]))
-              for mode in ['original', 'getlink']:
-                  env['PATH'] = original_path if mode == 'original' else str(root / 'diagnostics/sync-bin') + ':' + original_path
-                  failures = 0
-                  timeouts = 0
-                  for i in range(1, 11):
-                      result = subprocess.run(['chrt', '-f', '20', binary, case, '--exact', '--nocapture'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10)
-                      (root / f'diagnostics/pressure-{mode}-{i}.log').write_text(result.stdout)
-                      failures += bool(result.returncode)
-                      timeouts += 'timed out waiting for Ethernet frame' in result.stdout
-                      print('PRESSURE', mode, i, result.returncode, result.stdout, flush=True)
-                  print('PRESSURE TOTAL', mode, 'failures', failures, 'timeouts', timeouts, flush=True)
+              failures = 0
+              timeouts = 0
+              for i in range(1, 51):
+                  assert all(proc.poll() is None for proc in hogs), 'CPU load ended early'
+                  result = subprocess.run(['chrt', '-f', '20', binary, case, '--exact', '--nocapture'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10)
+                  (root / f'diagnostics/pressure-fixed-{i}.log').write_text(result.stdout)
+                  failures += bool(result.returncode)
+                  timeouts += 'timed out waiting for Ethernet frame' in result.stdout
+                  print('PRESSURE fixed', i, result.returncode, result.stdout, flush=True)
+                  assert 'tx_dropped=0\n' in result.stdout
+              assert all(proc.poll() is None for proc in hogs), 'CPU load ended early'
+              print('PRESSURE TOTAL fixed', 'failures', failures, 'timeouts', timeouts, flush=True)
+              assert failures == 0
           finally:
               for proc in hogs:
                   proc.kill()
