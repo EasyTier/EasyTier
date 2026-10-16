@@ -13,6 +13,7 @@ use cidr::{Ipv6Cidr, Ipv6Inet};
 
 use crate::{
     config::PeerId,
+    host::route::{RouteClaim, RouteDemand, RouteHandle, RouteInputError, RouteSet, RouteSpec},
     peers::peer_rpc::PeerRpcManager,
     proto::{
         common::Void,
@@ -76,6 +77,8 @@ pub(crate) struct PublicIpv6Service {
     client_state: std::sync::Mutex<Option<PublicIpv6ClientState>>,
     route_cache: std::sync::Mutex<BTreeSet<Ipv6Inet>>,
     pub(super) my_addr_cache: std::sync::Mutex<Option<Ipv6Inet>>,
+    runtime_update: parking_lot::Mutex<()>,
+    host_routes: parking_lot::Mutex<Option<RouteClaim>>,
 }
 
 impl PublicIpv6Service {
@@ -94,6 +97,8 @@ impl PublicIpv6Service {
             client_state: std::sync::Mutex::new(None),
             route_cache: std::sync::Mutex::new(BTreeSet::new()),
             my_addr_cache: std::sync::Mutex::new(None),
+            runtime_update: parking_lot::Mutex::new(()),
+            host_routes: parking_lot::Mutex::new(None),
         }
     }
 
@@ -201,14 +206,60 @@ impl PublicIpv6Service {
         (my_addr, routes)
     }
 
+    fn host_demand(my_addr: Option<Ipv6Inet>, routes: &BTreeSet<Ipv6Inet>) -> RouteDemand {
+        let mut routes = routes
+            .iter()
+            .map(|route| RouteSpec::for_tun(route.network().into()))
+            .collect::<RouteSet>();
+        if my_addr.is_some() {
+            let mut default = RouteSpec::for_tun(
+                cidr::Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0)
+                    .unwrap()
+                    .into(),
+            );
+            default.metric = 5;
+            routes.insert(default);
+        }
+        RouteDemand::Additional(routes)
+    }
+
+    pub(crate) fn bind_host_routes(&self, routes: &RouteHandle) -> anyhow::Result<()> {
+        let _update = self.runtime_update.lock();
+        let mut publication = self.host_routes.lock();
+        anyhow::ensure!(
+            publication.is_none(),
+            "public IPv6 host routes are already bound"
+        );
+        *publication = Some(routes.publish(Self::host_demand(
+            *self.my_addr_cache.lock().unwrap(),
+            &self.route_cache.lock().unwrap(),
+        ))?);
+        Ok(())
+    }
+
+    pub(crate) fn release_host_routes(&self) {
+        let publication = {
+            let _update = self.runtime_update.lock();
+            self.host_routes.lock().take()
+        };
+        drop(publication);
+    }
+
+    #[cfg(test)]
     pub(super) fn reconcile_runtime_from_snapshot(&self, peers: &[PublicIpv6PeerRouteInfo]) {
+        let _update = self.runtime_update.lock();
+        self.commit_runtime_snapshot(peers);
+    }
+
+    fn commit_runtime_snapshot(&self, peers: &[PublicIpv6PeerRouteInfo]) {
         let (mut my_addr, routes) = self.collect_runtime_from_snapshot(peers);
         if !self.runtime.ipv6_public_addr_auto() {
             my_addr = None;
         }
-
+        let mut changed = false;
         let mut cached_my_addr = self.my_addr_cache.lock().unwrap();
         if *cached_my_addr != my_addr {
+            changed = true;
             let old = *cached_my_addr;
             *cached_my_addr = my_addr;
             self.runtime.public_ipv6_lease_changed(old, my_addr);
@@ -217,6 +268,7 @@ impl PublicIpv6Service {
 
         let mut cached_routes = self.route_cache.lock().unwrap();
         if *cached_routes != routes {
+            changed = true;
             let added = routes
                 .difference(&cached_routes)
                 .copied()
@@ -228,11 +280,21 @@ impl PublicIpv6Service {
             *cached_routes = routes;
             self.runtime.public_ipv6_routes_changed(added, removed);
         }
+        if changed
+            && let Some(claim) = self.host_routes.lock().as_ref()
+            && let Err(error) = claim.replace(Self::host_demand(my_addr, &cached_routes))
+            && !matches!(error, RouteInputError::Closed)
+        {
+            tracing::error!(?error, "failed to publish public IPv6 host routes");
+        }
     }
 
     pub(super) fn reconcile_runtime(&self) {
+        // Collect after acquiring the publication gate. A delayed caller may
+        // not publish a snapshot captured before a newer caller committed.
+        let _update = self.runtime_update.lock();
         let peers = self.route_control.peer_route_snapshot();
-        self.reconcile_runtime_from_snapshot(&peers);
+        self.commit_runtime_snapshot(&peers);
     }
 
     pub fn handle_route_change(&self) -> bool {
@@ -250,11 +312,7 @@ impl PublicIpv6Service {
         // When client state changed, publish_current_client_lease() mutated the
         // local peer info synchronously, so the pre-update snapshot is stale for
         // this node's own entry.  Re-fetch to avoid reconciling against old data.
-        if client_changed {
-            self.reconcile_runtime();
-        } else {
-            self.reconcile_runtime_from_snapshot(&peers);
-        }
+        self.reconcile_runtime();
         peer_info_changed
     }
 

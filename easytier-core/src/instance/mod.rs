@@ -561,6 +561,13 @@ where
             adapters.credential_storage.take(),
             foreign_rpc_registrar,
         )?);
+        if let Some(routes) = adapters.routes.as_ref() {
+            peer_manager.bind_host_routes(routes)?;
+            #[cfg(feature = "proxy-cidr-monitor")]
+            {
+                adapters.proxy_cidr_monitor_enabled = false;
+            }
+        }
         let config = config.connectivity;
         let configured_listeners = (connectivity_mode != CoreConnectivityMode::OutboundOnly)
             .then_some(config.listeners.as_ref())

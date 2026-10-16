@@ -735,4 +735,88 @@ mod tests {
                 if message.contains("detected prefix")
         ));
     }
+    #[tokio::test]
+    async fn host_route_claim_tracks_complete_ipv6_state_with_explicit_default_metric() {
+        use crate::host::route::{InstanceRoutes, RouteDemand, RouteSet, RouteSpec};
+        let owner = InstanceRoutes::new(Arc::new(|| {}));
+        let peers = Arc::new(TestRouteControl {
+            my_peer_id: 1,
+            peers: Mutex::new(vec![
+                PublicIpv6PeerRouteInfo {
+                    peer_id: 1,
+                    inst_id: Some(uuid::Uuid::from_u128(1)),
+                    is_provider: false,
+                    prefix: None,
+                    lease: Some("2001:db8::123/64".parse().unwrap()),
+                    reachable: true,
+                },
+                PublicIpv6PeerRouteInfo {
+                    peer_id: 2,
+                    inst_id: Some(uuid::Uuid::from_u128(2)),
+                    is_provider: false,
+                    prefix: None,
+                    lease: Some("2001:db8:1::7/128".parse().unwrap()),
+                    reachable: true,
+                },
+                PublicIpv6PeerRouteInfo {
+                    peer_id: 3,
+                    inst_id: Some(uuid::Uuid::from_u128(3)),
+                    is_provider: false,
+                    prefix: None,
+                    lease: Some("2001:db8:2::7/128".parse().unwrap()),
+                    reachable: false,
+                },
+            ]),
+        });
+        let service = PublicIpv6Service::new(
+            Arc::new(TestRuntime::new(true)),
+            std::sync::Weak::new(),
+            peers.clone(),
+            Arc::new(TestSyncTrigger),
+        );
+        service.bind_host_routes(&owner.handle()).unwrap();
+        let routes = || {
+            owner
+                .inputs()
+                .snapshot()
+                .claims
+                .values()
+                .find_map(|demand| match demand.as_ref() {
+                    RouteDemand::Additional(routes) => Some(routes.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        service.reconcile_runtime();
+        let mut default = RouteSpec::for_tun("::/0".parse().unwrap());
+        default.metric = 5;
+        assert_eq!(
+            routes(),
+            RouteSet::from([
+                default,
+                RouteSpec::for_tun("2001:db8:1::7/128".parse().unwrap())
+            ])
+        );
+        let before = owner.inputs().snapshot();
+        service.reconcile_runtime();
+        let after = owner.inputs().snapshot();
+        for (id, publication) in &before.claims {
+            assert!(Arc::ptr_eq(publication, &after.claims[id]));
+        }
+        // Loss of our lease withdraws only the default; reachability changes
+        // replace the complete remote-prefix set, without delta replay.
+        peers.peers.lock().unwrap().retain(|info| info.peer_id != 1);
+        {
+            let mut peers = peers.peers.lock().unwrap();
+            peers[0].reachable = false;
+            peers[1].reachable = true;
+        }
+        service.reconcile_runtime();
+        assert_eq!(
+            routes(),
+            RouteSet::from([RouteSpec::for_tun("2001:db8:2::7/128".parse().unwrap())])
+        );
+        service.release_host_routes();
+        assert!(owner.inputs().snapshot().claims.is_empty());
+    }
 }
