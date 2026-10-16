@@ -745,6 +745,16 @@ impl ControllerState {
             let Some(group) = catalog.groups.get(&nic) else {
                 return;
             };
+            let pending = worker
+                .slots
+                .values()
+                .filter_map(|slot| slot.effect.as_ref())
+                .filter(|effect| {
+                    effect.key.nic == nic && !matches!(effect.phase, EffectPhase::External)
+                })
+                .map(|effect| effect.key.epoch)
+                .collect();
+            group.device.retain_releases(&pending);
             if !group.members.is_empty()
                 || !group.device.snapshot().live.is_empty()
                 || worker.slots.values().any(|slot| {

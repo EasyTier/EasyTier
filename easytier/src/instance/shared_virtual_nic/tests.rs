@@ -521,3 +521,61 @@ async fn legacy_route_entrypoints_reject_managed_devices_before_any_syscall() {
             .is_err()
     );
 }
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[tokio::test]
+#[ignore = "requires /dev/net/tun and an isolated network namespace"]
+async fn physical_tun_epoch_is_returned_causally_and_shared_members_reuse_it() {
+    use crate::instance::route::device::{DeviceRelease, DeviceState};
+    let changed = Arc::new(Notify::new());
+    let notify = changed.clone();
+    let device = DeviceState::new(Arc::new(move || notify.notify_one()));
+    let name = format!("et_ep{:06x}", rand::random::<u32>() & 0xffffff);
+    let config = || {
+        VirtualNicConfig::new(name.clone(), 1500, NetNS::current().unwrap())
+            .with_route_device(device.clone())
+    };
+    let mut registry = SharedVirtualNicRegistry::new();
+    let a = registry.create_member(
+        name.clone(),
+        config(),
+        uuid::Uuid::new_v4(),
+        Arc::new(Notify::new()),
+    );
+    let b = registry.create_member(
+        name.clone(),
+        config(),
+        uuid::Uuid::new_v4(),
+        Arc::new(Notify::new()),
+    );
+    let (ta, ea) = a.create_dev_with_epoch().await.unwrap();
+    let (tb, eb) = b.create_dev_with_epoch().await.unwrap();
+    let epoch = ea.expect("managed physical TUN must return an epoch");
+    assert_eq!(Some(epoch), eb);
+    assert_eq!(device.snapshot().selected, Some(epoch));
+    assert!(device.snapshot().ready);
+    drop(ta);
+    drop(a);
+    assert!(device.snapshot().live.contains_key(&epoch));
+    drop(tb);
+    drop(b);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let notification = changed.notified();
+            tokio::pin!(notification);
+            notification.as_mut().enable();
+            if !device.snapshot().live.contains_key(&epoch) {
+                break;
+            }
+            notification.await;
+        }
+    })
+    .await
+    .unwrap();
+    // The current library path does not prove exclusive creation, so even
+    // successful fd teardown must not manufacture a destruction certificate.
+    assert!(matches!(
+        device.snapshot().released[&epoch],
+        DeviceRelease::DescriptorClosed(_)
+    ));
+}

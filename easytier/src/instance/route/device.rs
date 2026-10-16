@@ -213,6 +213,16 @@ impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for DeviceResource<
     ) -> std::task::Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.get_mut().resource).poll_shutdown(cx)
     }
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().resource).poll_write_vectored(cx, bufs)
+    }
+    fn is_write_vectored(&self) -> bool {
+        self.resource.is_write_vectored()
+    }
 }
 
 #[cfg(test)]

@@ -729,8 +729,20 @@ impl SharedVirtualNicMember {
     }
 
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
+        Ok(self.create_dev_with_epoch().await?.0)
+    }
+
+    pub(crate) async fn create_dev_with_epoch(
+        &self,
+    ) -> Result<
+        (
+            Box<dyn Tunnel>,
+            Option<easytier_core::host::route::DeviceEpoch>,
+        ),
+        Error,
+    > {
         let member = self.clone();
-        shared_virtual_nic_runtime()
+        let epoch = shared_virtual_nic_runtime()
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
                 shared_nic
@@ -746,12 +758,18 @@ impl SharedVirtualNicMember {
                         member.registration.registration_id,
                         member.configured_mtu,
                     )
-                    .await
+                    .await?;
+                // Capture the epoch under the same NIC lock as dispatcher
+                // creation/reuse. Ready/DNS must receive this causal result.
+                let epoch = shared_nic.nic.lock().await.device_epoch();
+                Ok::<_, Error>(epoch)
             })
             .await
             .map_err(anyhow::Error::from)??;
-        self.registration
-            .register_tunnel(self.close_notifier.clone())
+        let tunnel = self
+            .registration
+            .register_tunnel(self.close_notifier.clone())?;
+        Ok((tunnel, epoch))
     }
 
     #[cfg(mobile)]

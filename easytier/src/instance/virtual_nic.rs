@@ -46,10 +46,15 @@ use crate::common::ifcfg::RegistryManager;
 
 use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicMember};
 
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+type TunIo = super::route::device::DeviceResource<AsyncDevice>;
+#[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+type TunIo = AsyncDevice;
+
 pin_project! {
     pub struct TunStream {
         #[pin]
-        l: BiLock<AsyncDevice>,
+        l: BiLock<TunIo>,
         cur_buf: BytesMut,
         has_packet_info: bool,
         payload_offset: usize,
@@ -57,7 +62,7 @@ pin_project! {
 }
 
 impl TunStream {
-    pub fn new(l: BiLock<AsyncDevice>, has_packet_info: bool) -> Self {
+    fn new(l: BiLock<TunIo>, has_packet_info: bool) -> Self {
         let mut payload_offset = ZCPacketType::NIC.get_packet_offsets().payload_offset;
         if has_packet_info {
             payload_offset -= 4;
@@ -201,7 +206,7 @@ impl ZCPacketToBytes for TunZCPacketToBytes {
 pin_project! {
     pub struct TunAsyncWrite {
         #[pin]
-        l: BiLock<AsyncDevice>,
+        l: BiLock<TunIo>,
     }
 }
 
@@ -286,6 +291,9 @@ impl VirtualNicConfig {
 pub struct VirtualNic {
     config: VirtualNicConfig,
 
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    device_epoch: Option<easytier_core::host::route::DeviceEpoch>,
+
     ifname: Option<String>,
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 
@@ -325,6 +333,8 @@ impl VirtualNic {
         let ifcfg = Box::new(crate::common::ifcfg::in_namespace(config.net_ns.clone()));
         Self {
             config,
+            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            device_epoch: None,
             ifname: None,
             ifcfg,
             #[cfg(target_os = "windows")]
@@ -648,6 +658,8 @@ impl VirtualNic {
         ));
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        let dev = TunIo::untracked(dev);
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -730,6 +742,25 @@ impl VirtualNic {
         }
 
         let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        let dev = {
+            use super::route::device::{DeviceOrigin, DeviceResource};
+            if let Some(device) = &self.config.route_device {
+                let index = self
+                    .config
+                    .net_ns
+                    .run(|| nix::net::if_::if_nametoindex(ifname.as_str()))?
+                    .map_err(anyhow::Error::from)?;
+                // The pinned tun dependency can attach an existing interface
+                // and does not offer IFF_TUN_EXCL. Do not guess exclusivity.
+                let lifetime =
+                    device.attach(ifname.clone(), index, DeviceOrigin::PersistentOrSharedTun);
+                self.device_epoch = Some(lifetime.epoch());
+                DeviceResource::new(dev, lifetime)
+            } else {
+                DeviceResource::untracked(dev)
+            }
+        };
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -741,6 +772,14 @@ impl VirtualNic {
         );
 
         self.ifname = Some(ifname.to_owned());
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        if let (Some(device), Some(epoch)) = (&self.config.route_device, self.device_epoch) {
+            if !device.mark_ready(epoch) {
+                return Err(
+                    anyhow::anyhow!("physical TUN generation changed during creation").into(),
+                );
+            }
+        }
 
         #[cfg(target_os = "windows")]
         {
@@ -770,6 +809,13 @@ impl VirtualNic {
 
     pub fn ifname(&self) -> &str {
         self.ifname.as_ref().unwrap().as_str()
+    }
+
+    pub(crate) fn device_epoch(&self) -> Option<easytier_core::host::route::DeviceEpoch> {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        return self.device_epoch;
+        #[cfg(not(all(target_os = "linux", feature = "linux-netlink")))]
+        None
     }
 
     pub async fn link_up(&self) -> Result<(), Error> {
@@ -927,9 +973,25 @@ pub enum NicBackend {
 
 impl NicBackend {
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
+        Ok(self.create_dev_with_epoch().await?.0)
+    }
+
+    pub(crate) async fn create_dev_with_epoch(
+        &self,
+    ) -> Result<
+        (
+            Box<dyn Tunnel>,
+            Option<easytier_core::host::route::DeviceEpoch>,
+        ),
+        Error,
+    > {
         match self {
-            Self::Dedicated(nic) => nic.lock().await.create_dev().await,
-            Self::Shared(member) => member.create_dev().await,
+            Self::Dedicated(nic) => {
+                let mut nic = nic.lock().await;
+                let tunnel = nic.create_dev().await?;
+                Ok((tunnel, nic.device_epoch()))
+            }
+            Self::Shared(member) => member.create_dev_with_epoch().await,
         }
     }
 
