@@ -13,23 +13,108 @@ use tokio::{io::unix::AsyncFd, runtime::Handle};
 
 use crate::common::{
     ifcfg::netlink_wire::{
-        MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_DUMP_INTR,
-        NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NetlinkDecode, NetlinkEncode,
-        RTM_DELROUTE, RTM_GETROUTE, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder, RouteType,
+        LinkMessage, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP,
+        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NetlinkDecode,
+        NetlinkEncode, RTM_DELADDR, RTM_DELLINK, RTM_DELROUTE, RTM_GETROUTE, RTM_NEWADDR,
+        RTM_NEWLINK, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder, RouteType, address_ifindex,
         netlink_error_code,
     },
     netns::PlatformNamespace,
 };
 
-use super::{OsRoute, RouteBackend, RouteError};
+use super::{OsRoute, OsRouteSlotKey, RouteBackend, RouteError};
 
 /// One writer's reusable socket, bound to its network namespace at creation.
-/// Readiness and ACK waiting stay on the async runtime; only socket setup uses
-/// a short-lived thread so namespace changes cannot leak into runtime workers.
+/// Socket setup uses a short synchronous namespace scope. Readiness, ACKs and
+/// timeout driving belong to the explicitly selected process shared runtime.
 pub(crate) struct PlatformRouteBackend {
     socket: AsyncFd<Socket>,
     sequence: u32,
     timeout: Duration,
+}
+
+/// Read-only notifications use a separate socket, never the request/ACK stream.
+pub(crate) struct RouteObserver {
+    socket: AsyncFd<Socket>,
+}
+
+#[derive(Default)]
+pub(crate) struct RouteChanges {
+    pub slots: BTreeSet<OsRouteSlotKey>,
+    pub links: BTreeSet<u32>,
+}
+
+impl RouteObserver {
+    pub(crate) fn new(namespace: &PlatformNamespace, executor: &Handle) -> anyhow::Result<Self> {
+        let socket = namespace.run(|| -> io::Result<Socket> {
+            let mut socket = Socket::new(NETLINK_ROUTE)?;
+            // LINK, IPv4/IPv6 IFADDR, IPv4/IPv6 ROUTE multicast groups.
+            socket.bind(&SocketAddr::new(0, 1 | 0x10 | 0x100 | 0x40 | 0x400))?;
+            socket.connect(&SocketAddr::new(0, 0))?;
+            socket.set_non_blocking(true)?;
+            Ok(socket)
+        })??;
+        let _entered = executor.enter();
+        Ok(Self {
+            socket: AsyncFd::new(socket)?,
+        })
+    }
+
+    // Errors mean the observation baseline was lost, including ENOBUFS and
+    // malformed framing. The controller must invalidate and inspect on error.
+    pub(crate) async fn next(&self) -> io::Result<RouteChanges> {
+        decode_changes(&receive(&self.socket).await?)
+    }
+}
+
+fn decode_changes(bytes: &[u8]) -> io::Result<RouteChanges> {
+    let mut changes = RouteChanges::default();
+    for frame in MessageIter::new(bytes) {
+        let (header, payload) = frame?;
+        if header.flags & NLM_F_DUMP_INTR != 0 {
+            return Err(io::Error::other("interrupted route observation"));
+        }
+        match header.message_type {
+            RTM_NEWROUTE | RTM_DELROUTE => {
+                let route = RouteMessage::from_bytes(payload)?;
+                if !route.is_destination_only() {
+                    continue;
+                }
+                let Some(metric) = NonZeroU32::new(route.priority()?) else {
+                    continue;
+                };
+                let unspecified: IpAddr = match route.family() as i32 {
+                    libc::AF_INET => std::net::Ipv4Addr::UNSPECIFIED.into(),
+                    libc::AF_INET6 => std::net::Ipv6Addr::UNSPECIFIED.into(),
+                    _ => return Err(io::Error::other("unknown observed route family")),
+                };
+                changes.slots.insert(OsRouteSlotKey {
+                    table: route.table()?,
+                    destination: IpCidr::new(
+                        route.destination().copied().unwrap_or(unspecified),
+                        route.dst_len(),
+                    )
+                    .map_err(io::Error::other)?,
+                    metric,
+                });
+            }
+            RTM_NEWLINK | RTM_DELLINK => {
+                changes
+                    .links
+                    .insert(LinkMessage::from_bytes(payload)?.index);
+            }
+            RTM_NEWADDR | RTM_DELADDR => {
+                changes.links.insert(address_ifindex(payload)?);
+            }
+            1 => {} // NLMSG_NOOP
+            _ => {
+                return Err(io::Error::other(
+                    "unexpected route notification; baseline lost",
+                ));
+            }
+        }
+    }
+    Ok(changes)
 }
 
 impl PlatformRouteBackend {
@@ -70,16 +155,7 @@ impl PlatformRouteBackend {
     }
 
     async fn receive(&self) -> io::Result<Vec<u8>> {
-        loop {
-            let mut ready = self.socket.readable().await?;
-            match ready.try_io(|socket| socket.get_ref().recv_from_full()) {
-                Ok(Ok((bytes, sender))) if sender.port_number() == 0 => return Ok(bytes),
-                Ok(Ok(_)) => continue,
-                Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Ok(Err(error)) => return Err(error),
-                Err(_) => continue,
-            }
-        }
+        receive(&self.socket).await
     }
 
     async fn request(
@@ -395,9 +471,84 @@ impl RequestFailure {
     }
 }
 
+async fn receive(socket: &AsyncFd<Socket>) -> io::Result<Vec<u8>> {
+    loop {
+        let mut ready = socket.readable().await?;
+        match ready.try_io(|socket| socket.get_ref().recv_from_full()) {
+            Ok(Ok((bytes, sender))) if sender.port_number() == 0 => return Ok(bytes),
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => continue,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observation_tracks_slots_even_when_a_foreign_route_is_not_equivalent() {
+        let owned = route("198.18.75.0/24", 7, 65535);
+        let bytes = route_request(&owned, RTM_NEWROUTE, 0)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let (_, payload) = MessageIter::new(&bytes).next().unwrap().unwrap();
+        let mut foreign = payload.to_vec();
+        foreign[7] = libc::RTN_BLACKHOLE;
+        assert!(!equivalent(&RouteMessage::from_bytes(&foreign).unwrap(), &owned).unwrap());
+        let changes = decode_changes(&frame(0, RTM_NEWROUTE, 0, &foreign)).unwrap();
+        assert!(changes.slots.contains(&owned.slot()));
+    }
+
+    #[test]
+    fn lost_or_malformed_notifications_are_errors_instead_of_empty_changes() {
+        for bytes in [
+            frame(0, 4, 0, &[]), // NLMSG_OVERRUN
+            frame(0, RTM_NEWROUTE, 0, &[0; 7]),
+            frame(0, RTM_NEWADDR, 0, &[0; 7]),
+            frame(0, NLMSG_ERROR, 0, &(-libc::ENOBUFS).to_ne_bytes()),
+        ] {
+            assert!(decode_changes(&bytes).is_err());
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "run inside an isolated user+network namespace"]
+    async fn kernel_observer_receives_changes_without_consuming_request_ack() {
+        let namespace = crate::common::netns::isolated_namespace_for_test().unwrap();
+        let index = dummy(&namespace, "et-watch");
+        let shared = crate::host_runtime::native_host_runtime()
+            .shared_executor()
+            .unwrap();
+        let observer = RouteObserver::new(namespace.platform(), &shared).unwrap();
+        let mut backend = PlatformRouteBackend::new(namespace.platform(), &shared).unwrap();
+        let owned = route("198.18.75.0/24", index, 65535);
+        backend.add(&owned).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if observer.next().await.unwrap().slots.contains(&owned.slot()) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(backend.contains(&owned).await.unwrap());
+        backend.remove(&owned).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if observer.next().await.unwrap().slots.contains(&owned.slot()) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!backend.contains(&owned).await.unwrap());
+    }
 
     fn ip(namespace: &crate::common::netns::NetNS, args: &[&str]) {
         let output = namespace

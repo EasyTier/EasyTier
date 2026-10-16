@@ -17,6 +17,7 @@ pub(crate) const NLM_F_CREATE: u16 = 0x400;
 pub(crate) const NLMSG_ERROR: u16 = 2;
 pub(crate) const NLMSG_DONE: u16 = 3;
 pub(crate) const RTM_NEWLINK: u16 = 16;
+pub(crate) const RTM_DELLINK: u16 = 17;
 pub(crate) const RTM_GETLINK: u16 = 18;
 pub(crate) const RTM_NEWADDR: u16 = 20;
 pub(crate) const RTM_DELADDR: u16 = 21;
@@ -338,6 +339,33 @@ pub(crate) trait NetlinkDecode: Sized {
     fn from_bytes(bytes: &[u8]) -> io::Result<Self>;
 }
 
+/// Validate the notification framing before using its interface index.
+pub(crate) fn address_ifindex(bytes: &[u8]) -> io::Result<u32> {
+    if bytes.len() < 8 {
+        return Err(invalid_data("truncated interface address message"));
+    }
+    let maximum_prefix = match bytes[0] as i32 {
+        libc::AF_INET => 32,
+        libc::AF_INET6 => 128,
+        _ => return Err(invalid_data("unknown interface address family")),
+    };
+    if bytes[1] > maximum_prefix {
+        return Err(invalid_data("invalid interface address prefix"));
+    }
+    let index = read_u32(&bytes[4..])?;
+    if index == 0 {
+        return Err(invalid_data("invalid interface address index"));
+    }
+    for attribute in parse_attributes(&bytes[8..])? {
+        if matches!(attribute.kind & NLA_TYPE_MASK, IFA_ADDRESS | IFA_LOCAL)
+            && parse_ip(bytes[0], &attribute.value).is_none()
+        {
+            return Err(invalid_data("invalid interface address attribute"));
+        }
+    }
+    Ok(index)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AddressMessage {
     family: u8,
@@ -432,6 +460,10 @@ impl RouteMessage {
         self.src_len
     }
 
+    pub(crate) fn is_destination_only(&self) -> bool {
+        self.src_len == 0 && self.tos == 0
+    }
+
     pub(crate) fn route_type(&self) -> RouteType {
         RouteType::from_raw(self.route_type)
     }
@@ -484,8 +516,7 @@ impl RouteMessage {
     /// A destination-only, directly attached route without source-prefix selection,
     /// a gateway, multipath, nexthop indirection or encapsulation.
     pub(crate) fn is_direct(&self) -> bool {
-        self.src_len == 0
-            && self.tos == 0
+        self.is_destination_only()
             && self.flags == 0
             && self.attributes.iter().all(|attribute| {
                 match attribute.kind & NLA_TYPE_MASK {
