@@ -393,7 +393,7 @@ pub(super) async fn apply_success(
     validation_change_epoch: u64,
 ) {
     let WebhookHeartbeatValidation {
-        config_revision: _,
+        config_revision,
         binding_version,
     } = validation;
 
@@ -437,7 +437,9 @@ pub(super) async fn apply_success(
             return;
         }
 
-        let notify_runtime = !data.auth_state.is_authorized();
+        let notify_runtime = !data.auth_state.is_authorized()
+            || data.webhook_config_revision.as_deref() != Some(config_revision.as_str());
+        let runtime_changed = notify_runtime || data.binding_version != Some(binding_version);
         let previous_connected_binding_version = data.webhook_connected_binding_version;
         let client_url = data.client_url.clone();
         let is_new_storage_token = data.storage_token.is_none();
@@ -463,6 +465,11 @@ pub(super) async fn apply_success(
         let storage_token = storage_token.clone();
         data.auth_state = SessionAuthState::Authorized;
         data.binding_version = Some(binding_version);
+        data.webhook_config_revision = Some(config_revision);
+        if runtime_changed {
+            let mut runtime = data.managed_runtime();
+            runtime.runtime_config_epoch = runtime.runtime_config_epoch.wrapping_add(1);
+        }
         if is_new_storage_token {
             tracing::info!(
                 machine_id = %input.machine_id,
