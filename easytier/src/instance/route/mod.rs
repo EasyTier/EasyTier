@@ -9,6 +9,8 @@ mod linux;
 mod manager;
 
 pub(crate) use linux::PlatformRouteBackend;
+#[cfg(feature = "tun")]
+pub(crate) use manager::RouteController;
 
 pub(crate) const METRIC_DIRECT: NonZeroU32 = NonZeroU32::new(65535).unwrap();
 pub(crate) const METRIC_PUBLIC_IPV6_DEFAULT: NonZeroU32 = NonZeroU32::new(5).unwrap();

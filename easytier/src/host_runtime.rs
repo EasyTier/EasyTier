@@ -45,6 +45,7 @@ pub struct NativeHostRuntime {
     shared: OnceLock<Result<NativeExecutor, String>>,
     shared_initialization: Mutex<()>,
     closing: AtomicBool,
+    executor_stopping: AtomicBool,
 }
 
 static NATIVE_HOST_RUNTIME: OnceLock<Arc<NativeHostRuntime>> = OnceLock::new();
@@ -64,18 +65,19 @@ impl NativeHostRuntime {
             shared: OnceLock::new(),
             shared_initialization: Mutex::new(()),
             closing: AtomicBool::new(false),
+            executor_stopping: AtomicBool::new(false),
         }
     }
 
     pub(crate) fn shared_executor(&self) -> io::Result<tokio::runtime::Handle> {
-        if self.closing.load(Ordering::Acquire) {
+        if self.executor_stopping.load(Ordering::Acquire) {
             return Err(io::Error::other("native host runtime is closing"));
         }
         let result = if let Some(shared) = self.shared.get() {
             shared
         } else {
             let _initialization = self.shared_initialization.lock().unwrap();
-            if self.closing.load(Ordering::Acquire) {
+            if self.executor_stopping.load(Ordering::Acquire) {
                 return Err(io::Error::other("native host runtime is closing"));
             }
             self.shared
@@ -90,6 +92,7 @@ impl NativeHostRuntime {
     // Called only after domain services have completed physical cleanup.
     pub(crate) fn request_executor_shutdown(&self) {
         self.closing.store(true, Ordering::Release);
+        self.executor_stopping.store(true, Ordering::Release);
         let _initialization = self.shared_initialization.lock().unwrap();
         if let Some(Ok(shared)) = self.shared.get() {
             shared.request_shutdown();
@@ -109,6 +112,9 @@ impl NativeHostRuntime {
         let candidate = Arc::new(NetNS::from_platform(platform));
         let namespace = {
             let mut entries = self.namespaces.lock().unwrap();
+            if self.closing.load(Ordering::Acquire) {
+                return Err(io::Error::other("native host runtime is closing"));
+            }
             entries
                 .entry(candidate.id())
                 .or_insert_with(|| candidate.clone())
@@ -118,6 +124,9 @@ impl NativeHostRuntime {
     }
 
     pub(crate) fn capture_default_namespace(&self) -> io::Result<Arc<NetNS>> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(io::Error::other("native host runtime is closing"));
+        }
         if let Some(namespace) = self.default_namespace.get() {
             return Ok(namespace.clone());
         }
@@ -132,6 +141,9 @@ impl NativeHostRuntime {
 
     /// Resolve only an already-interned runtime identity. Never reopen a name.
     pub(crate) fn namespace(&self, context: &SocketContext) -> io::Result<Arc<NetNS>> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(io::Error::other("native host runtime is closing"));
+        }
         let Some(token) = &context.netns else {
             return self.capture_default_namespace();
         };
@@ -291,6 +303,7 @@ impl VirtualUdpSocketFactory for NetNS {
 #[async_trait]
 impl DnsResolver for NetNS {
     async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+        self.ensure_open()?;
         self.dns.resolve(query).await
     }
 }
@@ -298,10 +311,12 @@ impl DnsResolver for NetNS {
 #[async_trait]
 impl DnsRecordResolver for NetNS {
     async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
+        self.ensure_open()?;
         self.dns.resolve_txt(query).await
     }
 
     async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+        self.ensure_open()?;
         self.dns.resolve_srv(query).await
     }
 }

@@ -12,6 +12,12 @@ use uuid::Uuid;
 
 use super::{OsRoute, OsRouteSlotKey};
 
+#[cfg(feature = "tun")]
+#[path = "controller.rs"]
+mod controller;
+#[cfg(feature = "tun")]
+pub(crate) use controller::RouteController;
+
 /// Exact effect parameters with the device evidence outside the backend API.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct RouteKey {
@@ -252,7 +258,7 @@ impl SlotState {
 /// One native writer's private state. All effect records stay in this object
 /// across awaits. A supervisor may retain it after the drive future panics.
 struct Worker<B> {
-    backend: B,
+    backend: Option<B>,
     desired: DesiredIndex,
     slots: BTreeMap<OsRouteSlotKey, SlotState>,
     pending: BTreeSet<OsRouteSlotKey>,
@@ -263,7 +269,7 @@ struct Worker<B> {
 impl<B: super::RouteBackend> Worker<B> {
     fn new(backend: B) -> Self {
         Self {
-            backend,
+            backend: Some(backend),
             desired: DesiredIndex::default(),
             slots: BTreeMap::new(),
             pending: BTreeSet::new(),
@@ -280,6 +286,20 @@ impl<B: super::RouteBackend> Worker<B> {
     ) -> BTreeSet<OsRouteSlotKey> {
         let changed = self.desired.replace(owner, old, next);
         for key in &changed {
+            if self.desired.candidates(key).is_none()
+                && self.slots.get(key).is_none_or(|slot| {
+                    slot.effect
+                        .as_ref()
+                        .is_none_or(|effect| matches!(effect.phase, EffectPhase::External))
+                })
+            {
+                // No mutation or observation is required to forget an obsolete
+                // External probe. It never granted responsibility to begin with.
+                self.slots.remove(key);
+                self.pending.remove(key);
+                self.inspections.remove(key);
+                continue;
+            }
             let slot = self.slots.entry(key.clone()).or_default();
             slot.status = SlotStatus::Pending;
             slot.retry = None;
@@ -354,7 +374,7 @@ impl<B: super::RouteBackend> Worker<B> {
     }
 
     /// One batch is all-or-error; partial family dumps never settle absence.
-    async fn inspect(&mut self) -> BTreeSet<OsRouteSlotKey> {
+    async fn inspect(&mut self) -> (BTreeSet<OsRouteSlotKey>, bool) {
         let keys = self
             .inspections
             .iter()
@@ -375,7 +395,7 @@ impl<B: super::RouteBackend> Worker<B> {
     async fn inspect_inner(
         &mut self,
         selected: &BTreeSet<OsRouteSlotKey>,
-    ) -> BTreeSet<OsRouteSlotKey> {
+    ) -> (BTreeSet<OsRouteSlotKey>, bool) {
         let keys = selected.clone();
         let requested = keys
             .iter()
@@ -390,8 +410,13 @@ impl<B: super::RouteBackend> Worker<B> {
         let result = if requested.is_empty() {
             Ok(BTreeSet::new())
         } else {
-            self.backend.existing(&requested).await
+            self.backend
+                .as_mut()
+                .expect("running route backend")
+                .existing(&requested)
+                .await
         };
+        let complete = result.is_ok();
         for key in &keys {
             let slot = self.slots.get_mut(key).unwrap();
             match &result {
@@ -442,7 +467,7 @@ impl<B: super::RouteBackend> Worker<B> {
                 }
             }
         }
-        keys
+        (keys, complete)
     }
 
     /// At most one mutation. The outer controller rechecks dirty/close and
@@ -514,7 +539,13 @@ impl<B: super::RouteBackend> Worker<B> {
                     slot.status = SlotStatus::Pending;
                     // The record above remains inside the retained worker if
                     // the future panics or is destroyed during this await.
-                    match self.backend.remove(&route).await {
+                    match self
+                        .backend
+                        .as_mut()
+                        .expect("running route backend")
+                        .remove(&route)
+                        .await
+                    {
                         Ok(()) => {
                             slot.effect = None;
                             slot.retry = None;
@@ -571,7 +602,13 @@ impl<B: super::RouteBackend> Worker<B> {
             owners,
         });
         slot.status = SlotStatus::Pending;
-        match self.backend.add(&accepted.route).await {
+        match self
+            .backend
+            .as_mut()
+            .expect("running route backend")
+            .add(&accepted.route)
+            .await
+        {
             Ok(()) => {
                 slot.accepted = Some(accepted.clone());
                 slot.effect.as_mut().unwrap().phase = EffectPhase::Owned;

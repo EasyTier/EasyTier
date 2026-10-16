@@ -73,6 +73,13 @@ impl SharedVirtualNic {
         self.valid.load(Ordering::Acquire)
     }
 
+    pub(crate) fn current_registration(
+        &self,
+        member: SharedVirtualNicMemberId,
+    ) -> Option<SharedVirtualNicMemberRegistrationId> {
+        self.member_registrations.get(&member).copied()
+    }
+
     #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
     pub(crate) fn prepare_managed_routes(
         &self,
@@ -191,7 +198,7 @@ impl SharedVirtualNic {
         Ok(())
     }
 
-    async fn attach_member_registration(
+    pub(crate) async fn attach_member_registration(
         &mut self,
         member_id: SharedVirtualNicMemberId,
         registration_id: SharedVirtualNicMemberRegistrationId,
@@ -337,7 +344,7 @@ impl SharedVirtualNic {
         }
     }
 
-    async fn invalidate_and_shutdown_dispatcher(&mut self) {
+    pub(crate) async fn invalidate_and_shutdown_dispatcher(&mut self) {
         self.mark_invalid();
         self.shutdown_dispatcher().await;
     }
