@@ -29,6 +29,7 @@ use rust_i18n::t;
 use serde_json::{Value, json};
 use std::str::FromStr;
 use std::{
+    fmt::Write as _,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
@@ -1211,7 +1212,11 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
-    log::init(&cli.logging_options, true)?;
+    log::init_with_default_console_targets(
+        &cli.logging_options,
+        true,
+        &["CORE", "easytier_core::instance::manager"],
+    )?;
 
     let manager = Arc::new(native_cli_instance_manager().with_config_path(cli.config_dir.clone()));
 
@@ -1360,10 +1365,17 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     tokio::select! {
         _ = manager.wait() => {
             let infos = manager.collect_network_infos().await?;
-            if infos
-                .into_values()
-                .filter_map(|info| info.error_msg).next().is_some() {
-                return Err(anyhow::anyhow!("some instances stopped with errors"));
+            let mut errors = String::new();
+            for (instance_id, info) in infos {
+                if let Some(error) = info.error_msg {
+                    if errors.is_empty() {
+                        errors.push_str("some instances stopped with errors:");
+                    }
+                    write!(errors, "\n{instance_id}: {error}").unwrap();
+                }
+            }
+            if !errors.is_empty() {
+                return Err(anyhow::anyhow!(errors));
             }
         }
         _ = tokio::signal::ctrl_c() => {
@@ -1489,7 +1501,7 @@ pub async fn main() -> ExitCode {
     let mut ret_code = 0;
 
     if let Err(error) = run_main(cli).await {
-        log::error!(%error);
+        log::error!(error = %format_args!("{error:#}"));
         ret_code = 1;
     }
 

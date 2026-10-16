@@ -342,10 +342,11 @@ where
     Accepted: Send + 'static,
 {
     let mut listener = creator();
-    match listener.listen().await {
-        Ok(()) => Ok(listener),
-        Err(error) => Err(error),
-    }
+    listener
+        .listen()
+        .await
+        .with_context(|| format!("failed to listen on {}", listener.local_url()))?;
+    Ok(listener)
 }
 
 async fn run_listener<Accepted, H>(
@@ -782,7 +783,8 @@ mod tests {
             true,
         );
 
-        assert!(manager.run().await.is_err());
+        let error = manager.run().await.unwrap_err();
+        assert!(format!("{error:#}").contains("mock://second"));
         crate::foundation::time::sleep(Duration::from_millis(20)).await;
         assert!(handler.accepted.lock().unwrap().is_empty());
         assert!(

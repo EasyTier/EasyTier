@@ -552,6 +552,13 @@ optional `tracing` feature selects the tokio-console subscriber integration;
 only that diagnostic profile pulls the main crate's `tracing-subscriber` and
 `console-subscriber` dependencies.
 
+The native CLI enables the `CORE` and `easytier_core::instance::manager` console
+targets by default. Instance startup failures are reported immediately with the
+instance ID and complete error chain, including the listener URL for bind
+failures. When all instances stop, the CLI's failure summary retains each failed
+instance's ID and saved error. Explicit console levels and `RUST_LOG` directives
+still control which records are emitted.
+
 Contrib applications and platform integrations may have independent logging
 requirements and are not implicitly wired to the native process logger.
 
