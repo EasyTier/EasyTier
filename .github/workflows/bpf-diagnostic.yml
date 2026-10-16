@@ -19,7 +19,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           for attempt in $(seq 1 180); do
-            if gh api repos/EasyTier/EasyTier/actions/runs/38868755556/artifacts --jq '.artifacts[].name' | grep -qx tests; then
+            if gh api repos/EasyTier/EasyTier/actions/runs/38868942483/artifacts --jq '.artifacts[].name' | grep -qx tests; then
               exit 0
             fi
             sleep 5
@@ -28,7 +28,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: tests
-          run-id: 38868755556
+          run-id: 38868942483
           github-token: ${{ github.token }}
       - name: Prepare fixed CI binary
         run: |
