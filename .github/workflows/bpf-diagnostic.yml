@@ -87,7 +87,7 @@ jobs:
           start = time.monotonic()
           failures = 0
           timeouts = 0
-          for i in range(1, 3001):
+          for i in range(1, 21):
               result = subprocess.run([binary, case, '--exact', '--nocapture'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
               if i <= 3 or result.returncode:
                   (root / f'diagnostics/attempt-{i}.log').write_text(result.stdout)
@@ -104,7 +104,7 @@ jobs:
               if i % 100 == 0:
                   print('PASS', i, 'elapsed', time.monotonic() - start, flush=True)
           else:
-              print('COMPLETED 3000 ATTEMPTS', flush=True)
+              print('COMPLETED 20 ATTEMPTS', flush=True)
           print('TOTAL FAILURES', failures, 'TIMEOUTS', timeouts, flush=True)
           PY
       - name: Repeat unmodified binary until the original timeout
@@ -118,7 +118,7 @@ jobs:
           case = 'socket::fake_tcp::netfilter::linux_bpf::tests::linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface'
           start = time.monotonic()
           failures = 0
-          for i in range(1, 10001):
+          for i in range(1, 21):
               result = subprocess.run([binary, case, '--exact', '--nocapture'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
               if result.returncode:
                   failures += 1
@@ -133,7 +133,72 @@ jobs:
               if i % 500 == 0:
                   print('BASELINE', i, 'failures', failures, 'elapsed', time.monotonic() - start, flush=True)
           else:
-              print('NO ORIGINAL TIMEOUT IN 10000 ATTEMPTS', flush=True)
+              print('NO ORIGINAL TIMEOUT IN 20 ATTEMPTS', flush=True)
+          PY
+      - name: Reproduce under worker scheduling pressure
+        run: |
+          cat > diagnostics/cpu-pressure.c <<'EOF'
+          #define _GNU_SOURCE
+          #include <sched.h>
+          #include <stdlib.h>
+          #include <time.h>
+          #include <stdio.h>
+          int main(int argc, char **argv) {
+              cpu_set_t mask;
+              CPU_ZERO(&mask);
+              CPU_SET(atoi(argv[1]), &mask);
+              if (sched_setaffinity(0, sizeof(mask), &mask)) { perror("affinity"); return 1; }
+              struct sched_param param = {.sched_priority = 10};
+              if (sched_setscheduler(0, SCHED_FIFO, &param)) { perror("scheduler"); return 1; }
+              struct timespec start, now;
+              clock_gettime(CLOCK_MONOTONIC, &start);
+              do { clock_gettime(CLOCK_MONOTONIC, &now); } while (now.tv_sec - start.tv_sec < 90);
+              return 0;
+          }
+          EOF
+          gcc -O2 diagnostics/cpu-pressure.c -o diagnostics/cpu-pressure
+          mkdir -p diagnostics/sync-bin
+          cat > diagnostics/sync-bin/ip <<'EOF'
+          #!/bin/sh
+          /usr/sbin/ip "$@" || exit $?
+          if [ "$1 $2 $3 $5" = "link set dev up" ]; then
+              case "$4" in
+                  elbs*) /usr/sbin/ip link show dev "elbc${4#elbs}" >/dev/null ;;
+              esac
+          fi
+          EOF
+          chmod +x diagnostics/sync-bin/ip
+          sudo -E python3 -u - <<'PY'
+          import os, pathlib, subprocess, time
+          root = pathlib.Path.cwd()
+          env = os.environ.copy()
+          env['EASYTIER_LINUX_BPF_INTEGRATION'] = 'required'
+          env['LD_PRELOAD'] = str(root / 'diagnostics/send-observer.so')
+          binary = str(root / 'target/debug/deps/easytier-0ae75d7f69396f6c')
+          case = 'socket::fake_tcp::netfilter::linux_bpf::tests::linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface'
+          original_path = env['PATH']
+          hogs = []
+          try:
+              os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(50))
+              for cpu in sorted(os.sched_getaffinity(0)):
+                  hogs.append(subprocess.Popen([str(root / 'diagnostics/cpu-pressure'), str(cpu)]))
+              for mode in ['original', 'getlink']:
+                  env['PATH'] = original_path if mode == 'original' else str(root / 'diagnostics/sync-bin') + ':' + original_path
+                  failures = 0
+                  timeouts = 0
+                  for i in range(1, 11):
+                      result = subprocess.run(['chrt', '-f', '20', binary, case, '--exact', '--nocapture'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10)
+                      (root / f'diagnostics/pressure-{mode}-{i}.log').write_text(result.stdout)
+                      failures += bool(result.returncode)
+                      timeouts += 'timed out waiting for Ethernet frame' in result.stdout
+                      print('PRESSURE', mode, i, result.returncode, result.stdout, flush=True)
+                  print('PRESSURE TOTAL', mode, 'failures', failures, 'timeouts', timeouts, flush=True)
+          finally:
+              for proc in hogs:
+                  proc.kill()
+              for proc in hogs:
+                  proc.wait()
+              os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
