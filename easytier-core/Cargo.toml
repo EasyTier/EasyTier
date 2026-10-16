@@ -53,6 +53,7 @@ prost.workspace = true
 prost-types.workspace = true
 rand.workspace = true
 quanta.workspace = true
+reed-solomon-erasure = "6.0.0"
 ring = { version = "0.17", optional = true }
 rustls = { workspace = true, features = ["ring", "std", "tls12"], optional = true }
 serde = { workspace = true, features = ["derive"] }
@@ -87,6 +88,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 webpki-roots = { version = "1.0", optional = true }
 x25519-dalek = { workspace = true, features = ["static_secrets"] }
 zerocopy = { workspace = true, features = ["derive", "simd"] }
+zeroize = "1.9.0"
 zstd = { version = "0.14", optional = true }
 # Match snow 0.10's AEAD generation to share aead, cipher and crypto-common.
 # Upgrade together with snow rather than pulling in a second crypto stack.

@@ -5,6 +5,18 @@ import "error.proto";
 
 package common;
 
+// Desired transmit policy; effective connection state is reported separately.
+message FecConfig {
+  // Local sending preference; a peer request can also enable sending.
+  optional bool enabled = 1;
+  // Request peer FEC sending independently of local sending.
+  optional bool force_peer = 2;
+  // Adaptive repair byte budget as a percentage of source bytes, with a bounded burst.
+  optional uint32 max_repair_percent = 3;
+  // Complete UDP payload bytes, excluding IP and UDP headers.
+  optional uint32 udp_payload_mtu = 4;
+}
+
 message Flags {
   string default_protocol = 1 [(easytier.flag) = { default: "tcp" }];
   string dev_name = 2 [(easytier.flag) = { default: "", form: true }];

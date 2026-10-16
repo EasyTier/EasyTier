@@ -302,6 +302,10 @@ impl PeerSession {
         self.datagram.session_generation()
     }
 
+    pub fn replay_rejections(&self) -> u64 {
+        self.datagram.replay_rejections()
+    }
+
     pub fn root_key(&self) -> [u8; 32] {
         self.datagram.root_key()
     }

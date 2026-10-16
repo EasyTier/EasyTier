@@ -54,6 +54,7 @@ pub struct CoreInstanceHostConfig {
     pub magic_dns_enabled: bool,
     pub kcp_enabled: bool,
     pub quic_enabled: bool,
+    pub udp_fec_enabled: bool,
     pub udp_broadcast_enabled: bool,
     pub upnp_enabled: bool,
     pub tcp_hole_punching_enabled: bool,
@@ -80,6 +81,7 @@ impl Default for CoreInstanceHostConfig {
             magic_dns_enabled: true,
             kcp_enabled: true,
             quic_enabled: true,
+            udp_fec_enabled: true,
             udp_broadcast_enabled: true,
             upnp_enabled: true,
             tcp_hole_punching_enabled: true,
@@ -157,6 +159,28 @@ impl CoreInstanceHostConfig {
     }
 }
 
+fn normalize_fec(
+    config: &TomlConfig,
+    host: &CoreInstanceHostConfig,
+) -> anyhow::Result<(crate::config::FecConfig, bool)> {
+    let mut fec = config.get_fec_config();
+    let supported = host.udp_fec_enabled
+        && host
+            .endpoint_protocols
+            .iter()
+            .any(|scheme| scheme.eq_ignore_ascii_case("udp"));
+    if (fec.enabled || fec.force_peer) && !supported {
+        anyhow::ensure!(
+            host.ignore_unsupported_config,
+            "this Host does not support native UDP FEC"
+        );
+        fec.enabled = false;
+        fec.force_peer = false;
+    }
+    fec.validate()?;
+    Ok((fec, supported))
+}
+
 impl CoreInstanceConfig {
     /// Normalizes the complete shared TOML model using OS-independent defaults.
     ///
@@ -200,6 +224,7 @@ impl CoreInstanceConfig {
         } else {
             config.get_proxy_cidrs()
         };
+        let (fec, fec_supported) = normalize_fec(config, host)?;
 
         let peer_snapshot =
             crate::config::peers::PeerRuntimeSnapshot::from_host_input(PeerRuntimeSnapshotInput {
@@ -242,6 +267,8 @@ impl CoreInstanceConfig {
                 network_identity: identity,
                 stun_info: Default::default(),
                 flags: flags.clone(),
+                fec,
+                fec_supported,
                 secure_mode: config.get_secure_mode(),
                 host_routing: host.host_routing,
                 acl: acl.clone(),
@@ -763,5 +790,72 @@ data_compress_algo = "Zstd"
                 CompressionAlgoPb::None as i32
             }
         );
+    }
+
+    #[test]
+    fn fec_payload_budget_does_not_constrain_local_mtu() {
+        let config = TomlConfig::new_from_str(
+            "ipv4 = '10.0.0.1/24'\n[flags]\nmtu = 1320\n[fec]\nenabled = true\nudp_payload_mtu = 576\n",
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+        assert!(normalized.peer.snapshot.fec.enabled);
+        assert_eq!(normalized.peer.snapshot.fec.udp_payload_mtu, 576);
+        assert_eq!(normalized.peer.snapshot.flags.mtu, 1320);
+        assert_eq!(config.get_flags().mtu, 1320);
+    }
+
+    #[test]
+    fn fec_force_peer_obeys_host_support_without_enabling_local_sending() {
+        let config = TomlConfig::new_from_str("[fec]\nforce_peer = true\n").unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+        assert!(!normalized.peer.snapshot.fec.enabled);
+        assert!(normalized.peer.snapshot.fec.force_peer);
+        let mut host = CoreInstanceHostConfig {
+            udp_fec_enabled: false,
+            ..Default::default()
+        };
+        assert!(CoreInstanceConfig::from_toml_with_host(&config, &host).is_err());
+        host.ignore_unsupported_config = true;
+        let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
+        assert!(!normalized.peer.snapshot.fec.enabled);
+        assert!(!normalized.peer.snapshot.fec.force_peer);
+        assert!(!normalized.peer.snapshot.fec_supported);
+        assert!(config.get_fec_config().force_peer);
+    }
+
+    #[test]
+    fn fec_host_capability_controls_execution_without_losing_desired_policy() {
+        let config =
+            TomlConfig::new_from_str("[fec]\nenabled = true\nudp_payload_mtu = 576\n").unwrap();
+        let mut host = CoreInstanceHostConfig {
+            udp_fec_enabled: false,
+            ..Default::default()
+        };
+        assert!(CoreInstanceConfig::from_toml_with_host(&config, &host).is_err());
+        host.ignore_unsupported_config = true;
+        let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
+        assert!(!normalized.peer.snapshot.fec.enabled);
+        assert!(!normalized.peer.snapshot.fec_supported);
+        assert!(config.get_fec_config().enabled);
+        host.udp_fec_enabled = true;
+        host.endpoint_protocols = vec!["ws".to_owned()];
+        assert!(
+            !CoreInstanceConfig::from_toml_with_host(&config, &host)
+                .unwrap()
+                .peer
+                .snapshot
+                .fec
+                .enabled
+        );
+        host.ignore_unsupported_config = false;
+        assert!(CoreInstanceConfig::from_toml_with_host(&config, &host).is_err());
+        let disabled = TomlConfig::default();
+        let normalized = CoreInstanceConfig::from_toml_with_host(&disabled, &host).unwrap();
+        assert!(!normalized.peer.snapshot.fec_supported);
+        host.endpoint_protocols = vec!["udp".to_owned()];
+        let normalized = CoreInstanceConfig::from_toml_with_host(&disabled, &host).unwrap();
+        assert!(normalized.peer.snapshot.fec_supported);
+        assert!(!normalized.peer.snapshot.fec.enabled);
     }
 }
