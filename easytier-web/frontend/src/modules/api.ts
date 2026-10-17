@@ -34,6 +34,13 @@ export interface RegisterData {
 
 export interface Summary {
     device_count: number;
+    outdated_count?: number;
+}
+
+export interface LatestVersion {
+    latest?: string;
+    raw_tag?: string;
+    source: string;
 }
 
 export interface ListNetworkInstanceIdResponse {
@@ -334,6 +341,11 @@ export class ApiClient {
 
     public async unblock_device(machine_id: string): Promise<undefined> {
         await this.client.delete(`/blocked-devices/${machine_id}`);
+    }
+
+    public async get_latest_version(): Promise<LatestVersion> {
+        const response = await this.client.get<any, LatestVersion>('/latest-version');
+        return response;
     }
 
     public async get_console_info(): Promise<ConsoleInfo> {

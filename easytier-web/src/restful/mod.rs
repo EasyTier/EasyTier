@@ -34,6 +34,7 @@ use crate::central_network::service::CentralNetworkService;
 use crate::client_manager::ClientManager;
 use crate::client_manager::storage::StorageToken;
 use crate::db::{Db, UserIdInDb};
+use crate::version_source::LatestVersion;
 use crate::webhook::SharedWebhookConfig;
 
 /// Embed assets for web dashboard, build frontend first
@@ -44,6 +45,7 @@ struct Assets;
 
 pub struct RestfulServer {
     bind_addr: SocketAddr,
+    latest_version: Arc<LatestVersion>,
     client_mgr: Arc<ClientManager>,
     central_service: Arc<CentralNetworkService>,
     feature_flags: Arc<FeatureFlags>,
@@ -64,6 +66,8 @@ struct ListSessionJsonResp(Vec<StorageToken>);
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct GetSummaryJsonResp {
     device_count: u32,
+    #[serde(default)]
+    outdated_count: u32,
 }
 
 #[derive(Clone)]
@@ -158,8 +162,18 @@ impl RestfulServer {
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
+        let source = match &feature_flags.expected_version {
+            Some(pinned) => crate::version_source::VersionSource::Static(pinned.clone()),
+            None => {
+                crate::version_source::VersionSource::parse(&feature_flags.latest_version_source)?
+            }
+        };
+        let latest_version = LatestVersion::new(source);
+        latest_version.spawn_refresh();
+
         Ok(RestfulServer {
             bind_addr,
+            latest_version: latest_version.clone(),
             client_mgr,
             central_service,
             feature_flags,
@@ -188,26 +202,58 @@ impl RestfulServer {
         State(client_mgr): AppState,
         Extension(config): Extension<ConsoleInfoConfig>,
         Extension(service): Extension<Arc<CentralNetworkService>>,
+        Extension(latest_version): Extension<Arc<crate::version_source::LatestVersion>>,
     ) -> Result<Json<GetSummaryJsonResp>, HttpHandleError> {
         let Some(user) = auth_session.user else {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
+        let latest = latest_version.latest().await;
 
-        let device_count = if config.webhook_auth {
-            client_mgr.list_machine_by_user_id(user.id()).await.len()
+        let (device_count, outdated_count) = if config.webhook_auth {
+            let mut infos = Vec::new();
+            for client_url in client_mgr.list_machine_by_user_id(user.id()).await {
+                if let Some(info) = client_mgr.get_heartbeat_requests(&client_url).await {
+                    infos.push(info);
+                }
+            }
+            let outdated = latest.as_deref().map_or(0, |latest| {
+                infos
+                    .iter()
+                    .filter(|info| {
+                        crate::version_source::is_outdated(&info.easytier_version, latest)
+                    })
+                    .count()
+            });
+            (infos.len(), outdated)
         } else {
-            service
+            let devices = service
                 .db
                 .list_devices(user.id())
                 .await
-                .map_err(convert_db_error)?
-                .len()
+                .map_err(convert_db_error)?;
+            let outdated = latest.as_deref().map_or(0, |latest| {
+                devices
+                    .iter()
+                    .filter(|device| {
+                        crate::version_source::is_outdated(&device.easytier_version, latest)
+                    })
+                    .count()
+            });
+            (devices.len(), outdated)
         };
 
         Ok(GetSummaryJsonResp {
             device_count: device_count as u32,
+            outdated_count: outdated_count as u32,
         }
         .into())
+    }
+
+    async fn handle_get_latest_version(
+        Extension(latest_version): Extension<Arc<crate::version_source::LatestVersion>>,
+    ) -> Json<crate::version_source::VersionSnapshot> {
+        let snapshot = latest_version.snapshot().await;
+        Json(snapshot)
     }
 
     async fn handle_get_console_info(
@@ -342,6 +388,10 @@ impl RestfulServer {
         };
         let mut app = Router::new()
             .route("/api/v1/summary", get(Self::handle_get_summary))
+            .route(
+                "/api/v1/latest-version",
+                get(Self::handle_get_latest_version),
+            )
             .route("/api/v1/console-info", get(Self::handle_get_console_info))
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
             .merge(central_routes)
@@ -358,6 +408,7 @@ impl RestfulServer {
             .route("/api/v1/parse-config", post(Self::handle_parse_config))
             .layer(Extension(self.central_service.clone()))
             .layer(Extension(self.oidc_config.clone()))
+            .layer(Extension(self.latest_version.clone()))
             .layer(Extension(ConsoleInfoConfig {
                 config_server_protocol: self.config_server_protocol.clone(),
                 config_server_port: self.config_server_port,
