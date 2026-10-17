@@ -128,6 +128,12 @@ function setReadyIpv6(instanceId: string, ipv6: string) {
   mocks.networkInfo.set(instanceId, info)
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
 async function loadVpnModule() {
   const mobileVpn = await import('./mobile_vpn')
   await mobileVpn.initMobileVpnService()
@@ -613,11 +619,155 @@ describe('mobile VPN reconciliation', () => {
     expect(mocks.stopVpn).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { delay: 'native status', event: 'no_tun start' },
+    { delay: 'running IDs', event: 'no_tun start' },
+    { delay: 'native status', event: 'route update' },
+    { delay: 'running IDs', event: 'route update' },
+  ])('cleans up a restored VPN after $event while awaiting $delay', async ({ delay, event }) => {
+    // A page reconstruction starts with no JS state, but the native VPN remains.
+    setConfig('A')
+    setConfig('C', true)
+    const vpn = await loadVpnModule()
+    const status = { running: true, ipv4Addrs: ['10.0.0.1/24'], routes: [] }
+    const runningIds = { running_inst_ids: ['C'] }
+    mocks.getVpnStatus.mockResolvedValue(status)
+    mocks.listNetworkInstanceIds.mockResolvedValue(runningIds)
+    const queried = deferred<void>()
+    const releaseQuery = deferred<void>()
+    if (delay === 'native status') {
+      mocks.getVpnStatus.mockImplementationOnce(async () => {
+        queried.resolve()
+        await releaseQuery.promise
+        return status
+      })
+    }
+    else {
+      mocks.listNetworkInstanceIds.mockImplementationOnce(async () => {
+        queried.resolve()
+        await releaseQuery.promise
+        return runningIds
+      })
+    }
+    const stopping = vpn.syncMobileVpnService()
+    await queried.promise
+    const newer = event === 'no_tun start'
+      ? vpn.onNetworkInstanceChange('C')
+      : vpn.onNetworkInstanceUpdate('A')
+    releaseQuery.resolve()
+    await Promise.all([stopping, newer])
+    await vi.advanceTimersByTimeAsync(125000)
+    expect(mocks.stopVpn).toHaveBeenCalledOnce()
+    expect(mocks.startVpn).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('samples native state even when a queued sync is superseded', async () => {
+    setConfig('C', true)
+    const vpn = await loadVpnModule()
+    const queried = deferred<void>()
+    const releaseQuery = deferred<void>()
+    mocks.listNetworkInstanceIds.mockImplementationOnce(async () => {
+      queried.resolve()
+      await releaseQuery.promise
+      return { running_inst_ids: ['C'] }
+    })
+    const updating = vpn.onNetworkInstanceUpdate('A')
+    await queried.promise
+    mocks.getVpnStatus.mockResolvedValue({ running: true })
+    const stopping = vpn.syncMobileVpnService()
+    const startingNoTun = vpn.onNetworkInstanceChange('C')
+    releaseQuery.resolve()
+    await Promise.all([updating, stopping, startingNoTun])
+    expect(mocks.getVpnStatus).toHaveBeenCalledOnce()
+    expect(mocks.stopVpn).toHaveBeenCalledOnce()
+    expect(mocks.startVpn).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['native status', 'running IDs'])('preserves native events during %s queries', async (delay) => {
+    const vpn = await loadVpnModule()
+    for (const running of [true, false]) {
+      const queried = deferred<void>()
+      const releaseQuery = deferred<void>()
+      mocks.getVpnStatus.mockImplementationOnce(async () => {
+        if (delay === 'native status') {
+          queried.resolve()
+          await releaseQuery.promise
+        }
+        return { running: !running }
+      })
+      mocks.listNetworkInstanceIds.mockImplementationOnce(async () => {
+        if (delay === 'running IDs') {
+          queried.resolve()
+          await releaseQuery.promise
+        }
+        return { running_inst_ids: [] }
+      })
+      const syncing = vpn.syncMobileVpnService()
+      await queried.promise
+      await mocks.listeners.get(running ? 'vpn_service_start' : 'vpn_service_stop')?.({})
+      releaseQuery.resolve()
+      await syncing
+      // Only the newer start needs cleanup. A stale running sample cannot
+      // resurrect a stopped VPN and wait for a second native stop event.
+      expect(mocks.stopVpn).toHaveBeenCalledOnce()
+    }
+    expect(mocks.startVpn).not.toHaveBeenCalled()
+  })
+
+  it('queues native sampling behind an in-flight VPN start', async () => {
+    setConfig('A')
+    setReady('A', '10.0.0.1')
+    const vpn = await loadVpnModule()
+    const attaching = deferred<void>()
+    const releaseAttachment = deferred<void>()
+    mocks.setTunFd.mockImplementationOnce(async () => {
+      attaching.resolve()
+      await releaseAttachment.promise
+      return makeMobileTunConfig(['A'])
+    })
+    const starting = vpn.onNetworkInstanceChange('A')
+    await attaching.promise
+    // The instance stops while its native start is still in flight.
+    mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: [] })
+    const syncing = vpn.syncMobileVpnService()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mocks.getVpnStatus).not.toHaveBeenCalled()
+    releaseAttachment.resolve()
+    await Promise.all([starting, syncing])
+    expect(mocks.startVpn).toHaveBeenCalledOnce()
+    expect(mocks.stopVpn).toHaveBeenCalledOnce()
+  })
+
+  it('lets the latest queued sync reconcile an intermediate empty instance list', async () => {
+    setConfig('A')
+    setReady('A', '10.0.0.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    mocks.getVpnStatus.mockResolvedValue({
+      running: true, ipv4Addrs: ['10.0.0.1/24'], routes: ['10.0.0.0/24'],
+    })
+    const queried = deferred<void>()
+    const reply = deferred<{ running_inst_ids: unknown[] }>()
+    mocks.listNetworkInstanceIds.mockImplementationOnce(() => {
+      queried.resolve()
+      return reply.promise
+    })
+    const oldSync = vpn.syncMobileVpnService()
+    await queried.promise
+    const newSync = vpn.syncMobileVpnService()
+    reply.resolve({ running_inst_ids: [] })
+    await Promise.all([oldSync, newSync])
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
+    expect(mocks.startVpn).toHaveBeenCalledOnce()
+  })
+
   it('preserves a native VPN while network info is unavailable', async () => {
     setConfig('A')
     mocks.getVpnStatus.mockResolvedValue({
       running: true,
-      ipv4Addr: '10.0.0.1/24',
+      ipv4Addrs: ['10.0.0.1/24'],
       routes: [],
     })
     mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: ['A'] })

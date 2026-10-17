@@ -28,6 +28,29 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 pub struct Vpnservice<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> Vpnservice<R> {
+    #[cfg(target_os = "android")]
+    pub fn read_management_snapshot(&self) -> crate::Result<Option<String>> {
+        #[derive(serde::Deserialize)]
+        struct Response {
+            snapshot: Option<String>,
+        }
+        let response: Response = self
+            .0
+            .run_mobile_plugin("readManagementSnapshot", VoidRequest {})?;
+        Ok(response.snapshot)
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn write_management_snapshot(&self, snapshot: String) -> crate::Result<()> {
+        #[derive(serde::Serialize)]
+        struct Request {
+            snapshot: String,
+        }
+        self.0
+            .run_mobile_plugin("writeManagementSnapshot", Request { snapshot })
+            .map_err(Into::into)
+    }
+
     pub fn ping(&self, payload: PingRequest) -> crate::Result<PingResponse> {
         self.0
             .run_mobile_plugin("ping", payload)
@@ -36,25 +59,25 @@ impl<R: Runtime> Vpnservice<R> {
 
     pub fn prepare_vpn(&self, payload: VoidRequest) -> crate::Result<Status> {
         self.0
-            .run_mobile_plugin("prepare_vpn", payload)
+            .run_mobile_plugin("prepareVpn", payload)
             .map_err(Into::into)
     }
 
     pub fn start_vpn(&self, payload: StartVpnRequest) -> crate::Result<Status> {
         self.0
-            .run_mobile_plugin("start_vpn", payload)
+            .run_mobile_plugin("startVpn", payload)
             .map_err(Into::into)
     }
 
     pub fn stop_vpn(&self, payload: VoidRequest) -> crate::Result<Status> {
         self.0
-            .run_mobile_plugin("stop_vpn", payload)
+            .run_mobile_plugin("stopVpn", payload)
             .map_err(Into::into)
     }
 
     pub fn get_vpn_status(&self, payload: VoidRequest) -> crate::Result<VpnStatus> {
         self.0
-            .run_mobile_plugin("get_vpn_status", payload)
+            .run_mobile_plugin("getVpnStatus", payload)
             .map_err(Into::into)
     }
 
@@ -63,7 +86,7 @@ impl<R: Runtime> Vpnservice<R> {
         payload: VoidRequest,
     ) -> crate::Result<VpnTileActionResponse> {
         self.0
-            .run_mobile_plugin("consume_vpn_tile_action", payload)
+            .run_mobile_plugin("consumeVpnTileAction", payload)
             .map_err(Into::into)
     }
 }
