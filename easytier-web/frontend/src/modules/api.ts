@@ -176,6 +176,7 @@ export interface ConsoleInfo {
     config_server_protocol: string;
     config_server_port: number;
     webhook_auth: boolean;
+    console_enroll_command?: string | null;
 }
 
 export type AclSelector =

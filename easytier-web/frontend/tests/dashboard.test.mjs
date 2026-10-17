@@ -83,7 +83,7 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
         if (state.failures.has(path)) return route.fulfill({ status: 503, json: { message: 'Test unavailable' } });
         let result = {};
         if (path === '/summary') result = { device_count: state.machines.length };
-        else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, webhook_auth: state.externalConsole ?? false };
+        else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, webhook_auth: state.externalConsole ?? false, ...state.consoleInfo };
         else if (path === '/machines') result = { machines: state.machines };
         else if (path === '/networks/gateway-info') {
             await delay(state.gatewayDelay);
@@ -160,11 +160,34 @@ test('overview uses real counts and recovers from partial refresh failures', asy
     assert.equal(await page.getByText('Unable to refresh data.', { exact: false }).count(), 0);
 });
 
-test('enrollment command uses the console info response', async t => {
-    const { page } = await open(t);
+async function assertEnrollmentCommand(page, context, command, custom = false) {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    // Windows normalizes clipboard line endings to CRLF.
+    const readClipboard = async () => (await page.evaluate(() => navigator.clipboard.readText())).replace(/\r\n/g, '\n');
+    const emptyState = page.locator('.console-empty-state');
+    await emptyState.locator('code').waitFor();
+    assert.equal(await emptyState.locator('code').textContent(), command);
+    await emptyState.getByRole('button', { name: 'Copy enrollment command' }).click();
+    assert.equal(await readClipboard(), command);
+    await page.evaluate(() => navigator.clipboard.writeText('previous clipboard value'));
     await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
-    await page.getByText('easytier-core --config-server udp://127.0.0.1:22020/test-user').waitFor();
-});
+    const popover = page.locator('.p-popover');
+    await popover.locator('code').waitFor();
+    assert.equal(await popover.locator('code').textContent(), command);
+    assert.equal(await popover.getByText('The path at the end is the enrollment token', { exact: false }).count(), custom ? 0 : 1);
+    await popover.getByRole('button', { name: 'Copy enrollment command' }).click();
+    assert.equal(await readClipboard(), command);
+}
+
+for (const consoleInfo of [{}, { console_enroll_command: null }]) {
+    test(`enrollment command uses the default with ${'console_enroll_command' in consoleInfo ? 'null' : 'missing'} customization`, async t => {
+        const { page, context } = await open(t, '/h/deviceList', {}, state => {
+            state.machines = [];
+            state.consoleInfo = consoleInfo;
+        });
+        await assertEnrollmentCommand(page, context, 'easytier-core --config-server udp://127.0.0.1:22020/test-user');
+    });
+}
 
 for (const [apiHost, hostname] of [
     ['https://api.example.test:8443/', 'api.example.test'],
@@ -172,11 +195,36 @@ for (const [apiHost, hostname] of [
     ['.', '127.0.0.1'],
 ]) {
     test(`enrollment command uses the configured API hostname for ${apiHost}`, async t => {
-        const { page } = await open(t, '/h', {}, state => { state.apiHost = apiHost; });
-        await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
-        await page.getByText(`easytier-core --config-server udp://${hostname}:22020/test-user`).waitFor();
+        const { page, context } = await open(t, '/h/deviceList', {}, state => {
+            state.machines = [];
+            state.apiHost = apiHost;
+        });
+        await assertEnrollmentCommand(page, context, `easytier-core --config-server udp://${hostname}:22020/test-user`);
     });
 }
+
+test('custom enrollment content is displayed and copied verbatim at both entry points', async t => {
+    const command = 'easytier-core --config-server tcp://edge.example.test:443/fixed-token\n# Keep ${SHELL} and {unknown} unchanged';
+    const { page, context } = await open(t, '/h/deviceList', {}, state => {
+        state.machines = [];
+        state.consoleInfo = { console_enroll_command: command };
+    });
+    await assertEnrollmentCommand(page, context, command, true);
+});
+
+test('custom enrollment placeholders use API settings and are expanded only once', async t => {
+    const { page, context } = await open(t, '/h/deviceList', {}, state => {
+        state.machines = [];
+        state.apiHost = 'https://[2001:db8::2]:8443/';
+        state.consoleInfo = {
+            username: 'user{host}$&',
+            config_server_protocol: 'tcp',
+            config_server_port: 443,
+            console_enroll_command: 'easytier-core --config-server {protocol}://{host}:{port}/{username} --hostname {username}',
+        };
+    });
+    await assertEnrollmentCommand(page, context, 'easytier-core --config-server tcp://[2001:db8::2]:443/user{host}$& --hostname user{host}$&', true);
+});
 
 test('device search, sort, expansion and routed drawer survive reload and history', async t => {
     const { page } = await open(t, '/h/deviceList');

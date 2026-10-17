@@ -4,6 +4,7 @@
 extern crate rust_i18n;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use central_network::gateway;
@@ -27,6 +28,7 @@ use mimalloc::MiMalloc;
 
 mod central_network;
 mod client_manager;
+mod console_config;
 #[cfg(test)]
 mod config_server_listener_tests;
 mod db;
@@ -53,6 +55,20 @@ struct Cli {
         help = t!("cli.db").to_string()
     )]
     db: String,
+
+    #[arg(
+        long,
+        env = "ET_WEB_CONSOLE_CONFIG_FILE",
+        help = t!("cli.console_config_file").to_string(),
+    )]
+    console_config_file: Option<PathBuf>,
+
+    #[arg(
+        long,
+        env = "ET_WEB_CONSOLE_ENROLL_COMMAND",
+        help = t!("cli.console_enroll_command").to_string(),
+    )]
+    console_enroll_command: Option<String>,
 
     #[arg(
         long,
@@ -290,6 +306,14 @@ async fn main() {
     easytier::utils::init_crypto_provider();
 
     let cli = Cli::parse();
+    let console_enroll_command = console_config::load(
+        cli.console_config_file.as_deref(),
+        cli.console_enroll_command.clone(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Invalid console configuration: {error:#}");
+        std::process::exit(2);
+    });
     log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();
     tracing::info!(
         version = EASYTIER_VERSION,
@@ -466,6 +490,7 @@ async fn main() {
         webhook_config,
         cli.config_server_protocol.clone(),
         cli.config_server_port,
+        console_enroll_command,
     )
     .await
     .unwrap()

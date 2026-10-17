@@ -7,6 +7,7 @@ import { Utils } from 'easytier-frontend-lib';
 import DeviceDetails from './DeviceDetails.vue';
 import { useI18n } from 'vue-i18n'
 import ApiClient from '../modules/api';
+import { buildEnrollCommand } from '../modules/enrollment';
 
 const { t } = useI18n()
 
@@ -42,12 +43,7 @@ watch(viewMode, (mode) => localStorage.setItem('deviceList.viewMode', mode));
 // Zero-device state is where users look for "how do I add one": surface
 // the enrollment command right there.
 const enrollInfo = ref<Awaited<ReturnType<ApiClient['get_console_info']>> | null>(null);
-const enrollCommand = computed(() => {
-    if (!enrollInfo.value) return '';
-    const host = window.location.hostname;
-    const { config_server_protocol: proto, config_server_port: port, username } = enrollInfo.value;
-    return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;
-});
+const enrollCommand = computed(() => buildEnrollCommand(enrollInfo.value));
 
 const copyEnrollCommand = async () => {
     try {
@@ -234,7 +230,7 @@ const locationText = (device: Utils.DeviceInfo) => {
                 <h2>{{ search ? t('web.console.no_results') : t('web.console.devices_empty') }}</h2>
                 <p v-if="!search">{{ t('web.console.devices_empty_hint') }}</p>
                 <div v-if="!search && enrollCommand" class="flex items-center gap-2 justify-center mt-2 flex-wrap">
-                    <code class="mono-value p-2 rounded" style="background: var(--console-ground); word-break: break-all">{{ enrollCommand }}</code>
+                    <code class="mono-value p-2 rounded" style="background: var(--console-ground); word-break: break-all; white-space: pre-wrap">{{ enrollCommand }}</code>
                     <Button icon="pi pi-copy" severity="secondary" outlined size="small"
                         :aria-label="t('web.console.enroll_copy')" @click="copyEnrollCommand" />
                 </div>
