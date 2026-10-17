@@ -24,11 +24,12 @@ use crate::client_manager::{
 };
 
 async fn recv_latest_heartbeat(
-    heartbeat_waiter: &mut broadcast::Receiver<HeartbeatRequest>,
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    heartbeat_waiter: &mut broadcast::Receiver<()>,
 ) -> Option<HeartbeatRequest> {
-    let mut req = loop {
+    loop {
         match heartbeat_waiter.recv().await {
-            Ok(req) => break req,
+            Ok(()) => break,
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 tracing::warn!(
                     skipped,
@@ -40,21 +41,23 @@ async fn recv_latest_heartbeat(
                 return None;
             }
         }
-    };
+    }
 
     // Drop any heartbeat backlog accumulated while the previous reconcile
     // round was doing DB/RPC IO. The newest heartbeat has the freshest
     // runtime instance list, which is all this task needs.
     loop {
         match heartbeat_waiter.try_recv() {
-            Ok(next_req) => req = next_req,
+            Ok(()) => {}
             Err(broadcast::error::TryRecvError::Empty) => break,
             Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
             Err(broadcast::error::TryRecvError::Closed) => return None,
         }
     }
 
-    Some(req)
+    // Notifications can be delayed by validation or publication IO. Read the
+    // current heartbeat instead of replaying the snapshot taken before that IO.
+    session_data.upgrade()?.read().await.req()
 }
 
 struct SessionClients {
@@ -65,7 +68,7 @@ struct SessionClients {
 
 pub(super) async fn reconcile_network_configs_on_heartbeat(
     session_data: std::sync::Weak<RwLock<SessionData>>,
-    mut heartbeat_waiter: broadcast::Receiver<HeartbeatRequest>,
+    mut heartbeat_waiter: broadcast::Receiver<()>,
     storage: WeakRefStorage,
     rpc_client: SessionRpcClient,
     config_client: SessionConfigClient,
@@ -78,7 +81,7 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
     };
     let mut cache = ReconcileCache::default();
     loop {
-        let Some(req) = recv_latest_heartbeat(&mut heartbeat_waiter).await else {
+        let Some(req) = recv_latest_heartbeat(&session_data, &mut heartbeat_waiter).await else {
             return;
         };
         let Some(storage) = storage.upgrade() else {
@@ -404,6 +407,15 @@ async fn prepare_reconcile_round(
             RoundStatus::Skip => return RoundStatus::Skip,
             RoundStatus::Stop => return RoundStatus::Stop,
         };
+    {
+        let Some(data) = session_data.upgrade() else {
+            return RoundStatus::Stop;
+        };
+        let data = data.read().await;
+        if !data.runtime_config_is_ready(target_config_revision.as_deref()) {
+            return RoundStatus::Skip;
+        }
+    }
     let should_apply_runtime_revision =
         target_config_revision.is_some() && target_config_revision != applied_config_revision;
     let mut scope = if should_apply_runtime_revision {
@@ -886,7 +898,9 @@ async fn begin_managed_runtime_mutation(
         return false;
     };
     let data = data.write().await;
-    if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
+    if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req)
+        || !data.runtime_config_is_ready(round.target_config_revision.as_deref())
+    {
         return false;
     }
     let managed_runtime = data.managed_runtime.clone();
@@ -1265,7 +1279,9 @@ async fn mark_config_revision_applied_if_current(
     };
     let notify = {
         let mut data = data.write().await;
-        if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
+        if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req)
+            || !data.runtime_config_is_ready(round.target_config_revision.as_deref())
+        {
             return RoundStatus::Ready(());
         }
         record_applied_config_revision(
@@ -1318,6 +1334,286 @@ mod tests {
     use easytier::proto::api::manage::{NetworkingMethod, PortForwardConfig};
 
     use super::*;
+
+    async fn takeover_session(
+        persisted_revision: Option<&str>,
+    ) -> (
+        crate::client_manager::storage::Storage,
+        std::sync::Arc<RwLock<SessionData>>,
+        ReconcileRound,
+    ) {
+        use super::super::{SessionAuthState, webhook_validation};
+        use crate::client_manager::storage::{Storage, StorageToken};
+
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage.db().auto_create_user("token").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        if let Some(revision) = persisted_revision {
+            storage
+                .db()
+                .set_managed_config_revision((user_id, machine_id), revision)
+                .await
+                .unwrap();
+        }
+        let req = HeartbeatRequest {
+            user_token: "token".to_owned(),
+            machine_id: Some(machine_id.into()),
+            running_network_instances: vec![uuid::Uuid::new_v4().into()],
+            ..Default::default()
+        };
+        let client_url = "tcp://127.0.0.1:1001".parse().unwrap();
+        let webhook = std::sync::Arc::new(crate::webhook::WebhookConfig::new(
+            Some("http://127.0.0.1:1".to_owned()),
+            None,
+            None,
+            None,
+            None,
+        ));
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            client_url,
+            None,
+            std::sync::Arc::new(crate::FeatureFlags::default()),
+            webhook.clone(),
+        );
+        data.req = Some(req.clone());
+        data.auth_state = SessionAuthState::Authorized;
+        data.binding_version = Some(1);
+        data.webhook_connected_binding_version = Some(1);
+        data.storage_token = Some(StorageToken {
+            token: req.user_token.clone(),
+            client_url: data.client_url.clone(),
+            machine_id,
+            user_id,
+        });
+        data.managed_runtime = storage.bind_managed_runtime_state(user_id, machine_id, None, 0);
+        data.managed_runtime().applied_config_revision = persisted_revision.map(str::to_owned);
+        let session_data = std::sync::Arc::new(RwLock::new(data));
+        let client_url = session_data.read().await.client_url.clone();
+        webhook_validation::apply_success(
+            &std::sync::Arc::downgrade(&session_data),
+            webhook_validation::WebhookValidationInput {
+                storage: storage.clone(),
+                webhook_config: webhook,
+                client_url,
+                applied_config_revision: persisted_revision.map(str::to_owned),
+                applied_config_revision_known: false,
+                failed_instance_ids: Vec::new(),
+                req: req.clone(),
+                machine_id,
+            },
+            webhook_validation::WebhookHeartbeatValidation {
+                config_revision: "current".to_owned(),
+                binding_version: 1,
+            },
+            user_id,
+            0,
+        )
+        .await;
+        let mut round = round_with_revision_state(persisted_revision, false);
+        round.req = req;
+        round.machine_id = machine_id;
+        round.user_id = user_id;
+        round.runtime_config_epoch = session_data
+            .read()
+            .await
+            .managed_runtime()
+            .runtime_config_epoch;
+        (storage, session_data, round)
+    }
+
+    #[tokio::test]
+    async fn takeover_skips_missing_and_outdated_receiver_config() {
+        for revision in [None, Some("outdated")] {
+            let (storage, data, round) = takeover_session(revision).await;
+            let rpc = easytier::proto::rpc::bidirect::BidirectRpcManager::new();
+            let mut client: SessionRpcClient = rpc.rpc_client().scoped_client::<
+                easytier::proto::api::manage::WebClientServiceClientFactory<BaseController>,
+            >(1, 1, String::new());
+
+            assert!(matches!(
+                prepare_reconcile_round(
+                    &std::sync::Arc::downgrade(&data),
+                    &storage.weak_ref().upgrade().unwrap(),
+                    &mut client,
+                    round.req,
+                )
+                .await,
+                RoundStatus::Skip
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn takeover_fences_mutations_and_applied_reports_from_unready_rounds() {
+        for revision in [None, Some("outdated")] {
+            let (storage, data, mut round) = takeover_session(revision).await;
+            let weak = std::sync::Arc::downgrade(&data);
+            let mut mutation = RuntimeMutationFence::default();
+            assert!(!begin_managed_runtime_mutation(&weak, &round, &mut mutation).await);
+            assert!(!mutation.started);
+
+            round.should_apply_runtime_revision = true;
+            mark_config_revision_applied_if_current(
+                &weak,
+                &storage.weak_ref().upgrade().unwrap(),
+                &round,
+                &ReconcileOutcome::default(),
+                &mutation,
+            )
+            .await;
+            let data = data.read().await;
+            let runtime = data.managed_runtime();
+            assert!(!runtime.applied_config_revision_known);
+            assert_eq!(runtime.applied_config_revision.as_deref(), revision);
+        }
+    }
+
+    async fn validate_takeover_session(
+        storage: &crate::client_manager::storage::Storage,
+        data: &std::sync::Arc<RwLock<SessionData>>,
+        round: &ReconcileRound,
+        revision: &str,
+        epoch: u64,
+    ) {
+        use super::super::webhook_validation;
+
+        let (webhook_config, client_url) = {
+            let data = data.read().await;
+            (data.webhook_config.clone(), data.client_url.clone())
+        };
+        webhook_validation::apply_success(
+            &std::sync::Arc::downgrade(data),
+            webhook_validation::WebhookValidationInput {
+                storage: storage.clone(),
+                webhook_config,
+                client_url,
+                applied_config_revision: None,
+                applied_config_revision_known: false,
+                failed_instance_ids: Vec::new(),
+                req: round.req.clone(),
+                machine_id: round.machine_id,
+            },
+            webhook_validation::WebhookHeartbeatValidation {
+                config_revision: revision.to_owned(),
+                binding_version: 1,
+            },
+            round.user_id,
+            epoch,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn takeover_new_publication_fences_late_validation_and_publication_callbacks() {
+        use super::super::{HeartbeatPolicy, Session};
+        use std::sync::Arc;
+
+        let (storage, data, round) = takeover_session(Some("current")).await;
+        let mut session = Session::new(
+            storage.weak_ref(),
+            "tcp://127.0.0.1:1001".parse().unwrap(),
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(crate::FeatureFlags::default()),
+            data.read().await.webhook_config.clone(),
+            0,
+        );
+        session.data = data.clone();
+        let old_epoch = data.read().await.webhook_validation_change_epoch;
+        storage
+            .db()
+            .set_managed_config_revision((round.user_id, round.machine_id), "newer")
+            .await
+            .unwrap();
+        storage.record_full_managed_config_change(round.user_id, round.machine_id, Some("newer"));
+        session
+            .notify_managed_runtime_state_changed(round.user_id, round.machine_id, Some("newer"))
+            .await;
+
+        validate_takeover_session(&storage, &data, &round, "current", old_epoch).await;
+        session
+            .notify_managed_runtime_state_changed(round.user_id, round.machine_id, Some("current"))
+            .await;
+        let current_epoch = {
+            let data = data.read().await;
+            assert_eq!(data.webhook_config_revision.as_deref(), Some("current"));
+            assert!(!data.runtime_config_is_ready(Some("newer")));
+            assert!(data.webhook_validation_dirty);
+            data.webhook_validation_change_epoch
+        };
+        assert!(
+            !begin_managed_runtime_mutation(
+                &Arc::downgrade(&data),
+                &round,
+                &mut RuntimeMutationFence::default()
+            )
+            .await
+        );
+
+        validate_takeover_session(&storage, &data, &round, "newer", current_epoch).await;
+        assert!(data.read().await.runtime_config_is_ready(Some("newer")));
+
+        // A newer Console revision may be observed after a publication commits
+        // but before its callback runs. SQLite still containing that publication
+        // does not allow the late callback to replace the newer authority.
+        validate_takeover_session(&storage, &data, &round, "newest", current_epoch).await;
+        session
+            .notify_managed_runtime_state_changed(round.user_id, round.machine_id, Some("newer"))
+            .await;
+        let data = data.read().await;
+        assert_eq!(data.webhook_config_revision.as_deref(), Some("newest"));
+        assert!(!data.runtime_config_is_ready(Some("newer")));
+        assert!(data.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn unchanged_validation_does_not_replay_an_old_heartbeat() {
+        let (storage, data, round) = takeover_session(Some("current")).await;
+        let mut notifications = data.read().await.heartbeat_waiter();
+        let epoch = data.read().await.webhook_validation_change_epoch;
+        validate_takeover_session(&storage, &data, &round, "current", epoch).await;
+        assert!(matches!(
+            notifications.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let newest_instance = uuid::Uuid::new_v4();
+        {
+            let mut data = data.write().await;
+            data.notifier.send(()).unwrap();
+            data.req.as_mut().unwrap().running_network_instances = vec![newest_instance.into()];
+        }
+        let req = recv_latest_heartbeat(&std::sync::Arc::downgrade(&data), &mut notifications)
+            .await
+            .unwrap();
+        assert_eq!(req.running_network_instances, vec![newest_instance.into()]);
+    }
+
+    #[tokio::test]
+    async fn authoritative_empty_config_remains_ready_but_missing_revision_does_not() {
+        let (storage, data, round) = takeover_session(Some("current")).await;
+        let mut mutation = RuntimeMutationFence::default();
+        assert!(round.local_configs.is_empty());
+        assert!(
+            begin_managed_runtime_mutation(
+                &std::sync::Arc::downgrade(&data),
+                &round,
+                &mut mutation
+            )
+            .await
+        );
+        let epoch = data.read().await.webhook_validation_change_epoch;
+        validate_takeover_session(&storage, &data, &round, "", epoch).await;
+        let mut data = data.write().await;
+        assert!(!data.runtime_config_is_ready(None));
+        assert!(!data.runtime_config_is_ready(Some("current")));
+        data.binding_version = Some(0);
+        assert!(
+            data.runtime_config_is_ready(None),
+            "legacy webhook without managed fields"
+        );
+    }
 
     fn config_with_port_forwards(port_forwards: Vec<PortForwardConfig>) -> NetworkConfig {
         NetworkConfig {
