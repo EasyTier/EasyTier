@@ -3,6 +3,16 @@ PROPFILE=true
 POSTFSDATA=true
 LATESTARTSERVICE=true
 
+OLDPATH=/data/adb/modules/easytier_magisk
+if [ -d "$OLDPATH/config" ] && [ "$OLDPATH" != "$MODPATH" ]; then
+  ui_print "检测到旧版 EasyTier 模块，正在迁移配置文件"
+  if cp -av "$OLDPATH"/config "$MODPATH"; then
+    ui_print "配置文件迁移成功"
+  else
+    ui_print "配置文件迁移失败，请手动迁移"
+  fi
+fi
+
 set_perm_recursive $MODPATH 0 0 0777 0777
 
 ui_print "系统架构为：$ARCH"
