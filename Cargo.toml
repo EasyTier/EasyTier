@@ -107,13 +107,20 @@ panic = "unwind"
 debug = 2
 
 [profile.release]
-panic = "abort"
-lto = true
-codegen-units = 1
 opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 strip = true
+overflow-checks = false
+incremental = false
 
 [profile.mini]
 inherits = "release"
 opt-level = "z"
-strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = false
+incremental = false
