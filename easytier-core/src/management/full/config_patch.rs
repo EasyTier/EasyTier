@@ -51,9 +51,25 @@ where
     // Preserve the existing ordered partial-commit contract: earlier valid
     // sub-patches remain applied if a later sub-patch fails.
     let patch_result: anyhow::Result<(bool, bool)> = async {
-        let result = patch_port_forwards(&candidate, patch.port_forwards);
-        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
-        result?;
+        if !patch.port_forwards.is_empty() {
+            patch_port_forwards(&candidate, patch.port_forwards)?;
+            // Port forwards have fallible host resources. Reserve them before the
+            // durable write, then commit resources and readback together. A failed
+            // bind or persistence operation must leave the previous rule usable.
+            let normalized = validate_candidate(instance, &candidate)?;
+            let runtime = runtime_config_from_normalized(&normalized);
+            #[cfg(feature = "proxy-smoltcp-stack")]
+            let prepared = instance.prepare_port_forwards(&runtime).await?;
+            persist_candidate_if_changed(instance, &config, &candidate, persistence).await?;
+            instance
+                .commit_runtime_config_under_operation(
+                    runtime,
+                    #[cfg(feature = "proxy-smoltcp-stack")]
+                    prepared,
+                    || config.replace_from_snapshot(&candidate),
+                )
+                .await?;
+        }
 
         let result = patch_acl(&candidate, patch.acl);
         validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
