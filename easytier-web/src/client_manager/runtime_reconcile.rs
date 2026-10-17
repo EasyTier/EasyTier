@@ -660,6 +660,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fec_full_reconcile_requires_overwrite_not_a_live_patch() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = current.clone();
+        desired.fec = Some(easytier::proto::common::FecConfig {
+            enabled: Some(true),
+            udp_payload_mtu: Some(1600),
+            ..Default::default()
+        });
+        assert!(
+            web_source_runtime_patch(&current, &desired, false)
+                .unwrap()
+                .is_none()
+        );
+        assert!(ensure_runtime_config_converged(&current, &desired, false).is_err());
+        let readback = NetworkConfig::new_from_config(desired.gen_config().unwrap()).unwrap();
+        assert!(ensure_runtime_config_converged(&readback, &desired, false).is_ok());
+        desired.fec.as_mut().unwrap().max_repair_percent = Some(10);
+        assert!(
+            web_source_runtime_patch(&readback, &desired, false)
+                .unwrap()
+                .is_none()
+        );
+    }
+
     fn port_forward(bind_port: u32, dst_port: u32) -> PortForwardConfig {
         PortForwardConfig {
             bind_ip: "127.0.0.1".to_string(),

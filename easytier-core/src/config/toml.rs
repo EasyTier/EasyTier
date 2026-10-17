@@ -109,6 +109,9 @@ pub trait ConfigLoader: Send + Sync {
     /// Apply only supplied fields, preserving absence and explicit defaults.
     fn patch_flags(&self, flags: FlagsPatch);
 
+    fn get_fec_config(&self) -> super::FecConfig;
+    fn set_fec_config(&self, config: super::FecConfig);
+
     fn get_exit_nodes(&self) -> Vec<IpAddr>;
     fn set_exit_nodes(&self, nodes: Vec<IpAddr>);
 
@@ -436,6 +439,8 @@ struct Config {
 
     secure_mode: Option<SecureModeConfig>,
 
+    fec: Option<super::FecConfig>,
+
     #[serde(default)]
     flags: FlagsPatch,
 
@@ -596,6 +601,9 @@ impl TomlConfig {
             .map(normalize_secure_mode_config)
             .transpose()
             .context("failed to normalize [secure_mode] config")?;
+        if let Some(fec) = &config.fec {
+            fec.validate()?;
+        }
         let has_network_identity = config.network_identity.is_some();
 
         let config = TomlConfig {
@@ -1028,6 +1036,14 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().secure_mode = secure_mode;
     }
 
+    fn get_fec_config(&self) -> super::FecConfig {
+        self.config.lock().unwrap().fec.clone().unwrap_or_default()
+    }
+
+    fn set_fec_config(&self, config: super::FecConfig) {
+        self.config.lock().unwrap().fec = Some(config);
+    }
+
     fn get_credential_file(&self) -> Option<PathBuf> {
         self.config.lock().unwrap().credential_file.clone()
     }
@@ -1183,6 +1199,34 @@ mod tests {
                 "accepted {value}"
             );
         }
+    }
+
+    #[test]
+    fn enabled_fec_rejects_invalid_ranges() {
+        for setting in [
+            "max_repair_percent = 0",
+            "max_repair_percent = 101",
+            "max_repair_percent = 4294967295",
+            "udp_payload_mtu = 575",
+            "udp_payload_mtu = 8193",
+            "udp_payload_mtu = 4294967295",
+        ] {
+            assert!(
+                TomlConfig::new_from_str(&format!("[fec]\nenabled = true\n{setting}")).is_err(),
+                "accepted {setting}"
+            );
+            assert!(
+                TomlConfig::new_from_str(&format!("[fec]\nenabled = false\n{setting}")).is_ok(),
+                "lost disabled desired {setting}"
+            );
+        }
+        for setting in [
+            "max_repair_percent = 1\nudp_payload_mtu = 576",
+            "max_repair_percent = 100\nudp_payload_mtu = 8192",
+        ] {
+            assert!(TomlConfig::new_from_str(&format!("[fec]\nenabled = true\n{setting}")).is_ok());
+        }
+        assert!(!TomlConfig::default().get_fec_config().enabled);
     }
 
     #[test]

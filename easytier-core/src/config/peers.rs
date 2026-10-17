@@ -237,6 +237,9 @@ pub struct PeerRuntimeSnapshot {
     pub easytier_version: String,
     pub avoid_relay_data_preference: bool,
     pub flags: Flags,
+    #[serde(default)]
+    pub fec: super::FecConfig,
+    pub fec_supported: bool,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
     pub peer_group_memberships: Vec<PeerGroupIdentity>,
     pub acl_group_declarations: Vec<PeerGroupIdentity>,
@@ -253,6 +256,8 @@ impl PeerRuntimeSnapshot {
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             avoid_relay_data_preference,
             flags,
+            fec: super::FecConfig::default(),
+            fec_supported: false,
             pinned_peers: Vec::new(),
             peer_group_memberships: Vec::new(),
             acl_group_declarations: Vec::new(),

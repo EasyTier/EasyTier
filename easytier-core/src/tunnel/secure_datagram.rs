@@ -64,89 +64,80 @@ impl EpochKeySlot {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct ReplayWindow256 {
+const REPLAY_WINDOW_PACKETS: usize = 8192;
+
+#[derive(Debug)]
+struct ReplayWindow8192 {
     max_seq: u64,
-    bitmap: [u8; 32],
+    bitmap: [u64; REPLAY_WINDOW_PACKETS / 64],
     valid: bool,
 }
 
-impl ReplayWindow256 {
+impl Default for ReplayWindow8192 {
+    fn default() -> Self {
+        Self {
+            max_seq: 0,
+            bitmap: [0; REPLAY_WINDOW_PACKETS / 64],
+            valid: false,
+        }
+    }
+}
+
+impl ReplayWindow8192 {
     fn clear(&mut self) {
         self.max_seq = 0;
         self.bitmap.fill(0);
         self.valid = false;
     }
 
-    fn test_bit(&self, idx: usize) -> bool {
-        let byte = idx / 8;
-        let bit = idx % 8;
-        (self.bitmap[byte] >> bit) & 1 == 1
+    fn bit_index(seq: u64) -> usize {
+        (seq & (REPLAY_WINDOW_PACKETS as u64 - 1)) as usize
     }
 
-    fn set_bit(&mut self, idx: usize) {
-        let byte = idx / 8;
-        let bit = idx % 8;
-        self.bitmap[byte] |= 1u8 << bit;
+    fn test_bit(&self, seq: u64) -> bool {
+        let idx = Self::bit_index(seq);
+        self.bitmap[idx / 64] & (1u64 << (idx % 64)) != 0
     }
 
-    fn shift_right(&mut self, shift: usize) {
-        if shift == 0 {
-            return;
-        }
-        let total_bits = 256usize;
-        if shift >= total_bits {
+    fn set_bit(&mut self, seq: u64) {
+        let idx = Self::bit_index(seq);
+        self.bitmap[idx / 64] |= 1u64 << (idx % 64);
+    }
+
+    fn advance(&mut self, seq: u64) {
+        let distance = seq - self.max_seq;
+        if distance >= REPLAY_WINDOW_PACKETS as u64 {
             self.bitmap.fill(0);
             return;
         }
 
-        let byte_shift = shift / 8;
-        let bit_shift = shift % 8;
-
-        if byte_shift > 0 {
-            for i in (0..self.bitmap.len()).rev() {
-                self.bitmap[i] = if i >= byte_shift {
-                    self.bitmap[i - byte_shift]
-                } else {
-                    0
-                };
-            }
-        }
-
-        if bit_shift > 0 {
-            let mut carry = 0u8;
-            for b in self.bitmap.iter_mut() {
-                let new_carry = *b >> (8 - bit_shift);
-                *b = (*b << bit_shift) | carry;
-                carry = new_carry;
-            }
+        // Reuse only the positions that have left the window. In-order packets
+        // clear one bit instead of shifting the entire bitmap.
+        let mut idx = Self::bit_index(self.max_seq + 1);
+        let mut remaining = distance as usize;
+        while remaining != 0 {
+            let bit = idx % 64;
+            let count = remaining.min(64 - bit);
+            let mask = (u64::MAX >> (64 - count)) << bit;
+            self.bitmap[idx / 64] &= !mask;
+            idx = (idx + count) & (REPLAY_WINDOW_PACKETS - 1);
+            remaining -= count;
         }
     }
 
     fn accept(&mut self, seq: u64) -> bool {
+        if !self.can_accept(seq) {
+            return false;
+        }
+
         if !self.valid {
             self.valid = true;
             self.max_seq = seq;
-            self.set_bit(0);
-            return true;
-        }
-
-        if seq > self.max_seq {
-            let shift = (seq - self.max_seq) as usize;
-            self.shift_right(shift);
+        } else if seq > self.max_seq {
+            self.advance(seq);
             self.max_seq = seq;
-            self.set_bit(0);
-            return true;
         }
-
-        let delta = (self.max_seq - seq) as usize;
-        if delta >= 256 {
-            return false;
-        }
-        if self.test_bit(delta) {
-            return false;
-        }
-        self.set_bit(delta);
+        self.set_bit(seq);
         true
     }
 
@@ -155,15 +146,14 @@ impl ReplayWindow256 {
             return true;
         }
 
-        let delta = (self.max_seq - seq) as usize;
-        delta < 256 && !self.test_bit(delta)
+        self.max_seq - seq < REPLAY_WINDOW_PACKETS as u64 && !self.test_bit(seq)
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default)]
 struct EpochRxSlot {
     epoch: u32,
-    window: ReplayWindow256,
+    window: ReplayWindow8192,
     last_rx_ms: u64,
     valid: bool,
 }
@@ -177,7 +167,7 @@ impl EpochRxSlot {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default)]
 struct SyncRxGrace {
     slots: [[EpochRxSlot; 2]; 2],
     expires_at_ms: u64,
@@ -186,13 +176,17 @@ struct SyncRxGrace {
 
 impl SyncRxGrace {
     fn clear(&mut self) {
-        self.slots = [[EpochRxSlot::default(), EpochRxSlot::default()]; 2];
+        for slots in &mut self.slots {
+            for slot in slots {
+                slot.clear();
+            }
+        }
         self.expires_at_ms = 0;
         self.valid = false;
     }
 
-    fn refresh(&mut self, slots: [[EpochRxSlot; 2]; 2], expires_at_ms: u64) {
-        self.slots = slots;
+    fn refresh(&mut self, slots: &mut [[EpochRxSlot; 2]; 2], expires_at_ms: u64) {
+        std::mem::swap(&mut self.slots, slots);
         self.expires_at_ms = expires_at_ms;
         self.valid = true;
     }
@@ -223,6 +217,7 @@ pub struct SecureDatagramSession {
 
     invalidated: AtomicBool,
     decrypt_fail_count: AtomicU32,
+    replay_rejections: AtomicU64,
 }
 
 impl std::fmt::Debug for SecureDatagramSession {
@@ -286,6 +281,7 @@ impl SecureDatagramSession {
             recv_cipher_algorithm,
             invalidated: AtomicBool::new(false),
             decrypt_fail_count: AtomicU32::new(0),
+            replay_rejections: AtomicU64::new(0),
         }
     }
 
@@ -299,6 +295,11 @@ impl SecureDatagramSession {
 
     pub fn session_generation(&self) -> u32 {
         self.session_generation.load(Ordering::Relaxed)
+    }
+
+    /// Lifetime total across every connection using this secure session.
+    pub fn replay_rejections(&self) -> u64 {
+        self.replay_rejections.load(Ordering::Relaxed)
     }
 
     pub fn root_key(&self) -> [u8; 32] {
@@ -316,11 +317,11 @@ impl SecureDatagramSession {
         let rx = self.rx_slots.lock().unwrap();
         let mut max_epoch = send_epoch;
         for dir in 0..2 {
-            let cur = rx[dir][0];
+            let cur = &rx[dir][0];
             if cur.valid {
                 max_epoch = max_epoch.max(cur.epoch);
             }
-            let prev = rx[dir][1];
+            let prev = &rx[dir][1];
             if prev.valid {
                 max_epoch = max_epoch.max(prev.epoch);
             }
@@ -369,7 +370,7 @@ impl SecureDatagramSession {
             let mut sync_rx_grace = self.sync_rx_grace.lock().unwrap();
             if can_preserve_rx_grace {
                 let expires_at_ms = now_ms().saturating_add(Self::SYNC_RX_GRACE_AFTER_MS);
-                sync_rx_grace.refresh(*rx, expires_at_ms);
+                sync_rx_grace.refresh(&mut rx, expires_at_ms);
                 self.sync_rx_grace_expires_at_ms
                     .store(expires_at_ms, Ordering::Relaxed);
             } else {
@@ -642,12 +643,9 @@ impl SecureDatagramSession {
             accepted
         } else {
             if !rx[dir_idx][0].valid {
-                rx[dir_idx][0] = EpochRxSlot {
-                    epoch,
-                    window: ReplayWindow256::default(),
-                    last_rx_ms: now_ms,
-                    valid: true,
-                };
+                rx[dir_idx][0].epoch = epoch;
+                rx[dir_idx][0].last_rx_ms = now_ms;
+                rx[dir_idx][0].valid = true;
             }
 
             if rx[dir_idx][0].valid && epoch == rx[dir_idx][0].epoch {
@@ -669,13 +667,11 @@ impl SecureDatagramSession {
                 if epoch > max_allowed_epoch {
                     false
                 } else {
-                    rx[dir_idx][1] = rx[dir_idx][0];
-                    rx[dir_idx][0] = EpochRxSlot {
-                        epoch,
-                        window: ReplayWindow256::default(),
-                        last_rx_ms: now_ms,
-                        valid: true,
-                    };
+                    rx[dir_idx].swap(0, 1);
+                    rx[dir_idx][0].window.clear();
+                    rx[dir_idx][0].epoch = epoch;
+                    rx[dir_idx][0].last_rx_ms = now_ms;
+                    rx[dir_idx][0].valid = true;
                     rx[dir_idx][0].window.accept(seq)
                 }
             } else {
@@ -720,6 +716,7 @@ impl SecureDatagramSession {
 
         let now_ms = now_ms();
         if !self.precheck_replay(epoch, seq, dir, now_ms) {
+            self.replay_rejections.fetch_add(1, Ordering::Relaxed);
             return Err(anyhow!("replay rejected"));
         }
 
@@ -738,6 +735,7 @@ impl SecureDatagramSession {
         self.decrypt_fail_count.store(0, Ordering::Relaxed);
 
         if !self.commit_replay(epoch, seq, dir, now_ms) {
+            self.replay_rejections.fetch_add(1, Ordering::Relaxed);
             return Err(anyhow!("replay rejected"));
         }
 
@@ -900,7 +898,7 @@ mod tests {
 
         let mut poisoned_nonce = [0u8; StandardAeadTail::NONCE_SIZE];
         poisoned_nonce[..4].copy_from_slice(&0u32.to_be_bytes());
-        poisoned_nonce[4..].copy_from_slice(&500u64.to_be_bytes());
+        poisoned_nonce[4..].copy_from_slice(&16_384u64.to_be_bytes());
 
         let payload = forged.mut_payload();
         let nonce_offset = payload.len() - StandardAeadTail::NONCE_SIZE;
@@ -925,8 +923,8 @@ mod tests {
     }
 
     #[test]
-    fn replay_window_shift_preserves_bits() {
-        let mut w = ReplayWindow256::default();
+    fn replay_window_advance_preserves_duplicates() {
+        let mut w = ReplayWindow8192::default();
         for i in 0..10u64 {
             assert!(w.accept(i), "seq {i} should be accepted");
         }
@@ -941,7 +939,7 @@ mod tests {
 
     #[test]
     fn replay_window_out_of_order_within_window() {
-        let mut w = ReplayWindow256::default();
+        let mut w = ReplayWindow8192::default();
         for i in (0..=20u64).step_by(2) {
             assert!(w.accept(i), "seq {i} should be accepted");
         }
@@ -953,90 +951,339 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sync_root_key_allows_any_epoch_from_remote() {
-        let s = SecureDatagramSession::new(
-            SecureDatagramSession::new_root_key(),
+    fn replay_session(initial_epoch: u32) -> SecureDatagramSession {
+        SecureDatagramSession::new(
+            [7; 32],
             1,
-            0,
+            initial_epoch,
             "aes-256-gcm".to_string(),
             "aes-256-gcm".to_string(),
-        );
-
-        let root_key = s.root_key();
-        let now = now_ms();
-        assert!(s.check_replay_for_test(0, 0, SecureDatagramDirection::AToB, now));
-        assert!(s.check_replay_for_test(0, 1, SecureDatagramDirection::AToB, now));
-
-        s.sync_root_key(root_key, 2, 2, true);
-
-        assert!(s.check_replay_for_test(0, 10, SecureDatagramDirection::AToB, now + 1));
+        )
     }
 
     #[test]
-    fn sync_root_key_keeps_previous_epochs_during_grace_window() {
-        let s = SecureDatagramSession::new(
-            SecureDatagramSession::new_root_key(),
-            1,
-            0,
-            "aes-256-gcm".to_string(),
-            "aes-256-gcm".to_string(),
-        );
+    fn replay_window_accepts_late_packets_through_8191() {
+        let mut w = ReplayWindow8192::default();
+        assert!(w.accept(8192));
 
-        let root_key = s.root_key();
-        let now = now_ms();
-        assert!(s.check_replay_for_test(0, 0, SecureDatagramDirection::AToB, now));
-        assert!(s.check_replay_for_test(1, 0, SecureDatagramDirection::AToB, now + 1));
-
-        s.sync_root_key(root_key, 2, 2, true);
-
-        assert!(s.check_replay_for_test(2, 0, SecureDatagramDirection::AToB, now + 2));
-        assert!(s.check_replay_for_test(1, 1, SecureDatagramDirection::AToB, now + 3));
-        assert!(s.check_replay_for_test(0, 1, SecureDatagramDirection::AToB, now + 4));
+        // 2000 packets also covers 100k PPS over a 20ms recovery interval.
+        for distance in [1, 255, 256, 257, 2000, 8191] {
+            let seq = 8192 - distance;
+            assert!(w.can_accept(seq));
+            assert!(w.can_accept(seq), "prechecks must not consume seq {seq}");
+            assert!(w.accept(seq));
+            assert!(!w.can_accept(seq));
+            assert!(!w.accept(seq));
+        }
+        assert!(!w.can_accept(0));
+        assert!(!w.accept(0));
+        assert!(!w.accept(8192));
     }
 
     #[test]
-    fn sync_root_key_expires_previous_epochs_after_grace_window() {
-        let s = SecureDatagramSession::new(
-            SecureDatagramSession::new_root_key(),
+    fn replay_window_jumps_clear_only_reused_positions() {
+        for advance in [
             1,
-            0,
-            "aes-256-gcm".to_string(),
-            "aes-256-gcm".to_string(),
-        );
+            63,
+            64,
+            65,
+            255,
+            256,
+            257,
+            4096,
+            8191,
+            8192,
+            8193,
+            1u64 << 32,
+            (1u64 << 32) + 65,
+        ] {
+            let mut w = ReplayWindow8192::default();
+            let previous_max = 8192 + 61;
+            let first = previous_max - 8191;
+            for seq in (first..=previous_max).step_by(2) {
+                assert!(w.accept(seq));
+            }
+            assert!(w.accept(previous_max));
 
-        let root_key = s.root_key();
-        let now = now_ms();
-        assert!(s.check_replay_for_test(0, 0, SecureDatagramDirection::AToB, now));
-        assert!(s.check_replay_for_test(1, 0, SecureDatagramDirection::AToB, now + 1));
-
-        s.sync_root_key(root_key, 2, 2, true);
-        assert!(s.check_replay_for_test(2, 0, SecureDatagramDirection::AToB, now + 2));
-
-        assert!(!s.check_replay_for_test(
-            0,
-            1,
-            SecureDatagramDirection::AToB,
-            now + SecureDatagramSession::SYNC_RX_GRACE_AFTER_MS + 3
-        ));
+            let next = previous_max + advance;
+            assert!(w.accept(next));
+            for seq in next - 8191..next {
+                let was_seen =
+                    seq <= previous_max && (seq == previous_max || (seq - first) % 2 == 0);
+                assert_eq!(w.can_accept(seq), !was_seen, "advance {advance}, seq {seq}");
+                assert_eq!(w.accept(seq), !was_seen, "advance {advance}, seq {seq}");
+                assert!(!w.accept(seq));
+            }
+            assert!(!w.accept(next));
+            assert!(!w.can_accept(next - 8192));
+            assert!(!w.accept(next - 8192));
+        }
     }
 
     #[test]
-    fn sync_root_key_does_not_preserve_previous_epochs_when_root_key_changes() {
-        let s = SecureDatagramSession::new(
-            SecureDatagramSession::new_root_key(),
-            1,
-            0,
-            "aes-256-gcm".to_string(),
-            "aes-256-gcm".to_string(),
-        );
+    fn replay_window_retains_duplicates_across_repeated_wraps() {
+        let mut w = ReplayWindow8192::default();
+        for seq in 0..3 * 8192u64 {
+            assert!(w.accept(seq), "seq {seq} should reuse an expired ring bit");
+            assert!(!w.accept(seq));
+            if seq >= 8192 {
+                assert!(!w.accept(seq - 8191));
+                assert!(!w.can_accept(seq - 8192));
+            }
+        }
+    }
 
+    #[test]
+    fn replay_window_handles_sequence_limits_and_clear() {
+        let mut w = ReplayWindow8192::default();
+        assert!(w.accept(u64::MAX - 8192));
+        assert!(w.accept(u64::MAX));
+        assert!(w.accept(u64::MAX - 8191));
+        assert!(!w.accept(u64::MAX - 8191));
+        assert!(!w.can_accept(u64::MAX - 8192));
+        assert!(!w.accept(u64::MAX - 8192));
+        assert!(!w.can_accept(0));
+        assert!(!w.accept(0));
+        assert!(!w.accept(u64::MAX));
+
+        w.clear();
+        assert!(w.accept(u64::MAX - 2));
+        assert!(w.accept(u64::MAX - 1));
+        assert!(w.accept(u64::MAX));
+        assert!(!w.accept(u64::MAX - 2));
+
+        w.clear();
+        assert!(w.can_accept(0));
+        assert!(w.accept(0));
+        assert!(!w.accept(0));
+        assert!(w.accept(u64::MAX));
+        assert!(w.accept(u64::MAX - 1));
+    }
+
+    #[test]
+    fn replay_commit_rechecks_duplicate_and_advanced_window() {
+        let s = replay_session(0);
+        let dir = SecureDatagramDirection::AToB;
         let now = now_ms();
-        assert!(s.check_replay_for_test(0, 0, SecureDatagramDirection::AToB, now));
-        assert!(s.check_replay_for_test(1, 0, SecureDatagramDirection::AToB, now + 1));
+        assert!(s.precheck_replay(0, 8192, dir, now));
+        assert!(s.precheck_replay(0, 8192, dir, now));
+        assert!(s.commit_replay(0, 8192, dir, now));
+        assert!(!s.commit_replay(0, 8192, dir, now));
 
-        s.sync_root_key(SecureDatagramSession::new_root_key(), 2, 2, true);
-        assert!(s.check_replay_for_test(2, 0, SecureDatagramDirection::AToB, now + 2));
-        assert!(!s.check_replay_for_test(1, 1, SecureDatagramDirection::AToB, now + 3));
+        assert!(s.precheck_replay(0, 1, dir, now));
+        assert!(s.check_replay_for_test(0, 8193, dir, now));
+        assert!(!s.commit_replay(0, 1, dir, now));
+        assert!(s.check_replay_for_test(0, 2, dir, now));
+    }
+
+    #[test]
+    fn replay_epoch_rotation_retains_direction_specific_windows() {
+        let s = replay_session(0);
+        let now = now_ms();
+        for dir in [SecureDatagramDirection::AToB, SecureDatagramDirection::BToA] {
+            assert!(s.check_replay_for_test(0, 8192, dir, now));
+            assert!(s.check_replay_for_test(0, 7936, dir, now));
+            assert!(s.check_replay_for_test(1, 8192, dir, now));
+            assert!(!s.check_replay_for_test(0, 8192, dir, now));
+            assert!(!s.check_replay_for_test(0, 7936, dir, now));
+            assert!(s.check_replay_for_test(0, 1, dir, now));
+            assert!(!s.check_replay_for_test(0, 0, dir, now));
+            assert!(s.check_replay_for_test(1, 1, dir, now));
+            assert!(!s.check_replay_for_test(1, 1, dir, now));
+
+            assert!(s.check_replay_for_test(2, 8192, dir, now));
+            assert!(!s.check_replay_for_test(0, 2, dir, now));
+            assert!(s.check_replay_for_test(1, 2, dir, now));
+            assert!(!s.check_replay_for_test(1, 1, dir, now));
+        }
+        assert_eq!(s.next_sync_epoch(), 3);
+    }
+
+    #[test]
+    fn sync_grace_preserves_all_windows_and_expires_at_deadline() {
+        let s = replay_session(0);
+        let now = now_ms();
+        for dir in [SecureDatagramDirection::AToB, SecureDatagramDirection::BToA] {
+            for epoch in [0, 1] {
+                assert!(s.check_replay_for_test(epoch, 8192, dir, now));
+                assert!(s.check_replay_for_test(epoch, 7936, dir, now));
+            }
+        }
+
+        s.sync_root_key(s.root_key(), 2, 2, true);
+        let expires = s.sync_rx_grace_expires_at_ms.load(Ordering::Relaxed);
+        for dir in [SecureDatagramDirection::AToB, SecureDatagramDirection::BToA] {
+            for epoch in [2, 3] {
+                assert!(s.check_replay_for_test(epoch, 8192, dir, now));
+            }
+            for epoch in [0, 1, 2, 3] {
+                assert!(!s.check_replay_for_test(epoch, 8192, dir, now));
+                assert!(s.check_replay_for_test(epoch, 1, dir, now));
+                assert!(!s.check_replay_for_test(epoch, 1, dir, now));
+                assert!(!s.check_replay_for_test(epoch, 0, dir, now));
+            }
+            for epoch in [0, 1] {
+                assert!(!s.check_replay_for_test(epoch, 7936, dir, now));
+                assert!(s.check_replay_for_test(epoch, 7935, dir, now));
+                assert!(s.check_replay_for_test(epoch, 2, dir, expires - 1));
+            }
+        }
+        for dir in [SecureDatagramDirection::AToB, SecureDatagramDirection::BToA] {
+            for epoch in [0, 1] {
+                assert!(!s.check_replay_for_test(epoch, 3, dir, expires));
+            }
+            for epoch in [2, 3] {
+                assert!(s.check_replay_for_test(epoch, 3, dir, expires));
+                assert!(!s.check_replay_for_test(epoch, 1, dir, expires));
+            }
+        }
+    }
+
+    #[test]
+    fn sync_discards_old_windows_without_grace_or_on_key_change() {
+        for (root_key, preserve_previous_epochs) in [([7; 32], false), ([9; 32], true)] {
+            let s = replay_session(0);
+            let now = now_ms();
+            for dir in [SecureDatagramDirection::AToB, SecureDatagramDirection::BToA] {
+                assert!(s.check_replay_for_test(0, 8192, dir, now));
+                assert!(s.check_replay_for_test(1, 8192, dir, now));
+            }
+            s.sync_root_key(root_key, 2, 2, preserve_previous_epochs);
+            for dir in [SecureDatagramDirection::AToB, SecureDatagramDirection::BToA] {
+                assert!(s.check_replay_for_test(2, 8192, dir, now));
+                assert!(s.check_replay_for_test(2, 1, dir, now));
+                assert!(!s.check_replay_for_test(0, 1, dir, now));
+                assert!(!s.check_replay_for_test(1, 1, dir, now));
+            }
+        }
+    }
+
+    #[test]
+    fn replay_idle_eviction_does_not_reset_active_epoch() {
+        let s = replay_session(0);
+        let dir = SecureDatagramDirection::AToB;
+        let now = now_ms();
+        assert!(s.check_replay_for_test(0, 8192, dir, now));
+        assert!(s.check_replay_for_test(1, 8192, dir, now + 1));
+        let deadline = now + SecureDatagramSession::EVICT_IDLE_AFTER_MS;
+        assert!(s.precheck_replay(0, 1, dir, deadline));
+        assert!(s.check_replay_for_test(1, 8193, dir, deadline));
+        assert!(!s.check_replay_for_test(0, 1, dir, deadline + 1));
+        assert!(!s.check_replay_for_test(1, 8192, dir, deadline + 1));
+        assert!(s.check_replay_for_test(1, 2, dir, deadline + 1));
+    }
+
+    #[cfg(any(
+        feature = "aes-gcm",
+        feature = "openssl-crypto",
+        feature = "ring-crypto"
+    ))]
+    mod encrypted_replay {
+        use super::*;
+        use crate::packet::PacketType;
+
+        fn packet(sender: &SecureDatagramSession, seq: u64) -> ZCPacket {
+            let dir = SecureDatagramDirection::AToB;
+            sender.send_seq[dir.idx()].store(seq, Ordering::Relaxed);
+            let mut packet = ZCPacket::new_with_payload(b"delayed packet");
+            packet.fill_peer_manager_hdr(10, 20, PacketType::Data as u8);
+            sender.encrypt_payload(dir, &mut packet).unwrap();
+            packet
+        }
+
+        #[test]
+        fn delayed_ciphertext_is_authenticated_and_delivered_once_across_paths() {
+            let sender = replay_session(0);
+            let receiver = Arc::new(replay_session(0));
+            let other_path = receiver.clone();
+            let dir = SecureDatagramDirection::AToB;
+            let mut too_old = packet(&sender, 0);
+            let mut at_edge = packet(&sender, 1);
+            let mut duplicate = at_edge.clone();
+            let mut delayed = packet(&sender, 8192 - 2000);
+            let mut forged = delayed.clone();
+            forged.mut_payload()[0] ^= 1;
+            let mut beyond_old_window = packet(&sender, 8192 - 256);
+            let mut latest = packet(&sender, 8192);
+            receiver.decrypt_payload(dir, &mut latest).unwrap();
+
+            assert!(other_path.decrypt_payload(dir, &mut too_old).is_err());
+            assert_eq!(receiver.replay_rejections(), 1);
+            other_path.decrypt_payload(dir, &mut at_edge).unwrap();
+            assert_eq!(at_edge.payload(), b"delayed packet");
+            assert!(receiver.decrypt_payload(dir, &mut duplicate).is_err());
+            assert_eq!(other_path.replay_rejections(), 2);
+            assert!(receiver.decrypt_payload(dir, &mut forged).is_err());
+            other_path.decrypt_payload(dir, &mut delayed).unwrap();
+            assert_eq!(delayed.payload(), b"delayed packet");
+            receiver
+                .decrypt_payload(dir, &mut beyond_old_window)
+                .unwrap();
+            assert_eq!(receiver.replay_rejections(), 2);
+        }
+
+        #[test]
+        fn concurrent_ciphertext_duplicates_count_one_session_rejection() {
+            let sender = replay_session(0);
+            let receiver = replay_session(0);
+            let dir = SecureDatagramDirection::AToB;
+            let mut first = packet(&sender, 0);
+            let mut second = first.clone();
+            let barrier = std::sync::Barrier::new(2);
+
+            let accepted = std::thread::scope(|scope| {
+                let a = scope.spawn(|| {
+                    barrier.wait();
+                    receiver.decrypt_payload(dir, &mut first).is_ok()
+                });
+                let b = scope.spawn(|| {
+                    barrier.wait();
+                    receiver.decrypt_payload(dir, &mut second).is_ok()
+                });
+                [a.join().unwrap(), b.join().unwrap()]
+            });
+
+            assert_ne!(accepted[0], accepted[1]);
+            assert_eq!(receiver.replay_rejections(), 1);
+        }
+
+        #[test]
+        fn delayed_ciphertext_obeys_epoch_grace_root_changes_and_invalidation() {
+            let sender = replay_session(0);
+            let receiver = replay_session(0);
+            let dir = SecureDatagramDirection::AToB;
+            let mut old_late = packet(&sender, 1);
+            let mut old_duplicate = old_late.clone();
+            let mut old_latest = packet(&sender, 8192);
+            receiver.decrypt_payload(dir, &mut old_latest).unwrap();
+
+            sender.send_epoch.store(1, Ordering::Relaxed);
+            let mut previous_late = packet(&sender, 1);
+            let mut previous_latest = packet(&sender, 8192);
+            receiver.decrypt_payload(dir, &mut previous_latest).unwrap();
+            receiver.sync_root_key(receiver.root_key(), 2, 2, true);
+            sender.sync_root_key(sender.root_key(), 2, 2, false);
+            let mut current_late = packet(&sender, 1);
+            let mut current_latest = packet(&sender, 8192);
+            receiver.decrypt_payload(dir, &mut current_latest).unwrap();
+            receiver.decrypt_payload(dir, &mut old_late).unwrap();
+            receiver.decrypt_payload(dir, &mut previous_late).unwrap();
+            assert!(receiver.decrypt_payload(dir, &mut old_duplicate).is_err());
+
+            receiver.sync_root_key([9; 32], 3, 3, true);
+            sender.sync_root_key([9; 32], 3, 3, false);
+            assert!(receiver.decrypt_payload(dir, &mut current_late).is_err());
+            let mut new_packet = packet(&sender, 0);
+            receiver.decrypt_payload(dir, &mut new_packet).unwrap();
+            assert_eq!(new_packet.payload(), b"delayed packet");
+
+            let mut after_invalidation = packet(&sender, 1);
+            receiver.invalidate();
+            assert!(
+                receiver
+                    .decrypt_payload(dir, &mut after_invalidation)
+                    .is_err()
+            );
+        }
     }
 }

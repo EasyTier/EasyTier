@@ -130,3 +130,34 @@ publication workers are disabled in Console mode.
 Device deletion uses the upstream disconnect semantics: an already in-flight
 validation may register the device again. A persisted ban rejects subsequent
 validations. Deletion does not introduce device generations or session fences.
+
+## UDP FEC
+
+UDP FEC is connection-local packet erasure recovery owned by the
+`peers/conn/fec` Module. PeerConn advertises `udp-fec-v1` through its existing
+handshake features and enables sending only when both ends support it. The
+Module owns coding, recovery, duplicate windows, deadlines, bounded storage
+and its asynchronous I/O Adapter; UDP sessions remain ordinary transports.
+
+FEC protects each enabled send direction on a native UDP hop.
+The feature advertises receive support independently of the transmit switch;
+receiving remains available when local FEC sending is disabled. Frames describe
+their actual coding parameters; local send policies need not match. The
+`force_peer` option requests peer sending on that connection through existing
+handshake features. Local enablement or a peer request starts TX after the
+handshake, using the sender's validated policy and resource budget. Requests
+do not change global configuration or propagate to other connections. No independent FEC
+authentication or parameter negotiation is added. Recovered packets still
+pass through the existing business-session validation. One instance budget
+is shared by ordinary and foreign-network connections and covers FEC-owned
+capacity, not downstream queues or process RSS. Send credit and statistics
+measure acceptance by the Tunnel Sink, not successful Host socket I/O.
+Desired policy is captured when a connection starts.
+
+The unmerged v1 uses sliding-window GF256 coding over up to 64 recently sent
+packets. Source packets are delivered immediately; repair equations can recover
+losses across overlapping windows. Repairs are generated only after reserving
+their actual byte cost and alternate with queued business traffic. Credit has
+a bounded two-MTU initial burst and is replenished only by accepted sources.
+Cumulative loss feedback adjusts local redundancy below the configured ceiling;
+it is an untrusted hint and does not affect connection liveness or routing.
