@@ -11,7 +11,7 @@ pub use super::{EncryptionAlgorithm, gateway::PortForwardConfig};
 use anyhow::Context;
 #[cfg(feature = "rich-config-errors")]
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
-use optionize::Optionizable;
+use optionize::{Optionizable, PartialOptionized};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::{acl::Acl, common::SecureModeConfig};
@@ -909,15 +909,7 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn patch_flags(&self, flags: FlagsPatch) {
-        // Protobuf merge: an update overwrites exactly the fields it carries,
-        // and presence is the encoding, so a flag explicitly set to its default
-        // value is applied like any other. Optionize's merge cannot express that
-        // here, because the one flattened nullable field would have to assign
-        // unconditionally.
-        let mut config = self.config.lock().unwrap();
-        let update = prost::Message::encode_to_vec(&flags);
-        prost::Message::merge(&mut config.flags, update.as_slice())
-            .expect("decoding the bytes just encoded cannot fail");
+        self.config.lock().unwrap().flags.merge(flags);
     }
 
     fn get_exit_nodes(&self) -> Vec<IpAddr> {
@@ -1389,7 +1381,6 @@ source = "web"
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
-    use crate::proto::common::CompressionAlgoPb;
     use base64::{Engine as _, prelude::BASE64_STANDARD};
 
     #[test]
@@ -1476,6 +1467,38 @@ socket_mark = 66
         }
     }
 
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn nullable_flag_patch_preserves_omissions_and_applies_clears() {
+        let config = TomlConfig::new_from_str("[flags]\nsocket_mark = 7").unwrap();
+        config.patch_flags(FlagsPatch {
+            latency_first: Some(false),
+            ..Default::default()
+        });
+        assert_eq!(config.get_flags_patch().socket_mark, Some(Some(7)));
+        assert_eq!(config.get_flags().socket_mark, Some(7));
+
+        config.patch_flags(FlagsPatch {
+            socket_mark: Some(None),
+            ..Default::default()
+        });
+        assert_eq!(config.get_flags_patch().socket_mark, Some(None));
+        assert_eq!(config.get_flags().socket_mark, None);
+        let dumped = config.dump();
+        assert!(!dumped.contains("socket_mark"));
+        let restored = TomlConfig::new_from_str(&dumped).unwrap();
+        assert_eq!(restored.get_flags().socket_mark, None);
+        assert_eq!(restored.get_flags_patch().latency_first, Some(false));
+
+        restored.patch_flags(FlagsPatch {
+            socket_mark: Some(Some(0)),
+            ..Default::default()
+        });
+        let restored = TomlConfig::new_from_str(&restored.dump()).unwrap();
+        assert_eq!(restored.get_flags_patch().socket_mark, Some(Some(0)));
+        assert_eq!(restored.get_flags().socket_mark, Some(0));
+    }
+
     #[test]
     fn flags_accept_protobuf_aliases_and_numbers_without_default_collisions() {
         let config = TomlConfig::new_from_str(
@@ -1492,7 +1515,7 @@ socketMark = "0"
         assert!(!flags.enable_encryption);
         assert_eq!(flags.mtu, 1420);
         assert_eq!(flags.foreign_relay_bps_limit, u64::MAX);
-        assert_eq!(flags.data_compress_algo, CompressionAlgoPb::Zstd as i32);
+        assert_eq!(flags.compression_algorithm, "Zstd");
         assert_eq!(flags.socket_mark, Some(0));
         for fields in [
             "enableEncryption = true\nenable_encryption = false",
@@ -1538,7 +1561,7 @@ socketMark = "0"
         flags.mtu = 0;
         flags.foreign_relay_bps_limit = u64::MAX - 1;
         flags.instance_recv_bps_limit = u64::MAX - 2;
-        flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+        flags.compression_algorithm = "zstd".to_owned();
         flags.socket_mark = Some(0);
         cfg.set_flags(flags);
 
@@ -1555,7 +1578,8 @@ socketMark = "0"
         assert!(dumped.contains("mtu = 0"));
         assert!(dumped.contains("foreign_relay_bps_limit = \"18446744073709551614\""));
         assert!(dumped.contains("instance_recv_bps_limit = \"18446744073709551613\""));
-        assert!(dumped.contains("data_compress_algo = \"Zstd\""));
+        assert!(dumped.contains("compression_algorithm = \"zstd\""));
+        assert!(!dumped.contains("data_compress_algo"));
         assert!(dumped.contains("socket_mark = 0"));
 
         let reloaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
@@ -1572,10 +1596,7 @@ socketMark = "0"
         assert_eq!(reloaded_flags.mtu, 0);
         assert_eq!(reloaded_flags.foreign_relay_bps_limit, u64::MAX - 1);
         assert_eq!(reloaded_flags.instance_recv_bps_limit, u64::MAX - 2);
-        assert_eq!(
-            reloaded_flags.data_compress_algo,
-            i32::from(CompressionAlgoPb::Zstd)
-        );
+        assert_eq!(reloaded_flags.compression_algorithm, "zstd");
         assert_eq!(reloaded_flags.socket_mark, Some(0));
     }
 

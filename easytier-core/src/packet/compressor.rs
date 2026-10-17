@@ -1,6 +1,6 @@
 use zerocopy::{AsBytes as _, FromBytes as _};
 
-use super::{COMPRESSOR_TAIL_SIZE, CompressorAlgo, CompressorTail, ZCPacket};
+use super::{COMPRESSOR_TAIL_SIZE, CompressionAlgorithm, CompressorTail, ZCPacket};
 
 mod zstd;
 
@@ -11,7 +11,7 @@ pub trait Compressor {
     async fn compress(
         &self,
         packet: &mut ZCPacket,
-        compress_algo: CompressorAlgo,
+        compression_algorithm: CompressionAlgorithm,
     ) -> Result<(), Error>;
     async fn decompress(&self, packet: &mut ZCPacket) -> Result<(), Error>;
 }
@@ -32,22 +32,22 @@ impl DefaultCompressor {
     pub async fn compress_raw(
         &self,
         data: &[u8],
-        compress_algo: CompressorAlgo,
+        compression_algorithm: CompressionAlgorithm,
     ) -> Result<Vec<u8>, Error> {
-        match compress_algo {
-            CompressorAlgo::ZstdDefault => zstd::compress(data, compress_algo),
-            CompressorAlgo::None => Ok(data.to_vec()),
+        match compression_algorithm {
+            CompressionAlgorithm::Zstd => zstd::compress(data, compression_algorithm),
+            CompressionAlgorithm::None => Ok(data.to_vec()),
         }
     }
 
     pub async fn decompress_raw(
         &self,
         data: &[u8],
-        compress_algo: CompressorAlgo,
+        compression_algorithm: CompressionAlgorithm,
     ) -> Result<Vec<u8>, Error> {
-        match compress_algo {
-            CompressorAlgo::ZstdDefault => zstd::decompress(data, compress_algo),
-            CompressorAlgo::None => Ok(data.to_vec()),
+        match compression_algorithm {
+            CompressionAlgorithm::Zstd => zstd::decompress(data, compression_algorithm),
+            CompressionAlgorithm::None => Ok(data.to_vec()),
         }
     }
 }
@@ -57,9 +57,9 @@ impl Compressor for DefaultCompressor {
     async fn compress(
         &self,
         zc_packet: &mut ZCPacket,
-        compress_algo: CompressorAlgo,
+        compression_algorithm: CompressionAlgorithm,
     ) -> Result<(), Error> {
-        if matches!(compress_algo, CompressorAlgo::None) {
+        if matches!(compression_algorithm, CompressionAlgorithm::None) {
             return Ok(());
         }
 
@@ -68,9 +68,9 @@ impl Compressor for DefaultCompressor {
             return Ok(());
         }
 
-        let tail = CompressorTail::new(compress_algo);
+        let tail = CompressorTail::new(compression_algorithm);
         let buf = self
-            .compress_raw(zc_packet.payload(), compress_algo)
+            .compress_raw(zc_packet.payload(), compression_algorithm)
             .await?;
 
         if buf.len() + COMPRESSOR_TAIL_SIZE > pm_header.len.get() as usize {
@@ -161,7 +161,7 @@ pub mod tests {
         );
 
         compressor
-            .compress(&mut packet, CompressorAlgo::ZstdDefault)
+            .compress(&mut packet, CompressionAlgorithm::Zstd)
             .await
             .unwrap();
         println!(
@@ -187,7 +187,7 @@ pub mod tests {
 
         // short text can't be compressed
         compressor
-            .compress(&mut packet, CompressorAlgo::ZstdDefault)
+            .compress(&mut packet, CompressionAlgorithm::Zstd)
             .await
             .unwrap();
         assert!(!packet.peer_manager_header().unwrap().is_compressed());
@@ -201,13 +201,13 @@ pub mod tests {
     #[tokio::test]
     async fn unavailable_zstd_returns_an_explicit_error() {
         let error = DefaultCompressor::new()
-            .compress_raw(b"payload", CompressorAlgo::ZstdDefault)
+            .compress_raw(b"payload", CompressionAlgorithm::Zstd)
             .await
             .unwrap_err();
 
         assert_eq!(
             error.to_string(),
-            "compression algorithm is unavailable in this build: ZstdDefault"
+            "compression algorithm is unavailable in this build: Zstd"
         );
     }
 }

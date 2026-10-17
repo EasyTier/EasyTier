@@ -17,7 +17,7 @@ use crate::{
     },
     gateway::vpn_portal::{PortalClientConfig, PortalRuntimeConfig},
     listener::plan::ListenerRuntimeConfig,
-    packet::CompressorAlgo,
+    packet::CompressionAlgorithm,
     peers::{
         context::PeerRuntimeSnapshotInput,
         peer_manager::{PortablePeerManagerConfig, RouteAlgoType},
@@ -25,8 +25,6 @@ use crate::{
     socket::{NetNamespace, SocketContext, tcp::TcpBindOptions, udp::UdpBindOptions},
     tunnel::encrypt::algorithm_is_available,
 };
-
-use easytier_proto::common::CompressionAlgoPb;
 
 use super::{CoreConnectivityConfig, CoreConnectivityMode, CoreInstanceConfig};
 
@@ -136,12 +134,12 @@ impl CoreInstanceHostConfig {
         if !self.tcp_hole_punching_enabled {
             flags.disable_tcp_hole_punching = true;
         }
-        if CompressionAlgoPb::try_from(flags.data_compress_algo)
-            .ok()
-            .and_then(|algorithm| CompressorAlgo::try_from(algorithm).ok())
-            .is_some_and(|algorithm| !algorithm.is_available())
+        if flags
+            .compression_algorithm
+            .parse::<CompressionAlgorithm>()
+            .is_ok_and(|algorithm| !algorithm.is_available())
         {
-            flags.data_compress_algo = CompressionAlgoPb::None as i32;
+            flags.compression_algorithm = CompressionAlgorithm::None.to_string();
         }
 
         if flags
@@ -756,11 +754,14 @@ data_compress_algo = "Zstd"
         };
         assert_eq!(flags.encryption_algorithm, expected_encryption.to_string());
         assert_eq!(
-            flags.data_compress_algo,
-            if CompressorAlgo::ZstdDefault.is_available() {
-                CompressionAlgoPb::Zstd as i32
+            flags
+                .compression_algorithm
+                .parse::<CompressionAlgorithm>()
+                .unwrap(),
+            if CompressionAlgorithm::Zstd.is_available() {
+                CompressionAlgorithm::Zstd
             } else {
-                CompressionAlgoPb::None as i32
+                CompressionAlgorithm::None
             }
         );
     }

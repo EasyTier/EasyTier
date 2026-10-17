@@ -6,6 +6,7 @@ pub(crate) use hole_punch::{
     HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid, new_hole_punch_packet,
 };
 
+pub use crate::config::CompressionAlgorithm;
 use bytes::Buf;
 use bytes::Bytes;
 use bytes::BytesMut;
@@ -345,18 +346,11 @@ impl<const TAG_SIZE: usize, const NONCE_SIZE: usize> AeadTail<TAG_SIZE, NONCE_SI
 
 pub type StandardAeadTail = AeadTail<16, 12>;
 
-#[derive(AsBytes, FromZeroes, Clone, Debug, Copy, PartialEq, Hash, Eq)]
-#[repr(u8)]
-pub enum CompressorAlgo {
-    None = 0,
-    ZstdDefault = 1,
-}
-
-impl CompressorAlgo {
+impl CompressionAlgorithm {
     pub fn is_available(self) -> bool {
         match self {
             Self::None => true,
-            Self::ZstdDefault => compressor::zstd_available(),
+            Self::Zstd => compressor::zstd_available(),
         }
     }
 
@@ -369,31 +363,31 @@ impl CompressorAlgo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("invalid compression algorithm: {0:?}")]
-pub struct CompressionAlgoError(pub CompressionAlgoPb);
+pub struct CompressionAlgorithmError(pub CompressionAlgoPb);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("compression algorithm is unavailable in this build: {0:?}")]
-pub struct CompressionUnavailableError(pub CompressorAlgo);
+pub struct CompressionUnavailableError(pub CompressionAlgorithm);
 
-impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
-    type Error = CompressionAlgoError;
+impl TryFrom<CompressionAlgoPb> for CompressionAlgorithm {
+    type Error = CompressionAlgorithmError;
 
     fn try_from(value: CompressionAlgoPb) -> Result<Self, Self::Error> {
         match value {
-            CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
-            CompressionAlgoPb::None => Ok(CompressorAlgo::None),
-            _ => Err(CompressionAlgoError(value)),
+            CompressionAlgoPb::Zstd => Ok(CompressionAlgorithm::Zstd),
+            CompressionAlgoPb::None => Ok(CompressionAlgorithm::None),
+            _ => Err(CompressionAlgorithmError(value)),
         }
     }
 }
 
-impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
-    type Error = CompressionAlgoError;
+impl TryFrom<CompressionAlgorithm> for CompressionAlgoPb {
+    type Error = CompressionAlgorithmError;
 
-    fn try_from(value: CompressorAlgo) -> Result<Self, Self::Error> {
+    fn try_from(value: CompressionAlgorithm) -> Result<Self, Self::Error> {
         match value {
-            CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
-            CompressorAlgo::None => Ok(CompressionAlgoPb::None),
+            CompressionAlgorithm::Zstd => Ok(CompressionAlgoPb::Zstd),
+            CompressionAlgorithm::None => Ok(CompressionAlgoPb::None),
         }
     }
 }
@@ -406,15 +400,20 @@ pub struct CompressorTail {
 pub const COMPRESSOR_TAIL_SIZE: usize = std::mem::size_of::<CompressorTail>();
 
 impl CompressorTail {
-    pub fn get_algo(&self) -> Option<CompressorAlgo> {
+    pub fn get_algo(&self) -> Option<CompressionAlgorithm> {
         match self.algo {
-            1 => Some(CompressorAlgo::ZstdDefault),
+            1 => Some(CompressionAlgorithm::Zstd),
             _ => None,
         }
     }
 
-    pub fn new(algo: CompressorAlgo) -> Self {
-        Self { algo: algo as u8 }
+    pub fn new(algo: CompressionAlgorithm) -> Self {
+        Self {
+            algo: match algo {
+                CompressionAlgorithm::None => 0,
+                CompressionAlgorithm::Zstd => 1,
+            },
+        }
     }
 }
 
@@ -931,44 +930,46 @@ mod tests {
     #[test]
     fn converts_compression_algo_none() {
         assert_eq!(
-            CompressorAlgo::None,
-            CompressorAlgo::try_from(CompressionAlgoPb::None).unwrap()
+            CompressionAlgorithm::None,
+            CompressionAlgorithm::try_from(CompressionAlgoPb::None).unwrap()
         );
         assert_eq!(
             CompressionAlgoPb::None,
-            CompressionAlgoPb::try_from(CompressorAlgo::None).unwrap()
+            CompressionAlgoPb::try_from(CompressionAlgorithm::None).unwrap()
         );
+        assert_eq!(CompressorTail::new(CompressionAlgorithm::None).algo, 0);
     }
 
     #[test]
     fn converts_zstd_compression_algo_in_every_profile() {
         assert_eq!(
-            CompressorAlgo::ZstdDefault,
-            CompressorAlgo::try_from(CompressionAlgoPb::Zstd).unwrap()
+            CompressionAlgorithm::Zstd,
+            CompressionAlgorithm::try_from(CompressionAlgoPb::Zstd).unwrap()
         );
         assert_eq!(
             CompressionAlgoPb::Zstd,
-            CompressionAlgoPb::try_from(CompressorAlgo::ZstdDefault).unwrap()
+            CompressionAlgoPb::try_from(CompressionAlgorithm::Zstd).unwrap()
         );
         assert_eq!(
-            Some(CompressorAlgo::ZstdDefault),
+            Some(CompressionAlgorithm::Zstd),
             CompressorTail { algo: 1 }.get_algo()
         );
+        assert_eq!(CompressorTail::new(CompressionAlgorithm::Zstd).algo, 1);
     }
 
     #[cfg(not(feature = "zstd"))]
     #[test]
     fn reports_zstd_as_unavailable_without_changing_vocabulary() {
-        assert!(!CompressorAlgo::ZstdDefault.is_available());
+        assert!(!CompressionAlgorithm::Zstd.is_available());
         assert_eq!(
-            CompressorAlgo::ZstdDefault.ensure_available().unwrap_err(),
-            CompressionUnavailableError(CompressorAlgo::ZstdDefault)
+            CompressionAlgorithm::Zstd.ensure_available().unwrap_err(),
+            CompressionUnavailableError(CompressionAlgorithm::Zstd)
         );
     }
 
     #[cfg(feature = "zstd")]
     #[test]
     fn reports_zstd_as_available_when_compiled() {
-        assert!(CompressorAlgo::ZstdDefault.is_available());
+        assert!(CompressionAlgorithm::Zstd.is_available());
     }
 }
