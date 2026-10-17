@@ -1399,6 +1399,7 @@ impl PeerConn {
         });
     }
 
+    #[easytier_profiling::instrument("PeerConn::send_msg")]
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         Ok(self.sink.send(msg).await?)
     }
