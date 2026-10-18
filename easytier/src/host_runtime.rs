@@ -215,6 +215,13 @@ impl NativeHostRuntime {
         Ok(self.default_namespace.get().unwrap().clone())
     }
 
+    pub(crate) fn is_process_default(&self, namespace: &PlatformNamespace) -> io::Result<bool> {
+        self.default_platform
+            .as_ref()
+            .map(|default| default.id() == namespace.id())
+            .map_err(|error| io::Error::new(error.kind(), error.to_string()))
+    }
+
     /// Resolve only an already-interned runtime identity. Never reopen a name.
     pub(crate) fn namespace(&self, context: &SocketContext) -> io::Result<Arc<NetNS>> {
         if self.closing.load(Ordering::Acquire) {
@@ -271,6 +278,7 @@ impl ConnectorRuntime for NetNS {
         &self,
         url: &url::Url,
     ) -> anyhow::Result<ConnectedByteStream<RuntimeTcpSocket>> {
+        self.ensure_open()?;
         #[cfg(unix)]
         if url.scheme() == "unix" {
             let socket = self.run(tokio::net::UnixSocket::new_stream)??;
@@ -295,6 +303,7 @@ impl ConnectorRuntime for NetNS {
         remote_addr: SocketAddr,
         context: SocketContext,
     ) -> anyhow::Result<SocketAddr> {
+        self.validate_context(&context)?;
         let bind_addr = match remote_addr {
             SocketAddr::V4(_) => {
                 SocketAddr::V4(SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, 0))
@@ -355,6 +364,7 @@ impl VirtualTcpListenerFactory for NetNS {
     type Listener = RuntimeTcpListener;
 
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
+        self.validate_context(&options.bind.context)?;
         Ok(Arc::new(
             crate::socket::tcp::bind_tcp_listener_in_namespace(options, self.platform()).await?,
         ))
@@ -512,6 +522,54 @@ mod tests {
         assert!(host.shared_executor().is_err());
         assert!(host.namespace(&SocketContext::default()).is_err());
         host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closed_domains_reject_new_native_io_through_every_bound_factory() {
+        let namespace = NetNS::from_platform(PlatformNamespace::current().unwrap());
+        namespace.request_service_shutdown();
+        let closing =
+            |error: anyhow::Error| assert!(error.to_string().contains("closing"), "{error:#}");
+        closing(
+            namespace
+                .bind_tcp(TcpListenOptions::direct_connect(
+                    "127.0.0.1:0".parse().unwrap(),
+                ))
+                .await
+                .err()
+                .unwrap(),
+        );
+        closing(
+            namespace
+                .bind_udp(UdpBindOptions::default())
+                .await
+                .err()
+                .unwrap(),
+        );
+        closing(
+            namespace
+                .local_addr_for_remote("127.0.0.1:9".parse().unwrap(), SocketContext::default())
+                .await
+                .err()
+                .unwrap(),
+        );
+        closing(
+            namespace
+                .resolve(DnsQuery::new("127.0.0.1", SocketContext::default()))
+                .await
+                .err()
+                .unwrap(),
+        );
+        #[cfg(unix)]
+        closing(
+            namespace
+                .connect_byte_stream(
+                    &url::Url::parse("unix:///tmp/easytier-closed-domain.sock").unwrap(),
+                )
+                .await
+                .err()
+                .unwrap(),
+        );
     }
 
     #[cfg(feature = "tun")]
