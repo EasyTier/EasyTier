@@ -1800,6 +1800,213 @@ mod tests {
             .unwrap()
             .unwrap();
     }
+
+    async fn kernel_member(
+        namespace: &Arc<NetNS>,
+        run: Uuid,
+        name: &str,
+        index: u32,
+    ) -> (
+        InstanceRoutes,
+        SharedVirtualNicMember,
+        Option<DeviceLifetime>,
+        DeviceEpoch,
+    ) {
+        let controller = namespace.route_controller().unwrap();
+        let owner = controller.open_instance(run, name.into()).unwrap();
+        owner.bind_config(config()).unwrap();
+        let (_, device) = controller.device(run).unwrap();
+        let lifetime = device
+            .snapshot()
+            .selected
+            .is_none()
+            .then(|| device.attach(name.into(), index, DeviceOrigin::Borrowed));
+        let epoch = device.snapshot().selected.unwrap();
+        assert!(device.mark_ready(epoch));
+        let member = namespace
+            .nics
+            .lock()
+            .await
+            .try_create_member(
+                name.into(),
+                VirtualNicConfig::new(name.into(), 1400, namespace.clone())
+                    .with_route_device(device),
+                run,
+                Arc::new(Notify::new()),
+            )
+            .unwrap();
+        member
+            .shared_nic()
+            .lock()
+            .await
+            .attach_member_registration(run, member.registration_id())
+            .await
+            .unwrap();
+        controller.bind_member(run, &member).unwrap();
+        controller
+            .set_member_ready(run, member.registration_id(), epoch)
+            .unwrap();
+        (owner, member, lifetime, epoch)
+    }
+
+    fn kernel_dummy(namespace: &NetNS, name: &str) -> u32 {
+        for args in [
+            vec!["link", "add", name, "type", "dummy"],
+            vec!["link", "set", name, "up"],
+        ] {
+            assert!(
+                namespace
+                    .run(|| std::process::Command::new("ip").args(args).status())
+                    .unwrap()
+                    .unwrap()
+                    .success()
+            );
+        }
+        namespace
+            .run(|| nix::net::if_::if_nametoindex(name))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "run inside an isolated user+network namespace; uses dummy links, no TUN required"]
+    async fn kernel_controller_shares_minimum_metric_then_retires_both_inputs() {
+        let namespace = crate::common::netns::isolated_namespace_for_test().unwrap();
+        let index = kernel_dummy(&namespace, "et-claims");
+        let (a, ma, lifetime, epoch) =
+            kernel_member(&namespace, Uuid::new_v4(), "et-claims", index).await;
+        let (b, mb, reused, b_epoch) =
+            kernel_member(&namespace, Uuid::new_v4(), "et-claims", index).await;
+        assert!(reused.is_none());
+        assert_eq!(epoch, b_epoch);
+        // Shared NIC forwarding admits overlap only for its existing DNS
+        // host-route exception. Ordinary overlay destinations remain disjoint.
+        let prefix = format!("{}/32", crate::instance::dns_server::MAGIC_DNS_FAKE_IP);
+        let a_claim = a.handle().publish(extra(&prefix)).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), a_claim.wait_ready(Some(epoch)))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut spec = RouteSpec::for_tun(prefix.parse().unwrap());
+        spec.metric = 1000;
+        let b_claim = b
+            .handle()
+            .publish(RouteDemand::Additional(BTreeSet::from([spec.clone()])))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), b_claim.wait_ready(Some(epoch)))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut reader =
+            PlatformRouteBackend::new(namespace.platform(), &Handle::current()).unwrap();
+        let route = OsRoute {
+            table: 254,
+            destination: spec.destination,
+            metric: std::num::NonZeroU32::new(1000).unwrap(),
+            ifindex: index,
+            preferred_source: None,
+        };
+        let requested = BTreeSet::from([route.clone()]);
+        assert_eq!(reader.existing(&requested).await.unwrap(), requested);
+        let weak_a = Arc::downgrade(&a.inputs());
+        a.request_close();
+        tokio::time::timeout(Duration::from_secs(5), a.wait_drained())
+            .await
+            .unwrap()
+            .unwrap();
+        drop((a, a_claim, ma));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while weak_a.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(reader.existing(&requested).await.unwrap(), requested);
+        b_claim.wait_ready(Some(epoch)).await.unwrap();
+        b.request_close();
+        tokio::time::timeout(Duration::from_secs(5), b.wait_drained())
+            .await
+            .unwrap()
+            .unwrap();
+        let both_metrics = BTreeSet::from([
+            route.clone(),
+            OsRoute {
+                metric: super::super::super::METRIC_DIRECT,
+                ..route
+            },
+        ]);
+        assert!(reader.existing(&both_metrics).await.unwrap().is_empty());
+        drop((b, b_claim, mb, lifetime));
+        namespace.request_service_shutdown();
+        tokio::time::timeout(Duration::from_secs(5), namespace.wait_services_stopped())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "run inside an isolated user+network namespace; uses a dummy link, no TUN required"]
+    async fn kernel_controller_never_deletes_an_observed_identical_foreign_replacement() {
+        let namespace = crate::common::netns::isolated_namespace_for_test().unwrap();
+        let index = kernel_dummy(&namespace, "et-foreign");
+        let (owner, member, lifetime, epoch) =
+            kernel_member(&namespace, Uuid::new_v4(), "et-foreign", index).await;
+        let claim = owner.handle().publish(extra("198.18.81.0/24")).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), claim.wait_ready(Some(epoch)))
+            .await
+            .unwrap()
+            .unwrap();
+        let controller = namespace.route_controller().unwrap();
+        let route = OsRoute {
+            table: 254,
+            destination: "198.18.81.0/24".parse().unwrap(),
+            metric: super::super::super::METRIC_DIRECT,
+            ifindex: index,
+            preferred_source: None,
+        };
+        let mut foreign =
+            PlatformRouteBackend::new(namespace.platform(), &Handle::current()).unwrap();
+        let paused = controller.worker.lock().await;
+        foreign.remove(&route).await.unwrap();
+        foreign.add(&route).await.unwrap();
+        drop(paused);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let unknown = controller
+                    .worker
+                    .lock()
+                    .await
+                    .slots
+                    .get(&route.slot())
+                    .and_then(|slot| slot.effect.as_ref())
+                    .is_some_and(|effect| matches!(effect.phase, EffectPhase::Unknown { .. }));
+                if unknown {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(claim.wait_ready(Some(epoch)).now_or_never().is_none());
+        owner.request_close();
+        assert!(owner.wait_drained().now_or_never().is_none());
+        let requested = BTreeSet::from([route.clone()]);
+        assert_eq!(foreign.existing(&requested).await.unwrap(), requested);
+        foreign.remove(&route).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), owner.wait_drained())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(controller.unresolved().await.is_empty());
+        drop((owner, claim, member, lifetime));
+        namespace.request_service_shutdown();
+        tokio::time::timeout(Duration::from_secs(5), namespace.wait_services_stopped())
+            .await
+            .unwrap()
+            .unwrap();
+    }
     async fn member_with_config(
         state: &Arc<ControllerState>,
         run: Uuid,
