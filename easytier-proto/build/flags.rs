@@ -1,20 +1,22 @@
-//! Reads the `(easytier.flag)` annotations off `common.Flags` and writes them
-//! out as Rust the crate compiles in.
+//! Reads the `(easytier.flag)` annotations off `common.Flags` to configure
+//! FlagsPatch generation and write schema defaults, form keys and aliases.
 //!
 //! Each annotation carries what the core runs for a flag a configuration does
 //! not state, the name the management API spells it with, and whether a config
 //! form offers it. Nothing here is a second list: the field, its type and its
 //! presence are the schema's, and an unannotated field fails the build.
 
-use std::{
-    fmt::Write as _,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fmt::Write as _, path::Path};
 
 use anyhow::{Context as _, bail, ensure};
-use prost_reflect::{DescriptorPool, DynamicMessage, Kind, Value};
+use heck::ToLowerCamelCase as _;
+use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, Kind, Value};
 
-pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
+pub fn generate(
+    descriptor_set: &[u8],
+    config: &mut prost_build::Config,
+    out: &Path,
+) -> anyhow::Result<()> {
     let pool = DescriptorPool::decode(descriptor_set)?;
     let message = pool
         .get_message_by_name("common.Flags")
@@ -29,8 +31,19 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
         .context("the compiled schema declares no api.manage.NetworkConfig")?;
     let api_carries = |name: &str| api.get_field_by_name(name).is_some();
 
+    config
+        .type_attribute(".common.Flags", "#[optionize::optionized]")
+        .type_attribute(
+            ".common.Flags",
+            "#[optionize(name = \"{}Patch\", attrs(\
+                serde_with::serde_as, \
+                derive(Clone, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize), \
+                serde(deny_unknown_fields)))]",
+        );
+
     let mut defaults: Vec<String> = Vec::new();
     let mut form = String::new();
+    let mut owners = BTreeMap::<String, String>::new();
 
     for field in message.fields() {
         let name = field.name();
@@ -42,6 +55,52 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
         let Value::Message(meta) = options.get_extension(&extension).into_owned() else {
             bail!("easytier.flag on common.Flags.{name} is not a message");
         };
+
+        let deprecated = is_set(&meta, "deprecated");
+        ensure!(
+            deprecated
+                == matches!(
+                    options.get_field_by_name("deprecated").as_deref(),
+                    Some(Value::Bool(true))
+                ),
+            "common.Flags.{name}: the annotation says deprecated = {deprecated}, \
+             but the field says the contrary"
+        );
+
+        let names = names(&field, &meta)?;
+        // Deprecated fields can retain their wire slot while a live field
+        // accepts their old name. The old field explicitly skips configuration
+        // input in its optionize annotation.
+        if !deprecated {
+            for spelling in &names {
+                if let Some(owner) = owners.insert(spelling.clone(), name.to_owned()) {
+                    ensure!(
+                        owner == name,
+                        "flag name {spelling} refers to both {owner} and {name}"
+                    );
+                }
+            }
+        }
+
+        // Common Serde rules and aliases use the same names as the alias map.
+        // Field-specific optionize and Serde rules live in the schema.
+        let mut serde = "default, skip_serializing_if = \"Option::is_none\"".to_owned();
+        for alias in names.iter().filter(|alias| *alias != name) {
+            write!(serde, ", alias = {alias:?}")?;
+        }
+        let path = format!(".common.Flags.{name}");
+        config.field_attribute(
+            &path,
+            format!("#[optionize(attrs(.., -prost, serde({serde})))]"),
+        );
+        if let Some(Value::List(options)) = meta.get_field_by_name("optionize").as_deref() {
+            for option in options {
+                let Value::String(option) = option else {
+                    bail!("common.Flags.{name}: optionize is not text");
+                };
+                config.field_attribute(&path, format!("#[optionize({option})]"));
+            }
+        }
 
         // The value the flag runs with, written the way its type reads; JSON
         // needs quotes around text, and an optional flag that states nothing
@@ -74,18 +133,6 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
             );
         }
 
-        let deprecated = is_set(&meta, "deprecated");
-
-        ensure!(
-            deprecated
-                == matches!(
-                    options.get_field_by_name("deprecated").as_deref(),
-                    Some(Value::Bool(true))
-                ),
-            "common.Flags.{name}: the annotation says deprecated = {deprecated}, \
-             but the field says the contrary"
-        );
-
         // The schema field names a config form owns, used as TOML keys.
         //
         // Only what the API carries can be a key here: the merge drops a key
@@ -107,6 +154,12 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
         }
     }
 
+    let mut aliases = String::new();
+    for (alias, name) in owners {
+        if alias != name {
+            writeln!(aliases, "    ({alias:?}, {name:?}),")?;
+        }
+    }
     let defaults = defaults.join(",\n");
     let generated = format!(
         "\
@@ -121,12 +174,42 @@ pub const DEFAULTS: &str = r##\"{{
 /// The schema field names of flags managed by the config form.
 pub const FORM: &[&str] = &[
 {form}];
+
+/// Maps alternate input names to their canonical schema field names.
+pub static ALIASES: std::sync::LazyLock<std::collections::BTreeMap<&'static str, &'static str>> =
+    std::sync::LazyLock::new(|| std::collections::BTreeMap::from([
+{aliases}]));
 "
     );
 
-    let path = out.join("flags.rs");
-    std::fs::write(&path, generated)?;
-    Ok(path)
+    std::fs::write(out.join("flags.rs"), generated)?;
+    Ok(())
+}
+
+/// Collect each field's name, JSON name and declared aliases, including the
+/// camelCase spelling of every name. Aliases need not be protobuf fields.
+fn names(field: &FieldDescriptor, meta: &DynamicMessage) -> anyhow::Result<Vec<String>> {
+    let name = field.name();
+    let mut declared = vec![name.to_owned(), field.json_name().to_owned()];
+    if let Some(Value::List(aliases)) = meta.get_field_by_name("alias").as_deref() {
+        for alias in aliases {
+            let Value::String(alias) = alias else {
+                bail!("common.Flags.{name}: alias is not text");
+            };
+            ensure!(!alias.is_empty(), "common.Flags.{name}: alias is empty");
+            declared.push(alias.clone());
+        }
+    }
+    let mut names = Vec::new();
+    for spelling in declared
+        .iter()
+        .flat_map(|name| [name.clone(), name.to_lower_camel_case()])
+    {
+        if !names.contains(&spelling) {
+            names.push(spelling);
+        }
+    }
+    Ok(names)
 }
 
 /// A text field of the annotation, absent when the annotation leaves it out.

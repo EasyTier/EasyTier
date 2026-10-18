@@ -26,7 +26,7 @@ use crate::{
         rpc_types::{__rt::RpcClientFactory, descriptor::ServiceDescriptor, handler::Handler},
     },
     rpc::packet::{
-        BuildRpcPacketArgs, PacketMerger, accepted_compression_algo, build_rpc_packet,
+        BuildRpcPacketArgs, PacketMerger, accepted_compression_algorithm, build_rpc_packet,
         compress_packet, decompress_packet,
     },
     tunnel::{
@@ -338,7 +338,7 @@ impl Client {
                     trace_id: ctrl.trace_id(),
                     compression_info: RpcCompressionInfo {
                         algo: c_algo.into(),
-                        accepted_algo: accepted_compression_algo().into(),
+                        accepted_algo: accepted_compression_algorithm().into(),
                     },
                 });
                 let timeout_dur = std::time::Duration::from_millis(ctrl.timeout_ms() as u64);

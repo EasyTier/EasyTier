@@ -3,7 +3,10 @@
 use std::net::SocketAddr;
 
 use anyhow::Context;
-use easytier_proto::{api::manage, common::FlagsPatch};
+use easytier_proto::{
+    api::manage,
+    common::{CompressionAlgoPb, FlagsPatch},
+};
 
 #[cfg(all(
     feature = "browser-config",
@@ -12,6 +15,7 @@ use easytier_proto::{api::manage, common::FlagsPatch};
 use easytier_proto::common::Flags;
 use optionize::{Optionizable, Optionized};
 
+use crate::config::CompressionAlgorithm;
 use crate::config::{
     MappedListenerPolicy, normalize_secure_mode_config,
     toml::{
@@ -71,7 +75,7 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.p2p_only = flags.p2p_only;
     result.lazy_p2p = flags.lazy_p2p;
     result.bind_device = flags.bind_device;
-    result.socket_mark = flags.socket_mark;
+    result.socket_mark = flags.socket_mark.flatten();
     result.no_tun = flags.no_tun;
     result.enable_exit_node = flags.enable_exit_node;
     result.relay_all_peer_rpc = flags.relay_all_peer_rpc;
@@ -88,7 +92,11 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
     result.enable_magic_dns = flags.accept_dns;
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
-    result.data_compress_algo = flags.data_compress_algo;
+    result.data_compress_algo = flags
+        .compression_algorithm
+        .and_then(|name| name.parse::<CompressionAlgorithm>().ok())
+        .and_then(|algorithm| CompressionAlgoPb::try_from(algorithm).ok())
+        .map(i32::from);
     result.encryption_algorithm = flags.encryption_algorithm;
     result.instance_recv_bps_limit = flags.instance_recv_bps_limit;
     result.enable_private_mode = flags.private_mode;
@@ -170,15 +178,11 @@ pub(crate) fn merge_network_config_toml(
         .and_then(|value| value.try_into().ok())
         .unwrap_or_default();
 
-    // Normalize any camelCase aliases in original [flags] to their canonical field names
-    // so each field appears at most once in the merged table.
-    for field in Flags::flags() {
-        if let (Some(name), Some(json_name)) = (field.name.as_deref(), field.json_name.as_deref()) {
-            if name != json_name
-                && let Some(val) = merged_flags.remove(json_name)
-            {
-                merged_flags.entry(name.to_owned()).or_insert(val);
-            }
+    // Normalize all schema aliases, including camelCase, before the form
+    // replaces or removes the canonical keys it manages.
+    for (&alias, &canonical) in Flags::aliases() {
+        if let Some(value) = merged_flags.remove(alias) {
+            merged_flags.entry(canonical.to_owned()).or_insert(value);
         }
     }
 
@@ -503,7 +507,7 @@ impl NetworkConfigExt for NetworkConfig {
         cfg.patch_flags(FlagsPatch {
             dev_name: self.dev_name.clone(),
             enable_ipv6: self.disable_ipv6.map(|disabled| !disabled),
-            socket_mark: self.socket_mark,
+            socket_mark: self.socket_mark.map(Some),
             enable_encryption: self.disable_encryption.map(|disabled| !disabled),
             relay_network_whitelist: self.enable_relay_network_whitelist.map(|enabled| {
                 if enabled {
@@ -520,7 +524,16 @@ impl NetworkConfigExt for NetworkConfig {
                 .context("invalid mtu: expected a non-negative integer")?,
             private_mode: self.enable_private_mode,
             encryption_algorithm: self.encryption_algorithm.clone(),
-            data_compress_algo: self.data_compress_algo.map(|algorithm| algorithm.max(1)),
+            compression_algorithm: self
+                .data_compress_algo
+                .map(|algorithm| -> anyhow::Result<String> {
+                    Ok(CompressionAlgorithm::try_from(CompressionAlgoPb::try_from(
+                        algorithm.max(1),
+                    )?)?
+                    .to_string())
+                })
+                .transpose()
+                .context("invalid data_compress_algo")?,
             latency_first: self.latency_first,
             use_smoltcp: self.use_smoltcp,
             enable_kcp_proxy: self.enable_kcp_proxy,
@@ -682,7 +695,12 @@ impl NetworkConfigExt for NetworkConfig {
             .into_iter()
             .map(|credential| credential.downgrade())
             .collect();
-        set_network_flags(&mut result, config.get_flags_patch());
+        let flags = config.get_flags_patch();
+        if let Some(name) = &flags.compression_algorithm {
+            name.parse::<CompressionAlgorithm>()
+                .context("invalid compression_algorithm")?;
+        }
+        set_network_flags(&mut result, flags);
         result.acl = config.get_acl();
 
         Ok(result)
@@ -872,6 +890,21 @@ mod tests {
                 Some(Value::Bool(true))
             );
 
+            if name == "compression_algorithm" {
+                let mut projected = NetworkConfig::default();
+                set_network_flags(
+                    &mut projected,
+                    FlagsPatch {
+                        compression_algorithm: Some("zstd".to_owned()),
+                        ..Default::default()
+                    },
+                );
+                let projected = serde_json::to_value(projected).unwrap();
+                assert_eq!(projected[&api_field], "Zstd");
+                assert!(!negate);
+                continue;
+            }
+
             let declared = defaults[name]
                 .as_bool()
                 .unwrap_or_else(|| panic!("{name} is not a boolean flag"));
@@ -927,6 +960,23 @@ mod tests {
             .gen_config()
             .is_err()
         );
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn api_socket_mark_round_trip_preserves_omissions_and_zero() {
+        for socket_mark in [None, Some(0), Some(7)] {
+            let input = NetworkConfig {
+                socket_mark,
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            assert_eq!(config.get_flags_patch().socket_mark, socket_mark.map(Some));
+            let config = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            let output = NetworkConfig::new_from_config(&config).unwrap();
+            assert_eq!(output.socket_mark, socket_mark);
+            assert_eq!(config.get_flags_patch().socket_mark, socket_mark.map(Some));
+        }
     }
 
     #[test]
@@ -1083,6 +1133,90 @@ private_mode = false
                 );
             }
         }
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn browser_merge_replaces_and_clears_legacy_compression_names() {
+        for old in [
+            "data_compress_algo = 'Zstd'",
+            "dataCompressAlgo = 'Zstd'",
+            "compressionAlgorithm = 'zstd'",
+        ] {
+            let original = format!("[flags]\ndefault_protocol = 'udp'\n{old}\n");
+            for algorithm in [None, Some(1), Some(2)] {
+                let input = NetworkConfig {
+                    data_compress_algo: algorithm,
+                    ..standalone_config()
+                };
+                let merged = merge_network_config_toml(&original, &input).unwrap();
+                let config = TomlConfigLoader::new_from_str(&merged).unwrap();
+                assert_eq!(
+                    config.get_flags_patch().compression_algorithm.as_deref(),
+                    algorithm.map(|value| if value == 2 { "zstd" } else { "none" })
+                );
+                assert!(!merged.contains("data_compress_algo"));
+                assert!(!merged.contains("dataCompressAlgo"));
+                assert!(!merged.contains("compressionAlgorithm"));
+                assert_eq!(config.get_flags().default_protocol, "udp");
+            }
+        }
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn browser_merge_replaces_and_clears_foreign_network_whitelist_aliases() {
+        for alias in ["foreign_network_whitelist", "foreignNetworkWhitelist"] {
+            let original = format!("[flags]\n{alias} = 'old-network'\n");
+            for enabled in [None, Some(false), Some(true)] {
+                let input = NetworkConfig {
+                    enable_relay_network_whitelist: enabled,
+                    relay_network_whitelist: vec!["new-network".to_owned()],
+                    ..standalone_config()
+                };
+                let merged = merge_network_config_toml(&original, &input).unwrap();
+                let config = TomlConfigLoader::new_from_str(&merged).unwrap();
+                assert_eq!(
+                    config.get_flags_patch().relay_network_whitelist.as_deref(),
+                    enabled.map(|enabled| if enabled { "new-network" } else { "*" })
+                );
+                assert!(!merged.contains(alias));
+                assert!(!merged.contains("old-network"));
+            }
+        }
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn compression_api_round_trip_uses_the_string_config_field() {
+        for algorithm in [None, Some(0), Some(1), Some(2)] {
+            let input = NetworkConfig {
+                data_compress_algo: algorithm,
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            assert_eq!(
+                restored.get_flags_patch().compression_algorithm.as_deref(),
+                algorithm.map(|value| if value == 2 { "zstd" } else { "none" })
+            );
+            let output = NetworkConfig::new_from_config(restored).unwrap();
+            assert_eq!(
+                output.data_compress_algo,
+                algorithm.map(|value| value.max(1))
+            );
+        }
+        assert!(
+            NetworkConfig {
+                data_compress_algo: Some(99),
+                ..standalone_config()
+            }
+            .gen_config()
+            .is_err()
+        );
+        let invalid =
+            TomlConfigLoader::new_from_str("[flags]\ncompression_algorithm = 'unknown'").unwrap();
+        assert!(NetworkConfig::new_from_config(invalid).is_err());
     }
 
     #[cfg(feature = "browser-config")]
