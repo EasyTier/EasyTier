@@ -120,6 +120,10 @@ pub(crate) trait PublicIpv6SyncTrigger: Send + Sync {
 #[async_trait::async_trait]
 pub trait PublicIpv6Host: Send + Sync {
     async fn collect_reserved_public_ipv6_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr>;
+
+    /// Invalidates native address eligibility before publishing a new lease.
+    /// This synchronous hook does no I/O.
+    fn public_ipv6_lease_changing(&self, _new: Option<Ipv6Inet>) {}
 }
 
 #[async_trait::async_trait]
@@ -232,6 +236,7 @@ impl PublicIpv6Runtime for CorePublicIpv6Runtime {
     }
 
     fn public_ipv6_lease_changed(&self, old: Option<Ipv6Inet>, new: Option<Ipv6Inet>) {
+        self.host.public_ipv6_lease_changing(new);
         *self.lease.lock().unwrap() = new;
         self.events
             .emit(CoreEvent::PublicIpv6LeaseChanged { old, new });

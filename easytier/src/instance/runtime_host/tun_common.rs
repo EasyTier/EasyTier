@@ -125,6 +125,8 @@ pub(super) struct NativeDhcpHost {
     pub(super) packet_plane: Arc<CorePacketPlane>,
     #[cfg(not(mobile))]
     pub(super) shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    pub(super) routes: Option<Arc<crate::instance::route::runtime::NativeRouteContext>>,
 }
 
 impl NativeDhcpHost {
@@ -167,8 +169,10 @@ impl NativeDhcpHost {
                     self.nic.receiver(),
                     self.closed.clone(),
                     self.shared_virtual_nic_registry.clone(),
+                    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+                    self.routes.clone(),
                 )
-                .await;
+                .await?;
                 tokio::select! {
                     _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
                     result = nic.run(addresses.ipv4, addresses.ipv6) => result?,
@@ -181,6 +185,7 @@ impl NativeDhcpHost {
                         nic.ifname().await,
                         ip,
                         shared_route_backend,
+                        nic.managed_dns_routes(),
                     )
                 } else {
                     MagicDnsRuntime::default()
@@ -238,6 +243,8 @@ mod tests {
             global_ctx.clone(),
             cancel.clone(),
             TestInstance::current_shared_virtual_nic_registry(),
+            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            None,
         );
         let (_sender, receiver) = tokio::sync::mpsc::channel(1);
         runtime

@@ -19,6 +19,7 @@ pub(crate) struct NativeRouteContext {
     run: Uuid,
     name: String,
     device: Arc<DeviceState>,
+    public_address: Mutex<Option<cidr::Ipv6Inet>>,
     pub(crate) handle: RouteHandle,
 }
 
@@ -44,10 +45,32 @@ impl NativeRouteContext {
         &self,
         member: &SharedVirtualNicMember,
         epoch: DeviceEpoch,
-    ) -> anyhow::Result<DeviceEpoch> {
+        applied_public_address: Option<cidr::Ipv6Inet>,
+    ) -> anyhow::Result<Option<DeviceEpoch>> {
+        // Serialize eligibility with the synchronous Core lease notification.
+        // An old address setup cannot mark a newer lease ready.
+        let desired = self.public_address.lock();
+        if *desired != applied_public_address {
+            return Ok(None);
+        }
         self.ensure_open()?;
         self.controller()?
             .set_member_ready(self.run, member.registration_id(), epoch)
+            .map(Some)
+    }
+    pub(crate) fn public_address(&self) -> Option<cidr::Ipv6Inet> {
+        *self.public_address.lock()
+    }
+
+    #[cfg(feature = "public-ipv6-provider")]
+    fn public_address_changing(&self, address: Option<cidr::Ipv6Inet>) {
+        let mut current = self.public_address.lock();
+        if *current != address {
+            *current = address;
+            if let Ok(controller) = self.controller() {
+                controller.invalidate_instance_device(self.run);
+            }
+        }
     }
     pub(crate) fn unready(&self, member: &SharedVirtualNicMember) {
         if let Ok(controller) = self.controller() {
@@ -82,6 +105,7 @@ impl NativeRouteRuntime {
                 run,
                 name,
                 device,
+                public_address: Mutex::new(None),
                 handle,
             }),
         })
@@ -113,6 +137,35 @@ impl NativeRouteRuntime {
         }
         self.context.abandon(reason);
         drop(owner);
+    }
+}
+
+#[cfg(feature = "public-ipv6-provider")]
+pub(crate) struct NativePublicIpv6Host {
+    global_ctx: ArcGlobalCtx,
+    routes: Arc<NativeRouteContext>,
+}
+
+#[cfg(feature = "public-ipv6-provider")]
+impl NativePublicIpv6Host {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx, routes: Arc<NativeRouteContext>) -> Self {
+        Self { global_ctx, routes }
+    }
+}
+
+#[cfg(feature = "public-ipv6-provider")]
+#[async_trait::async_trait]
+impl easytier_core::peers::public_ipv6::PublicIpv6Host for NativePublicIpv6Host {
+    async fn collect_reserved_public_ipv6_addrs(
+        &self,
+        prefix: cidr::Ipv6Cidr,
+    ) -> std::collections::HashSet<std::net::Ipv6Addr> {
+        self.global_ctx
+            .collect_reserved_public_ipv6_addrs(prefix)
+            .await
+    }
+    fn public_ipv6_lease_changing(&self, new: Option<cidr::Ipv6Inet>) {
+        self.routes.public_address_changing(new);
     }
 }
 impl Drop for NativeRouteRuntime {
@@ -197,6 +250,61 @@ mod tests {
     };
     use futures::FutureExt;
     use std::collections::BTreeMap;
+
+    #[cfg(feature = "public-ipv6-provider")]
+    #[tokio::test]
+    async fn newer_public_address_intent_rejects_old_configuration_completion() {
+        let global = Arc::new(crate::common::global_ctx::GlobalCtx::new(
+            crate::common::config::TomlConfig::default(),
+        ));
+        let runtime = NativeRouteRuntime::new(&global).unwrap();
+        let context = &runtime.context;
+        let lifetime = context.device.attach(
+            "synthetic".into(),
+            42,
+            super::super::device::DeviceOrigin::Borrowed,
+        );
+        context.device.mark_ready(lifetime.epoch());
+        let mut registry = crate::instance::shared_virtual_nic::SharedVirtualNicRegistry::new();
+        let member = registry
+            .try_create_member(
+                "synthetic".into(),
+                context.config(1400),
+                context.run,
+                Arc::new(tokio::sync::Notify::new()),
+            )
+            .unwrap();
+        context.bind_member(&member).unwrap();
+        let first = "2001:db8::1/128".parse().unwrap();
+        let next = "2001:db8::2/128".parse().unwrap();
+        context.public_address_changing(Some(first));
+        assert_eq!(
+            context
+                .ready(&member, lifetime.epoch(), Some(first))
+                .unwrap(),
+            Some(lifetime.epoch())
+        );
+        context.public_address_changing(Some(next));
+        assert_eq!(
+            context
+                .ready(&member, lifetime.epoch(), Some(first))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            context
+                .ready(&member, lifetime.epoch(), Some(next))
+                .unwrap(),
+            Some(lifetime.epoch())
+        );
+        runtime.request_close();
+        assert!(
+            context
+                .ready(&member, lifetime.epoch(), Some(next))
+                .is_err()
+        );
+        runtime.drain().await.unwrap();
+    }
 
     #[tokio::test(start_paused = true)]
     async fn watchdog_does_not_treat_repeated_unknown_presence_as_progress() {

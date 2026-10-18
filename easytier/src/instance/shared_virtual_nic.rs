@@ -369,6 +369,16 @@ impl SharedVirtualNic {
             })
             .collect();
         let nic = self.nic.lock().await;
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        let address_update = if !delta.ipv4_addresses.added.is_empty()
+            || !delta.ipv4_addresses.removed.is_empty()
+            || !delta.ipv6_addresses.added.is_empty()
+            || !delta.ipv6_addresses.removed.is_empty()
+        {
+            nic.begin_address_update()
+        } else {
+            None
+        };
 
         if !self.managed_routes {
             for route in delta
@@ -440,6 +450,10 @@ impl SharedVirtualNic {
             }
         }
 
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        if let Some((state, epoch)) = address_update {
+            state.mark_ready(epoch);
+        }
         Ok(())
     }
 
@@ -953,6 +967,7 @@ impl SharedVirtualNicRegistryKey {
 }
 
 struct SharedVirtualNicRegistryEntry {
+    managed_routes: bool,
     lifetimes: Arc<std::sync::Mutex<Option<usize>>>,
     nic: Arc<Mutex<SharedVirtualNic>>,
     valid: Arc<AtomicBool>,
@@ -978,6 +993,7 @@ impl SharedVirtualNicRegistryEntry {
 
     fn new(nic: SharedVirtualNic) -> Self {
         Self {
+            managed_routes: nic.managed_routes,
             lifetimes: nic.lifetimes.clone(),
             valid: nic.valid_flag(),
             member_tunnel_table: nic.member_tunnel_table(),
@@ -1038,11 +1054,19 @@ impl SharedVirtualNicRegistry {
         dev_name: String,
         config: VirtualNicConfig,
         member: uuid::Uuid,
-    ) -> &SharedVirtualNicRegistryEntry {
+    ) -> Result<&SharedVirtualNicRegistryEntry, Error> {
         // Only explicit completion can retire an entry; weak references do not prove teardown.
         self.nics
             .retain(|_, entry| entry.lifetimes.lock().unwrap().is_some());
         let key = SharedVirtualNicRegistryKey::new(dev_name, member);
+        if let Some(entry) = self.nics.get(&key).filter(|entry| entry.is_valid()) {
+            if entry.managed_routes != config.routes_managed() {
+                return Err(anyhow::anyhow!(
+                    "cannot mix Legacy and managed routes on the same NIC"
+                )
+                .into());
+            }
+        }
         let needs_new_entry = self
             .nics
             .get(&key)
@@ -1053,28 +1077,41 @@ impl SharedVirtualNicRegistry {
             self.nics.insert(key.clone(), entry);
         }
 
-        self.nics
+        Ok(self
+            .nics
             .get(&key)
-            .expect("shared virtual nic registry entry should exist")
+            .expect("shared virtual nic registry entry should exist"))
     }
 
-    pub fn create_member(
+    pub(crate) fn try_create_member(
         &mut self,
         dev_name: String,
         config: VirtualNicConfig,
         member_id: SharedVirtualNicMemberId,
         close_notifier: Arc<Notify>,
-    ) -> SharedVirtualNicMember {
+    ) -> Result<SharedVirtualNicMember, Error> {
         let configured_mtu = config.mtu();
-        let entry = self.get_or_create_entry(dev_name, config, member_id);
-        SharedVirtualNicMember::new(
+        let entry = self.get_or_create_entry(dev_name, config, member_id)?;
+        Ok(SharedVirtualNicMember::new(
             member_id,
             configured_mtu,
             entry.nic(),
             close_notifier,
             entry.member_tunnel_table(),
             entry.lifetimes.clone(),
-        )
+        ))
+    }
+
+    #[cfg(test)]
+    pub fn create_member(
+        &mut self,
+        name: String,
+        config: VirtualNicConfig,
+        member: SharedVirtualNicMemberId,
+        closed: Arc<Notify>,
+    ) -> SharedVirtualNicMember {
+        self.try_create_member(name, config, member, closed)
+            .unwrap()
     }
 }
 

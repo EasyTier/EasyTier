@@ -25,6 +25,8 @@ pub(super) struct NativeTunRuntime {
     nic: TunNicState,
     shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     static_ip_task: Mutex<Option<JoinHandle<()>>>,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    routes: Option<Arc<crate::instance::route::runtime::NativeRouteContext>>,
 }
 
 impl NativeTunRuntime {
@@ -32,6 +34,9 @@ impl NativeTunRuntime {
         global_ctx: ArcGlobalCtx,
         cancel: CancellationToken,
         shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))] routes: Option<
+            Arc<crate::instance::route::runtime::NativeRouteContext>,
+        >,
     ) -> Self {
         Self {
             global_ctx,
@@ -39,6 +44,8 @@ impl NativeTunRuntime {
             nic: TunNicState::empty(),
             shared_virtual_nic_registry,
             static_ip_task: Mutex::new(None),
+            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            routes,
         }
     }
 
@@ -70,6 +77,8 @@ impl NativeTunRuntime {
         let global_ctx = self.global_ctx.clone();
         let receiver = self.nic.receiver();
         let shared_virtual_nic_registry = self.shared_virtual_nic_registry.clone();
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        let routes = self.routes.clone();
         let (output, first_round) = oneshot::channel();
         let task = tokio::spawn(async move {
             let mut output = Some(output);
@@ -80,14 +89,25 @@ impl NativeTunRuntime {
                 }
                 nic_state.stop().await;
                 let closed = Arc::new(Notify::new());
-                let mut nic = NicCtx::new(
+                let nic = NicCtx::new(
                     global_ctx.clone(),
                     packet_plane.clone(),
                     receiver.clone(),
                     closed.clone(),
                     shared_virtual_nic_registry.clone(),
+                    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+                    routes.clone(),
                 )
                 .await;
+                let mut nic = match nic {
+                    Ok(nic) => nic,
+                    Err(error) => {
+                        if let Some(output) = output.take() {
+                            let _ = output.send(Err(error));
+                        }
+                        return;
+                    }
+                };
                 let result = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
@@ -117,6 +137,7 @@ impl NativeTunRuntime {
                         nic.ifname().await,
                         ip,
                         shared_route_backend,
+                        nic.managed_dns_routes(),
                     )
                 } else {
                     MagicDnsRuntime::default()
@@ -173,6 +194,8 @@ impl NativeTunRuntime {
             closed: Arc::new(Notify::new()),
             packet_plane,
             shared_virtual_nic_registry: self.shared_virtual_nic_registry.clone(),
+            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            routes: self.routes.clone(),
         })
     }
 }

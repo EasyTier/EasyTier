@@ -501,6 +501,18 @@ impl RouteController {
     pub(crate) fn set_member_unready(&self, run: Uuid, registration: Uuid) {
         self.state.member_unready(run, registration);
     }
+
+    pub(crate) fn invalidate_instance_device(&self, run: Uuid) {
+        let mut catalog = self.state.catalog.lock();
+        let Some(input) = catalog.instances.get_mut(&run) else {
+            return;
+        };
+        input.ready = None;
+        input.inputs.invalidate();
+        let nic = input.nic;
+        drop(catalog);
+        self.state.mark_nic(nic);
+    }
     pub(crate) fn request_shutdown(&self) {
         self.state.request_shutdown();
     }

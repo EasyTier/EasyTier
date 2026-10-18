@@ -368,6 +368,27 @@ fn registry_shares_named_devices_but_isolates_anonymous_members() {
     ));
 }
 
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[test]
+fn registry_rejects_mixed_route_ownership_without_reserving_another_member() {
+    let mut registry = SharedVirtualNicRegistry::new();
+    let first = create_member(&mut registry, "et-route-modes", 1400, None);
+    let managed = virtual_nic_config(1400, None).with_route_device(
+        crate::instance::route::device::DeviceState::new(Arc::new(|| {})),
+    );
+    assert!(
+        registry
+            .try_create_member(
+                "et-route-modes".into(),
+                managed,
+                uuid::Uuid::new_v4(),
+                Arc::new(Notify::new())
+            )
+            .is_err()
+    );
+    assert_eq!(*first.registration.lifetimes.lock().unwrap(), Some(1));
+}
+
 #[tokio::test]
 async fn pending_registration_prevents_retirement_and_last_drop_allows_compaction() {
     let mut registry = SharedVirtualNicRegistry::new();

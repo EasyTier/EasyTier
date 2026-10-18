@@ -1,11 +1,14 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[cfg(feature = "web-client")]
 use easytier_core::config::runtime::CoreInstanceRuntimeConfig;
 use easytier_core::{
     gateway::dhcp::DhcpHost, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::ArcGlobalCtx;
@@ -37,43 +40,67 @@ pub(crate) struct NativeInstanceRuntimeHost {
     global_ctx: ArcGlobalCtx,
     operation: Arc<Mutex<()>>,
     cancel: CancellationToken,
-    event_journal: EventJournal,
-    tun: NativeTunRuntime,
+    event_journal: Arc<EventJournal>,
+    tun: Arc<NativeTunRuntime>,
+    cleanup_started: AtomicBool,
+    cleanup_result: watch::Sender<Option<Result<(), Arc<str>>>>,
+    #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+    routes: Option<Arc<super::route::runtime::NativeRouteRuntime>>,
     executor: Option<NativeInstanceExecutor>,
 }
 
 impl NativeInstanceRuntimeHost {
     #[cfg(test)]
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Arc<Self> {
-        Self::new_with_executor(global_ctx, None)
+        Self::new_with_executor(global_ctx, None).unwrap()
     }
 
     pub(super) fn new_with_executor(
         global_ctx: ArcGlobalCtx,
         executor: Option<NativeInstanceExecutor>,
-    ) -> Arc<Self> {
+    ) -> anyhow::Result<Arc<Self>> {
+        #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+        let routes = (!global_ctx.no_tun())
+            .then(|| super::route::runtime::NativeRouteRuntime::new(&global_ctx).map(Arc::new))
+            .transpose()?;
         let cancel = CancellationToken::new();
-        let tun = NativeTunRuntime::new(
+        let tun = Arc::new(NativeTunRuntime::new(
             global_ctx.clone(),
             cancel.clone(),
             #[cfg(feature = "tun")]
             global_ctx.net_ns.nics.clone(),
-        );
-        let event_journal = EventJournal::new(&global_ctx);
-        Arc::new(Self {
+            #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+            routes.as_ref().map(|routes| routes.context.clone()),
+        ));
+        let event_journal = Arc::new(EventJournal::new(&global_ctx));
+        Ok(Arc::new(Self {
             global_ctx,
             event_journal,
             operation: Arc::new(Mutex::new(())),
             cancel,
             tun,
             executor,
-        })
+            cleanup_started: AtomicBool::new(false),
+            cleanup_result: watch::channel(None).0,
+            #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+            routes,
+        }))
     }
 
     async fn prepare_runtime(
         &self,
         packet_plane: Arc<CorePacketPlane>,
+        runtime_config: easytier_core::config::runtime::CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
+        let _operation = self.operation.lock().await;
+        anyhow::ensure!(!self.cancel.is_cancelled(), "instance runtime is closing");
+        #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+        if let Some(routes) = &self.routes {
+            routes.bind_config(runtime_config)?;
+        }
+        #[cfg(not(all(target_os = "linux", feature = "tun", feature = "linux-netlink")))]
+        let _ = runtime_config;
+        anyhow::ensure!(!self.cancel.is_cancelled(), "instance runtime is closing");
         self.event_journal.start(self.cancel.clone()).await;
         self.tun.prepare(packet_plane.clone()).await?;
         Ok(Some(
@@ -82,14 +109,90 @@ impl NativeInstanceRuntimeHost {
     }
 
     async fn shutdown_runtime(&self) {
-        self.cancel.cancel();
-        let _operation = self.operation.lock().await;
-        self.event_journal.stop().await;
-        self.tun.shutdown().await;
+        self.request_runtime_shutdown();
+        let mut result = self.cleanup_result.subscribe();
+        while result.borrow_and_update().is_none() {
+            if result.changed().await.is_err() {
+                break;
+            }
+        }
     }
 
     fn request_runtime_shutdown(&self) {
         self.cancel.cancel();
+        #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+        if let Some(routes) = &self.routes {
+            routes.request_close();
+        }
+        if self.cleanup_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let operation = self.operation.clone();
+        let journal = self.event_journal.clone();
+        let tun = self.tun.clone();
+        let result = self.cleanup_result.clone();
+        #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+        let routes = self.routes.clone();
+        // Created before spawn so loss of an unpolled cleanup is visible too.
+        let on_interrupted = {
+            let result = result.clone();
+            #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+            let routes = routes.clone();
+            move || {
+                let reason: Arc<str> = "native runtime cleanup was interrupted".into();
+                #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+                if let Some(routes) = routes {
+                    routes.abandon(reason.clone());
+                }
+                result.send_replace(Some(Err(reason)));
+            }
+        };
+        let interrupted = guarden::guard!([on_interrupted] { on_interrupted(); });
+        match crate::host_runtime::native_host_runtime().shared_executor() {
+            Ok(shared) => {
+                shared.spawn(async move {
+                    let _operation = operation.lock().await;
+                    journal.stop().await;
+                    tun.shutdown().await;
+                    #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+                    let drained = match routes {
+                        Some(routes) => routes
+                            .drain()
+                            .await
+                            .map_err(|error| Arc::<str>::from(format!("{error:#}"))),
+                        None => Ok(()),
+                    };
+                    #[cfg(not(all(
+                        target_os = "linux",
+                        feature = "tun",
+                        feature = "linux-netlink"
+                    )))]
+                    let drained = Ok(());
+                    if let Err(error) = &drained {
+                        tracing::warn!(%error, "native runtime cleanup incomplete");
+                    }
+                    result.send_replace(Some(drained));
+                    let _ = interrupted.defuse();
+                });
+            }
+            Err(error) => {
+                tracing::error!(?error, "native cleanup executor unavailable");
+                drop(interrupted);
+            }
+        }
+    }
+
+    fn runtime_shutdown_error(&self) -> Option<String> {
+        self.cleanup_result
+            .borrow()
+            .as_ref()
+            .and_then(|result| result.as_ref().err())
+            .map(ToString::to_string)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+    pub(super) fn route_context(&self) -> Option<Arc<super::route::runtime::NativeRouteContext>> {
+        self.routes.as_ref().map(|routes| routes.context.clone())
     }
 
     fn management_events_snapshot(&self) -> Vec<String> {
@@ -178,6 +281,12 @@ impl NativeInstanceRuntimeHost {
     }
 }
 
+impl Drop for NativeInstanceRuntimeHost {
+    fn drop(&mut self) {
+        self.request_runtime_shutdown();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +297,23 @@ mod tests {
 
     fn runtime_host(global_ctx: ArcGlobalCtx) -> Arc<NativeInstanceRuntimeHost> {
         NativeInstanceRuntimeHost::new(global_ctx)
+    }
+
+    #[tokio::test]
+    async fn cleanup_survives_cancellation_of_its_first_waiter() {
+        let global_ctx = Arc::new(GlobalCtx::new(TomlConfig::default()));
+        let host = runtime_host(global_ctx);
+        let permit = host.operation.lock().await;
+        let waiter_host = host.clone();
+        let waiter = tokio::spawn(async move { waiter_host.shutdown_runtime().await });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        let _ = waiter.await;
+        drop(permit);
+        tokio::time::timeout(std::time::Duration::from_secs(3), host.shutdown_runtime())
+            .await
+            .unwrap();
+        assert_eq!(host.cleanup_result.borrow().as_ref(), Some(&Ok(())));
     }
 
     #[cfg(feature = "web-client")]

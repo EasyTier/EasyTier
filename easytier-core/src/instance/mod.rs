@@ -243,6 +243,11 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
 
     async fn shutdown(&self);
 
+    /// Reports a physical cleanup failure after shutdown has returned.
+    fn shutdown_error(&self) -> Option<String> {
+        None
+    }
+
     /// Requests prompt Host cleanup when the canonical instance owner is
     /// dropped without an opportunity to await [`Self::shutdown`].
     fn request_shutdown(&self) {}

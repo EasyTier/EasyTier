@@ -17,13 +17,17 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,
-        _runtime_config: easytier_core::config::runtime::CoreRuntimeConfigStore,
+        runtime_config: easytier_core::config::runtime::CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
-        self.prepare_runtime(packet_plane).await
+        self.prepare_runtime(packet_plane, runtime_config).await
     }
 
     async fn shutdown(&self) {
         self.shutdown_runtime().await;
+    }
+
+    fn shutdown_error(&self) -> Option<String> {
+        self.runtime_shutdown_error()
     }
 
     fn request_shutdown(&self) {

@@ -215,6 +215,18 @@ where
         // Host packet tasks can still call the packet plane, so stop them
         // before clearing PeerManager resources.
         self.instance_runtime.shutdown().await;
+        if let Some(error) = self.instance_runtime.shutdown_error() {
+            let mut latest = self.latest_error.write();
+            match latest.as_mut() {
+                Some(previous) => {
+                    previous.push_str("; host cleanup: ");
+                    previous.push_str(&error);
+                }
+                None => {
+                    *latest = Some(format!("host cleanup: {error}"));
+                }
+            }
+        }
         self.peer_manager.clear_resources().await;
         self.packet_egress.stop().await;
     }

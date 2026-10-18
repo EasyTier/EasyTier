@@ -79,7 +79,7 @@ impl NativeTunRuntime {
             closed,
             shared_virtual_nic_registry,
         )
-        .await;
+        .await?;
         let claims = match claims {
             Some(claims) => claims,
             None => NicCtx::mobile_tun_claims(&global_ctx, &packet_plane).await,
@@ -89,7 +89,14 @@ impl NativeTunRuntime {
             .context("attach mobile TUN failed")?;
         let magic_dns = if let Some(ip) = global_ctx.get_ipv4() {
             let shared_route_backend = nic.shared_route_backend_for_dns();
-            MagicDnsRuntime::start(global_ctx, packet_plane, None, ip, shared_route_backend)
+            MagicDnsRuntime::start(
+                global_ctx,
+                packet_plane,
+                None,
+                ip,
+                shared_route_backend,
+                None,
+            )
         } else {
             MagicDnsRuntime::default()
         };

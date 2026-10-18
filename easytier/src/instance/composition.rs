@@ -74,13 +74,23 @@ pub(super) fn compose_native_core_instance(
         &host_config,
         namespace,
     ));
-    let runtime_host = NativeInstanceRuntimeHost::new_with_executor(global_ctx.clone(), executor);
+    let runtime_host = NativeInstanceRuntimeHost::new_with_executor(global_ctx.clone(), executor)?;
     let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
         global_ctx.clone(),
         process_runtime,
         runtime_host.clone(),
         host_config,
     );
+    #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+    if let Some(routes) = runtime_host.route_context() {
+        adapters.routes = Some(routes.handle.clone());
+        #[cfg(feature = "public-ipv6-provider")]
+        {
+            adapters.public_ipv6_host = Some(Arc::new(
+                super::route::runtime::NativePublicIpv6Host::new(global_ctx.clone(), routes),
+            ));
+        }
+    }
     adapters.instance_runtime = runtime_host;
     NativeCoreInstance::from_toml(toml_config, adapters)
 }

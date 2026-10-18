@@ -311,6 +311,19 @@ impl Drop for VirtualNic {
 }
 
 impl VirtualNic {
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    pub(crate) fn begin_address_update(
+        &self,
+    ) -> Option<(
+        Arc<super::route::device::DeviceState>,
+        easytier_core::host::route::DeviceEpoch,
+    )> {
+        let state = self.config.route_device.as_ref()?.clone();
+        let epoch = self.device_epoch?;
+        state.mark_unready(epoch);
+        Some((state, epoch))
+    }
+
     pub(crate) fn routes_managed(&self) -> bool {
         self.config.routes_managed()
     }
@@ -1152,6 +1165,9 @@ pub struct NicCtx {
 
     backend: NicBackend,
     tasks: JoinSet<()>,
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    routes: Option<Arc<super::route::runtime::NativeRouteContext>>,
+    ready_epoch: Option<easytier_core::host::route::DeviceEpoch>,
 
     #[cfg(target_os = "windows")]
     windows_udp_broadcast_relay: Option<AbortOnDropHandle<()>>,
@@ -1193,6 +1209,9 @@ impl NicCtx {
 
             backend,
             tasks: JoinSet::new(),
+            #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+            routes: None,
+            ready_epoch: None,
 
             #[cfg(target_os = "windows")]
             windows_udp_broadcast_relay: None,
@@ -1205,7 +1224,10 @@ impl NicCtx {
         peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         close_notifier: Arc<Notify>,
         registry: ArcSharedVirtualNicRegistry,
-    ) -> Self {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))] routes: Option<
+            Arc<super::route::runtime::NativeRouteContext>,
+        >,
+    ) -> Result<Self, Error> {
         let nic_config = Self::virtual_nic_config(&global_ctx);
         #[cfg(mobile)]
         let nic_config = VirtualNicConfig {
@@ -1213,23 +1235,52 @@ impl NicCtx {
             net_ns: global_ctx.net_ns.platform().clone(),
             ..nic_config
         };
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        let nic_config = if let Some(routes) = &routes {
+            routes.ensure_open()?;
+            routes.config(nic_config.mtu())
+        } else {
+            nic_config
+        };
         // Only an explicitly configured name opts into sharing.
         let backend = {
-            NicBackend::Shared(registry.lock().await.create_member(
+            NicBackend::Shared(registry.lock().await.try_create_member(
                 nic_config.dev_name.clone(),
                 nic_config,
                 global_ctx.run_key(),
                 close_notifier.clone(),
-            ))
+            )?)
         };
 
-        Self::new_with_backend(
+        let mut nic = Self::new_with_backend(
             global_ctx,
             packet_plane,
             peer_packet_receiver,
             close_notifier,
             backend,
-        )
+        );
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        if let Some(routes) = routes {
+            let NicBackend::Shared(member) = &nic.backend else {
+                unreachable!()
+            };
+            routes.bind_member(member)?;
+            nic.routes = Some(routes);
+        }
+        Ok(nic)
+    }
+
+    pub(crate) fn managed_dns_routes(
+        &self,
+    ) -> Option<(
+        easytier_core::host::route::RouteHandle,
+        easytier_core::host::route::DeviceEpoch,
+    )> {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        if let (Some(routes), Some(epoch)) = (&self.routes, self.ready_epoch) {
+            return Some((routes.handle.clone(), epoch));
+        }
+        None
     }
 
     pub async fn ifname(&self) -> Option<String> {
@@ -1237,6 +1288,11 @@ impl NicCtx {
     }
 
     pub(crate) async fn shutdown(&mut self) {
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        if let (Some(routes), NicBackend::Shared(member)) = (&self.routes, &self.backend) {
+            routes.unready(member);
+        }
+        self.ready_epoch = None;
         // The forwarding tasks own the TUN stream and sink. Wait until both
         // release the device before another NIC with the same name is created.
         self.tasks.shutdown().await;
@@ -1565,6 +1621,67 @@ impl NicCtx {
         Ok(())
     }
 
+    #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+    async fn run_managed_public_ipv6_addr_updater(
+        &mut self,
+        routes: Arc<super::route::runtime::NativeRouteContext>,
+        epoch: easytier_core::host::route::DeviceEpoch,
+    ) -> Result<(), Error> {
+        async fn apply(
+            backend: &NicBackend,
+            routes: &super::route::runtime::NativeRouteContext,
+            epoch: easytier_core::host::route::DeviceEpoch,
+            current: &mut Option<cidr::Ipv6Inet>,
+        ) -> Result<(), Error> {
+            let NicBackend::Shared(member) = backend else {
+                unreachable!()
+            };
+            loop {
+                let next = routes.public_address();
+                if *current != next {
+                    routes.unready(member);
+                    backend.link_up().await?;
+                    if let Some(old) = *current {
+                        backend.remove_ipv6(Some(old)).await?;
+                    }
+                    if let Some(new) = next {
+                        backend
+                            .add_ipv6(new.address(), new.network_length() as i32)
+                            .await?;
+                    }
+                    *current = next;
+                }
+                if routes.ready(member, epoch, *current)?.is_some() {
+                    return Ok(());
+                }
+            }
+        }
+        let backend = self.backend.clone();
+        let mut events = self.global_ctx.subscribe();
+        let mut current = None;
+        apply(&backend, &routes, epoch, &mut current).await?;
+        let closed = self.close_notifier.clone();
+        self.tasks.spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(GlobalCtxEvent::PublicIpv6Changed(..))
+                    | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+                if let Err(error) = apply(&backend, &routes, epoch, &mut current).await {
+                    if let NicBackend::Shared(member) = &backend {
+                        routes.unready(member);
+                    }
+                    tracing::error!(?error, "managed TUN public address update failed");
+                    closed.notify_one();
+                    break;
+                }
+            }
+        });
+        Ok(())
+    }
+
     async fn run_public_ipv6_addr_updater(&mut self) -> Result<(), Error> {
         let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
@@ -1647,7 +1764,7 @@ impl NicCtx {
         ipv4_addr: Option<cidr::Ipv4Inet>,
         ipv6_addr: Option<cidr::Ipv6Inet>,
     ) -> Result<(), Error> {
-        let tunnel = match self.backend.create_dev().await {
+        let (tunnel, epoch) = match self.backend.create_dev_with_epoch().await {
             Ok(ret) => {
                 let ifname = self.tun_ifname().await?;
 
@@ -1679,6 +1796,16 @@ impl NicCtx {
             self.assign_ipv6_to_tun_device(ipv6_addr).await?;
         }
 
+        #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+        if let Some(routes) = self.routes.clone() {
+            let epoch =
+                epoch.ok_or_else(|| anyhow::anyhow!("managed TUN has no physical epoch"))?;
+            self.run_managed_public_ipv6_addr_updater(routes, epoch)
+                .await?;
+            self.ready_epoch = Some(epoch);
+            return Ok(());
+        }
+        let _ = epoch;
         self.run_proxy_cidrs_route_updater().await?;
         self.run_public_ipv6_route_updater().await?;
         // Keep the updater running so runtime config patches can enable auto mode
