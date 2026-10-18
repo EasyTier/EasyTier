@@ -630,8 +630,8 @@ impl<B: super::RouteBackend> Worker<B> {
             Ok(()) => {
                 slot.accepted = Some(accepted.clone());
                 slot.effect.as_mut().unwrap().phase = EffectPhase::Owned;
+                slot.status = SlotStatus::Ready(accepted);
                 slot.retry = None;
-                self.pending.insert(key.clone());
             }
             Err(RouteError::Unknown(error)) => {
                 slot.effect.as_mut().unwrap().phase = EffectPhase::Unknown {

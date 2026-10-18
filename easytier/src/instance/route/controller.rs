@@ -6,7 +6,7 @@ use std::{
 };
 
 use easytier_core::host::route::{
-    ClaimRouteStatus, DeviceEpoch, InstanceRouteStatus, InstanceRoutes, RouteDemand,
+    ClaimRouteStatus, DeviceEpoch, InstanceRouteStatus, InstanceRoutes, RouteClaimId, RouteDemand,
     RouteInputSnapshot, RouteInputs, RouteSet, RouteSpec,
 };
 use parking_lot::Mutex;
@@ -583,6 +583,14 @@ impl<B> Drop for DriverGuard<B> {
 
 // Caches retain publications and resolved metadata, never RouteInputs or the
 // configuration store. The catalog is the only long-lived input owner.
+#[derive(Default)]
+struct ClaimProgress {
+    rejected: Option<Arc<str>>,
+    // Only non-ready routes participate in the aggregate; the first one
+    // preserves deterministic route-order feedback without rescanning T.
+    remaining: BTreeMap<RouteSpec, SlotStatus>,
+}
+
 struct CachedInput {
     snapshot: RouteInputSnapshot,
     accepted: RouteSet,
@@ -594,6 +602,11 @@ struct CachedInput {
     fresh: bool,
     eligible: bool,
     withdrawn: bool,
+    progress: BTreeMap<RouteClaimId, ClaimProgress>,
+    slot_demands: BTreeMap<OsRouteSlotKey, Vec<(RouteClaimId, RouteSpec)>>,
+    progress_dirty: bool,
+    #[cfg(test)]
+    status_reads: usize,
 }
 
 impl CachedInput {
@@ -609,6 +622,11 @@ impl CachedInput {
             fresh: false,
             eligible: false,
             withdrawn: false,
+            progress: BTreeMap::new(),
+            slot_demands: BTreeMap::new(),
+            progress_dirty: true,
+            #[cfg(test)]
+            status_reads: 0,
         }
     }
     fn same_source(&self, next: &RouteInputSnapshot) -> bool {
@@ -648,30 +666,93 @@ impl CachedInput {
             })
             .collect()
     }
-    fn status<B: RouteBackend>(
-        &self,
-        id: easytier_core::host::route::RouteClaimId,
-        demand: &Arc<RouteDemand>,
+    fn update_progress<B: RouteBackend>(
+        &mut self,
         worker: &Worker<B>,
+        affected: &BTreeSet<OsRouteSlotKey>,
+    ) {
+        let demands = if self.progress_dirty {
+            self.progress.clear();
+            self.slot_demands.clear();
+            self.progress_dirty = false;
+            let mut demands = Vec::new();
+            for (id, publication) in &self.snapshot.claims {
+                self.progress.insert(*id, ClaimProgress::default());
+                match publication.as_ref() {
+                    RouteDemand::AutoProxy(prefixes) if !self.snapshot.auto_suppressed() => {
+                        demands.extend(
+                            prefixes
+                                .iter()
+                                .map(|prefix| (*id, RouteSpec::for_tun((*prefix).into()))),
+                        );
+                    }
+                    RouteDemand::Additional(routes) => {
+                        demands.extend(routes.iter().cloned().map(|route| (*id, route)))
+                    }
+                    _ => {}
+                }
+            }
+            demands
+        } else {
+            // Remove first, then reinsert according to the current aggregate.
+            // Another owner changing the minimum metric can move a dependency
+            // to a different slot without changing this claim's publication.
+            affected
+                .iter()
+                .filter_map(|slot| self.slot_demands.remove(slot))
+                .flatten()
+                .collect()
+        };
+        for (id, spec) in demands {
+            #[cfg(test)]
+            {
+                self.status_reads += 1;
+            }
+            let progress = self
+                .progress
+                .get_mut(&id)
+                .expect("claim progress is initialized");
+            if let Some(error) = self.unsupported.get(&spec) {
+                progress.rejected.get_or_insert_with(|| error.clone());
+            }
+            let resolved = self.resolved.get(&spec);
+            let status = resolved.map_or(SlotStatus::Pending, |route| worker.status(route));
+            match status {
+                SlotStatus::Ready(_) => {
+                    progress.remaining.remove(&spec);
+                }
+                status => {
+                    progress.remaining.insert(spec.clone(), status);
+                }
+            }
+            if let Some(route) = resolved {
+                let physical = worker.desired.aggregate(route).unwrap_or(route);
+                self.slot_demands
+                    .entry(physical.route.slot())
+                    .or_default()
+                    .push((id, spec));
+            }
+        }
+    }
+
+    fn status(
+        &self,
+        id: RouteClaimId,
+        demand: &Arc<RouteDemand>,
         observed: bool,
     ) -> ClaimRouteStatus {
         if matches!(demand.as_ref(), RouteDemand::AutoProxy(_)) && self.snapshot.auto_suppressed() {
             return ClaimRouteStatus::Suppressed;
         }
-        let routes: RouteSet = match demand.as_ref() {
-            RouteDemand::AutoProxy(prefixes) => prefixes
-                .iter()
-                .map(|prefix| RouteSpec::for_tun((*prefix).into()))
-                .collect(),
-            RouteDemand::Additional(routes) => routes.clone(),
+        let Some(progress) = self.progress.get(&id) else {
+            return ClaimRouteStatus::Pending;
         };
-        if let Some(error) = routes.iter().find_map(|route| self.unsupported.get(route)) {
+        if let Some(error) = &progress.rejected {
             return ClaimRouteStatus::Rejected(error.clone());
         }
         if self.snapshot.config.is_none() || !self.fresh {
             return ClaimRouteStatus::Pending;
         }
-        // A genuinely empty Additional claim needs neither a NIC nor OS work.
         if matches!(demand.as_ref(), RouteDemand::Additional(routes) if routes.is_empty()) {
             return ClaimRouteStatus::Ready;
         }
@@ -689,22 +770,18 @@ impl CachedInput {
                 .map(ClaimRouteStatus::Rejected)
                 .unwrap_or(ClaimRouteStatus::Pending);
         }
-        for route in routes {
-            let Some(resolved) = self.resolved.get(&route) else {
-                return ClaimRouteStatus::Pending;
-            };
-            match worker.status(resolved) {
-                SlotStatus::Ready(_) => {}
-                SlotStatus::Conflict => {
-                    return ClaimRouteStatus::Rejected(
-                        "incompatible route occupies the Linux route slot".into(),
-                    );
-                }
-                SlotStatus::Failed(error) => return ClaimRouteStatus::Failed(error),
-                SlotStatus::Pending => return ClaimRouteStatus::Pending,
-            }
+        match progress
+            .remaining
+            .first_key_value()
+            .map(|(_, status)| status)
+        {
+            None => ClaimRouteStatus::Ready,
+            Some(SlotStatus::Conflict) => ClaimRouteStatus::Rejected(
+                "incompatible route occupies the Linux route slot".into(),
+            ),
+            Some(SlotStatus::Failed(error)) => ClaimRouteStatus::Failed(error.clone()),
+            _ => ClaimRouteStatus::Pending,
         }
-        ClaimRouteStatus::Ready
     }
 }
 
@@ -1244,6 +1321,7 @@ async fn drive<B: RouteBackend>(
             let Some(cache) = caches.get_mut(&run) else {
                 continue;
             };
+            cache.progress_dirty = true;
             if cache.fresh {
                 let next = cache.resolved.values().cloned().collect();
                 affected.extend(worker.replace_routes(run, &cache.indexed, &next));
@@ -1338,9 +1416,10 @@ async fn drive<B: RouteBackend>(
         };
         let mut retired = Vec::new();
         for (run, input) in &inputs {
-            let Some(cache) = caches.get(run) else {
+            let Some(cache) = caches.get_mut(run) else {
                 continue;
             };
+            cache.update_progress(&worker, &affected);
             let drained = cache.snapshot.closed
                 && cache.fresh
                 && cache.withdrawn
@@ -1364,7 +1443,7 @@ async fn drive<B: RouteBackend>(
                 .snapshot
                 .claims
                 .iter()
-                .map(|(id, demand)| (*id, cache.status(*id, demand, &worker, observed)))
+                .map(|(id, demand)| (*id, cache.status(*id, demand, observed)))
                 .collect();
             if input.publish_feedback(&cache.snapshot, status, feedback) {
                 if drained {
@@ -1458,6 +1537,142 @@ mod tests {
     };
     use futures::FutureExt;
     use std::time::Duration;
+
+    fn feedback_fixture(
+        count: usize,
+    ) -> (
+        InstanceRoutes,
+        easytier_core::host::route::RouteClaim,
+        Uuid,
+        CachedInput,
+        Worker<Backend>,
+    ) {
+        let owner = InstanceRoutes::new(Arc::new(|| {}));
+        owner.bind_config(config()).unwrap();
+        let epoch = DeviceEpoch::new();
+        let nic = Uuid::new_v4();
+        let run = Uuid::new_v4();
+        let routes = (0..count)
+            .map(|index| {
+                RouteSpec::for_tun(
+                    cidr::IpCidr::new(
+                        std::net::Ipv4Addr::from(0xc6120000u32 + index as u32).into(),
+                        32,
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect::<RouteSet>();
+        let claim = owner
+            .handle()
+            .publish(RouteDemand::Additional(routes.clone()))
+            .unwrap();
+        let mut cache = CachedInput::new(owner.inputs().snapshot());
+        cache.resolved = routes
+            .into_iter()
+            .map(|spec| {
+                let route = OsRoute {
+                    table: 254,
+                    destination: spec.destination,
+                    metric: super::super::super::METRIC_DIRECT,
+                    ifindex: 7,
+                    preferred_source: None,
+                };
+                (spec, RouteKey { route, nic, epoch })
+            })
+            .collect();
+        cache.fresh = true;
+        cache.eligible = true;
+        cache.publications = cache.snapshot.claims.clone();
+        let fake = Arc::new(Fake::default());
+        let mut worker = Worker::new(Backend(fake));
+        let accepted = cache.resolved.values().cloned().collect();
+        worker.replace_routes(run, &BTreeSet::new(), &accepted);
+        (owner, claim, run, cache, worker)
+    }
+
+    async fn measure_feedback_updates(count: usize) -> (usize, std::time::Duration) {
+        let (_owner, _claim, _run, mut cache, mut worker) = feedback_fixture(count);
+        let started = std::time::Instant::now();
+        cache.update_progress(&worker, &BTreeSet::new());
+        let keys = worker.slots.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            worker.advance(&key).await;
+            cache.update_progress(&worker, &BTreeSet::from([key]));
+            let (id, publication) = cache.snapshot.claims.first_key_value().unwrap();
+            let _ = cache.status(*id, publication, true);
+        }
+        let elapsed = started.elapsed();
+        let (id, publication) = cache.snapshot.claims.first_key_value().unwrap();
+        assert_eq!(
+            cache.status(*id, publication, true),
+            ClaimRouteStatus::Ready
+        );
+        (cache.status_reads, elapsed)
+    }
+
+    #[tokio::test]
+    async fn feedback_updates_touch_each_route_once_per_affected_slot() {
+        let (reads, _) = measure_feedback_updates(2048).await;
+        assert_eq!(
+            reads, 4096,
+            "initial build plus one update per ACK; no full-claim scans"
+        );
+    }
+
+    #[tokio::test]
+    async fn feedback_follows_another_owners_minimum_metric_without_republishing() {
+        async fn advance(cache: &mut CachedInput, worker: &mut Worker<Backend>) {
+            for _ in 0..10 {
+                let Some(slot) = worker.next_pending(tokio::time::Instant::now()) else {
+                    return;
+                };
+                worker.advance(&slot).await;
+                cache.update_progress(worker, &BTreeSet::from([slot]));
+            }
+            panic!("unexpected repeated mutation");
+        }
+        let (_owner, _claim, _run, mut cache, mut worker) = feedback_fixture(1);
+        let first = cache.resolved.first_key_value().unwrap().1.clone();
+        cache.update_progress(&worker, &BTreeSet::new());
+        advance(&mut cache, &mut worker).await;
+        let mut lower = first.clone();
+        lower.route.metric = super::super::super::METRIC_PUBLIC_IPV6_DEFAULT;
+        let other = Uuid::new_v4();
+        let routes = BTreeSet::from([lower.clone()]);
+        let affected = worker.replace_routes(other, &BTreeSet::new(), &routes);
+        cache.update_progress(&worker, &affected);
+        advance(&mut cache, &mut worker).await;
+        assert!(cache.slot_demands.contains_key(&lower.route.slot()));
+        assert!(!cache.slot_demands.contains_key(&first.route.slot()));
+        let (id, publication) = cache.snapshot.claims.first_key_value().unwrap();
+        assert_eq!(
+            cache.status(*id, publication, true),
+            ClaimRouteStatus::Ready
+        );
+        let affected = worker.replace_routes(other, &routes, &BTreeSet::new());
+        cache.update_progress(&worker, &affected);
+        advance(&mut cache, &mut worker).await;
+        assert!(cache.slot_demands.contains_key(&first.route.slot()));
+        assert!(!cache.slot_demands.contains_key(&lower.route.slot()));
+        let (id, publication) = cache.snapshot.claims.first_key_value().unwrap();
+        assert_eq!(
+            cache.status(*id, publication, true),
+            ClaimRouteStatus::Ready
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "manual CPU/allocation performance probe, no physical TUN required"]
+    async fn benchmark_feedback_scaling() {
+        for count in [1000, 10000, 50000] {
+            let (reads, elapsed) = measure_feedback_updates(count).await;
+            assert_eq!(reads, count * 2);
+            println!(
+                "route feedback: routes={count}, route_status_reads={reads}, elapsed={elapsed:?}"
+            );
+        }
+    }
 
     #[derive(Default)]
     struct FakeState {
