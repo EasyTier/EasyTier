@@ -28,12 +28,8 @@ async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
         config.set_flags(flags);
         config
     };
-    let registry = TestInstance::new_shared_virtual_nic_registry();
-    let mut first = TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
-        config(),
-        CoreProcessRuntime::new(),
-        registry.clone(),
-    );
+    let registry = TestInstance::current_shared_virtual_nic_registry();
+    let mut first = TestInstance::new_with_process_runtime(config(), CoreProcessRuntime::new());
     first.run().await.unwrap();
     assert_eq!(list_interface_firewall_rules(name).unwrap().len(), 8);
     let cached = registry
@@ -56,13 +52,9 @@ async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
     .unwrap();
     assert!(list_interface_firewall_rules(name).unwrap().is_empty());
 
-    // An independent registry has the same name-allocation boundary as a
-    // separate process. The previous registry deliberately remains alive.
-    let mut second = TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
-        config(),
-        CoreProcessRuntime::new(),
-        TestInstance::new_shared_virtual_nic_registry(),
-    );
+    // The process directory remains alive, but a retired entry must release
+    // the device name and its OS resources before the next instance starts.
+    let mut second = TestInstance::new_with_process_runtime(config(), CoreProcessRuntime::new());
     second.run().await.unwrap();
     assert_eq!(second.get_global_ctx().get_tun_device_name().unwrap(), name);
     let rules = list_interface_firewall_rules(name).unwrap();
@@ -359,20 +351,91 @@ fn create_member(
 }
 
 #[test]
-fn registry_shares_devices_only_within_the_same_name_and_namespace() {
+fn registry_shares_named_devices_but_isolates_anonymous_members() {
     let mut registry = SharedVirtualNicRegistry::new();
-    let first = create_member(&mut registry, "et0", 1400, Some("net-a"));
-    for (name, netns, shared) in [
-        ("et0", Some("net-a"), true),
-        ("et0", Some("net-b"), false),
-        ("et1", Some("net-a"), false),
-        ("et0", None, false),
-    ] {
-        let next = create_member(&mut registry, name, 1300, netns);
-        assert_eq!(Arc::ptr_eq(&first.shared_nic, &next.shared_nic), shared);
-        assert_eq!(next.configured_mtu, 1300);
-    }
+    let first = create_member(&mut registry, "et0", 1400, None);
+    let same = create_member(&mut registry, "et0", 1300, None);
+    let other = create_member(&mut registry, "et1", 1300, None);
+    assert!(Arc::ptr_eq(&first.shared_nic, &same.shared_nic));
+    assert!(!Arc::ptr_eq(&first.shared_nic, &other.shared_nic));
+    assert_eq!(same.configured_mtu, 1300);
     assert_eq!(first.configured_mtu, 1400);
+    let anonymous_a = create_member(&mut registry, "", 1400, None);
+    let anonymous_b = create_member(&mut registry, "", 1400, None);
+    assert!(!Arc::ptr_eq(
+        &anonymous_a.shared_nic,
+        &anonymous_b.shared_nic
+    ));
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[test]
+fn registry_rejects_mixed_route_ownership_without_reserving_another_member() {
+    let mut registry = SharedVirtualNicRegistry::new();
+    let first = create_member(&mut registry, "et-route-modes", 1400, None);
+    let managed = virtual_nic_config(1400, None).with_route_device(
+        crate::instance::route::device::DeviceState::new(Arc::new(|| {})),
+    );
+    assert!(
+        registry
+            .try_create_member(
+                "et-route-modes".into(),
+                managed,
+                uuid::Uuid::new_v4(),
+                Arc::new(Notify::new())
+            )
+            .is_err()
+    );
+    assert_eq!(*first.registration.lifetimes.lock().unwrap(), Some(1));
+}
+
+#[tokio::test]
+async fn pending_registration_prevents_retirement_and_last_drop_allows_compaction() {
+    let mut registry = SharedVirtualNicRegistry::new();
+    let first = create_member(&mut registry, "et0", 1400, None);
+    let nic = first.shared_nic.clone();
+    let mut locked = nic.lock().await;
+    drop(first); // Cleanup is blocked on this NIC lock, but releases its lifetime synchronously.
+    let next = create_member(&mut registry, "et0", 1400, None);
+    assert!(Arc::ptr_eq(&nic, &next.shared_nic));
+    locked.shutdown_dispatcher_if_idle().await;
+    assert!(locked.is_valid());
+    assert_eq!(*locked.lifetimes.lock().unwrap(), Some(1));
+    drop(next);
+    locked.shutdown_dispatcher_if_idle().await;
+    assert_eq!(*locked.lifetimes.lock().unwrap(), None);
+    assert!(!locked.is_valid());
+    drop(locked);
+    let replacement = create_member(&mut registry, "et0", 1400, None);
+    assert!(!Arc::ptr_eq(&nic, &replacement.shared_nic));
+    assert_eq!(registry.nics.len(), 1);
+}
+
+#[tokio::test]
+async fn explicit_member_close_waits_for_the_nic_and_rejects_queued_creation() {
+    use futures::FutureExt;
+    let mut registry = SharedVirtualNicRegistry::new();
+    let member = create_member(&mut registry, "et-pending-close", 1400, None);
+    let nic = member.shared_nic();
+    let held = nic.lock().await;
+    let close = member.close();
+    tokio::pin!(close);
+    assert!(close.as_mut().now_or_never().is_none());
+    let create = member.create_dev();
+    tokio::pin!(create);
+    assert!(create.as_mut().now_or_never().is_none());
+    drop(held);
+    close.await.unwrap();
+    let error = create.await.err().expect("queued setup must be rejected");
+    assert!(error.to_string().contains("closed"), "{error:?}");
+    assert!(nic.lock().await.dispatcher.is_none());
+    let error = member
+        .create_dev()
+        .await
+        .err()
+        .expect("closed member must not reopen");
+    assert!(error.to_string().contains("closed"), "{error:?}");
+    member.close().await.unwrap();
 }
 
 #[test]
@@ -392,5 +455,175 @@ fn registry_replaces_invalid_devices() {
             .get("et0", &virtual_nic_config(1500, None))
             .unwrap(),
         &next.shared_nic,
+    ));
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[tokio::test]
+async fn managed_route_admission_keeps_previous_claims_on_rejection_and_withdraws_without_os_writes()
+ {
+    use crate::instance::route::device::DeviceState;
+    use easytier_core::host::route::{RouteSet, RouteSpec};
+    let config =
+        virtual_nic_config(1500, None).with_route_device(DeviceState::new(Arc::new(|| {})));
+    let mut nic = SharedVirtualNic::new(config);
+    nic.member_registrations.insert(MEMBER, REGISTRATION);
+    nic.ifcfg
+        .apply_member_claims(MEMBER, address_claims("10.50.0.2/24"));
+    nic.ifcfg
+        .apply_member_claims(uuid::Uuid::from_u128(2), address_claims("10.60.0.2/24"));
+    let ifcfg = RecordingIfConfiger::default();
+    set_ifcfg(&nic, ifcfg.clone()).await;
+    let wanted = RouteSet::from([RouteSpec::for_tun("10.70.0.0/24".parse().unwrap())]);
+    let claims = nic
+        .prepare_managed_routes(MEMBER, REGISTRATION, &wanted)
+        .unwrap();
+    nic.commit_managed_routes(MEMBER, REGISTRATION, claims)
+        .await
+        .unwrap();
+    let accepted = nic.ifcfg.claims_of(MEMBER);
+    assert_eq!(accepted.ipv4_routes.len(), 1);
+    let conflict = RouteSet::from([RouteSpec::for_tun("10.60.0.0/24".parse().unwrap())]);
+    assert!(
+        nic.prepare_managed_routes(MEMBER, REGISTRATION, &conflict)
+            .is_err()
+    );
+    assert_eq!(nic.ifcfg.claims_of(MEMBER), accepted);
+    let withdraw = nic
+        .prepare_managed_routes(MEMBER, REGISTRATION, &RouteSet::new())
+        .unwrap();
+    nic.commit_managed_routes(MEMBER, REGISTRATION, withdraw)
+        .await
+        .unwrap();
+    assert!(nic.ifcfg.claims_of(MEMBER).ipv4_routes.is_empty());
+    assert_eq!(
+        nic.ifcfg.claims_of(MEMBER).ipv4_addresses,
+        accepted.ipv4_addresses
+    );
+    assert!(ifcfg.routes.lock().unwrap().is_empty());
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[tokio::test]
+async fn managed_address_changes_do_not_readd_or_remove_controller_routes() {
+    use crate::instance::route::device::DeviceState;
+    let config =
+        virtual_nic_config(1500, None).with_route_device(DeviceState::new(Arc::new(|| {})));
+    let mut nic = SharedVirtualNic::new(config);
+    let mut before = address_claims("10.50.0.2/24");
+    before
+        .ipv4_routes
+        .insert(SharedIpv4Route::new("10.70.0.0".parse().unwrap(), 24, None));
+    nic.ifcfg.apply_member_claims(MEMBER, before.clone());
+    let ifcfg = RecordingIfConfiger::default();
+    set_ifcfg(&nic, ifcfg.clone()).await;
+    let mut changed = before;
+    changed.ipv4_addresses = BTreeSet::from(["10.51.0.2/24".parse().unwrap()]);
+    let mut next = nic.ifcfg.clone();
+    next.apply_member_claims(MEMBER, changed);
+    nic.apply_ifcfg_update(&next).await.unwrap();
+    assert!(
+        ifcfg.routes.lock().unwrap().is_empty(),
+        "address changes must not invoke legacy route restoration"
+    );
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[tokio::test]
+async fn legacy_route_entrypoints_reject_managed_devices_before_any_syscall() {
+    use crate::instance::route::device::DeviceState;
+    let config =
+        || virtual_nic_config(1500, None).with_route_device(DeviceState::new(Arc::new(|| {})));
+    let device = VirtualNic::new(config());
+    assert!(
+        device
+            .add_route("10.70.0.0".parse().unwrap(), 24)
+            .await
+            .is_err()
+    );
+    assert!(
+        device
+            .remove_route("10.70.0.0".parse().unwrap(), 24)
+            .await
+            .is_err()
+    );
+    assert!(
+        device
+            .add_ipv6_route("2001:db8::".parse().unwrap(), 64)
+            .await
+            .is_err()
+    );
+    assert!(
+        device
+            .remove_ipv6_route("2001:db8::".parse().unwrap(), 64)
+            .await
+            .is_err()
+    );
+    let mut registry = SharedVirtualNicRegistry::new();
+    let member =
+        registry.create_member("et0".to_owned(), config(), MEMBER, Arc::new(Notify::new()));
+    assert!(
+        member
+            .add_route("10.70.0.0".parse().unwrap(), 24)
+            .await
+            .is_err()
+    );
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+#[tokio::test]
+#[ignore = "requires /dev/net/tun and an isolated network namespace"]
+async fn physical_tun_epoch_is_returned_causally_and_shared_members_reuse_it() {
+    use crate::instance::route::device::{DeviceRelease, DeviceState};
+    let changed = Arc::new(Notify::new());
+    let notify = changed.clone();
+    let device = DeviceState::new(Arc::new(move || notify.notify_one()));
+    let name = format!("et_ep{:06x}", rand::random::<u32>() & 0xffffff);
+    let config = || {
+        VirtualNicConfig::new(name.clone(), 1500, NetNS::current().unwrap())
+            .with_route_device(device.clone())
+    };
+    let mut registry = SharedVirtualNicRegistry::new();
+    let a = registry.create_member(
+        name.clone(),
+        config(),
+        uuid::Uuid::new_v4(),
+        Arc::new(Notify::new()),
+    );
+    let b = registry.create_member(
+        name.clone(),
+        config(),
+        uuid::Uuid::new_v4(),
+        Arc::new(Notify::new()),
+    );
+    let (ta, ea) = a.create_dev_with_epoch().await.unwrap();
+    let (tb, eb) = b.create_dev_with_epoch().await.unwrap();
+    let epoch = ea.expect("managed physical TUN must return an epoch");
+    assert_eq!(Some(epoch), eb);
+    assert_eq!(device.snapshot().selected, Some(epoch));
+    assert!(device.snapshot().ready);
+    drop(ta);
+    drop(a);
+    assert!(device.snapshot().live.contains_key(&epoch));
+    drop(tb);
+    drop(b);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let notification = changed.notified();
+            tokio::pin!(notification);
+            notification.as_mut().enable();
+            if !device.snapshot().live.contains_key(&epoch) {
+                break;
+            }
+            notification.await;
+        }
+    })
+    .await
+    .unwrap();
+    // The current library path does not prove exclusive creation, so even
+    // successful fd teardown must not manufacture a destruction certificate.
+    assert!(matches!(
+        device.snapshot().released[&epoch],
+        DeviceRelease::DescriptorClosed(_)
     ));
 }

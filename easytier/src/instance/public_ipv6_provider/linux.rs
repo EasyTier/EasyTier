@@ -379,35 +379,41 @@ impl NdpProxyRuntime {
             return self.cleanup_pending();
         };
 
-        let _g = global_ctx.net_ns.guard();
+        global_ctx
+            .net_ns
+            .run(|| {
+                if self.wan_iface.as_deref() != Some(desired.target.wan_interface.as_str()) {
+                    if !self.clear_current_locked() {
+                        tracing::warn!(
+                            old_wan_iface = ?self.wan_iface,
+                            new_wan_iface = %desired.target.wan_interface,
+                            remaining_entries = self.applied.len(),
+                            "waiting to remove old NDP proxy entries before switching WAN interface"
+                        );
+                        return true;
+                    }
+                    self.wan_iface = Some(desired.target.wan_interface.clone());
+                }
 
-        if self.wan_iface.as_deref() != Some(desired.target.wan_interface.as_str()) {
-            if !self.clear_current_locked() {
-                tracing::warn!(
-                    old_wan_iface = ?self.wan_iface,
-                    new_wan_iface = %desired.target.wan_interface,
-                    remaining_entries = self.applied.len(),
-                    "waiting to remove old NDP proxy entries before switching WAN interface"
-                );
-                return true;
-            }
-            self.wan_iface = Some(desired.target.wan_interface.clone());
-        }
-
-        if let Err(err) = sync_ndp_proxy_entries(
-            desired.target.wan_interface.as_str(),
-            tun_iface.as_str(),
-            desired.prefix,
-            &mut self.applied,
-        ) {
-            tracing::warn!(
-                wan_iface = %desired.target.wan_interface,
-                tun_iface = %tun_iface,
-                ?err,
-                "failed to sync NDP proxy entries"
-            );
-        }
-        self.cleanup_pending()
+                if let Err(err) = sync_ndp_proxy_entries(
+                    desired.target.wan_interface.as_str(),
+                    tun_iface.as_str(),
+                    desired.prefix,
+                    &mut self.applied,
+                ) {
+                    tracing::warn!(
+                        wan_iface = %desired.target.wan_interface,
+                        tun_iface = %tun_iface,
+                        ?err,
+                        "failed to sync NDP proxy entries"
+                    );
+                }
+                self.cleanup_pending()
+            })
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "cannot enter namespace for NDP synchronization");
+                true
+            })
     }
 
     fn clear_current(&mut self, global_ctx: &ArcGlobalCtx) -> bool {
@@ -415,8 +421,12 @@ impl NdpProxyRuntime {
     }
 
     fn clear_current_in_netns(&mut self, net_ns: &NetNS) -> bool {
-        let _g = net_ns.guard();
-        self.clear_current_locked()
+        net_ns
+            .run(|| self.clear_current_locked())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "cannot enter namespace for NDP cleanup");
+                false
+            })
     }
 
     fn clear_current_locked(&mut self) -> bool {
@@ -601,7 +611,7 @@ fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) -> b
 
 pub(super) struct RuntimePublicIpv6ProviderPlatform {
     global_ctx: std::sync::Weak<crate::common::global_ctx::GlobalCtx>,
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     event_receiver: tokio::sync::Mutex<tokio::sync::broadcast::Receiver<GlobalCtxEvent>>,
     ndp_proxy: std::sync::Mutex<NdpProxyRuntime>,
 }
@@ -627,7 +637,7 @@ impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
             return Err(PublicIpv6PlatformError::Unavailable);
         };
 
-        let _guard = global_ctx.net_ns.guard();
+        global_ctx.net_ns.run(|| {
         ensure_linux_ipv6_forwarding()
             .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))?;
 
@@ -655,6 +665,7 @@ impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
                 ndp_target: detected.and_then(|detected| detected.ndp_target),
             })
             .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))
+        }).map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))?
     }
 
     fn sync_ndp(

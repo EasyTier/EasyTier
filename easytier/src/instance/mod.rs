@@ -25,5 +25,8 @@ pub mod shared_virtual_nic;
 #[cfg(feature = "tun")]
 pub mod virtual_nic;
 
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) mod route;
+
 #[cfg(any(all(windows, feature = "tun"), test))]
 pub(crate) mod windows_udp_broadcast;

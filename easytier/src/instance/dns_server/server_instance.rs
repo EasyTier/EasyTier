@@ -14,10 +14,7 @@ use super::{
 };
 use crate::{
     common::{
-        error::Error as EtError,
-        global_ctx::ArcGlobalCtx,
-        ifcfg::{IfConfiger, IfConfiguerTrait},
-        netns::NetNS,
+        error::Error as EtError, global_ctx::ArcGlobalCtx, ifcfg::IfConfiguerTrait, netns::NetNS,
     },
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
@@ -31,7 +28,7 @@ use crate::{
             dns_record::{self},
         },
         rpc::standalone::{
-            RpcServerHook, RuntimeRpcListener, StandAloneServer, runtime_rpc_listener,
+            NamespaceRpcListener, RpcServerHook, StandAloneServer, namespace_rpc_listener,
         },
         rpc_types::controller::{BaseController, Controller},
     },
@@ -53,7 +50,7 @@ use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, tim
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
     tun_dev: Option<String>,
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
     fake_ip: Ipv4Addr,
     manage_fake_ip_route: bool,
     route_store: MagicDnsRecordStore,
@@ -333,7 +330,7 @@ impl RpcServerHook for MagicDnsServerInstanceData {
 }
 
 pub struct MagicDnsServerInstance {
-    _rpc_server: StandAloneServer<RuntimeRpcListener>,
+    _rpc_server: StandAloneServer<NamespaceRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     packet_filter: MagicDnsResolverRegistration,
     tun_inet: Ipv4Inet,
@@ -366,8 +363,7 @@ impl MagicDnsServerInstance {
         net_ns: &NetNS,
         cost: Option<i32>,
     ) -> Result<(), anyhow::Error> {
-        let ifcfg = IfConfiger::default();
-        let _guard = net_ns.guard();
+        let ifcfg = crate::common::ifcfg::in_namespace(net_ns.platform().clone());
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
             Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
                 ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
@@ -381,8 +377,7 @@ impl MagicDnsServerInstance {
     }
 
     async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, net_ns: &NetNS) {
-        let ifcfg = IfConfiger::default();
-        let _guard = net_ns.guard();
+        let ifcfg = crate::common::ifcfg::in_namespace(net_ns.platform().clone());
         if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
             tracing::warn!(
                 ?err,
@@ -400,7 +395,16 @@ impl MagicDnsServerInstance {
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
     ) -> Result<Self, anyhow::Error> {
-        Self::new_inner(packet_plane, global_ctx, tun_dev, tun_inet, fake_ip, true).await
+        Self::new_inner(
+            packet_plane,
+            global_ctx,
+            tun_dev,
+            tun_inet,
+            fake_ip,
+            true,
+            std::future::ready(Ok(())),
+        )
+        .await
     }
 
     pub(crate) async fn new_with_external_fake_ip_route(
@@ -410,7 +414,36 @@ impl MagicDnsServerInstance {
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
     ) -> Result<Self, anyhow::Error> {
-        Self::new_inner(packet_plane, global_ctx, tun_dev, tun_inet, fake_ip, false).await
+        Self::new_inner(
+            packet_plane,
+            global_ctx,
+            tun_dev,
+            tun_inet,
+            fake_ip,
+            false,
+            std::future::ready(Ok(())),
+        )
+        .await
+    }
+
+    pub(crate) async fn new_with_route_ready(
+        packet_plane: Arc<CorePacketPlane>,
+        global_ctx: ArcGlobalCtx,
+        tun_dev: Option<String>,
+        tun_inet: Ipv4Inet,
+        fake_ip: Ipv4Addr,
+        ready: impl std::future::Future<Output = anyhow::Result<()>>,
+    ) -> anyhow::Result<Self> {
+        Self::new_inner(
+            packet_plane,
+            global_ctx,
+            tun_dev,
+            tun_inet,
+            fake_ip,
+            false,
+            ready,
+        )
+        .await
     }
 
     async fn new_inner(
@@ -420,16 +453,31 @@ impl MagicDnsServerInstance {
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
         manage_fake_ip_route: bool,
+        route_ready: impl std::future::Future<Output = anyhow::Result<()>>,
     ) -> Result<Self, anyhow::Error> {
-        let tcp_listener = runtime_rpc_listener(MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse()?);
+        let tcp_listener = namespace_rpc_listener(
+            global_ctx.net_ns.clone(),
+            MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse()?,
+        );
         let mut rpc_server = StandAloneServer::new(tcp_listener);
         rpc_server.serve().await?;
+        // Reserve the per-domain server role before publishing a route. Client
+        // instances must not compete for the fake IP through a different TUN.
+        // No resolver or system DNS configuration is visible before readiness.
+        if let Err(error) = route_ready.await {
+            rpc_server.shutdown().await;
+            return Err(error);
+        }
 
         let dns_config = RunConfigBuilder::default()
             .general(GeneralConfigBuilder::default().build()?)
             .excluded_forward_nameservers(vec![fake_ip.into()])
             .build()?;
-        let mut dns_server = Server::new(dns_config);
+        let mut dns_server = Server::in_namespace(
+            dns_config,
+            global_ctx.net_ns.platform().clone(),
+            global_ctx.get_flags().socket_mark,
+        )?;
         dns_server.run().await?;
 
         if manage_fake_ip_route
@@ -488,7 +536,8 @@ impl MagicDnsServerInstance {
         })
     }
 
-    pub async fn clean_env(&self) {
+    pub async fn clean_env(&mut self) {
+        self._rpc_server.shutdown().await;
         if let Some(configer) = &self.data.system_config {
             let ret = configer.close();
             if let Err(e) = ret {
@@ -510,5 +559,74 @@ impl MagicDnsServerInstance {
 impl Drop for MagicDnsServerInstance {
     fn drop(&mut self) {
         println!("MagicDnsServerInstance dropped");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod route_ready_tests {
+    use super::*;
+    use crate::instance::{
+        composition::{NativeCoreInstance, runtime_core_host_adapters},
+        config::test_core_instance_config,
+    };
+    use easytier_core::{
+        host::packet::HostPacketChannelSink, process_runtime::CoreProcessRuntime,
+        socket::SocketListener,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    #[ignore = "run inside an isolated user+network namespace"]
+    async fn server_role_precedes_route_publication_and_failed_readiness_releases_role() {
+        let ctx = crate::common::global_ctx::tests::get_mock_global_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+        let adapters = runtime_core_host_adapters(
+            ctx.clone(),
+            CoreProcessRuntime::new(),
+            Arc::new(HostPacketChannelSink::new(sender)),
+        );
+        let core = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
+        let entered = AtomicBool::new(false);
+        let readiness = || async {
+            entered.store(true, Ordering::Release);
+            anyhow::bail!("route not ready")
+        };
+        let address = MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse().unwrap();
+        let mut occupied = namespace_rpc_listener(ctx.net_ns.clone(), address);
+        occupied.listen().await.unwrap();
+        let result = MagicDnsServerInstance::new_with_route_ready(
+            core.packet_plane(),
+            ctx.clone(),
+            None,
+            "10.50.0.1/24".parse().unwrap(),
+            "100.100.100.100".parse().unwrap(),
+            readiness(),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(
+            !entered.load(Ordering::Acquire),
+            "an RPC client must not publish a server route"
+        );
+        drop(occupied);
+        let result = MagicDnsServerInstance::new_with_route_ready(
+            core.packet_plane(),
+            ctx.clone(),
+            None,
+            "10.50.0.1/24".parse().unwrap(),
+            "100.100.100.100".parse().unwrap(),
+            readiness(),
+        )
+        .await;
+        assert!(
+            result
+                .err()
+                .expect("readiness must fail")
+                .to_string()
+                .contains("route not ready")
+        );
+        assert!(entered.load(Ordering::Acquire));
+        let mut available = namespace_rpc_listener(ctx.net_ns.clone(), address);
+        available.listen().await.unwrap();
     }
 }

@@ -21,7 +21,7 @@ use super::{
         RouteType, netlink_error_code,
     },
 };
-use crate::common::network::ip_mask_to_prefix;
+use crate::common::{netns::PlatformNamespace, network::ip_mask_to_prefix};
 use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{IpInet, Ipv4Inet, Ipv6Inet};
@@ -133,10 +133,23 @@ fn dump_netlink_messages<T: NetlinkDecode>(
     receive_netlink_dump(builder)
 }
 
-#[derive(Default)]
-pub struct NetlinkIfConfiger {}
+pub struct NetlinkIfConfiger {
+    namespace: PlatformNamespace,
+}
+
+impl Default for NetlinkIfConfiger {
+    fn default() -> Self {
+        Self::in_namespace(
+            PlatformNamespace::current().expect("capture interface configuration namespace"),
+        )
+    }
+}
 
 impl NetlinkIfConfiger {
+    pub(crate) fn in_namespace(namespace: PlatformNamespace) -> Self {
+        Self { namespace }
+    }
+
     pub(crate) fn get_interface_index(name: &str) -> Result<u32, Error> {
         let name = CString::new(name).with_context(|| "failed to convert interface name")?;
         match unsafe { libc::if_nametoindex(name.as_ptr()) } {
@@ -380,19 +393,21 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        let message = NetlinkIfConfiger::ipv4_route_message(
-            NetlinkIfConfiger::get_interface_index(name)?,
-            address,
-            cidr_prefix,
-            cost,
-            source_hint,
-        );
-        let request = message_request(
-            RTM_NEWROUTE,
-            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
-            &message,
-        )?;
-        send_netlink_req_and_wait_ack(request)
+        self.namespace.run(|| {
+            let message = NetlinkIfConfiger::ipv4_route_message(
+                NetlinkIfConfiger::get_interface_index(name)?,
+                address,
+                cidr_prefix,
+                cost,
+                source_hint,
+            );
+            let request = message_request(
+                RTM_NEWROUTE,
+                NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+                &message,
+            )?;
+            send_netlink_req_and_wait_ack(request)
+        })?
     }
 
     async fn remove_ipv4_route(
@@ -401,25 +416,27 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let routes = Self::list_routes()?;
-        let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
+        self.namespace.run(|| {
+            let routes = Self::list_routes()?;
+            let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
-        for msg in routes {
-            let destination = msg
-                .destination()
-                .copied()
-                .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-            if destination == IpAddr::V4(address)
-                && msg.dst_len() == cidr_prefix
-                && msg.oif() == Some(ifidx)
-            {
-                let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
-                send_netlink_req_and_wait_ack(request)?;
-                return Ok(());
+            for msg in routes {
+                let destination = msg
+                    .destination()
+                    .copied()
+                    .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                if destination == IpAddr::V4(address)
+                    && msg.dst_len() == cidr_prefix
+                    && msg.oif() == Some(ifidx)
+                {
+                    let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
+                    send_netlink_req_and_wait_ack(request)?;
+                    return Ok(());
+                }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })?
     }
 
     async fn remove_ipv4_route_with_cost_and_source_hint(
@@ -430,18 +447,20 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        let message = Self::ipv4_route_message(
-            Self::get_interface_index(name)?,
-            address,
-            cidr_prefix,
-            cost,
-            source_hint,
-        );
-        let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &message)?;
-        match send_netlink_req_and_wait_ack(request) {
-            Err(Error::IOError(err)) if err.raw_os_error() == Some(libc::ESRCH) => Ok(()),
-            result => result,
-        }
+        self.namespace.run(|| {
+            let message = Self::ipv4_route_message(
+                Self::get_interface_index(name)?,
+                address,
+                cidr_prefix,
+                cost,
+                source_hint,
+            );
+            let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &message)?;
+            match send_netlink_req_and_wait_ack(request) {
+                Err(Error::IOError(err)) if err.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+                result => result,
+            }
+        })?
     }
 
     async fn add_ipv4_ip(
@@ -450,55 +469,63 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let broadcast = if cidr_prefix == 32 {
-            address
-        } else {
-            let ip_addr = u32::from(address);
-            Ipv4Addr::from((0xffff_ffff_u32) >> u32::from(cidr_prefix) | ip_addr)
-        };
-        let message = AddressMessage::new(
-            libc::AF_INET as u8,
-            Self::get_interface_index(name)?,
-            cidr_prefix,
-            IpAddr::V4(address),
-        )
-        .local(IpAddr::V4(address))
-        .broadcast(broadcast);
-        let request = message_request(
-            RTM_NEWADDR,
-            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
-            &message,
-        )?;
-        send_netlink_req_and_wait_ack(request)
+        self.namespace.run(|| {
+            let broadcast = if cidr_prefix == 32 {
+                address
+            } else {
+                let ip_addr = u32::from(address);
+                Ipv4Addr::from((0xffff_ffff_u32) >> u32::from(cidr_prefix) | ip_addr)
+            };
+            let message = AddressMessage::new(
+                libc::AF_INET as u8,
+                Self::get_interface_index(name)?,
+                cidr_prefix,
+                IpAddr::V4(address),
+            )
+            .local(IpAddr::V4(address))
+            .broadcast(broadcast);
+            let request = message_request(
+                RTM_NEWADDR,
+                NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+                &message,
+            )?;
+            send_netlink_req_and_wait_ack(request)
+        })?
     }
 
     async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
-        let mut flags = Self::get_flags(name)?;
-        flags.set(InterfaceFlags::IFF_UP, up);
-        Self::set_flags(name, flags)?;
-        Ok(())
+        self.namespace.run(|| {
+            let mut flags = Self::get_flags(name)?;
+            flags.set(InterfaceFlags::IFF_UP, up);
+            Self::set_flags(name, flags)?;
+            Ok(())
+        })?
     }
 
     async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        if let Some(ip) = ip {
-            let prefix_len = Self::get_prefix_len(name, ip.address())?;
-            Self::remove_one_ip(name, ip.address(), prefix_len)?;
-        } else {
-            let addrs = Self::list_addresses(name)?;
-            for addr in addrs {
-                if let IpAddr::V4(ipv4) = addr.address() {
-                    Self::remove_one_ip(name, ipv4, addr.network_length())?;
+        self.namespace.run(|| {
+            if let Some(ip) = ip {
+                let prefix_len = Self::get_prefix_len(name, ip.address())?;
+                Self::remove_one_ip(name, ip.address(), prefix_len)?;
+            } else {
+                let addrs = Self::list_addresses(name)?;
+                for addr in addrs {
+                    if let IpAddr::V4(ipv4) = addr.address() {
+                        Self::remove_one_ip(name, ipv4, addr.network_length())?;
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })?
     }
 
     async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
-        Self::mtu_op(name, SIOCSIFMTU, mtu as libc::c_int)?;
+        self.namespace.run(|| {
+            Self::mtu_op(name, SIOCSIFMTU, mtu as libc::c_int)?;
 
-        Ok(())
+            Ok(())
+        })?
     }
 
     async fn add_ipv6_ip(
@@ -507,35 +534,39 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let message = AddressMessage::new(
-            libc::AF_INET6 as u8,
-            Self::get_interface_index(name)?,
-            cidr_prefix,
-            IpAddr::V6(address),
-        );
-        let request = message_request(
-            RTM_NEWADDR,
-            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
-            &message,
-        )?;
-        send_netlink_req_and_wait_ack(request)
+        self.namespace.run(|| {
+            let message = AddressMessage::new(
+                libc::AF_INET6 as u8,
+                Self::get_interface_index(name)?,
+                cidr_prefix,
+                IpAddr::V6(address),
+            );
+            let request = message_request(
+                RTM_NEWADDR,
+                NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+                &message,
+            )?;
+            send_netlink_req_and_wait_ack(request)
+        })?
     }
 
     async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        if let Some(ipv6) = ip {
-            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
-            Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
-        } else {
-            let addrs = Self::list_addresses(name)?;
-            for addr in addrs {
-                if let IpAddr::V6(ipv6) = addr.address() {
-                    let prefix_len = addr.network_length();
-                    Self::remove_one_ipv6(name, ipv6, prefix_len)?;
+        self.namespace.run(|| {
+            if let Some(ipv6) = ip {
+                let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
+                Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
+            } else {
+                let addrs = Self::list_addresses(name)?;
+                for addr in addrs {
+                    if let IpAddr::V6(ipv6) = addr.address() {
+                        let prefix_len = addr.network_length();
+                        Self::remove_one_ipv6(name, ipv6, prefix_len)?;
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })?
     }
 
     async fn add_ipv6_route(
@@ -545,23 +576,25 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let mut builder = RouteMessageBuilder::new(libc::AF_INET6 as u8)
-            .oif(Self::get_interface_index(name)?)
-            .priority(cost.unwrap_or(65535) as u32)
-            .table(libc::RT_TABLE_MAIN.into())
-            .static_protocol()
-            .universe_scope()
-            .route_type(RouteType::Unicast);
-        if cidr_prefix != 0 {
-            builder = builder.destination(IpAddr::V6(address), cidr_prefix);
-        }
-        let message = builder.build();
-        let request = message_request(
-            RTM_NEWROUTE,
-            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
-            &message,
-        )?;
-        send_netlink_req_and_wait_ack(request)
+        self.namespace.run(|| {
+            let mut builder = RouteMessageBuilder::new(libc::AF_INET6 as u8)
+                .oif(Self::get_interface_index(name)?)
+                .priority(cost.unwrap_or(65535) as u32)
+                .table(libc::RT_TABLE_MAIN.into())
+                .static_protocol()
+                .universe_scope()
+                .route_type(RouteType::Unicast);
+            if cidr_prefix != 0 {
+                builder = builder.destination(IpAddr::V6(address), cidr_prefix);
+            }
+            let message = builder.build();
+            let request = message_request(
+                RTM_NEWROUTE,
+                NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+                &message,
+            )?;
+            send_netlink_req_and_wait_ack(request)
+        })?
     }
 
     async fn remove_ipv6_route(
@@ -570,25 +603,27 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let routes = Self::list_route_messages(libc::AF_INET6 as u8)?;
-        let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
+        self.namespace.run(|| {
+            let routes = Self::list_route_messages(libc::AF_INET6 as u8)?;
+            let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
-        for msg in routes {
-            let destination = msg
-                .destination()
-                .copied()
-                .unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
-            if destination == IpAddr::V6(address)
-                && msg.dst_len() == cidr_prefix
-                && msg.oif() == Some(ifidx)
-            {
-                let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
-                send_netlink_req_and_wait_ack(request)?;
-                return Ok(());
+            for msg in routes {
+                let destination = msg
+                    .destination()
+                    .copied()
+                    .unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+                if destination == IpAddr::V6(address)
+                    && msg.dst_len() == cidr_prefix
+                    && msg.oif() == Some(ifidx)
+                {
+                    let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
+                    send_netlink_req_and_wait_ack(request)?;
+                    return Ok(());
+                }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })?
     }
 }
 
@@ -678,7 +713,7 @@ mod tests {
     #[tokio::test]
     async fn addr_test() {
         let _prepare_env = PrepareEnv::new();
-        let ifcfg = NetlinkIfConfiger {};
+        let ifcfg = NetlinkIfConfiger::default();
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         ifcfg
             .add_ipv4_ip(DUMMY_IFACE_NAME, "10.44.44.4".parse().unwrap(), 24)
@@ -721,7 +756,7 @@ mod tests {
         let _prepare_env = PrepareEnv::new();
         let ret = NetlinkIfConfiger::list_routes().unwrap();
 
-        let ifcfg = NetlinkIfConfiger {};
+        let ifcfg = NetlinkIfConfiger::default();
         println!("{:?}", ret);
 
         ifcfg.set_link_status(DUMMY_IFACE_NAME, true).await.unwrap();
@@ -755,7 +790,7 @@ mod tests {
     async fn remove_ipv4_route_with_source_hint_keeps_other_metric() {
         let iface = test_iface_name("rm");
         let _link = ScopedDummyLink::new(&iface);
-        let ifcfg = NetlinkIfConfiger {};
+        let ifcfg = NetlinkIfConfiger::default();
         let address = "10.231.1.1".parse().unwrap();
         let destination = "10.99.0.0".parse().unwrap();
 
@@ -865,7 +900,7 @@ mod tests {
     async fn ipv6_route_remove_test() {
         let iface = test_iface_name("rr");
         let _link = ScopedDummyLink::new(&iface);
-        let ifcfg = NetlinkIfConfiger {};
+        let ifcfg = NetlinkIfConfiger::default();
         let route_addr = "2001:db8:200::".parse::<std::net::Ipv6Addr>().unwrap();
 
         ifcfg

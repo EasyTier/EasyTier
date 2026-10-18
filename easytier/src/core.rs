@@ -1355,23 +1355,40 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(unix))]
     let sigterm = std::future::pending::<()>();
 
-    tokio::select! {
+    let wait_result = tokio::select! {
         _ = manager.wait() => {
-            let infos = manager.collect_network_infos().await?;
-            if infos
-                .into_values()
-                .filter_map(|info| info.error_msg).next().is_some() {
-                return Err(anyhow::anyhow!("some instances stopped with errors"));
+            match manager.collect_network_infos().await {
+                Ok(infos) if infos.values().any(|info| info.error_msg.is_some()) =>
+                    Err(anyhow::anyhow!("some instances stopped with errors")),
+                Ok(_) => Ok(()),
+                Err(error) => Err(error),
             }
         }
         _ = tokio::signal::ctrl_c() => {
             log::info!("ctrl-c received, exiting...");
+            Ok(())
         }
 
         _ = sigterm, if cfg!(unix) => {
             log::warn!("terminate signal received, exiting...");
+            Ok(())
         }
+    };
+    let stopped = manager
+        .delete_network_instances(manager.instance_ids())
+        .await;
+    let native = crate::instance::factory::shutdown_native_services().await;
+    let mut errors = Vec::new();
+    if let Err(error) = wait_result {
+        errors.push(format!("{error:#}"));
     }
+    if let Err(error) = stopped {
+        errors.push(format!("instance cleanup: {error:#}"));
+    }
+    if let Err(error) = native {
+        errors.push(format!("native cleanup: {error:#}"));
+    }
+    anyhow::ensure!(errors.is_empty(), "{}", errors.join("; "));
     Ok(())
 }
 

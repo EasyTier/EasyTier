@@ -8,7 +8,7 @@ use easytier_core::{
 };
 
 #[cfg(feature = "tun")]
-use crate::instance::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicRegistry};
+use crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry;
 use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtx},
     instance::{
@@ -17,8 +17,6 @@ use crate::{
     },
     socket::udp::RuntimeUdpSocket,
 };
-#[cfg(feature = "tun")]
-use tokio::sync::Mutex;
 
 pub(crate) struct TestInstance {
     core: Arc<NativeCoreInstance>,
@@ -30,27 +28,12 @@ impl TestInstance {
         config: TomlConfig,
         process_runtime: Arc<CoreProcessRuntime>,
     ) -> Self {
-        Self::compose(
-            config,
-            process_runtime,
-            #[cfg(feature = "tun")]
-            Arc::new(Mutex::new(SharedVirtualNicRegistry::new())),
-            |_| {},
-        )
+        Self::compose(config, process_runtime, |_| {})
     }
 
     #[cfg(feature = "tun")]
-    pub fn new_with_process_runtime_and_shared_virtual_nic_registry(
-        config: TomlConfig,
-        process_runtime: Arc<CoreProcessRuntime>,
-        shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
-    ) -> Self {
-        Self::compose(config, process_runtime, shared_virtual_nic_registry, |_| {})
-    }
-
-    #[cfg(feature = "tun")]
-    pub fn new_shared_virtual_nic_registry() -> ArcSharedVirtualNicRegistry {
-        Arc::new(Mutex::new(SharedVirtualNicRegistry::new()))
+    pub fn current_shared_virtual_nic_registry() -> ArcSharedVirtualNicRegistry {
+        crate::common::netns::NetNS::current().unwrap().nics.clone()
     }
 
     pub fn new_with_process_runtime_and_stun_provider(
@@ -59,21 +42,14 @@ impl TestInstance {
         provider: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
     ) -> Self {
         let provider: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> = Arc::from(provider);
-        Self::compose(
-            config,
-            process_runtime,
-            #[cfg(feature = "tun")]
-            Arc::new(Mutex::new(SharedVirtualNicRegistry::new())),
-            move |adapters| {
-                adapters.replace_stun_provider(provider);
-            },
-        )
+        Self::compose(config, process_runtime, move |adapters| {
+            adapters.replace_stun_provider(provider);
+        })
     }
 
     fn compose(
         config: TomlConfig,
         process_runtime: Arc<CoreProcessRuntime>,
-        #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
         customize: impl FnOnce(
             &mut easytier_core::instance::CoreHostAdapters<
                 crate::instance::host::NativeInstanceHost,
@@ -81,16 +57,25 @@ impl TestInstance {
         ),
     ) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-        let runtime_host = NativeInstanceRuntimeHost::new(
-            global_ctx.clone(),
-            #[cfg(feature = "tun")]
-            shared_virtual_nic_registry,
-        );
+        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
         let mut adapters = runtime_core_host_adapters_with_packet_egress(
             global_ctx.clone(),
             process_runtime,
             runtime_host.clone(),
         );
+        #[cfg(all(target_os = "linux", feature = "tun", feature = "linux-netlink"))]
+        if let Some(routes) = runtime_host.route_context() {
+            adapters.routes = Some(routes.handle.clone());
+            #[cfg(feature = "public-ipv6-provider")]
+            {
+                adapters.public_ipv6_host = Some(Arc::new(
+                    crate::instance::route::runtime::NativePublicIpv6Host::new(
+                        global_ctx.clone(),
+                        routes,
+                    ),
+                ));
+            }
+        }
         customize(&mut adapters);
         adapters.instance_runtime = runtime_host;
         let core = CoreInstance::from_toml(config, adapters)

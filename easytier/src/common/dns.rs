@@ -18,8 +18,6 @@ use hickory_resolver::name_server::{GenericConnector, TokioConnectionProvider};
 use hickory_resolver::system_conf::read_system_conf;
 #[cfg(feature = "dns-resolver")]
 use hickory_resolver::{Resolver, TokioResolver};
-#[cfg(feature = "dns-resolver")]
-use once_cell::sync::Lazy;
 use tokio::net::lookup_host;
 #[cfg(feature = "dns-resolver")]
 use tokio::net::{TcpStream, UdpSocket};
@@ -27,12 +25,9 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Semaphore;
 
 use super::error::Error;
-use super::netns::NetNS;
+use super::netns::PlatformNamespace;
 #[cfg(feature = "dns-resolver")]
-use crate::{
-    socket::{tcp::create_tcp_socket, udp::create_udp_socket},
-    socket_protector::native_socket_protection_available,
-};
+use crate::socket::{tcp::create_tcp_socket_in_namespace, udp::create_udp_socket_in_namespace};
 #[cfg(feature = "dns-resolver")]
 use easytier_core::socket::{NetNamespace, tcp::TcpBindOptions, udp::UdpBindOptions};
 
@@ -66,12 +61,14 @@ fn resolver_config() -> (ResolverConfig, ResolverOpts) {
 }
 
 #[cfg(feature = "dns-resolver")]
-static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> = Lazy::new(|| {
+fn process_resolver() -> Resolver<GenericConnector<TokioRuntimeProvider>> {
+    // A pooled socket must not survive the caller's runtime. Only configuration
+    // may be process-shared; standalone requests own their resolver resources.
     let (config, options) = resolver_config();
-    let builder = TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
-        .with_options(options);
-    Arc::new(builder.build())
-});
+    TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
+        .with_options(options)
+        .build()
+}
 
 #[cfg(feature = "dns-resolver")]
 const SYSTEM_DNS_LOOKUP_TIMEOUT: Duration = Duration::from_millis(800);
@@ -118,12 +115,14 @@ impl SystemDnsResolver {
                 .acquire_owned()
                 .await
                 .context("system DNS lookup slot closed")?;
-            tokio::spawn(async move {
-                let _permit = permit;
-                system_lookup.await
-            })
-            .await
-            .context("system DNS lookup task failed")?
+            crate::host_runtime::native_host_runtime()
+                .shared_executor()?
+                .spawn(async move {
+                    let _permit = permit;
+                    system_lookup.await
+                })
+                .await
+                .context("system DNS lookup task failed")?
         };
 
         match tokio::time::timeout(self.timeout, system_attempt).await {
@@ -146,49 +145,48 @@ impl SystemDnsResolver {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 struct RuntimeDnsIoContext {
-    netns: Option<String>,
+    namespace: PlatformNamespace,
     socket_mark: Option<u32>,
 }
 
 impl RuntimeDnsIoContext {
-    fn from_socket_context(context: &SocketContext) -> Self {
-        Self {
-            netns: context
-                .netns
-                .as_ref()
-                .map(|namespace| namespace.token().to_owned()),
+    fn from_socket_context(
+        context: &SocketContext,
+        namespace: &PlatformNamespace,
+    ) -> std::io::Result<Self> {
+        namespace.validate_context(context)?;
+        Ok(Self {
+            namespace: namespace.clone(),
             socket_mark: context.socket_mark,
-        }
-    }
-
-    fn netns(&self) -> NetNS {
-        NetNS::new(self.netns.clone())
-    }
-
-    #[cfg(feature = "dns-resolver")]
-    fn is_process_default(&self) -> bool {
-        self.netns.is_none() && self.socket_mark.is_none() && !native_socket_protection_available()
+        })
     }
 
     #[cfg(feature = "dns-resolver")]
     fn socket_context(&self) -> SocketContext {
         SocketContext::default()
-            .with_netns(self.netns.clone().map(NetNamespace::new))
+            .with_netns(Some(NetNamespace::new(self.namespace.id().to_string())))
             .with_socket_mark(self.socket_mark)
     }
 }
 
 #[cfg(feature = "dns-resolver")]
 #[derive(Clone)]
-struct RuntimeDnsIoProvider {
+pub(crate) struct RuntimeDnsIoProvider {
     inner: TokioRuntimeProvider,
     context: RuntimeDnsIoContext,
 }
 
 #[cfg(feature = "dns-resolver")]
 impl RuntimeDnsIoProvider {
+    pub(crate) fn in_namespace(namespace: PlatformNamespace, socket_mark: Option<u32>) -> Self {
+        Self::new(RuntimeDnsIoContext {
+            namespace,
+            socket_mark,
+        })
+    }
+
     fn new(context: RuntimeDnsIoContext) -> Self {
         Self {
             inner: TokioRuntimeProvider::new(),
@@ -219,10 +217,11 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
             .with_local_addr(bind_addr)
             .with_bind_device(Some(String::new()))
             .with_reuse_addr(false);
+        let namespace = self.context.namespace.clone();
         Box::pin(async move {
             let wait_for = wait_for.unwrap_or(Duration::from_secs(5));
             let connect = async {
-                let socket = create_tcp_socket(server_addr, &options)
+                let socket = create_tcp_socket_in_namespace(server_addr, &options, &namespace)
                     .await
                     .map_err(io::Error::other)?;
                 socket.set_nodelay(true)?;
@@ -247,26 +246,42 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
         let options = UdpBindOptions::default()
             .with_context(self.context.socket_context())
             .with_local_addr(Some(local_addr));
-        Box::pin(async move { create_udp_socket(&options).await.map_err(io::Error::other) })
+        let namespace = self.context.namespace.clone();
+        Box::pin(async move {
+            create_udp_socket_in_namespace(&options, &namespace)
+                .await
+                .map_err(io::Error::other)
+        })
     }
 }
 
 #[cfg(feature = "dns-resolver")]
 type ContextualResolver = Resolver<GenericConnector<RuntimeDnsIoProvider>>;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct RuntimeDnsResolver {
+    namespace: PlatformNamespace,
     #[cfg(feature = "dns-resolver")]
     system_dns: SystemDnsResolver,
 }
 
 impl RuntimeDnsResolver {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    fn requires_socket_dns(context: &RuntimeDnsIoContext) -> std::io::Result<bool> {
+        Ok(context.socket_mark.is_some()
+            || crate::socket_protector::native_socket_protection_available()
+            || !crate::host_runtime::native_host_runtime()
+                .is_process_default(&context.namespace)?)
+    }
+    pub(crate) fn in_namespace(namespace: PlatformNamespace) -> Self {
+        Self {
+            namespace,
+            #[cfg(feature = "dns-resolver")]
+            system_dns: SystemDnsResolver::default(),
+        }
     }
 
-    // A netns token can be deleted and recreated. Keep contextual resolvers
-    // request-scoped so pooled DNS sockets cannot outlive that namespace.
+    // Keep the resolver request-scoped: connection pools must not retain
+    // sockets registered on a caller's short-lived instance Reactor.
     #[cfg(feature = "dns-resolver")]
     fn contextual_resolver(context: RuntimeDnsIoContext) -> ContextualResolver {
         let (config, options) = resolver_config();
@@ -290,46 +305,23 @@ impl RuntimeDnsResolver {
     }
 
     #[cfg(feature = "dns-resolver")]
-    async fn resolve_process_ips(&self, host: &str) -> anyhow::Result<Vec<IpAddr>> {
-        let system_host = host.to_owned();
-        self.system_dns
-            .resolve(
-                async move {
-                    let addresses = lookup_host((system_host.as_str(), 0))
-                        .await?
-                        .map(|address| address.ip())
-                        .collect();
-                    Ok(addresses)
-                },
-                async {
-                    let response = RESOLVER
-                        .lookup_ip(host)
-                        .await
-                        .with_context(|| format!("hickory dns lookup_ip failed, host: {host}"))?;
-                    Ok(response.iter().collect())
-                },
-            )
-            .await
-    }
-
-    #[cfg(feature = "dns-resolver")]
     async fn resolve_contextual_ips(
         &self,
         context: RuntimeDnsIoContext,
         host: String,
     ) -> anyhow::Result<Vec<IpAddr>> {
-        if context.socket_mark.is_some() || native_socket_protection_available() {
+        if Self::requires_socket_dns(&context)? {
             return Self::resolve_contextual_with_hickory(context, host).await;
         }
 
-        // libc DNS cannot attach SO_MARK. It remains usable for a
-        // namespace-only context when confined to one blocking thread.
+        // Restrict libc/NSS to the process default domain. A scoped setns
+        // cannot confine plugins that delegate to a host-wide Unix daemon.
         let system_context = context.clone();
         let system_host = host.clone();
         self.system_dns
             .resolve(
                 async move {
-                    let netns = system_context.netns();
+                    let netns = system_context.namespace;
                     let addresses = tokio::task::spawn_blocking(move || {
                         netns.run(|| {
                             (system_host.as_str(), 0)
@@ -338,7 +330,7 @@ impl RuntimeDnsResolver {
                         })
                     })
                     .await
-                    .context("contextual system DNS task failed")??;
+                    .context("contextual system DNS task failed")???;
                     Ok(addresses)
                 },
                 Self::resolve_contextual_with_hickory(context, host),
@@ -350,26 +342,22 @@ impl RuntimeDnsResolver {
 #[async_trait]
 impl DnsResolver for RuntimeDnsResolver {
     async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
-        let context = RuntimeDnsIoContext::from_socket_context(&query.context);
+        let context = RuntimeDnsIoContext::from_socket_context(&query.context, &self.namespace)?;
+        if let Ok(address) = query.host.parse::<IpAddr>() {
+            return Ok(vec![address]);
+        }
         #[cfg(feature = "dns-resolver")]
         {
-            if context.is_process_default() {
-                return self.resolve_process_ips(&query.host).await;
-            }
             return self.resolve_contextual_ips(context, query.host).await;
         }
         #[cfg(not(feature = "dns-resolver"))]
         {
-            if context.socket_mark.is_some()
-                || crate::socket_protector::native_socket_protection_available()
-            {
-                anyhow::bail!("socket-marked or VPN-protected DNS requires DNS resolver support");
-            }
-            if context.netns.is_none() {
-                return Ok(resolve_ips(&query.host).await?);
+            if Self::requires_socket_dns(&context)? {
+                return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,
+                    "DNS in a non-default namespace, with a socket mark or VPN protection requires DNS resolver support").into());
             }
             let host = query.host;
-            let netns = context.netns();
+            let netns = context.namespace;
             return tokio::task::spawn_blocking(move || {
                 netns.run(|| {
                     (host.as_str(), 0)
@@ -378,7 +366,7 @@ impl DnsResolver for RuntimeDnsResolver {
                 })
             })
             .await
-            .context("contextual system DNS task failed")?
+            .context("contextual system DNS task failed")??
             .map_err(Into::into);
         }
     }
@@ -388,11 +376,7 @@ impl DnsResolver for RuntimeDnsResolver {
 #[async_trait]
 impl DnsRecordResolver for RuntimeDnsResolver {
     async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
-        let context = RuntimeDnsIoContext::from_socket_context(&query.context);
-        if context.is_process_default() {
-            return Ok(resolve_txt_record(&query.host).await?);
-        }
-
+        let context = RuntimeDnsIoContext::from_socket_context(&query.context, &self.namespace)?;
         let resolver = Self::contextual_resolver(context);
         let response = resolver
             .txt_lookup(&query.host)
@@ -410,14 +394,10 @@ impl DnsRecordResolver for RuntimeDnsResolver {
     }
 
     async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
-        let context = RuntimeDnsIoContext::from_socket_context(&query.context);
-        let response = if context.is_process_default() {
-            RESOLVER.srv_lookup(&query.host).await?
-        } else {
-            Self::contextual_resolver(context)
-                .srv_lookup(&query.host)
-                .await?
-        };
+        let context = RuntimeDnsIoContext::from_socket_context(&query.context, &self.namespace)?;
+        let response = Self::contextual_resolver(context)
+            .srv_lookup(&query.host)
+            .await?;
         Ok(response
             .iter()
             .map(|record| DnsSrvRecord {
@@ -442,30 +422,38 @@ impl DnsRecordResolver for RuntimeDnsResolver {
     }
 }
 
-#[cfg(feature = "dns-resolver")]
-async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
-    let r = RESOLVER.clone();
-    let response = r
-        .txt_lookup(domain_name)
-        .await
-        .with_context(|| format!("txt_lookup failed, domain_name: {}", domain_name))?;
-
-    let txt_record = response
-        .iter()
-        .next()
-        .with_context(|| format!("no txt record found, domain_name: {}", domain_name))?;
-
-    let txt_data = String::from_utf8_lossy(&txt_record.txt_data()[0]);
-    tracing::info!(?txt_data, ?domain_name, "get txt record");
-
-    Ok(txt_data.to_string())
-}
-
 pub async fn socket_addrs(
     url: &url::Url,
     default_port_number: impl Fn() -> Option<u16>,
 ) -> Result<Vec<SocketAddr>, Error> {
     socket_addrs_with_system_resolver(url, default_port_number, true).await
+}
+
+#[cfg(any(feature = "faketcp", feature = "wireguard"))]
+pub(crate) async fn socket_addrs_in_namespace(
+    url: &url::Url,
+    default_port: u16,
+    namespace: PlatformNamespace,
+    context: SocketContext,
+) -> Result<Vec<SocketAddr>, Error> {
+    namespace.validate_context(&context)?;
+    let port = url.port().unwrap_or(default_port);
+    let addresses = match url
+        .host()
+        .ok_or_else(|| Error::InvalidUrl(url.to_string()))?
+    {
+        url::Host::Ipv4(ip) => vec![IpAddr::V4(ip)],
+        url::Host::Ipv6(ip) => vec![IpAddr::V6(ip)],
+        url::Host::Domain(host) => {
+            RuntimeDnsResolver::in_namespace(namespace)
+                .resolve(DnsQuery::new(host, context))
+                .await?
+        }
+    };
+    Ok(addresses
+        .into_iter()
+        .map(|ip| SocketAddr::new(ip, port))
+        .collect())
 }
 
 async fn socket_addrs_with_system_resolver(
@@ -506,7 +494,7 @@ async fn socket_addrs_with_system_resolver(
     // use hickory_resolver
     #[cfg(feature = "dns-resolver")]
     {
-        let ret = RESOLVER.lookup_ip(&host).await.with_context(|| {
+        let ret = process_resolver().lookup_ip(&host).await.with_context(|| {
             format!(
                 "hickory dns lookup_ip failed, host: {}, port: {}",
                 host, port
@@ -519,14 +507,6 @@ async fn socket_addrs_with_system_resolver(
     }
     #[cfg(not(feature = "dns-resolver"))]
     unreachable!("the system resolver error returns above")
-}
-
-#[cfg(not(feature = "dns-resolver"))]
-async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
-    Ok(lookup_host((host, 0))
-        .await?
-        .map(|addr| addr.ip())
-        .collect())
 }
 
 #[cfg(test)]
@@ -599,18 +579,50 @@ mod tests {
     }
 
     #[test]
-    fn runtime_dns_context_preserves_process_routing_inputs() {
+    fn runtime_dns_context_preserves_bound_domain_and_zero_mark() {
+        let namespace = PlatformNamespace::current().unwrap();
         let context = SocketContext::default()
             .with_socket_mark(Some(0))
+            .with_netns(Some(easytier_core::socket::NetNamespace::new(
+                namespace.id().to_string(),
+            )));
+        let actual = RuntimeDnsIoContext::from_socket_context(&context, &namespace).unwrap();
+        assert_eq!(actual.namespace.id(), namespace.id());
+        assert_eq!(actual.socket_mark, Some(0));
+        let named = SocketContext::default()
             .with_netns(Some(easytier_core::socket::NetNamespace::new("instance-a")));
+        assert!(RuntimeDnsIoContext::from_socket_context(&named, &namespace).is_err());
+    }
 
-        assert_eq!(
-            RuntimeDnsIoContext::from_socket_context(&context),
-            RuntimeDnsIoContext {
-                netns: Some("instance-a".to_owned()),
-                socket_mark: Some(0),
-            }
-        );
+    #[tokio::test]
+    async fn dns_literal_needs_no_resolver_socket_or_mark_capability() {
+        let namespace = PlatformNamespace::current().unwrap();
+        let resolver = RuntimeDnsResolver::in_namespace(namespace);
+        for address in ["127.0.0.1", "::1"] {
+            let context = SocketContext::default().with_socket_mark(Some(0));
+            assert_eq!(
+                resolver
+                    .resolve(DnsQuery::new(address, context))
+                    .await
+                    .unwrap(),
+                vec![address.parse::<IpAddr>().unwrap()]
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "run inside an isolated user+network namespace"]
+    fn non_default_domains_cannot_use_process_wide_nss() {
+        let host = crate::host_runtime::native_host_runtime();
+        let original = host.capture_default_namespace().unwrap();
+        let other = crate::common::netns::isolated_namespace_for_test().unwrap();
+        assert!(host.is_process_default(original.platform()).unwrap());
+        assert!(!host.is_process_default(other.platform()).unwrap());
+        let context =
+            RuntimeDnsIoContext::from_socket_context(&SocketContext::default(), other.platform())
+                .unwrap();
+        assert!(RuntimeDnsResolver::requires_socket_dns(&context).unwrap());
     }
 
     #[tokio::test]

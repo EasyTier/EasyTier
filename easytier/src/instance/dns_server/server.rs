@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use hickory_proto::rr;
 use hickory_proto::rr::LowerName;
 use hickory_resolver::config::ResolverOpts;
-use hickory_resolver::name_server::TokioConnectionProvider;
+use hickory_resolver::name_server::GenericConnector;
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_server::ServerFuture;
 use hickory_server::authority::{AuthorityObject, Catalog, ZoneType};
@@ -13,14 +13,19 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::{TcpSocket, UdpSocket};
 use tokio::sync::{RwLock, RwLockReadGuard};
 
-use crate::common::dns::get_default_resolver_config;
+use crate::common::{
+    dns::{RuntimeDnsIoProvider, get_default_resolver_config},
+    netns::PlatformNamespace,
+};
 
 use super::config::{GeneralConfig, Record, RunConfig};
 
 pub struct Server {
+    namespace: PlatformNamespace,
+    socket_mark: Option<u32>,
     server: ServerFuture<CatalogRequestHandler>,
     catalog: Arc<RwLock<Catalog>>,
     general_config: GeneralConfig,
@@ -76,6 +81,14 @@ impl Server {
     }
 
     fn try_new(config: RunConfig) -> Result<Self> {
+        Self::in_namespace(config, PlatformNamespace::current()?, None)
+    }
+
+    pub(crate) fn in_namespace(
+        config: RunConfig,
+        namespace: PlatformNamespace,
+        socket_mark: Option<u32>,
+    ) -> Result<Self> {
         let mut catalog = Catalog::new();
         for (domain, records) in config.zones().iter() {
             let zone = rr::Name::from_str(domain.as_str())?;
@@ -103,7 +116,10 @@ impl Server {
         };
         let auth = ForwardAuthority::builder_with_config(
             forward_config,
-            TokioConnectionProvider::default(),
+            GenericConnector::new(RuntimeDnsIoProvider::in_namespace(
+                namespace.clone(),
+                socket_mark,
+            )),
         )
         .build()
         .unwrap();
@@ -115,6 +131,8 @@ impl Server {
         let server = ServerFuture::new(handler);
 
         Ok(Self {
+            namespace,
+            socket_mark,
             server,
             catalog,
             general_config: config.general().clone(),
@@ -130,31 +148,34 @@ impl Server {
     pub async fn register_udp_socket(&mut self, address: String) -> Result<SocketAddr> {
         let bind_addr = SocketAddr::from_str(&address)
             .with_context(|| format!("DNS Server failed to parse address {}", address))?;
-        let socket = socket2::Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )
-        .with_context(|| {
-            format!(
-                "DNS Server failed to create UDP socket for address {}",
-                address
+        let socket = self.namespace.run(|| -> Result<socket2::Socket> {
+            let socket = socket2::Socket::new(
+                socket2::Domain::for_address(bind_addr),
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
             )
-        })?;
-        socket2::SockRef::from(&socket)
-            .set_reuse_address(true)
             .with_context(|| {
                 format!(
-                    "DNS Server failed to set reuse address on socket {}",
+                    "DNS Server failed to create UDP socket for address {}",
                     address
                 )
             })?;
-        socket.bind(&bind_addr.into()).with_context(|| {
-            format!("DNS Server failed to bind socket to address {}", bind_addr)
-        })?;
-        socket
-            .set_nonblocking(true)
-            .with_context(|| "DNS Server failed to set socket to non-blocking".to_string())?;
+            socket2::SockRef::from(&socket)
+                .set_reuse_address(true)
+                .with_context(|| {
+                    format!(
+                        "DNS Server failed to set reuse address on socket {}",
+                        address
+                    )
+                })?;
+            socket.bind(&bind_addr.into()).with_context(|| {
+                format!("DNS Server failed to bind socket to address {}", bind_addr)
+            })?;
+            socket
+                .set_nonblocking(true)
+                .with_context(|| "DNS Server failed to set socket to non-blocking".to_string())?;
+            Ok(socket)
+        })??;
         let socket = UdpSocket::from_std(socket.into()).with_context(|| {
             format!(
                 "DNS Server failed to convert socket to UdpSocket for address {}",
@@ -170,11 +191,56 @@ impl Server {
         Ok(local_addr)
     }
 
+    async fn tcp_addresses(&self, address: &str) -> Result<Vec<SocketAddr>> {
+        use easytier_core::{
+            host::dns::{DnsQuery, DnsResolver},
+            socket::SocketContext,
+        };
+        if let Ok(address) = address.parse() {
+            return Ok(vec![address]);
+        }
+        let (host, port) = address
+            .rsplit_once(':')
+            .context("DNS TCP address requires a port")?;
+        let port: u16 = port.parse().context("invalid DNS TCP port")?;
+        let resolver = crate::common::dns::RuntimeDnsResolver::in_namespace(self.namespace.clone());
+        let addresses = resolver
+            .resolve(DnsQuery::new(
+                host,
+                SocketContext::default().with_socket_mark(self.socket_mark),
+            ))
+            .await?;
+        anyhow::ensure!(
+            !addresses.is_empty(),
+            "DNS TCP address resolved to no addresses"
+        );
+        Ok(addresses
+            .into_iter()
+            .map(|ip| SocketAddr::new(ip, port))
+            .collect())
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         if let Some(address) = self.general_config.listen_tcp() {
-            let tcp_listener = TcpListener::bind(address.clone())
-                .await
-                .with_context(|| format!("DNS Server failed to bind TCP address {}", address))?;
+            let mut listener = Err(std::io::Error::other(
+                "DNS TCP address resolved to no addresses",
+            ));
+            for address in self.tcp_addresses(address).await? {
+                listener = self.namespace.run(|| -> std::io::Result<_> {
+                    let socket = if address.is_ipv4() {
+                        TcpSocket::new_v4()?
+                    } else {
+                        TcpSocket::new_v6()?
+                    };
+                    socket.bind(address)?;
+                    socket.listen(1024)
+                })?;
+                if listener.is_ok() {
+                    break;
+                }
+            }
+            let tcp_listener = listener
+                .with_context(|| format!("DNS Server failed to bind TCP address {address}"))?;
             self.server
                 .register_listener(tcp_listener, Duration::from_secs(5));
         }
@@ -285,6 +351,54 @@ mod tests {
         assert_eq!(response.answers().first().unwrap(), &expected_record);
 
         server.shutdown().await?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "run inside an isolated user+network namespace"]
+    async fn namespace_dns_listeners_and_udp_tcp_queries_stay_in_their_domain() -> Result<()> {
+        use crate::common::netns::isolated_namespace_for_test;
+        use hickory_proto::xfer::Protocol;
+        use hickory_resolver::{
+            Resolver,
+            config::{NameServerConfig, ResolverConfig},
+        };
+        let a = isolated_namespace_for_test()?;
+        let b = isolated_namespace_for_test()?;
+        let address = "127.0.0.1:6053";
+        let config = |ip: &str| -> Result<RunConfig> {
+            Ok(RunConfigBuilder::default().general(GeneralConfigBuilder::default().listen_udp(address).listen_tcp(address).build()?)
+                .zones(hashmap! { "et.internal.".to_owned() => vec![
+                    RecordBuilder::default().rr_type(RecordType::A).name("www.et.internal.".to_owned()).value(ip.to_owned()).ttl(Duration::from_secs(60)).build()?,
+                    RecordBuilder::default().rr_type(RecordType::SOA).name("et.internal.".to_owned()).value("ns.et.internal. hostmaster.et.internal. 2023101001 7200 3600 1209600 86400".to_owned()).ttl(Duration::from_secs(60)).build()?,
+                ] }).build()?)
+        };
+        let mut sa = Server::in_namespace(config("192.0.2.1")?, a.platform().clone(), None)?;
+        let mut sb = Server::in_namespace(config("192.0.2.2")?, b.platform().clone(), None)?;
+        sa.run().await?;
+        sb.run().await?;
+        for protocol in [Protocol::Udp, Protocol::Tcp] {
+            for (namespace, ip) in [(&a, "192.0.2.1"), (&b, "192.0.2.2")] {
+                let mut resolver_config = ResolverConfig::new();
+                resolver_config.add_name_server(NameServerConfig::new(address.parse()?, protocol));
+                let provider = GenericConnector::new(RuntimeDnsIoProvider::in_namespace(
+                    namespace.platform().clone(),
+                    None,
+                ));
+                let resolver = Resolver::builder_with_config(resolver_config, provider).build();
+                let lookup = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    resolver.ipv4_lookup("www.et.internal."),
+                )
+                .await??;
+                assert_eq!(
+                    lookup.iter().next().unwrap().0,
+                    ip.parse::<std::net::Ipv4Addr>()?
+                );
+            }
+        }
+        sa.shutdown().await?;
+        sb.shutdown().await?;
         Ok(())
     }
 }

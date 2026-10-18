@@ -10,6 +10,7 @@ use easytier_core::{
 };
 
 use crate::{
+    common::netns::NetNS,
     host_runtime::{NativeHostRuntime, native_host_runtime},
     tunnel::TunnelUrl,
 };
@@ -19,6 +20,30 @@ pub use easytier_core::rpc::standalone::{RpcServerHook, StandAloneServer};
 pub type RuntimeRpcDialer = TcpTunnelDialer<NativeHostRuntime>;
 pub type RuntimeRpcListener = TcpTunnelListener<NativeHostRuntime>;
 pub type RuntimeRpcClient = StandAloneClient<RuntimeRpcDialer>;
+pub(crate) type NamespaceRpcListener = TcpTunnelListener<NetNS>;
+pub(crate) type NamespaceRpcClient = StandAloneClient<TcpTunnelDialer<NetNS>>;
+
+pub(crate) fn namespace_rpc_client(
+    namespace: std::sync::Arc<NetNS>,
+    remote_url: url::Url,
+) -> NamespaceRpcClient {
+    StandAloneClient::new(TcpTunnelDialer::new(
+        remote_url,
+        namespace.clone(),
+        namespace,
+    ))
+}
+
+pub(crate) fn namespace_rpc_listener(
+    namespace: std::sync::Arc<NetNS>,
+    local_addr: std::net::SocketAddr,
+) -> NamespaceRpcListener {
+    let bind = TcpBindOptions::default()
+        .with_local_addr(Some(local_addr))
+        .with_only_v6(true)
+        .with_need_protect(false);
+    TcpTunnelListener::new_with_bind(local_addr, bind, namespace)
+}
 
 pub fn runtime_rpc_dialer(remote_url: url::Url) -> RuntimeRpcDialer {
     TcpTunnelDialer::new(remote_url, native_host_runtime(), native_host_runtime())
@@ -113,5 +138,45 @@ mod tests {
             connected.info().unwrap().remote_addr.unwrap().url,
             listener_url.as_str()
         );
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "run inside an isolated user+network namespace"]
+    async fn namespace_rpc_clients_and_servers_use_distinct_loopbacks() {
+        use crate::{
+            common::netns::isolated_namespace_for_test,
+            proto::{
+                magic_dns::MagicDnsServerRpcClientFactory, rpc_types::controller::BaseController,
+            },
+        };
+        let a = isolated_namespace_for_test().unwrap();
+        let b = isolated_namespace_for_test().unwrap();
+        let address = "127.0.0.1:49813".parse().unwrap();
+        let mut first = StandAloneServer::new(super::namespace_rpc_listener(a.clone(), address));
+        let mut second = StandAloneServer::new(super::namespace_rpc_listener(b.clone(), address));
+        first.serve().await.unwrap();
+        second.serve().await.unwrap();
+        let url: url::Url = "tcp://127.0.0.1:49813".parse().unwrap();
+        let mut ca = super::namespace_rpc_client(a.clone(), url.clone());
+        let mut cb = super::namespace_rpc_client(b.clone(), url.clone());
+        ca.scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>(String::new())
+            .await
+            .unwrap();
+        cb.scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>(String::new())
+            .await
+            .unwrap();
+        drop(first);
+        let mut next_a = super::namespace_rpc_client(a, url.clone());
+        assert!(
+            next_a
+                .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>(String::new())
+                .await
+                .is_err()
+        );
+        let mut next_b = super::namespace_rpc_client(b, url);
+        next_b
+            .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>(String::new())
+            .await
+            .unwrap();
     }
 }

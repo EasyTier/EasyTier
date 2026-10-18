@@ -1,6 +1,9 @@
 //! Atomic runtime configuration owned by one core instance.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, OnceLock},
+};
 
 use arc_swap::ArcSwap;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
@@ -63,6 +66,7 @@ struct CoreRuntimeConfigStoreInner {
     update: Mutex<()>,
     peer_changes: tokio::sync::watch::Sender<u64>,
     service_changes: tokio::sync::watch::Sender<u64>,
+    route_invalidator: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Atomic configuration authority shared by one core instance and its peer
@@ -82,12 +86,26 @@ impl CoreRuntimeConfigStore {
                 update: Mutex::new(()),
                 peer_changes,
                 service_changes,
+                route_invalidator: OnceLock::new(),
             }),
         }
     }
 
     pub fn snapshot(&self) -> Arc<CoreInstanceRuntimeConfig> {
         self.inner.snapshot.load_full()
+    }
+
+    pub(crate) fn set_route_invalidator(
+        &self,
+        invalidate: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(), ()> {
+        self.inner.route_invalidator.set(invalidate).map_err(|_| ())
+    }
+
+    fn invalidate_routes(&self) {
+        if let Some(invalidate) = self.inner.route_invalidator.get() {
+            invalidate();
+        }
     }
 
     pub(crate) fn with_snapshot<T>(&self, read: impl FnOnce(&CoreInstanceRuntimeConfig) -> T) -> T {
@@ -102,6 +120,8 @@ impl CoreRuntimeConfigStore {
         self.inner
             .service_changes
             .send_modify(|version| *version += 1);
+        drop(_update);
+        self.invalidate_routes();
     }
 
     pub(crate) fn replace_with_current(
@@ -118,6 +138,8 @@ impl CoreRuntimeConfigStore {
         self.inner
             .service_changes
             .send_modify(|version| *version += 1);
+        drop(_update);
+        self.invalidate_routes();
         config
     }
 
@@ -129,6 +151,8 @@ impl CoreRuntimeConfigStore {
         self.inner
             .service_changes
             .send_modify(|version| *version += 1);
+        drop(_update);
+        self.invalidate_routes();
     }
 
     pub fn update_peer(&self, peer: Arc<PeerRuntimeSnapshot>) {
@@ -168,6 +192,49 @@ impl CoreRuntimeConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_invalidation_follows_service_commits_outside_the_update_lock() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let store = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::default()),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let weak = Arc::downgrade(&store.inner);
+        assert!(
+            store
+                .set_route_invalidator(Arc::new(move || {
+                    let inner = weak.upgrade().unwrap();
+                    assert!(
+                        inner.update.try_lock().is_some(),
+                        "callback must not run under the config write lock"
+                    );
+                    let _committed = inner.snapshot.load_full();
+                    observed.fetch_add(1, Ordering::Relaxed);
+                }))
+                .is_ok()
+        );
+        assert!(
+            store
+                .set_route_invalidator(Arc::new(|| panic!("must not replace the fixed callback")))
+                .is_err()
+        );
+        store.update_services(|services| services.manual_routes = Some(BTreeSet::new()));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        store.replace(store.snapshot().as_ref().clone());
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        store.replace_with_current(store.snapshot().as_ref().clone(), |_, config| {
+            config.services.dhcp_ipv4 = true
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+        store.update_peer(Arc::new(PeerRuntimeSnapshot::default()));
+        store.update_peer_with(|peer| {
+            peer.runtime.core.node.hostname = Some("peer-only".to_owned())
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
 
     #[test]
     fn replaces_service_and_peer_as_one_version() {

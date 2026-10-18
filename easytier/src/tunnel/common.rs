@@ -2,7 +2,7 @@ use bon::builder;
 use network_interface::NetworkInterfaceConfig as _;
 use std::net::{IpAddr, SocketAddr};
 
-use crate::common::netns::NetNS;
+use crate::common::netns::PlatformNamespace;
 use easytier_core::tunnel::TunnelError;
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
 
@@ -206,10 +206,10 @@ impl From<&str> for BindDev {
 ///
 /// Returns a [`TunnelError`] if socket creation, configuration, or finalization fails.
 #[builder]
-pub async fn bind<B: Bindable>(
+pub(crate) async fn bind<B: Bindable>(
     addr: SocketAddr,
     #[builder(default, into)] dev: BindDev,
-    net_ns: Option<NetNS>,
+    #[builder(into)] net_ns: Option<PlatformNamespace>,
     #[builder(default)] only_v6: bool,
     #[builder(default = !cfg!(target_os = "windows"))] reuse_addr: bool,
     #[builder(default)] reuse_port: bool,
@@ -218,8 +218,11 @@ pub async fn bind<B: Bindable>(
     socket_mark: Option<u32>,
     #[builder(default)] need_protect: bool,
 ) -> Result<B, TunnelError> {
-    let (socket, dev) = {
-        let _g = net_ns.as_ref().map(|n| n.guard());
+    let namespace = match net_ns {
+        Some(namespace) => namespace,
+        None => PlatformNamespace::current()?,
+    };
+    let (socket, dev) = namespace.run(|| -> Result<_, TunnelError> {
         let dev = match dev {
             BindDev::Auto => get_interface_name_by_ip(&addr.ip()),
             BindDev::Disabled => None,
@@ -230,13 +233,14 @@ pub async fn bind<B: Bindable>(
         // A platform protector may set its own routing mark. Never overwrite
         // that mark with caller options after its acknowledgement.
         apply_socket_mark(&socket, socket_mark)?;
-        (socket, dev)
-    };
+        Ok((socket, dev))
+    })??;
     crate::socket_protector::protect_native_socket(&socket, need_protect).await?;
     // Restore the requested namespace for synchronous bind/device lookup only.
-    let _g = net_ns.as_ref().map(|n| n.guard());
-    setup_socket2_ext(&socket, &addr, dev, only_v6, reuse_addr, reuse_port)?;
-    B::finalize(socket)
+    namespace.run(|| {
+        setup_socket2_ext(&socket, &addr, dev, only_v6, reuse_addr, reuse_port)?;
+        B::finalize(socket)
+    })?
 }
 
 // endregion
@@ -449,18 +453,22 @@ pub(crate) mod tests {
     }
 
     async fn _tunnel_pingpong_netns<L, C>(
-        mut listener: L,
+        listener: L,
         connector: C,
-        l_netns: NetNS,
-        c_netns: NetNS,
+        l_netns: std::sync::Arc<NetNS>,
+        c_netns: std::sync::Arc<NetNS>,
         buf: Vec<u8>,
         timeout: std::time::Duration,
     ) -> anyhow::Result<()>
     where
-        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
-        C: TunnelDialer,
+        L: FnOnce(Arc<NetNS>) -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync>
+            + Send
+            + 'static,
+        C: FnOnce(Arc<NetNS>) -> Box<dyn TunnelDialer> + Send + 'static,
     {
-        tokio::time::timeout(timeout, l_netns.run_async(|| listener.listen()))
+        let mut listener = listener(l_netns);
+        let connector = connector(c_netns);
+        tokio::time::timeout(timeout, listener.listen())
             .await
             .context("listener setup timed out")?
             .context("listener setup failed")?;
@@ -475,7 +483,7 @@ pub(crate) mod tests {
             _tunnel_echo_server(ret, false).await
         }));
 
-        let tunnel = tokio::time::timeout(timeout, c_netns.run_async(|| connector.connect()))
+        let tunnel = tokio::time::timeout(timeout, connector.connect())
             .await
             .context("connect timed out")?
             .context("connect failed")?;
@@ -529,14 +537,16 @@ pub(crate) mod tests {
     pub(crate) async fn _tunnel_pingpong_netns_with_timeout<L, C>(
         listener: L,
         connector: C,
-        l_netns: NetNS,
-        c_netns: NetNS,
+        l_netns: std::sync::Arc<NetNS>,
+        c_netns: std::sync::Arc<NetNS>,
         buf: Vec<u8>,
         timeout: std::time::Duration,
     ) -> Result<(), anyhow::Error>
     where
-        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
-        C: TunnelDialer,
+        L: FnOnce(Arc<NetNS>) -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync>
+            + Send
+            + 'static,
+        C: FnOnce(Arc<NetNS>) -> Box<dyn TunnelDialer> + Send + 'static,
     {
         // Each phase has its own deadline; connection setup must not consume
         // the echo or shutdown budget. Dropping the caller cancels both tasks.
@@ -567,19 +577,20 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn _tunnel_bench_netns<L, C>(
-        mut listener: L,
+        listener: L,
         connector: C,
-        netns_l: NetNS,
-        netns_c: NetNS,
+        netns_l: std::sync::Arc<NetNS>,
+        netns_c: std::sync::Arc<NetNS>,
     ) -> usize
     where
-        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
-        C: TunnelDialer,
+        L: FnOnce(Arc<NetNS>) -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync>
+            + Send
+            + 'static,
+        C: FnOnce(Arc<NetNS>) -> Box<dyn TunnelDialer> + Send + 'static,
     {
-        {
-            let _g = netns_l.guard();
-            listener.listen().await.unwrap();
-        }
+        let mut listener = listener(netns_l);
+        let connector = connector(netns_c);
+        listener.listen().await.unwrap();
 
         let bps = Arc::new(AtomicU64::new(0));
         let bps_clone = bps.clone();
@@ -604,10 +615,7 @@ pub(crate) mod tests {
             }
         });
 
-        let tunnel = {
-            let _g = netns_c.guard();
-            connector.connect().await.unwrap()
-        };
+        let tunnel = connector.connect().await.unwrap();
 
         let (_recv, mut send) = tunnel.split();
 

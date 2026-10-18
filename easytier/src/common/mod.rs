@@ -11,6 +11,7 @@ pub mod ifcfg;
 #[cfg(feature = "logging")]
 pub mod log;
 pub mod machine_id;
+pub(crate) mod native_executor;
 pub mod netns;
 pub mod network;
 #[cfg(feature = "management")]

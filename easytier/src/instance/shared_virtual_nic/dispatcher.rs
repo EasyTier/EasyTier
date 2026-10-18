@@ -33,8 +33,8 @@ use easytier_core::{
 };
 
 use super::{
-    SHARED_VIRTUAL_NIC_RUNTIME, SharedIfConfigClaims, SharedIpv4Route, SharedIpv6Route,
-    SharedVirtualNicMemberId, SharedVirtualNicMemberRegistrationId,
+    SharedIfConfigClaims, SharedIpv4Route, SharedIpv6Route, SharedVirtualNicMemberId,
+    SharedVirtualNicMemberRegistrationId, shared_virtual_nic_runtime,
 };
 
 const MEMBER_TUNNEL_BUFFER_SIZE: usize = 1024;
@@ -534,7 +534,7 @@ impl SharedVirtualNicDispatcher {
         };
 
         Self {
-            task: AbortOnDropHandle::new(SHARED_VIRTUAL_NIC_RUNTIME.spawn(task.run())),
+            task: AbortOnDropHandle::new(shared_virtual_nic_runtime().spawn(task.run())),
             control_sender,
         }
     }
@@ -563,7 +563,7 @@ impl SharedVirtualNicDispatcher {
                 ..Default::default()
             },
         };
-        let task = SHARED_VIRTUAL_NIC_RUNTIME.spawn(task.run_for_mobile(first_open_sender));
+        let task = shared_virtual_nic_runtime().spawn(task.run_for_mobile(first_open_sender));
 
         let dispatcher = Self {
             task: AbortOnDropHandle::new(task),
@@ -3232,7 +3232,7 @@ mod tests {
                 let (control_sender, mut controls) = mpsc::unbounded_channel();
                 let ack_applied = applied.clone();
                 let ack_resume = resume.clone();
-                let task = SHARED_VIRTUAL_NIC_RUNTIME.spawn(async move {
+                let task = shared_virtual_nic_runtime().spawn(async move {
                     let mut updates = 0;
                     while let Some(control) = controls.recv().await {
                         match control {
@@ -3257,6 +3257,8 @@ mod tests {
                     control_sender,
                 });
                 let table = shared_nic.member_tunnel_table.clone();
+                let lifetimes = shared_nic.lifetimes.clone();
+                *lifetimes.lock().unwrap() = Some(1);
                 let shared_nic = Arc::new(tokio::sync::Mutex::new(shared_nic));
                 let member = SharedVirtualNicMember::new(
                     member_id,
@@ -3264,6 +3266,7 @@ mod tests {
                     shared_nic.clone(),
                     Arc::new(Notify::new()),
                     table,
+                    lifetimes,
                 );
                 shared_nic
                     .lock()

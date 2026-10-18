@@ -16,6 +16,9 @@ pub(crate) const NLM_F_CREATE: u16 = 0x400;
 
 pub(crate) const NLMSG_ERROR: u16 = 2;
 pub(crate) const NLMSG_DONE: u16 = 3;
+pub(crate) const RTM_NEWLINK: u16 = 16;
+pub(crate) const RTM_DELLINK: u16 = 17;
+pub(crate) const RTM_GETLINK: u16 = 18;
 pub(crate) const RTM_NEWADDR: u16 = 20;
 pub(crate) const RTM_DELADDR: u16 = 21;
 pub(crate) const RTM_NEWROUTE: u16 = 24;
@@ -37,12 +40,58 @@ const RTA_DST: u16 = 1;
 const RTA_SRC: u16 = 2;
 const RTA_OIF: u16 = 4;
 const RTA_PRIORITY: u16 = 6;
-const RTA_PREFSRC: u16 = 7;
 const RTA_TABLE: u16 = 15;
+const RTA_PREFSRC: u16 = 7;
+const RTA_CACHEINFO: u16 = 12;
+const RTA_PREF: u16 = 20;
 
 const NDA_DST: u16 = 1;
 const NTF_PROXY: u8 = 0x08;
 const NUD_PERMANENT: u16 = 0x80;
+
+#[derive(Clone, Debug)]
+pub(crate) struct LinkMessage {
+    pub(crate) index: u32,
+    pub(crate) flags: u32,
+    pub(crate) name: String,
+    pub(crate) kind: Option<String>,
+}
+
+impl NetlinkDecode for LinkMessage {
+    const MESSAGE_TYPE: u16 = RTM_NEWLINK;
+
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() < 16 {
+            return Err(invalid_data("truncated interface header"));
+        }
+        let index = u32::try_from(read_i32(&bytes[4..])?)
+            .map_err(|_| invalid_data("invalid interface index"))?;
+        let attributes = parse_attributes(&bytes[16..])?;
+        let string = |bytes: &[u8]| -> io::Result<String> {
+            let value = std::ffi::CStr::from_bytes_with_nul(bytes)
+                .map_err(|_| invalid_data("invalid interface string attribute"))?;
+            Ok(value.to_string_lossy().into_owned())
+        };
+        let name = attributes
+            .iter()
+            .find(|attribute| attribute.kind == 3)
+            .ok_or_else(|| invalid_data("interface has no name"))?;
+        let kind = match attributes.iter().find(|attribute| attribute.kind == 18) {
+            Some(info) => parse_attributes(&info.value)?
+                .iter()
+                .find(|attribute| attribute.kind == 1)
+                .map(|attribute| string(&attribute.value))
+                .transpose()?,
+            None => None,
+        };
+        Ok(Self {
+            index,
+            flags: read_u32(&bytes[8..])?,
+            name: string(&name.value)?,
+            kind,
+        })
+    }
+}
 
 fn align4(len: usize) -> Option<usize> {
     len.checked_add(3).map(|len| len & !3)
@@ -96,6 +145,11 @@ impl MessageBuilder {
         self.bytes.extend_from_slice(bytes);
     }
 
+    pub(crate) fn sequence(mut self, sequence: u32) -> Self {
+        self.bytes[8..12].copy_from_slice(&sequence.to_ne_bytes());
+        self
+    }
+
     pub(crate) fn finish(mut self) -> io::Result<Vec<u8>> {
         let len = u32::try_from(self.bytes.len())
             .map_err(|_| invalid_data("netlink message is too large"))?;
@@ -108,6 +162,8 @@ impl MessageBuilder {
 pub(crate) struct MessageHeader {
     pub(crate) message_type: u16,
     pub(crate) flags: u16,
+    pub(crate) sequence: u32,
+    pub(crate) port_number: u32,
 }
 
 pub(crate) struct MessageIter<'a> {
@@ -157,12 +213,16 @@ impl<'a> Iterator for MessageIter<'a> {
 
         let message_type = read_u16(&self.bytes[4..]).expect("header length checked");
         let flags = read_u16(&self.bytes[6..]).expect("header length checked");
+        let sequence = read_u32(&self.bytes[8..]).expect("header length checked");
+        let port_number = read_u32(&self.bytes[12..]).expect("header length checked");
         let payload = &self.bytes[NLMSG_HEADER_LEN..len];
         self.bytes = &self.bytes[aligned_len..];
         Some(Ok((
             MessageHeader {
                 message_type,
                 flags,
+                sequence,
+                port_number,
             },
             payload,
         )))
@@ -254,6 +314,24 @@ fn parse_ip(family: u8, bytes: &[u8]) -> Option<IpAddr> {
     }
 }
 
+fn route_ip_attribute(
+    family: u8,
+    attributes: &[Attribute],
+    kind: u16,
+) -> io::Result<Option<IpAddr>> {
+    if !matches!(family as i32, libc::AF_INET | libc::AF_INET6) {
+        return Ok(None);
+    }
+    attributes
+        .iter()
+        .find(|attribute| attribute.kind & NLA_TYPE_MASK == kind)
+        .map(|attribute| {
+            parse_ip(family, &attribute.value)
+                .ok_or_else(|| invalid_data("invalid route address attribute"))
+        })
+        .transpose()
+}
+
 pub(crate) trait NetlinkEncode {
     fn write_to(&self, bytes: &mut Vec<u8>) -> io::Result<()>;
 }
@@ -262,6 +340,33 @@ pub(crate) trait NetlinkDecode: Sized {
     const MESSAGE_TYPE: u16;
 
     fn from_bytes(bytes: &[u8]) -> io::Result<Self>;
+}
+
+/// Validate the notification framing before using its interface index.
+pub(crate) fn address_ifindex(bytes: &[u8]) -> io::Result<u32> {
+    if bytes.len() < 8 {
+        return Err(invalid_data("truncated interface address message"));
+    }
+    let maximum_prefix = match bytes[0] as i32 {
+        libc::AF_INET => 32,
+        libc::AF_INET6 => 128,
+        _ => return Err(invalid_data("unknown interface address family")),
+    };
+    if bytes[1] > maximum_prefix {
+        return Err(invalid_data("invalid interface address prefix"));
+    }
+    let index = read_u32(&bytes[4..])?;
+    if index == 0 {
+        return Err(invalid_data("invalid interface address index"));
+    }
+    for attribute in parse_attributes(&bytes[8..])? {
+        if matches!(attribute.kind & NLA_TYPE_MASK, IFA_ADDRESS | IFA_LOCAL)
+            && parse_ip(bytes[0], &attribute.value).is_none()
+        {
+            return Err(invalid_data("invalid interface address attribute"));
+        }
+    }
+    Ok(index)
 }
 
 #[derive(Clone, Debug)]
@@ -358,6 +463,10 @@ impl RouteMessage {
         self.src_len
     }
 
+    pub(crate) fn is_destination_only(&self) -> bool {
+        self.src_len == 0 && self.tos == 0
+    }
+
     pub(crate) fn route_type(&self) -> RouteType {
         RouteType::from_raw(self.route_type)
     }
@@ -372,6 +481,57 @@ impl RouteMessage {
 
     pub(crate) fn oif(&self) -> Option<u32> {
         self.oif
+    }
+
+    fn u32_attribute(&self, kind: u16) -> io::Result<Option<u32>> {
+        self.attributes
+            .iter()
+            .find(|attribute| attribute.kind & NLA_TYPE_MASK == kind)
+            .map(|attribute| {
+                if attribute.value.len() != 4 {
+                    return Err(invalid_data("invalid route integer attribute"));
+                }
+                read_u32(&attribute.value)
+            })
+            .transpose()
+    }
+
+    pub(crate) fn priority(&self) -> io::Result<u32> {
+        Ok(self.u32_attribute(RTA_PRIORITY)?.unwrap_or(0))
+    }
+
+    pub(crate) fn preferred_source(&self) -> io::Result<Option<IpAddr>> {
+        route_ip_attribute(self.family, &self.attributes, RTA_PREFSRC)
+    }
+
+    pub(crate) fn table(&self) -> io::Result<u32> {
+        Ok(self.u32_attribute(RTA_TABLE)?.unwrap_or(self.table.into()))
+    }
+
+    pub(crate) fn protocol(&self) -> u8 {
+        self.protocol
+    }
+
+    pub(crate) fn scope(&self) -> u8 {
+        self.scope
+    }
+
+    /// A destination-only, directly attached route without source-prefix selection,
+    /// a gateway, multipath, nexthop indirection or encapsulation.
+    pub(crate) fn is_direct(&self) -> bool {
+        self.is_destination_only()
+            && self.flags == 0
+            && self.attributes.iter().all(|attribute| {
+                match attribute.kind & NLA_TYPE_MASK {
+                    RTA_DST | RTA_OIF | RTA_PRIORITY | RTA_PREFSRC | RTA_TABLE | RTA_CACHEINFO => {
+                        true
+                    }
+                    RTA_PREF => attribute.value == [0],
+                    // Metrics, encapsulation and unknown attributes can change
+                    // forwarding semantics. Never silently equate them.
+                    _ => false,
+                }
+            })
     }
 }
 
@@ -390,18 +550,37 @@ impl NetlinkDecode for RouteMessage {
         }
         let family = bytes[0];
         let attributes = parse_attributes(&bytes[12..])?;
-        let destination = attributes
-            .iter()
-            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_DST)
-            .and_then(|attribute| parse_ip(family, &attribute.value));
-        let source = attributes
-            .iter()
-            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_SRC)
-            .and_then(|attribute| parse_ip(family, &attribute.value));
+        for (index, attribute) in attributes.iter().enumerate() {
+            if attributes[..index]
+                .iter()
+                .any(|previous| previous.kind & NLA_TYPE_MASK == attribute.kind & NLA_TYPE_MASK)
+            {
+                return Err(invalid_data("duplicate route attribute"));
+            }
+            if matches!(
+                attribute.kind & NLA_TYPE_MASK,
+                RTA_OIF | RTA_PRIORITY | RTA_TABLE
+            ) && attribute.value.len() != 4
+            {
+                return Err(invalid_data("invalid route integer attribute"));
+            }
+            if attribute.kind & NLA_TYPE_MASK == RTA_PREF && attribute.value.len() != 1 {
+                return Err(invalid_data("invalid route preference attribute"));
+            }
+        }
+        route_ip_attribute(family, &attributes, RTA_PREFSRC)?;
+        let destination = route_ip_attribute(family, &attributes, RTA_DST)?;
+        let source = route_ip_attribute(family, &attributes, RTA_SRC)?;
         let oif = attributes
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_OIF)
-            .and_then(|attribute| read_u32(&attribute.value).ok());
+            .map(|attribute| {
+                if attribute.value.len() != 4 {
+                    return Err(invalid_data("invalid route interface attribute"));
+                }
+                read_u32(&attribute.value)
+            })
+            .transpose()?;
 
         Ok(Self {
             family,
@@ -610,6 +789,80 @@ impl NetlinkEncode for NeighborMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forwarding_attributes_are_not_silently_ignored_for_route_equivalence() {
+        let direct = RouteMessageBuilder::new(libc::AF_INET6 as u8)
+            .destination("2001:db8:1::".parse().unwrap(), 64)
+            .oif(7)
+            .priority(65535)
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast)
+            .build();
+        assert!(direct.is_direct());
+        for kind in [5, 8, 9, 18, 21, 22, 30, 42] {
+            let mut changed = direct.clone();
+            changed.attributes.push(Attribute::new(kind, vec![0; 16]));
+            assert!(
+                !changed.is_direct(),
+                "unsupported forwarding attribute {kind}"
+            );
+        }
+        let mut changed = direct.clone();
+        changed.tos = 16;
+        assert!(!changed.is_direct());
+        let mut changed = direct;
+        changed.src_len = 64;
+        assert!(!changed.is_direct());
+    }
+
+    #[test]
+    fn malformed_or_duplicate_route_keys_fail_the_whole_decode() {
+        let direct = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination("198.18.0.0".parse().unwrap(), 24)
+            .oif(7)
+            .priority(65535)
+            .build();
+        for kind in [RTA_OIF, RTA_PRIORITY, RTA_TABLE, RTA_PREF, RTA_PREFSRC] {
+            let mut changed = direct.clone();
+            changed
+                .attributes
+                .retain(|attribute| attribute.kind != kind);
+            changed.attributes.push(Attribute::new(kind, vec![0; 2]));
+            let mut bytes = Vec::new();
+            changed.write_to(&mut bytes).unwrap();
+            assert!(
+                RouteMessage::from_bytes(&bytes).is_err(),
+                "malformed attribute {kind}"
+            );
+        }
+        let mut duplicate = direct;
+        duplicate
+            .attributes
+            .push(Attribute::new(RTA_OIF, 8_u32.to_ne_bytes()));
+        let mut bytes = Vec::new();
+        duplicate.write_to(&mut bytes).unwrap();
+        assert!(RouteMessage::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn link_decode_reads_nested_driver_kind_and_rejects_partial_attributes() {
+        let mut bytes = vec![0; 16];
+        bytes[4..8].copy_from_slice(&17_i32.to_ne_bytes());
+        bytes[8..12].copy_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
+        Attribute::new(3, b"et0\0").write_to(&mut bytes).unwrap();
+        let mut info = Vec::new();
+        Attribute::new(1, b"tun\0").write_to(&mut info).unwrap();
+        Attribute::new(18, info).write_to(&mut bytes).unwrap();
+        let link = LinkMessage::from_bytes(&bytes).unwrap();
+        assert_eq!(link.index, 17);
+        assert_eq!(link.name, "et0");
+        assert_eq!(link.kind.as_deref(), Some("tun"));
+        assert_eq!(link.flags, libc::IFF_UP as u32);
+        bytes.pop();
+        assert!(LinkMessage::from_bytes(&bytes).is_err());
+    }
 
     fn encode<T: NetlinkEncode>(message: &T) -> Vec<u8> {
         let mut bytes = Vec::new();

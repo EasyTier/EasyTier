@@ -813,6 +813,16 @@ fn check_resolved_remote_addr_not_from_virtual_network(
 }
 
 impl PeerManagerCore {
+    pub(crate) fn bind_host_routes(
+        &self,
+        routes: &crate::host::route::RouteHandle,
+    ) -> anyhow::Result<()> {
+        if let Some(route) = self.route_algo_inst.ospf_route() {
+            route.bind_host_routes(routes)?;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mut config: PortablePeerManagerConfig,

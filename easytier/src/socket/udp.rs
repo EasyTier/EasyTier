@@ -5,9 +5,8 @@ use std::{
 
 use async_trait::async_trait;
 #[cfg(any(feature = "wireguard", test))]
-use easytier_core::socket::{
-    NetNamespace,
-    udp::{UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocketListener},
+use easytier_core::socket::udp::{
+    UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocketListener,
 };
 use easytier_core::socket::{
     SocketContext,
@@ -20,27 +19,26 @@ use easytier_core::socket::{
 use tokio::net::UdpSocket;
 
 #[cfg(any(feature = "wireguard", test))]
-use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
+use crate::common::netns::NetNS;
 use crate::{
-    common::netns::NetNS,
+    common::netns::PlatformNamespace,
     tunnel::common::{BindDev, bind},
 };
 
 use super::udp_src;
 
 #[cfg(any(feature = "wireguard", test))]
-pub(crate) type RuntimeUdpSessionSocketListener = UdpSessionSocketListener<NativeHostRuntime>;
+pub(crate) type RuntimeUdpSessionSocketListener = UdpSessionSocketListener<NetNS>;
 
 #[cfg(any(feature = "wireguard", test))]
 pub(crate) fn new_runtime_udp_session_listener(
     url: url::Url,
     mut request: UdpSessionListenRequest,
     accept_kind: UdpSessionAcceptKind,
-    net_ns: NetNS,
+    net_ns: std::sync::Arc<NetNS>,
 ) -> RuntimeUdpSessionSocketListener {
-    request.bind.context.netns = net_ns.name().map(NetNamespace::new);
-    let runtime = native_host_runtime();
-    UdpSessionSocketListener::new_with_request(url, request, accept_kind, runtime)
+    request.bind.context.netns = Some(net_ns.token());
+    UdpSessionSocketListener::new_with_request(url, request, accept_kind, net_ns)
 }
 
 pub struct RuntimeUdpSocket {
@@ -133,12 +131,19 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RuntimeUdpSocketFactory;
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeUdpSocketFactory {
+    namespace: PlatformNamespace,
+}
 
 impl RuntimeUdpSocketFactory {
+    #[cfg(any(feature = "upnp", test))]
     pub(crate) fn new() -> Self {
-        Self
+        Self::in_namespace(PlatformNamespace::current().expect("capture UDP factory namespace"))
+    }
+
+    pub(crate) fn in_namespace(namespace: PlatformNamespace) -> Self {
+        Self { namespace }
     }
 
     fn bind_device_for(&self, options: &UdpBindOptions) -> BindDev {
@@ -171,15 +176,25 @@ impl RuntimeUdpSocketFactory {
 
 /// Creates a host-owned UDP socket, including any required protection, before
 /// it can be used by DNS, a route probe, or a virtual socket adapter.
+#[cfg(test)]
 pub(crate) async fn create_udp_socket(options: &UdpBindOptions) -> anyhow::Result<UdpSocket> {
-    let factory = RuntimeUdpSocketFactory::new();
+    let namespace = crate::host_runtime::native_host_runtime().namespace(&options.context)?;
+    create_udp_socket_in_namespace(options, namespace.platform()).await
+}
+
+pub(crate) async fn create_udp_socket_in_namespace(
+    options: &UdpBindOptions,
+    namespace: &PlatformNamespace,
+) -> anyhow::Result<UdpSocket> {
+    namespace.validate_context(&options.context)?;
+    let factory = RuntimeUdpSocketFactory::in_namespace(namespace.clone());
     let bind_addr = options
         .local_addr
         .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
     Ok(bind::<UdpSocket>()
         .addr(bind_addr)
         .dev(factory.bind_device_for(options))
-        .net_ns(NetNS::from_socket_context(&options.context))
+        .net_ns(namespace.clone())
         .only_v6(options.only_v6)
         .reuse_addr(factory.reuse_addr_for(options))
         .reuse_port(options.reuse_port)
@@ -194,7 +209,7 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
     type Socket = RuntimeUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-        let socket = create_udp_socket(&options).await?;
+        let socket = create_udp_socket_in_namespace(&options, &self.namespace).await?;
         Ok(Arc::new(RuntimeUdpSocket::new_with_context(
             Arc::new(socket),
             options.context,

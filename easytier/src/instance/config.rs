@@ -21,6 +21,7 @@ use crate::{
 pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
     let hostname = gethostname::gethostname().to_string_lossy().to_string();
     CoreInstanceHostConfig {
+        socket_namespace: None,
         hostname_fallback: (!hostname.is_empty()).then_some(hostname),
         host_routing: HostRoutingPolicy {
             local_exit_node_fallback: cfg!(target_env = "ohos"),

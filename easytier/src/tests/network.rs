@@ -82,15 +82,18 @@ impl TestNetwork {
 
 impl Drop for TestNetwork {
     fn drop(&mut self) {
-        let _guard = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
-        for (_, namespace) in &self.namespaces {
-            del_netns(namespace);
-        }
-        for (_, link) in self.links.iter().rev() {
-            let _ = std::process::Command::new("ip")
-                .args(["link", "del", link])
-                .output();
-        }
+        NetNS::new(Some(ROOT_NETNS_NAME.to_owned()))
+            .run(|| {
+                for (_, namespace) in &self.namespaces {
+                    del_netns(namespace);
+                }
+                for (_, link) in self.links.iter().rev() {
+                    let _ = std::process::Command::new("ip")
+                        .args(["link", "del", link])
+                        .output();
+                }
+            })
+            .unwrap()
     }
 }
 
@@ -104,47 +107,45 @@ fn nested_namespace_guard_restores_current_thread() {
     let current = || std::fs::read_link("/proc/thread-self/ns/net").unwrap();
     let original = current();
 
-    net_a.run(|| {
-        let expected = current();
-        assert_ne!(expected, original);
-        net_b.run(|| assert_ne!(current(), expected));
-        assert_eq!(current(), expected);
-    });
+    net_a
+        .run(|| {
+            let expected = current();
+            assert_ne!(expected, original);
+            net_b.run(|| assert_ne!(current(), expected)).unwrap();
+            assert_eq!(current(), expected);
+        })
+        .unwrap();
     assert_eq!(current(), original);
 }
 
 #[tokio::test]
-async fn async_namespace_restores_between_polls() {
+async fn bound_sockets_use_distinct_namespaces_without_switching_async_tasks() {
+    use easytier_core::socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory};
     let mut network = TestNetwork::new();
     network.create_empty_namespace("net_a");
     network.create_empty_namespace("net_b");
-    let net_a = NetNS::new(Some(network.namespace("net_a").into()));
-    let net_b = NetNS::new(Some(network.namespace("net_b").into()));
-    let current = || std::fs::read_link("/proc/thread-self/ns/net").unwrap();
-    let original = current();
-    let expected = net_a.run(current);
-
-    let mut future = Box::pin(net_a.run_async(|| async {
-        assert_eq!(current(), expected);
-        tokio::task::yield_now().await;
-        assert_eq!(current(), expected);
-    }));
-    assert!(futures::poll!(future.as_mut()).is_pending());
-    assert_eq!(current(), original);
-    net_b.run(|| assert_ne!(current(), expected));
-    future.await;
-    assert_eq!(current(), original);
-
-    let dropped_in = std::cell::RefCell::new(None);
-    let mut cancelled = Box::pin(net_a.run_async(|| async {
-        let _cleanup = guarden::guard::ContextGuard::new((), |_| {
-            *dropped_in.borrow_mut() = Some(current());
-        });
-        std::future::pending::<()>().await;
-    }));
-    assert!(futures::poll!(cancelled.as_mut()).is_pending());
-    assert_eq!(current(), original);
-    drop(cancelled);
-    assert_eq!(current(), original);
-    assert_eq!(*dropped_in.borrow(), Some(expected));
+    let a = NetNS::new(Some(network.namespace("net_a").into()));
+    let b = NetNS::new(Some(network.namespace("net_b").into()));
+    let original = NetNS::current().unwrap();
+    let socket_a = a
+        .bind_udp(
+            UdpBindOptions::direct_connect().with_local_addr(Some("0.0.0.0:0".parse().unwrap())),
+        )
+        .await
+        .unwrap();
+    let address = socket_a.local_addr().unwrap();
+    let _socket_b = b
+        .bind_udp(UdpBindOptions::direct_connect().with_local_addr(Some(address)))
+        .await
+        .unwrap();
+    assert!(
+        a.bind_udp(UdpBindOptions::direct_connect().with_local_addr(Some(address)))
+            .await
+            .is_err()
+    );
+    tokio::task::yield_now().await;
+    assert!(std::sync::Arc::ptr_eq(
+        &original,
+        &NetNS::current().unwrap()
+    ));
 }

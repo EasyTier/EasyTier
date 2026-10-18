@@ -238,9 +238,15 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,
+        runtime_config: CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>>;
 
     async fn shutdown(&self);
+
+    /// Reports a physical cleanup failure after shutdown has returned.
+    fn shutdown_error(&self) -> Option<String> {
+        None
+    }
 
     /// Requests prompt Host cleanup when the canonical instance owner is
     /// dropped without an opportunity to await [`Self::shutdown`].
@@ -276,6 +282,7 @@ impl InstanceRuntimeHost for () {
     async fn prepare(
         &self,
         _packet_plane: Arc<CorePacketPlane>,
+        _runtime_config: CoreRuntimeConfigStore,
     ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         Ok(None)
     }
@@ -303,6 +310,7 @@ where
     process_runtime: Arc<CoreProcessRuntime>,
     pub packet_egress: Arc<dyn PacketEgressHost>,
     pub instance_runtime: Arc<dyn InstanceRuntimeHost>,
+    pub routes: Option<crate::host::route::RouteHandle>,
     pub events: Arc<dyn CoreEventSink>,
     pub credential_storage: Option<Arc<dyn CredentialStorage>>,
     #[cfg(feature = "wrapped-transport")]
@@ -364,6 +372,7 @@ where
             process_runtime,
             packet_egress,
             instance_runtime: Arc::new(()),
+            routes: None,
             events: Arc::new(()),
             credential_storage: None,
             #[cfg(feature = "wrapped-transport")]
@@ -557,6 +566,13 @@ where
             adapters.credential_storage.take(),
             foreign_rpc_registrar,
         )?);
+        if let Some(routes) = adapters.routes.as_ref() {
+            peer_manager.bind_host_routes(routes)?;
+            #[cfg(feature = "proxy-cidr-monitor")]
+            {
+                adapters.proxy_cidr_monitor_enabled = false;
+            }
+        }
         let config = config.connectivity;
         let configured_listeners = (connectivity_mode != CoreConnectivityMode::OutboundOnly)
             .then_some(config.listeners.as_ref())
@@ -570,6 +586,7 @@ where
         let CoreHostAdapters {
             host,
             config: _,
+            routes: _,
             #[cfg(any(test, feature = "test-utils"))]
                 stun_override: _,
             dns,
