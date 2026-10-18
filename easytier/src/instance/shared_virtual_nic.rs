@@ -621,6 +621,7 @@ fn ignore_added_ifcfg_already_exists(result: Result<(), Error>) -> Result<(), Er
 }
 
 struct SharedVirtualNicMemberRegistration {
+    closed: AtomicBool,
     member_id: SharedVirtualNicMemberId,
     registration_id: SharedVirtualNicMemberRegistrationId,
     shared_nic: Arc<Mutex<SharedVirtualNic>>,
@@ -630,6 +631,9 @@ struct SharedVirtualNicMemberRegistration {
 
 impl SharedVirtualNicMemberRegistration {
     fn register_tunnel(&self, close_notifier: Arc<Notify>) -> Result<Box<dyn Tunnel>, Error> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(anyhow::anyhow!("shared NIC member is closed").into());
+        }
         self.member_tunnel_table
             .register(self.member_id, self.registration_id, close_notifier)
     }
@@ -683,6 +687,21 @@ pub struct SharedVirtualNicMember {
 }
 
 impl SharedVirtualNicMember {
+    fn ensure_open(&self) -> Result<(), Error> {
+        if self.registration.closed.load(Ordering::Acquire) {
+            return Err(anyhow::anyhow!("shared NIC member is closed").into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn close(&self) -> Result<(), Error> {
+        self.registration.closed.store(true, Ordering::Release);
+        // Serialize behind any detached creation/configuration transaction.
+        // Queued transactions recheck closed under this same NIC lock.
+        let mut nic = self.shared_nic.lock().await;
+        nic.remove_member_registration_claims(self.member_id, self.registration.registration_id)
+            .await
+    }
     pub(crate) fn registration_id(&self) -> SharedVirtualNicMemberRegistrationId {
         self.registration.registration_id
     }
@@ -701,6 +720,7 @@ impl SharedVirtualNicMember {
             shared_nic: shared_nic.clone(),
             close_notifier,
             registration: Arc::new(SharedVirtualNicMemberRegistration {
+                closed: AtomicBool::new(false),
                 member_id,
                 registration_id,
                 shared_nic: shared_nic.clone(),
@@ -722,9 +742,11 @@ impl SharedVirtualNicMember {
     ) -> Result<(), Error> {
         claims.mtu = Some(self.configured_mtu);
         let member = self.clone();
-        shared_virtual_nic_runtime()
+        crate::host_runtime::native_host_runtime()
+            .shared_executor()?
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
+                member.ensure_open()?;
                 shared_nic
                     .attach_member_registration(
                         member.member_id,
@@ -761,9 +783,11 @@ impl SharedVirtualNicMember {
         Error,
     > {
         let member = self.clone();
-        let epoch = shared_virtual_nic_runtime()
+        let epoch = crate::host_runtime::native_host_runtime()
+            .shared_executor()?
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
+                member.ensure_open()?;
                 shared_nic
                     .attach_member_registration(
                         member.member_id,
@@ -798,9 +822,11 @@ impl SharedVirtualNicMember {
         replace_tun_fd: bool,
     ) -> Result<Box<dyn Tunnel>, Error> {
         let member = self.clone();
-        shared_virtual_nic_runtime()
+        crate::host_runtime::native_host_runtime()
+            .shared_executor()?
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
+                member.ensure_open()?;
                 shared_nic
                     .attach_member_registration(
                         member.member_id,
@@ -924,9 +950,11 @@ impl SharedVirtualNicMember {
         // Complete OS changes and commit their claims even if the caller is cancelled.
         // Holding the registration also defers member cleanup until the commit.
         let member = self.clone();
-        shared_virtual_nic_runtime()
+        crate::host_runtime::native_host_runtime()
+            .shared_executor()?
             .spawn(async move {
                 let mut shared_nic = member.shared_nic.lock().await;
+                member.ensure_open()?;
                 let previous = shared_nic.ifcfg.claims_of(member.member_id);
                 let mut claims = previous.clone();
                 update(&mut claims);

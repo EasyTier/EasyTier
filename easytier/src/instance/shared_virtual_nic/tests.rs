@@ -411,6 +411,33 @@ async fn pending_registration_prevents_retirement_and_last_drop_allows_compactio
     assert_eq!(registry.nics.len(), 1);
 }
 
+#[tokio::test]
+async fn explicit_member_close_waits_for_the_nic_and_rejects_queued_creation() {
+    use futures::FutureExt;
+    let mut registry = SharedVirtualNicRegistry::new();
+    let member = create_member(&mut registry, "et-pending-close", 1400, None);
+    let nic = member.shared_nic();
+    let held = nic.lock().await;
+    let close = member.close();
+    tokio::pin!(close);
+    assert!(close.as_mut().now_or_never().is_none());
+    let create = member.create_dev();
+    tokio::pin!(create);
+    assert!(create.as_mut().now_or_never().is_none());
+    drop(held);
+    close.await.unwrap();
+    let error = create.await.err().expect("queued setup must be rejected");
+    assert!(error.to_string().contains("closed"), "{error:?}");
+    assert!(nic.lock().await.dispatcher.is_none());
+    let error = member
+        .create_dev()
+        .await
+        .err()
+        .expect("closed member must not reopen");
+    assert!(error.to_string().contains("closed"), "{error:?}");
+    member.close().await.unwrap();
+}
+
 #[test]
 fn registry_replaces_invalid_devices() {
     let mut registry = SharedVirtualNicRegistry::new();

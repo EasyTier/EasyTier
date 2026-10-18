@@ -1296,6 +1296,11 @@ impl NicCtx {
         // The forwarding tasks own the TUN stream and sink. Wait until both
         // release the device before another NIC with the same name is created.
         self.tasks.shutdown().await;
+        if let NicBackend::Shared(member) = &self.backend {
+            if let Err(error) = member.close().await {
+                tracing::warn!(?error, "shared NIC member cleanup failed");
+            }
+        }
     }
 
     async fn tun_ifname(&self) -> Result<String, Error> {

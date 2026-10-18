@@ -10,10 +10,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    MagicDnsRuntime,
-    tun_common::{NativeDhcpHost, TunNicState},
-};
+use super::tun_common::{NativeDhcpHost, TunNicState};
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
     instance::{shared_virtual_nic::ArcSharedVirtualNicRegistry, virtual_nic::NicCtx},
@@ -99,7 +96,7 @@ impl NativeTunRuntime {
                     routes.clone(),
                 )
                 .await;
-                let mut nic = match nic {
+                let nic = match nic {
                     Ok(nic) => nic,
                     Err(error) => {
                         if let Some(output) = output.take() {
@@ -108,17 +105,22 @@ impl NativeTunRuntime {
                         return;
                     }
                 };
-                let result = tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => {
-                        Self::report_static_ip_cancelled(&mut output);
+                let result = nic_state
+                    .configure(
+                        nic,
+                        &cancel,
+                        global_ctx.clone(),
+                        packet_plane.clone(),
+                        easytier_core::gateway::dhcp::DhcpAddresses { ipv4, ipv6 },
+                    )
+                    .await;
+                if let Err(error) = result {
+                    nic_state.stop().await;
+                    if let Some(output) = output.take() {
+                        let _ = output.send(Err(error.into()));
                         return;
                     }
-                    result = nic.run(ipv4, ipv6) => result,
-                };
-                if let Err(error) = result {
-                    if let Some(output) = output.take() {
-                        let _ = output.send(Err(error));
+                    if cancel.is_cancelled() {
                         return;
                     }
                     tracing::error!(?error, "failed to create native interface");
@@ -129,20 +131,6 @@ impl NativeTunRuntime {
                     continue;
                 }
 
-                let magic_dns = if let Some(ip) = ipv4 {
-                    let shared_route_backend = nic.shared_route_backend_for_dns();
-                    MagicDnsRuntime::start(
-                        global_ctx.clone(),
-                        packet_plane.clone(),
-                        nic.ifname().await,
-                        ip,
-                        shared_route_backend,
-                        nic.managed_dns_routes(),
-                    )
-                } else {
-                    MagicDnsRuntime::default()
-                };
-                nic_state.install(nic, magic_dns).await;
                 if let Some(output) = output.take() {
                     let _ = output.send(Ok(()));
                 }

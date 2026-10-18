@@ -7,10 +7,7 @@ use easytier_core::{
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    MagicDnsRuntime,
-    tun_common::{NativeDhcpHost, TunNicState},
-};
+use super::tun_common::{NativeDhcpHost, TunNicState};
 use crate::{
     common::global_ctx::ArcGlobalCtx,
     instance::{shared_virtual_nic::ArcSharedVirtualNicRegistry, virtual_nic::NicCtx},
@@ -72,7 +69,7 @@ impl NativeTunRuntime {
             return Ok(());
         }
         let closed = Arc::new(Notify::new());
-        let mut nic = NicCtx::new(
+        let nic = NicCtx::new(
             global_ctx.clone(),
             packet_plane.clone(),
             nic_state.receiver(),
@@ -84,23 +81,10 @@ impl NativeTunRuntime {
             Some(claims) => claims,
             None => NicCtx::mobile_tun_claims(&global_ctx, &packet_plane).await,
         };
-        nic.run_for_mobile(fd, replace_tun_fd, claims)
+        nic_state
+            .configure_for_mobile(nic, global_ctx, packet_plane, fd, replace_tun_fd, claims)
             .await
             .context("attach mobile TUN failed")?;
-        let magic_dns = if let Some(ip) = global_ctx.get_ipv4() {
-            let shared_route_backend = nic.shared_route_backend_for_dns();
-            MagicDnsRuntime::start(
-                global_ctx,
-                packet_plane,
-                None,
-                ip,
-                shared_route_backend,
-                None,
-            )
-        } else {
-            MagicDnsRuntime::default()
-        };
-        nic_state.install(nic, magic_dns).await;
         Ok(())
     }
 

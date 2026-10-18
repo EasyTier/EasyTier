@@ -539,7 +539,17 @@ impl RouteController {
         self.state.abandon(run, reason);
     }
     pub(crate) async fn wait_stopped(&self) -> anyhow::Result<()> {
-        self.state.stopped().await
+        if let Err(error) = self.state.stopped().await {
+            let effects = self.unresolved().await;
+            if !effects.is_empty() {
+                return Err(error.context(format!(
+                    "retained route effects (up to 16): {}",
+                    effects.join("; ")
+                )));
+            }
+            return Err(error);
+        }
+        Ok(())
     }
     pub(crate) async fn unresolved(&self) -> Vec<String> {
         let worker = self.worker.lock().await;
@@ -548,6 +558,7 @@ impl RouteController {
             .values()
             .filter_map(|slot| slot.effect.as_ref())
             .filter(|effect| !matches!(effect.phase, EffectPhase::External))
+            .take(16)
             .map(|effect| format!("{:?}: {:?}", effect.key, effect.phase))
             .collect()
     }
