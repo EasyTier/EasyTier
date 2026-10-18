@@ -72,6 +72,7 @@ struct InputRef {
     nic: Uuid,
     member: Option<MemberBinding>,
     ready: Option<(Uuid, DeviceEpoch)>,
+    abandoned: bool,
 }
 
 struct NicGroup {
@@ -180,6 +181,7 @@ impl ControllerState {
                 nic,
                 member: None,
                 ready: None,
+                abandoned: false,
             },
         );
         drop(catalog);
@@ -231,6 +233,7 @@ impl ControllerState {
             .instances
             .get_mut(&run)
             .ok_or_else(|| anyhow::anyhow!("instance run is not registered"))?;
+        anyhow::ensure!(!input.inputs.is_closed(), "instance routes are closing");
         let nic = input.nic;
         input.member = Some(MemberBinding {
             nic: weak.clone(),
@@ -260,15 +263,19 @@ impl ControllerState {
             .instances
             .get(&run)
             .ok_or_else(|| anyhow::anyhow!("instance run is not registered"))?;
+        anyhow::ensure!(!input.inputs.is_closed(), "instance routes are closing");
+        let group = &catalog.groups[&input.nic];
+        anyhow::ensure!(group.failure.is_none(), "NIC admission failed");
         anyhow::ensure!(
             input
                 .member
                 .as_ref()
-                .is_some_and(|member| member.registration == registration),
+                .is_some_and(|member| member.registration == registration
+                    && Weak::ptr_eq(&member.nic, &group.nic)),
             "NIC member registration changed"
         );
         let nic = input.nic;
-        let facts = catalog.groups[&nic].device.snapshot();
+        let facts = group.device.snapshot();
         anyhow::ensure!(
             facts.selected == Some(epoch) && facts.ready,
             "physical device generation changed or is not ready"
@@ -387,6 +394,20 @@ impl ControllerState {
         self.wake.notify_one();
     }
 
+    fn abandon(&self, run: Uuid, reason: Arc<str>) {
+        let input = {
+            let mut catalog = self.catalog.lock();
+            let Some(input) = catalog.instances.get_mut(&run) else {
+                return;
+            };
+            input.abandoned = true;
+            input.inputs.clone()
+        };
+        input.close();
+        input.fail(reason);
+        self.mark_input(run);
+    }
+
     fn fail(&self, reason: Arc<str>) {
         let inputs = {
             let mut catalog = self.catalog.lock();
@@ -442,6 +463,18 @@ impl RouteController {
     pub(crate) fn open_instance(&self, run: Uuid, name: String) -> anyhow::Result<InstanceRoutes> {
         self.state.open(run, name)
     }
+    pub(crate) fn ensure_instance_open(&self, run: Uuid) -> anyhow::Result<()> {
+        let catalog = self.state.catalog.lock();
+        anyhow::ensure!(
+            !catalog.closing
+                && catalog
+                    .instances
+                    .get(&run)
+                    .is_some_and(|input| !input.inputs.is_closed()),
+            "instance route capability is closed"
+        );
+        Ok(())
+    }
     pub(crate) fn device(&self, run: Uuid) -> anyhow::Result<(Uuid, Arc<DeviceState>)> {
         let catalog = self.state.catalog.lock();
         let input = catalog
@@ -470,6 +503,9 @@ impl RouteController {
     }
     pub(crate) fn request_shutdown(&self) {
         self.state.request_shutdown();
+    }
+    pub(crate) fn abandon_instance(&self, run: Uuid, reason: Arc<str>) {
+        self.state.abandon(run, reason);
     }
     pub(crate) async fn wait_stopped(&self) -> anyhow::Result<()> {
         self.state.stopped().await
@@ -926,15 +962,22 @@ async fn refresh_group(
                     Ok(Err(error)) => error.to_string().into(),
                     Ok(Ok(())) => unreachable!(),
                 };
-                nic_guard.mark_invalid();
                 {
                     let mut catalog = state.catalog.lock();
                     if let Some(current) = catalog.groups.get_mut(&id) {
                         if Weak::ptr_eq(&current.nic, &group.nic) {
                             current.failure = Some(reason.clone());
+                            let members = current.members.clone();
+                            for run in members {
+                                if let Some(input) = catalog.instances.get_mut(&run) {
+                                    input.ready = None;
+                                    input.inputs.invalidate();
+                                }
+                            }
                         }
                     }
                 }
+                nic_guard.mark_invalid();
                 let weak = group.nic.clone();
                 state.shared.spawn(async move {
                     if let Some(nic) = weak.upgrade() {
@@ -1138,6 +1181,32 @@ async fn drive<B: RouteBackend>(
         feedback.extend(&changed_inputs);
         let mut worker = retained.lock().await;
         let mut affected = BTreeSet::new();
+        // A bounded failed shutdown releases input/config ownership while the
+        // exact effect ledger retains only run IDs. Native registration cleanup
+        // belongs to the actual NIC owner and does not need these input stores.
+        let abandoned = {
+            let catalog = state.catalog.lock();
+            dirty
+                .instances
+                .iter()
+                .copied()
+                .filter(|run| {
+                    catalog
+                        .instances
+                        .get(run)
+                        .is_some_and(|input| input.abandoned)
+                })
+                .collect::<Vec<_>>()
+        };
+        for run in abandoned {
+            if let Some(cache) = caches.remove(&run) {
+                affected.extend(worker.replace_routes(run, &cache.indexed, &BTreeSet::new()));
+            }
+            changed_inputs.remove(&run);
+            if let Some(nic) = state.retire(run) {
+                dirty.nics.insert(nic);
+            }
+        }
         for run in changed_inputs {
             let Some(cache) = caches.get_mut(&run) else {
                 continue;
@@ -1244,7 +1313,14 @@ async fn drive<B: RouteBackend>(
             let status = if drained {
                 InstanceRouteStatus::Drained
             } else if cache.snapshot.closed {
-                InstanceRouteStatus::Draining
+                InstanceRouteStatus::Draining {
+                    remaining: Some(
+                        worker
+                            .responsibility_index
+                            .get(run)
+                            .map_or(0, BTreeSet::len),
+                    ),
+                }
             } else {
                 InstanceRouteStatus::Active
             };
@@ -1904,5 +1980,52 @@ mod tests {
         assert!(controller.worker.lock().await.backend.is_none());
         shared.request_shutdown();
         shared.wait_stopped().await;
+    }
+    #[tokio::test]
+    async fn failed_shutdown_retires_input_but_keeps_unknown_effect_without_delete_rights() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        fake.state.lock().unknown_add = true;
+        let run = Uuid::new_v4();
+        let (owner, _member, _epoch, _registry) =
+            member(&state, run, "controller-abandoned", 7).await;
+        let weak = Arc::downgrade(&owner.inputs());
+        let claim = owner.handle().publish(extra("198.18.1.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        fake.until(|fake| fake.adds == 1).await;
+        state.abandon(run, "cleanup stalled".into());
+        assert!(matches!(
+            owner.wait_drained().await,
+            Err(RouteWaitError::Failed(_))
+        ));
+        drop(claim);
+        drop(owner);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!state.catalog.lock().instances.contains_key(&run));
+        let slots = {
+            let worker = worker.lock().await;
+            assert!(worker.has_responsibility(run));
+            assert!(worker.slots.values().any(|slot| {
+                slot.effect
+                    .as_ref()
+                    .is_some_and(|effect| matches!(effect.phase, EffectPhase::Unknown { .. }))
+            }));
+            worker.slots.keys().cloned().collect()
+        };
+        assert_eq!(fake.state.lock().removes, 0);
+        // A later complete absence observation may settle the orphan receipt.
+        fake.state.lock().routes.clear();
+        state.os_changed(RouteChanges {
+            slots,
+            links: BTreeSet::new(),
+        });
+        finish(&state, task).await;
+        assert!(!worker.lock().await.has_responsibility(run));
     }
 }

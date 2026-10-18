@@ -172,7 +172,7 @@ pub enum ClaimRouteStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstanceRouteStatus {
     Active,
-    Draining,
+    Draining { remaining: Option<usize> },
     Drained,
     Failed(Arc<str>),
 }
@@ -368,6 +368,20 @@ impl InstanceRoutes {
             })?;
         }
     }
+
+    pub fn status(&self) -> InstanceRouteStatus {
+        self.feedback.borrow().instance.clone()
+    }
+
+    /// Cleanup progress shares the existing feedback watch. Repeated states
+    /// are invalidations, not evidence that OS cleanup made progress.
+    pub async fn status_changed(&mut self) -> Result<InstanceRouteStatus, RouteWaitError> {
+        self.feedback
+            .changed()
+            .await
+            .map_err(|_| RouteWaitError::Failed("route driver disappeared without drain".into()))?;
+        Ok(self.feedback.borrow_and_update().instance.clone())
+    }
 }
 
 impl Drop for InstanceRoutes {
@@ -377,6 +391,10 @@ impl Drop for InstanceRoutes {
 }
 
 impl RouteInputs {
+    pub fn is_closed(&self) -> bool {
+        self.state.lock().closed
+    }
+
     fn changed(&self) {
         // Watch carries feedback, never raw input or a second refresh queue.
         self.feedback.send_modify(|_| {});
@@ -407,7 +425,7 @@ impl RouteInputs {
             let claims = std::mem::take(&mut state.claims);
             self.feedback.send_replace(Feedback {
                 stamp: state.stamp,
-                instance: InstanceRouteStatus::Draining,
+                instance: InstanceRouteStatus::Draining { remaining: None },
                 claims: BTreeMap::new(),
             });
             claims
@@ -485,7 +503,7 @@ impl RouteInputs {
             (false, InstanceRouteStatus::Active)
             | (
                 true,
-                InstanceRouteStatus::Draining
+                InstanceRouteStatus::Draining { .. }
                 | InstanceRouteStatus::Drained
                 | InstanceRouteStatus::Failed(_),
             ) => {}
@@ -863,7 +881,11 @@ mod tests {
         assert!(closed.claims.is_empty());
         assert!(inputs.publish_feedback(&closed, InstanceRouteStatus::Drained, BTreeMap::new()));
         inputs.fail("late failure".into());
-        assert!(!inputs.publish_feedback(&closed, InstanceRouteStatus::Draining, BTreeMap::new()));
+        assert!(!inputs.publish_feedback(
+            &closed,
+            InstanceRouteStatus::Draining { remaining: None },
+            BTreeMap::new()
+        ));
         owner.wait_drained().await.unwrap();
         drop(owner);
         drop(inputs);
@@ -1006,5 +1028,33 @@ mod tests {
         drop(owner);
         assert!(inputs.snapshot().closed);
         assert_eq!(wakes.load(Ordering::Relaxed), 3);
+    }
+    #[tokio::test]
+    async fn cleanup_progress_uses_feedback_and_preserves_the_terminal_result() {
+        let mut owner = owner();
+        owner.request_close();
+        assert_eq!(
+            owner.status(),
+            InstanceRouteStatus::Draining { remaining: None }
+        );
+        let inputs = owner.inputs();
+        let snapshot = inputs.snapshot();
+        assert!(inputs.publish_feedback(
+            &snapshot,
+            InstanceRouteStatus::Draining { remaining: Some(2) },
+            BTreeMap::new()
+        ));
+        assert_eq!(
+            owner.status_changed().await.unwrap(),
+            InstanceRouteStatus::Draining { remaining: Some(2) }
+        );
+        assert!(inputs.publish_feedback(&snapshot, InstanceRouteStatus::Drained, BTreeMap::new()));
+        assert_eq!(
+            owner.status_changed().await.unwrap(),
+            InstanceRouteStatus::Drained
+        );
+        owner.wait_drained().await.unwrap();
+        inputs.fail("late cleanup error".into());
+        assert_eq!(owner.status(), InstanceRouteStatus::Drained);
     }
 }

@@ -7,6 +7,8 @@ use cidr::IpCidr;
 pub(crate) mod device;
 mod linux;
 mod manager;
+#[cfg(feature = "tun")]
+pub(crate) mod runtime;
 
 pub(crate) use linux::PlatformRouteBackend;
 #[cfg(feature = "tun")]

@@ -141,6 +141,13 @@ impl NetNS {
         }
     }
 
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", feature = "tun"))]
+    pub(crate) fn existing_route_controller(
+        &self,
+    ) -> Option<&crate::instance::route::RouteController> {
+        self.routes.get().and_then(|result| result.as_ref().ok())
+    }
+
     pub(crate) async fn wait_services_stopped(&self) -> anyhow::Result<()> {
         #[cfg(all(target_os = "linux", feature = "linux-netlink", feature = "tun"))]
         if let Some(routes) = self.routes.get() {
