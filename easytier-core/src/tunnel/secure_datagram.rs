@@ -1011,14 +1011,12 @@ mod tests {
         assert!(s.check_replay_for_test(1, 0, SecureDatagramDirection::AToB, now + 1));
 
         s.sync_root_key(root_key, 2, 2, true);
-        assert!(s.check_replay_for_test(2, 0, SecureDatagramDirection::AToB, now + 2));
+        // Use the actual deadline so scheduling delays before sync do not affect the test.
+        let expires_at_ms = s.sync_rx_grace_expires_at_ms.load(Ordering::Relaxed);
+        assert!(s.check_replay_for_test(2, 0, SecureDatagramDirection::AToB, expires_at_ms - 1));
+        assert!(s.check_replay_for_test(0, 1, SecureDatagramDirection::AToB, expires_at_ms - 1));
 
-        assert!(!s.check_replay_for_test(
-            0,
-            1,
-            SecureDatagramDirection::AToB,
-            now + SecureDatagramSession::SYNC_RX_GRACE_AFTER_MS + 3
-        ));
+        assert!(!s.check_replay_for_test(0, 2, SecureDatagramDirection::AToB, expires_at_ms));
     }
 
     #[test]
