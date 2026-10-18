@@ -1756,6 +1756,13 @@ impl PeerManagerCore {
         *self.exit_nodes.write().await = exit_nodes;
     }
 
+    /// Shares the network's current exit nodes, including later updates, while
+    /// keeping this peer's route lookup and packet identity independent.
+    pub(super) fn inherit_exit_nodes(&mut self, network: &Self) {
+        self.exit_nodes = network.exit_nodes.clone();
+        self.outbound_packet_router.exit_nodes = self.exit_nodes.clone();
+    }
+
     fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) {
         self.acl_filter.reload_rules(acl);
     }

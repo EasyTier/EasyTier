@@ -199,7 +199,7 @@ impl AttachedPeerRuntime {
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
         let flags = peer_snapshot.flags.clone();
-        let peer_manager = Arc::new(PeerManagerCore::new(
+        let mut peer_manager = PeerManagerCore::new(
             PortablePeerManagerConfig {
                 snapshot: peer_snapshot,
                 route_algo: RouteAlgoType::Ospf,
@@ -214,7 +214,9 @@ impl AttachedPeerRuntime {
             Arc::new(()),
             None,
             Arc::new(()),
-        )?);
+        )?;
+        peer_manager.inherit_exit_nodes(&network_peer_manager);
+        let peer_manager = Arc::new(peer_manager);
         if let Err(error) = peer_manager
             .follow_network_policy(network_runtime_config, config.groups)
             .await
@@ -619,6 +621,176 @@ mod tests {
 
     fn peer_manager() -> (Arc<PeerManagerCore>, CoreRuntimeConfigStore) {
         peer_manager_with_acl(Vec::new())
+    }
+
+    async fn connect_exit_peer(
+        network: &PeerManagerCore,
+        store: &CoreRuntimeConfigStore,
+        address: Ipv4Addr,
+    ) -> (Arc<PeerManagerCore>, HostPacketReceiver) {
+        let mut snapshot = store.snapshot().peer.as_ref().clone();
+        snapshot.runtime.core.routes.ipv4 = Some(IpPrefix {
+            address: address.into(),
+            prefix_len: 24,
+        });
+        if let Some(secure) = snapshot.runtime.secure_mode.as_mut() {
+            let private = StaticSecret::from([address.octets()[3]; 32]);
+            secure.local_private_key = Some(BASE64_STANDARD.encode(private.as_bytes()));
+            secure.local_public_key =
+                Some(BASE64_STANDARD.encode(PublicKey::from(&private).as_bytes()));
+        }
+        let flags = snapshot.flags.clone();
+        let store =
+            CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot.clone()));
+        let (sender, receiver) = host_packet_channel();
+        let public_ipv6 = CorePublicIpv6Runtime::new(store.clone(), Arc::new(()), Arc::new(()));
+        let peer = Arc::new(
+            PeerManagerCore::new(
+                PortablePeerManagerConfig {
+                    snapshot,
+                    route_algo: RouteAlgoType::Ospf,
+                    exit_nodes: Vec::new(),
+                    foreign_context_default_flags: flags,
+                },
+                Vec::new(),
+                store,
+                Arc::new(()),
+                sender,
+                public_ipv6,
+                Arc::new(()),
+                None,
+                Arc::new(()),
+            )
+            .unwrap(),
+        );
+        peer.run().await.unwrap();
+        let (server, client) = create_ring_tunnel_pair();
+        let (server_result, client_result) = tokio::join!(
+            network.add_tunnel_as_server(server),
+            peer.add_client_tunnel(client),
+        );
+        server_result.unwrap();
+        client_result.unwrap();
+        (peer, receiver)
+    }
+
+    async fn check_attached_peer_exit_nodes(secure: bool) {
+        let (network, store) = peer_manager_with_acl_and_secure(Vec::new(), secure);
+        network.run().await.unwrap();
+        let first_ip = Ipv4Addr::new(10, 82, 0, 10);
+        let second_ip = Ipv4Addr::new(10, 82, 0, 11);
+        let (first, mut first_packets) = connect_exit_peer(&network, &store, first_ip).await;
+        let (second, mut second_packets) = connect_exit_peer(&network, &store, second_ip).await;
+        network.update_exit_nodes(vec![first_ip.into()]).await;
+        let client_ip = Ipv4Addr::new(10, 82, 0, 2);
+        let attached = AttachedPeerRuntime::connect(
+            network.clone(),
+            store,
+            AttachedPeerConfig {
+                name: "exit-node-client".to_owned(),
+                virtual_ip: attached_ipv4(client_ip),
+                groups: vec!["ops".to_owned()],
+                identity_private_key: [2; 32],
+            },
+        )
+        .await
+        .unwrap();
+        for (exit, address) in [(&first, first_ip), (&second, second_ip)] {
+            wait_for_route(&attached.peer_manager, exit.my_peer_id(), address, true).await;
+            wait_for_route(exit, attached.peer_id(), client_ip, true).await;
+        }
+
+        let public_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let mut request = vec![0u8; 28];
+        request[0] = 0x45;
+        request[2..4].copy_from_slice(&28u16.to_be_bytes());
+        request[8] = 64;
+        request[9] = 1;
+        request[12..16].copy_from_slice(&client_ip.octets());
+        request[16..20].copy_from_slice(&public_ip.octets());
+        request[20] = 8;
+
+        for (exit, address, packets) in [
+            (&first, first_ip, &mut first_packets),
+            (&second, second_ip, &mut second_packets),
+        ] {
+            if address == second_ip {
+                network.update_exit_nodes(vec![second_ip.into()]).await;
+            }
+            assert_eq!(
+                attached
+                    .peer_manager
+                    .get_msg_dst_peer(&public_ip.into())
+                    .await,
+                (vec![exit.my_peer_id()], true),
+            );
+            attached.send_packet(&request).await.unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(5), packets.recv())
+                .await
+                .expect("exit node did not receive the client packet")
+                .unwrap()
+                .into_core_packet();
+            assert_eq!(packet.payload(), request.as_slice());
+            let header = packet.peer_manager_header().unwrap();
+            assert!(header.is_exit_node());
+            assert_eq!(header.from_peer_id.get(), attached.peer_id());
+            assert_eq!(header.to_peer_id.get(), exit.my_peer_id());
+
+            let mut reply = request.clone();
+            reply[12..16].copy_from_slice(&public_ip.octets());
+            reply[16..20].copy_from_slice(&client_ip.octets());
+            reply[20] = 0;
+            exit.send_msg_by_ip(ZCPacket::new_with_payload(&reply), client_ip.into(), false)
+                .await
+                .unwrap();
+            let received = tokio::time::timeout(Duration::from_secs(5), attached.recv_packet())
+                .await
+                .expect("exit reply did not reach the client")
+                .unwrap();
+            assert_eq!(received.payload(), reply.as_slice());
+        }
+
+        network.update_exit_nodes(Vec::new()).await;
+        assert_eq!(
+            attached
+                .peer_manager
+                .get_msg_dst_peer(&public_ip.into())
+                .await,
+            (Vec::new(), false),
+        );
+        // Explicit mesh routes must still win, even with an exit configured.
+        network.update_exit_nodes(vec![second_ip.into()]).await;
+        assert_eq!(
+            attached
+                .peer_manager
+                .get_msg_dst_peer(&first_ip.into())
+                .await,
+            (vec![first.my_peer_id()], false),
+        );
+        request[16..20].copy_from_slice(&first_ip.octets());
+        attached.send_packet(&request).await.unwrap();
+        let packet = tokio::time::timeout(Duration::from_secs(5), first_packets.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .into_core_packet();
+        assert_eq!(packet.payload(), request.as_slice());
+        assert!(!packet.peer_manager_header().unwrap().is_exit_node());
+
+        attached.close().await;
+        first.clear_resources().await;
+        second.clear_resources().await;
+        network.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn attached_peer_inherits_exit_nodes_and_updates() {
+        check_attached_peer_exit_nodes(false).await;
+    }
+
+    #[tokio::test]
+    async fn secure_attached_peer_inherits_exit_nodes_and_updates() {
+        check_attached_peer_exit_nodes(true).await;
     }
 
     async fn wait_for_route(
