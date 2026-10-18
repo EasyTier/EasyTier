@@ -163,6 +163,7 @@ pub(crate) struct MessageHeader {
     pub(crate) message_type: u16,
     pub(crate) flags: u16,
     pub(crate) sequence: u32,
+    pub(crate) port_number: u32,
 }
 
 pub(crate) struct MessageIter<'a> {
@@ -213,6 +214,7 @@ impl<'a> Iterator for MessageIter<'a> {
         let message_type = read_u16(&self.bytes[4..]).expect("header length checked");
         let flags = read_u16(&self.bytes[6..]).expect("header length checked");
         let sequence = read_u32(&self.bytes[8..]).expect("header length checked");
+        let port_number = read_u32(&self.bytes[12..]).expect("header length checked");
         let payload = &self.bytes[NLMSG_HEADER_LEN..len];
         self.bytes = &self.bytes[aligned_len..];
         Some(Ok((
@@ -220,6 +222,7 @@ impl<'a> Iterator for MessageIter<'a> {
                 message_type,
                 flags,
                 sequence,
+                port_number,
             },
             payload,
         )))

@@ -3,6 +3,7 @@ use std::{
     io,
     net::IpAddr,
     num::NonZeroU32,
+    sync::{Arc, Weak},
     time::Duration,
 };
 
@@ -28,7 +29,10 @@ use super::{OsRoute, OsRouteSlotKey, RouteBackend, RouteError};
 /// Socket setup uses a short synchronous namespace scope. Readiness, ACKs and
 /// timeout driving belong to the explicitly selected process shared runtime.
 pub(crate) struct PlatformRouteBackend {
-    socket: AsyncFd<Socket>,
+    socket: Arc<AsyncFd<Socket>>,
+    origin: RequestOrigin,
+    namespace: PlatformNamespace,
+    executor: Handle,
     sequence: u32,
     timeout: Duration,
 }
@@ -36,7 +40,14 @@ pub(crate) struct PlatformRouteBackend {
 /// Read-only notifications use a separate socket, never the request/ACK stream.
 pub(crate) struct RouteObserver {
     socket: AsyncFd<Socket>,
+    origin: Option<RequestOrigin>,
 }
+
+/// The observer never keeps a request socket alive across a receive/await.
+/// Upgrading only while decoding also prevents a reused port number being
+/// mistaken for the current writer's identity.
+#[derive(Clone)]
+pub(crate) struct RequestOrigin(Arc<parking_lot::Mutex<Weak<AsyncFd<Socket>>>>);
 
 #[derive(Default)]
 pub(crate) struct RouteChanges {
@@ -45,7 +56,15 @@ pub(crate) struct RouteChanges {
 }
 
 impl RouteObserver {
-    pub(crate) fn new(namespace: &PlatformNamespace, executor: &Handle) -> anyhow::Result<Self> {
+    pub(crate) fn origin(&self) -> Option<RequestOrigin> {
+        self.origin.clone()
+    }
+
+    pub(crate) fn new(
+        namespace: &PlatformNamespace,
+        executor: &Handle,
+        origin: Option<RequestOrigin>,
+    ) -> anyhow::Result<Self> {
         let socket = namespace.run(|| -> io::Result<Socket> {
             let mut socket = Socket::new(NETLINK_ROUTE)?;
             // LINK, IPv4/IPv6 IFADDR, IPv4/IPv6 ROUTE multicast groups.
@@ -57,17 +76,36 @@ impl RouteObserver {
         let _entered = executor.enter();
         Ok(Self {
             socket: AsyncFd::new(socket)?,
+            origin,
         })
     }
 
     // Errors mean the observation baseline was lost, including ENOBUFS and
     // malformed framing. The controller must invalidate and inspect on error.
     pub(crate) async fn next(&self) -> io::Result<RouteChanges> {
-        decode_changes(&receive(&self.socket).await?)
+        let bytes = receive(&self.socket).await?;
+        let own_socket = self
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.0.lock().upgrade());
+        let own_port = own_socket
+            .as_ref()
+            .map(|socket| {
+                let mut address = SocketAddr::new(0, 0);
+                socket.get_ref().get_address(&mut address)?;
+                Ok::<_, io::Error>(address.port_number())
+            })
+            .transpose()?;
+        decode_changes_from(&bytes, own_port)
     }
 }
 
+#[cfg(test)]
 fn decode_changes(bytes: &[u8]) -> io::Result<RouteChanges> {
+    decode_changes_from(bytes, None)
+}
+
+fn decode_changes_from(bytes: &[u8], own_port: Option<u32>) -> io::Result<RouteChanges> {
     let mut changes = RouteChanges::default();
     for frame in MessageIter::new(bytes) {
         let (header, payload) = frame?;
@@ -76,6 +114,12 @@ fn decode_changes(bytes: &[u8]) -> io::Result<RouteChanges> {
         }
         match header.message_type {
             RTM_NEWROUTE | RTM_DELROUTE => {
+                if header.port_number != 0
+                    && header.sequence != 0
+                    && own_port == Some(header.port_number)
+                {
+                    continue;
+                }
                 let route = RouteMessage::from_bytes(payload)?;
                 if !route.is_destination_only() {
                     continue;
@@ -119,6 +163,25 @@ fn decode_changes(bytes: &[u8]) -> io::Result<RouteChanges> {
 
 impl PlatformRouteBackend {
     pub(crate) fn new(namespace: &PlatformNamespace, executor: &Handle) -> anyhow::Result<Self> {
+        let socket = Self::socket(namespace, executor)?;
+        Ok(Self {
+            origin: RequestOrigin(Arc::new(parking_lot::Mutex::new(Arc::downgrade(&socket)))),
+            socket,
+            namespace: namespace.clone(),
+            executor: executor.clone(),
+            sequence: 0,
+            timeout: Duration::from_secs(2),
+        })
+    }
+
+    pub(crate) fn request_origin(&self) -> RequestOrigin {
+        self.origin.clone()
+    }
+
+    fn socket(
+        namespace: &PlatformNamespace,
+        executor: &Handle,
+    ) -> anyhow::Result<Arc<AsyncFd<Socket>>> {
         let socket = namespace.run(|| -> io::Result<Socket> {
             let mut socket = Socket::new(NETLINK_ROUTE)?;
             socket.bind_auto()?;
@@ -129,11 +192,7 @@ impl PlatformRouteBackend {
         // Explicit registration on the host-owned Reactor, even when a first
         // caller enters from a short-lived instance runtime.
         let _entered = executor.enter();
-        Ok(Self {
-            socket: AsyncFd::new(socket)?,
-            sequence: 0,
-            timeout: Duration::from_secs(2),
-        })
+        Ok(Arc::new(AsyncFd::new(socket)?))
     }
 
     async fn send(&self, request: &[u8], sent: &mut bool) -> io::Result<()> {
@@ -163,9 +222,16 @@ impl PlatformRouteBackend {
         request: MessageBuilder,
         kind: ReplyKind,
     ) -> Result<Vec<RouteMessage>, RequestFailure> {
-        self.sequence = self.sequence.checked_add(1).ok_or_else(|| {
-            RequestFailure::io(io::Error::other("netlink sequence exhausted"), false)
-        })?;
+        if self.sequence == u32::MAX {
+            // Allocate/register the replacement before dropping the old socket:
+            // its port cannot be reused and late ACKs stay on the old queue.
+            let socket = Self::socket(&self.namespace, &self.executor)
+                .map_err(|error| RequestFailure::io(io::Error::other(error), false))?;
+            *self.origin.0.lock() = Arc::downgrade(&socket);
+            self.socket = socket;
+            self.sequence = 0;
+        }
+        self.sequence += 1;
         let request = request
             .sequence(self.sequence)
             .finish()
@@ -523,7 +589,7 @@ mod tests {
         let shared = crate::host_runtime::native_host_runtime()
             .shared_executor()
             .unwrap();
-        let observer = RouteObserver::new(namespace.platform(), &shared).unwrap();
+        let observer = RouteObserver::new(namespace.platform(), &shared, None).unwrap();
         let mut backend = PlatformRouteBackend::new(namespace.platform(), &shared).unwrap();
         let owned = route("198.18.75.0/24", index, 65535);
         backend.add(&owned).await.unwrap();
@@ -548,6 +614,77 @@ mod tests {
         .await
         .unwrap();
         assert!(!backend.contains(&owned).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "run inside an isolated user+network namespace"]
+    async fn kernel_observer_filters_only_the_live_request_socket_origin() {
+        let namespace = crate::common::netns::isolated_namespace_for_test().unwrap();
+        let index = dummy(&namespace, "et-origin");
+        let shared = crate::host_runtime::native_host_runtime()
+            .shared_executor()
+            .unwrap();
+        let mut own = PlatformRouteBackend::new(namespace.platform(), &shared).unwrap();
+        let mut other = PlatformRouteBackend::new(namespace.platform(), &shared).unwrap();
+        let observer =
+            RouteObserver::new(namespace.platform(), &shared, Some(own.request_origin())).unwrap();
+        let first = route("198.18.76.0/24", index, 65535);
+        let second = route("198.18.77.0/24", index, 65535);
+        own.add(&first).await.unwrap();
+        let changes = tokio::time::timeout(Duration::from_secs(2), observer.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            changes.slots.is_empty(),
+            "own ACK must not trigger another FIB dump"
+        );
+        other.add(&second).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let changes = observer.next().await.unwrap();
+                assert!(!changes.slots.contains(&first.slot()));
+                if changes.slots.contains(&second.slot()) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        other.remove(&second).await.unwrap();
+        own.remove(&first).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "run inside an isolated user+network namespace"]
+    async fn kernel_sequence_rollover_replaces_socket_before_reusing_a_sequence() {
+        let namespace = crate::common::netns::isolated_namespace_for_test().unwrap();
+        let index = dummy(&namespace, "et-rollover");
+        let shared = crate::host_runtime::native_host_runtime()
+            .shared_executor()
+            .unwrap();
+        let mut backend = PlatformRouteBackend::new(namespace.platform(), &shared).unwrap();
+        let first = route("198.18.78.0/24", index, 65535);
+        let second = route("198.18.79.0/24", index, 65535);
+        let late = route_request(
+            &first,
+            RTM_NEWROUTE,
+            NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL,
+        )
+        .unwrap()
+        .sequence(1)
+        .finish()
+        .unwrap();
+        backend.send(&late, &mut false).await.unwrap();
+        let old = backend.socket.clone();
+        backend.sequence = u32::MAX;
+        backend.add(&second).await.unwrap();
+        assert!(!Arc::ptr_eq(&old, &backend.socket));
+        assert_eq!(backend.sequence, 1);
+        assert!(backend.contains(&first).await.unwrap());
+        assert!(backend.contains(&second).await.unwrap());
+        backend.remove(&first).await.unwrap();
+        backend.remove(&second).await.unwrap();
     }
 
     fn ip(namespace: &crate::common::netns::NetNS, args: &[&str]) {

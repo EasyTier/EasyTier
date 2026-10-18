@@ -44,6 +44,7 @@ struct Dirty {
     order: Vec<Uuid>,
     nics: BTreeSet<Uuid>,
     slots: BTreeSet<OsRouteSlotKey>,
+    foreign: BTreeSet<OsRouteSlotKey>,
     verify_all: bool,
 }
 impl Dirty {
@@ -56,6 +57,7 @@ impl Dirty {
         self.instances.is_empty()
             && self.nics.is_empty()
             && self.slots.is_empty()
+            && self.foreign.is_empty()
             && !self.verify_all
     }
 }
@@ -329,9 +331,9 @@ impl ControllerState {
     }
 
     fn os_changed(&self, changes: RouteChanges) {
-        let (inputs, slots, nics) = {
+        let (inputs, slots, nics, foreign) = {
             let catalog = self.catalog.lock();
-            let slots = changes
+            let foreign = changes
                 .slots
                 .into_iter()
                 .filter(|slot| catalog.slots.contains_key(slot))
@@ -343,6 +345,21 @@ impl ControllerState {
                 .flatten()
                 .copied()
                 .collect::<BTreeSet<_>>();
+            let nic_runs = nics
+                .iter()
+                .filter_map(|nic| catalog.groups.get(nic))
+                .flat_map(|group| group.members.iter().copied())
+                .collect::<BTreeSet<_>>();
+            let mut slots = foreign.clone();
+            if !nic_runs.is_empty() {
+                slots.extend(
+                    catalog
+                        .slots
+                        .iter()
+                        .filter(|(_, owners)| !owners.is_disjoint(&nic_runs))
+                        .map(|(slot, _)| slot.clone()),
+                );
+            }
             let runs = slots
                 .iter()
                 .filter_map(|slot| catalog.slots.get(slot))
@@ -365,6 +382,7 @@ impl ControllerState {
                     .collect::<Vec<_>>(),
                 slots,
                 nics,
+                foreign,
             )
         };
         for input in inputs {
@@ -372,6 +390,7 @@ impl ControllerState {
         }
         let mut dirty = self.dirty.lock();
         dirty.slots.extend(slots);
+        dirty.foreign.extend(foreign);
         dirty.nics.extend(nics);
         if !dirty.is_empty() {
             self.wake.notify_one();
@@ -448,7 +467,7 @@ impl RouteController {
     pub(crate) fn new(namespace: PlatformNamespace, shared: Handle) -> anyhow::Result<Self> {
         // Constructors explicitly enter this executor for AsyncFd registration.
         let backend = PlatformRouteBackend::new(&namespace, &shared)?;
-        let observer = RouteObserver::new(&namespace, &shared)?;
+        let observer = RouteObserver::new(&namespace, &shared, Some(backend.request_origin()))?;
         let state = ControllerState::new(shared.clone());
         let worker = Arc::new(AsyncMutex::new(Worker::new(backend)));
         spawn_driver(
@@ -1095,6 +1114,7 @@ async fn observe(
     namespace: PlatformNamespace,
     stop: CancellationToken,
 ) {
+    let origin = observer.as_ref().and_then(|observer| observer.origin());
     let mut attempt = 0u32;
     loop {
         if stop.is_cancelled() {
@@ -1121,7 +1141,7 @@ async fn observe(
             (100_u64 << attempt.saturating_sub(1).min(6)).min(5000),
         );
         tokio::select! { _ = stop.cancelled() => return, _ = tokio::time::sleep(delay) => {} }
-        match RouteObserver::new(&namespace, &state.shared) {
+        match RouteObserver::new(&namespace, &state.shared, origin.clone()) {
             Ok(socket) => {
                 observer = Some(socket);
                 state.observation_changed(true);
@@ -1229,6 +1249,10 @@ async fn drive<B: RouteBackend>(
                 cache.indexed = next;
             }
         }
+        // Subscribe new desired/effect slots before any request is sent. A
+        // foreign replacement can race our ACK and must not be filtered out
+        // merely because this first slot was not published to the observer yet.
+        state.sync_slots(&worker, &affected);
         let observation = {
             let catalog = state.catalog.lock();
             (catalog.observation, catalog.connected)
@@ -1238,8 +1262,11 @@ async fn drive<B: RouteBackend>(
             verifying = Some(observation.0);
             unverified = worker.slots.keys().cloned().collect();
             for key in &unverified {
-                worker.invalidate(key);
+                worker.lose_ownership(key);
             }
+        }
+        for key in &dirty.foreign {
+            worker.lose_ownership(key);
         }
         for key in &dirty.slots {
             worker.invalidate(key);
@@ -1697,7 +1724,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observation_reconnect_cannot_restore_ready_before_a_complete_dump() {
+    async fn observation_reconnect_needs_absence_before_reacquiring_owned_routes() {
         let state = ControllerState::new(Handle::current());
         let fake = Arc::new(Fake::default());
         let (owner, _member, epoch, _registry) =
@@ -1723,6 +1750,24 @@ mod tests {
         );
         fake.state.lock().pause_query = false;
         fake.query_ack.notify_one();
+        fake.until(|fake| fake.queries >= 2).await;
+        assert!(
+            claim
+                .wait_ready(Some(epoch.epoch()))
+                .now_or_never()
+                .is_none()
+        );
+        assert_eq!(fake.state.lock().removes, 0);
+        let slots = {
+            let mut fake = fake.state.lock();
+            let slots = fake.routes.iter().map(OsRoute::slot).collect();
+            fake.routes.clear();
+            slots
+        };
+        state.os_changed(RouteChanges {
+            slots,
+            links: BTreeSet::new(),
+        });
         tokio::time::timeout(
             Duration::from_secs(3),
             claim.wait_ready(Some(epoch.epoch())),
@@ -1730,7 +1775,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(fake.state.lock().adds, 1);
+        assert_eq!(fake.state.lock().adds, 2);
         finish(&state, task).await;
     }
 

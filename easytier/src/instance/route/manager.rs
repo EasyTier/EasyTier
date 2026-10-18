@@ -316,6 +316,24 @@ impl<B: super::RouteBackend> Worker<B> {
         }
     }
 
+    fn lose_ownership(&mut self, key: &OsRouteSlotKey) {
+        if let Some(effect) = self
+            .slots
+            .get_mut(key)
+            .and_then(|slot| slot.effect.as_mut())
+        {
+            if matches!(effect.phase, EffectPhase::Owned) {
+                effect.phase = EffectPhase::Unknown {
+                    operation: Mutation::Add,
+                    reason:
+                        "external route mutation or observation loss broke ownership continuity"
+                            .into(),
+                };
+            }
+        }
+        self.invalidate(key);
+    }
+
     fn next_pending(&self, now: tokio::time::Instant) -> Option<OsRouteSlotKey> {
         self.pending
             .iter()
@@ -1022,6 +1040,36 @@ mod tests {
                 .iter()
                 .any(|call| matches!(call, Call::Remove(_)))
         );
+    }
+
+    #[tokio::test]
+    async fn a_known_owned_route_loses_delete_rights_after_foreign_identical_replacement() {
+        let backend = MockBackend::default();
+        let (owner, key, routes) = single_route();
+        let mut worker = Worker::new(backend.clone());
+        worker.replace_routes(owner, &BTreeSet::new(), &routes);
+        settle(&mut worker).await;
+        assert_eq!(worker.status(&key), SlotStatus::Ready(key.clone()));
+        // DELETE followed by an identical external CREATE leaves the same dump.
+        worker.lose_ownership(&key.route.slot());
+        settle(&mut worker).await;
+        assert_eq!(worker.status(&key), SlotStatus::Pending);
+        worker.replace_routes(owner, &routes, &BTreeSet::new());
+        settle(&mut worker).await;
+        assert!(worker.has_responsibility(owner));
+        assert!(
+            !backend
+                .0
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|call| matches!(call, Call::Remove(_)))
+        );
+        backend.0.lock().unwrap().routes.clear();
+        worker.invalidate(&key.route.slot());
+        settle(&mut worker).await;
+        assert!(!worker.has_responsibility(owner));
     }
 
     #[tokio::test]
