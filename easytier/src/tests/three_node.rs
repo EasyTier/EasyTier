@@ -2075,8 +2075,13 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
                 config
                     .add_proxy_cidr("198.51.100.0/24".parse().unwrap(), None)
                     .unwrap();
+                let mut flags = config.get_flags();
+                flags.enable_exit_node = true;
+                flags.use_smoltcp = true;
+                config.set_flags(flags);
             }
             if config.get_inst_name() == "inst3" {
+                config.set_exit_nodes(vec!["10.144.144.1".parse().unwrap()]);
                 config.set_vpn_portal_config(VpnPortalConfig {
                     enabled: None,
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
@@ -2137,7 +2142,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
         dst_socket_addr,
         Key::try_from(server_public.as_slice()).unwrap(),
         Key::try_from(client_private.as_slice()).unwrap(),
-        vec!["10.144.144.0/24".to_string()],
+        vec!["10.144.144.0/24".to_string(), "10.1.1.1/32".to_string()],
         "10.144.144.4".to_owned(),
     )
     .unwrap();
@@ -2157,6 +2162,14 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     // ping portal node
     wait_for_condition(
         || async { ping_test(network.namespace("net_d"), "10.144.144.3", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    // This address is outside the mesh and advertised proxy CIDRs, on a
+    // separate bridge reachable only through the configured exit node.
+    wait_for_condition(
+        || async { ping_test(network.namespace("net_d"), "10.1.1.1", None).await },
         Duration::from_secs(5),
     )
     .await;
