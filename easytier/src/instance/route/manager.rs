@@ -383,6 +383,51 @@ impl<B: super::RouteBackend> Worker<B> {
         self.responsibility_index.contains_key(&owner)
     }
 
+    /// Read back stable confirmed effects in one batch. Unchanged routes keep
+    /// their status and authority; only complete absence releases an effect.
+    /// The controller must invalidate affected inputs before attempting repair.
+    async fn audit(&mut self) -> Result<BTreeSet<OsRouteSlotKey>, super::RouteError> {
+        let requested = self
+            .slots
+            .iter()
+            .filter_map(|(key, slot)| {
+                let effect = slot.effect.as_ref()?;
+                (matches!(effect.phase, EffectPhase::Owned | EffectPhase::External)
+                    && matches!(&slot.status, SlotStatus::Ready(ready) if ready == &effect.key)
+                    && !self.pending.contains(key)
+                    && !self.inspections.contains(key)
+                    && slot.retry.is_none())
+                .then(|| effect.key.route.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        if requested.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        // The backend rejects partial/error dumps. No effect is changed until
+        // the whole batch has completed successfully.
+        let existing = self
+            .backend
+            .as_mut()
+            .expect("running route backend")
+            .existing(&requested)
+            .await?;
+        let missing = requested
+            .difference(&existing)
+            .map(OsRoute::slot)
+            .collect::<BTreeSet<_>>();
+        for key in &missing {
+            let before = self.effect_owners(key);
+            let slot = self.slots.get_mut(key).unwrap();
+            slot.effect = None;
+            slot.status = SlotStatus::Pending;
+            // Keep the accepted incumbent; re-establishing ownership still
+            // requires a fresh successful exclusive add through advance().
+            self.pending.insert(key.clone());
+            self.index_responsibility(key, &before);
+        }
+        Ok(missing)
+    }
+
     fn next_retry(&self) -> Option<tokio::time::Instant> {
         self.pending
             .iter()
@@ -809,7 +854,7 @@ mod tests {
     enum Call {
         Add(OsRoute),
         Remove(OsRoute),
-        Inspect,
+        Inspect(BTreeSet<OsRoute>),
     }
     enum Directive {
         UnknownApplied,
@@ -870,7 +915,7 @@ mod tests {
             routes: &BTreeSet<OsRoute>,
         ) -> Result<BTreeSet<OsRoute>, super::super::RouteError> {
             let mut state = self.0.lock().unwrap();
-            state.calls.push(Call::Inspect);
+            state.calls.push(Call::Inspect(routes.clone()));
             if state.query_failed {
                 return Err(super::super::RouteError::Failed(anyhow::anyhow!(
                     "dump interrupted"
@@ -907,6 +952,296 @@ mod tests {
         let owner = Uuid::from_u128(1);
         let key = route(7, Uuid::from_u128(3), DeviceEpoch::new(), 65535);
         (owner, key.clone(), BTreeSet::from([key]))
+    }
+
+    fn inspect_calls(backend: &MockBackend) -> usize {
+        backend
+            .0
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|call| matches!(call, Call::Inspect(_)))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn stable_audit_batches_one_read_and_changes_no_state() {
+        let backend = MockBackend::default();
+        let mut worker = Worker::new(backend.clone());
+        let owner = Uuid::from_u128(1);
+        let nic = Uuid::from_u128(3);
+        let epoch = DeviceEpoch::new();
+        let first = route(7, nic, epoch, 65535);
+        let mut second = route(8, nic, epoch, 65535);
+        second.route.destination = "198.18.9.0/24".parse().unwrap();
+        let routes = BTreeSet::from([first.clone(), second.clone()]);
+        worker.replace_routes(owner, &BTreeSet::new(), &routes);
+        settle(&mut worker).await;
+        let calls = backend.0.lock().unwrap().calls.len();
+        let retries = worker
+            .slots
+            .iter()
+            .map(|(key, slot)| (key.clone(), slot.retry))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(worker.audit().await.unwrap(), BTreeSet::new());
+        assert_eq!(inspect_calls(&backend), 1, "one readback for all routes");
+        let requested = backend
+            .0
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .find_map(|call| match call {
+                Call::Inspect(requested) => Some(requested.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            requested,
+            BTreeSet::from([first.route.clone(), second.route.clone()]),
+            "the whole candidate set is read once"
+        );
+        assert_eq!(
+            backend.0.lock().unwrap().calls.len(),
+            calls + 1,
+            "audits never mutate"
+        );
+        assert_eq!(
+            worker
+                .slots
+                .iter()
+                .map(|(key, slot)| (key.clone(), slot.retry))
+                .collect::<BTreeMap<_, _>>(),
+            retries
+        );
+        assert!(worker.pending.is_empty());
+        assert!(worker.inspections.is_empty());
+        assert_eq!(worker.status(&first), SlotStatus::Ready(first.clone()));
+        assert_eq!(worker.status(&second), SlotStatus::Ready(second.clone()));
+        assert_eq!(
+            worker.effect_owners(&first.route.slot()),
+            BTreeSet::from([owner])
+        );
+        assert_eq!(
+            worker.responsibility_index,
+            BTreeMap::from([(
+                owner,
+                routes.iter().map(|route| route.route.slot()).collect()
+            )])
+        );
+        assert!(matches!(
+            worker.slots[&first.route.slot()]
+                .effect
+                .as_ref()
+                .unwrap()
+                .phase,
+            EffectPhase::Owned
+        ));
+    }
+
+    #[tokio::test]
+    async fn silent_route_loss_is_repaired_only_through_a_fresh_exclusive_ack() {
+        let backend = MockBackend::default();
+        let mut worker = Worker::new(backend.clone());
+        let (owner, key, routes) = single_route();
+        worker.replace_routes(owner, &BTreeSet::new(), &routes);
+        settle(&mut worker).await;
+        // No input, device or OS notification accompanies the disappearance.
+        backend.0.lock().unwrap().routes.clear();
+        let mutations = backend
+            .0
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|call| matches!(call, Call::Add(_) | Call::Remove(_)))
+            .count();
+        assert_eq!(
+            worker.audit().await.unwrap(),
+            BTreeSet::from([key.route.slot()])
+        );
+        assert!(matches!(worker.status(&key), SlotStatus::Pending));
+        assert!(worker.slots[&key.route.slot()].effect.is_none());
+        assert!(
+            !worker.has_responsibility(owner),
+            "a vanished effect retains no delete/responsibility authority"
+        );
+        assert_eq!(
+            backend
+                .0
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::Add(_) | Call::Remove(_)))
+                .count(),
+            mutations,
+            "the audit itself never mutates"
+        );
+        settle(&mut worker).await;
+        assert_eq!(worker.status(&key), SlotStatus::Ready(key.clone()));
+        assert!(backend.0.lock().unwrap().routes.contains(&key.route));
+        assert_eq!(
+            backend
+                .0
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::Add(_)))
+                .count(),
+            2,
+            "repair uses the ordinary exclusive add path"
+        );
+        assert!(
+            backend
+                .0
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|call| !matches!(call, Call::Remove(_))),
+            "a vanished route needs no delete"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_audit_proves_nothing_and_keeps_every_confirmed_effect() {
+        let backend = MockBackend::default();
+        let mut worker = Worker::new(backend.clone());
+        let (owner, key, routes) = single_route();
+        worker.replace_routes(owner, &BTreeSet::new(), &routes);
+        settle(&mut worker).await;
+        backend.0.lock().unwrap().query_failed = true;
+        assert!(worker.audit().await.is_err());
+        assert_eq!(worker.status(&key), SlotStatus::Ready(key.clone()));
+        assert_eq!(
+            worker.effect_owners(&key.route.slot()),
+            BTreeSet::from([owner])
+        );
+        assert!(worker.has_responsibility(owner));
+        assert!(worker.pending.is_empty());
+        assert!(
+            backend.0.lock().unwrap().routes.contains(&key.route),
+            "no repair was attempted"
+        );
+        let repair_adds = backend
+            .0
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|call| matches!(call, Call::Add(_)))
+            .count();
+        assert_eq!(repair_adds, 1, "the failed readback changed nothing");
+        assert!(
+            backend
+                .0
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|call| !matches!(call, Call::Remove(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn external_audit_never_deletes_or_adopts() {
+        let backend = MockBackend::default();
+        let (owner, key, routes) = single_route();
+        backend.0.lock().unwrap().routes.insert(key.route.clone());
+        let mut worker = Worker::new(backend.clone());
+        worker.replace_routes(owner, &BTreeSet::new(), &routes);
+        settle(&mut worker).await;
+        assert_eq!(worker.audit().await.unwrap(), BTreeSet::new());
+        assert!(matches!(
+            worker.slots[&key.route.slot()]
+                .effect
+                .as_ref()
+                .unwrap()
+                .phase,
+            EffectPhase::External
+        ));
+        assert!(worker.responsible_owners().is_empty());
+        // The external route disappears silently: the slot may be repaired,
+        // but only a new exclusive add ACK can make it Owned.
+        backend.0.lock().unwrap().routes.clear();
+        assert_eq!(
+            worker.audit().await.unwrap(),
+            BTreeSet::from([key.route.slot()])
+        );
+        assert!(worker.slots[&key.route.slot()].effect.is_none());
+        settle(&mut worker).await;
+        assert_eq!(worker.status(&key), SlotStatus::Ready(key.clone()));
+        assert_eq!(worker.responsible_owners(), BTreeSet::from([owner]));
+        let calls = backend.0.lock().unwrap().calls.clone();
+        // The initial probe plus the post-audit repair, never a delete.
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(call, Call::Add(_)))
+                .count(),
+            2
+        );
+        assert!(!calls.iter().any(|call| matches!(call, Call::Remove(_))));
+    }
+
+    #[tokio::test]
+    async fn unknown_effects_are_never_audited_or_promoted() {
+        let backend = MockBackend::default();
+        backend
+            .0
+            .lock()
+            .unwrap()
+            .directives
+            .push_back(Directive::UnknownApplied);
+        let (owner, key, routes) = single_route();
+        let mut worker = Worker::new(backend.clone());
+        worker.replace_routes(owner, &BTreeSet::new(), &routes);
+        settle(&mut worker).await;
+        let calls = backend.0.lock().unwrap().calls.len();
+        assert_eq!(
+            worker.audit().await.unwrap(),
+            BTreeSet::new(),
+            "an uncertain effect has no steady-state audit candidate"
+        );
+        assert_eq!(backend.0.lock().unwrap().calls.len(), calls);
+        assert!(matches!(
+            worker.slots[&key.route.slot()]
+                .effect
+                .as_ref()
+                .unwrap()
+                .phase,
+            EffectPhase::Unknown { .. }
+        ));
+        assert!(
+            !worker.effect_owners(&key.route.slot()).is_empty(),
+            "the uncertain receipt alone keeps its owner(s)"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_keeps_per_slot_backoff_and_skips_retrying_candidates() {
+        let backend = MockBackend::default();
+        let mut worker = Worker::new(backend.clone());
+        let (owner, key, routes) = single_route();
+        worker.replace_routes(owner, &BTreeSet::new(), &routes);
+        settle(&mut worker).await;
+        let slot = key.route.slot();
+        // Fabricate a live retry on a Ready slot: the audit must not observe it.
+        worker.slots.get_mut(&slot).unwrap().retry = Some((
+            3,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+        ));
+        let calls = backend.0.lock().unwrap().calls.len();
+        assert_eq!(worker.audit().await.unwrap(), BTreeSet::new());
+        assert_eq!(backend.0.lock().unwrap().calls.len(), calls);
+        assert_eq!(
+            worker.slots[&slot].retry.unwrap().0,
+            3,
+            "audits never reset per-slot backoff"
+        );
     }
 
     #[tokio::test]

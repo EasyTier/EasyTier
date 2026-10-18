@@ -31,6 +31,13 @@ use crate::{
     },
 };
 
+/// Slow OS verification supplements event-driven invalidation and exact retries.
+const AUDIT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn audit_retry_delay(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis((100_u64 << attempt.saturating_sub(1).min(6)).min(5000))
+}
+
 #[derive(Clone, Debug)]
 enum Phase {
     Running,
@@ -871,6 +878,27 @@ impl ControllerState {
                 .is_none_or(|cache| cache.fresh && self.current(run, cache))
         })
     }
+    /// Invalidate each affected owner once, without retaining catalog locks or
+    /// input references across backend I/O. The old slot map includes both
+    /// desired users and effect responsibility holders until sync_slots().
+    fn invalidate_slots(&self, slots: &BTreeSet<OsRouteSlotKey>) {
+        let inputs = {
+            let catalog = self.catalog.lock();
+            slots
+                .iter()
+                .filter_map(|slot| catalog.slots.get(slot))
+                .flatten()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .filter_map(|run| catalog.instances.get(&run))
+                .map(|input| input.inputs.clone())
+                .collect::<Vec<_>>()
+        };
+        for input in inputs {
+            input.invalidate();
+        }
+    }
     fn retire(&self, run: Uuid) -> Option<Uuid> {
         let input = {
             let mut catalog = self.catalog.lock();
@@ -1250,6 +1278,11 @@ async fn drive<B: RouteBackend>(
     let mut unverified = BTreeSet::new();
     let mut closing_since = None;
     let mut least_remaining = None;
+    // Steady-state OS audit. A single deadline advances only when an audit
+    // actually completes, so frequent input activity cannot starve it and a
+    // slow readback or a late scheduler wake cannot cause catch-up bursts.
+    let mut audit_at = None::<tokio::time::Instant>;
+    let mut audit_attempt = 0u32;
     loop {
         let notified = state.wake.notified();
         tokio::pin!(notified);
@@ -1374,10 +1407,46 @@ async fn drive<B: RouteBackend>(
         if unverified.is_empty() && observation.1 && verifying == Some(observation.0) {
             verified = verifying.take();
         }
+        // Run due audits even when new input invalidations are arriving. They
+        // only release effects proven absent; the normal freshness gate below
+        // prevents writes based on input snapshots superseded during readback.
+        if closing_since.is_none()
+            && observation.1
+            && verified == Some(observation.0)
+            && audit_at.is_some_and(|deadline| deadline <= tokio::time::Instant::now())
+        {
+            match worker.audit().await {
+                Ok(missing) => {
+                    if !missing.is_empty() {
+                        // Before any repair await, make every previous Ready
+                        // for the affected owners unusable, including feedback
+                        // computed from a snapshot captured before this audit.
+                        state.invalidate_slots(&missing);
+                        tracing::warn!(
+                            slots = missing.len(),
+                            "route audit detected missing effects"
+                        );
+                        affected.extend(missing);
+                    }
+                    audit_attempt = 0;
+                    audit_at = Some(tokio::time::Instant::now() + AUDIT_INTERVAL);
+                }
+                Err(error) => {
+                    audit_attempt = audit_attempt.saturating_add(1);
+                    let delay = audit_retry_delay(audit_attempt);
+                    audit_at = Some(tokio::time::Instant::now() + delay);
+                    tracing::warn!(
+                        ?error,
+                        ?delay,
+                        "route audit failed; retaining confirmed effects"
+                    );
+                }
+            }
+        }
         // Never choose a winner until all changes collected in this batch reach
         // the derived index. A busy NIC does not block an independent OS slot.
         let mut made_progress = false;
-        if state.dirty.lock().is_empty() {
+        if observation.1 && verified == Some(observation.0) && state.dirty.lock().is_empty() {
             let now = tokio::time::Instant::now();
             let next = worker
                 .pending
@@ -1503,11 +1572,25 @@ async fn drive<B: RouteBackend>(
             );
         }
         let now = tokio::time::Instant::now();
+        // Start only when slots exist, and park maintenance during close or
+        // observation recovery. This is O(1) on the normal per-ACK path.
+        let audit_deadline = if closing_since.is_none()
+            && observation.1
+            && verified == Some(observation.0)
+            && !worker.slots.is_empty()
+        {
+            Some(*audit_at.get_or_insert(now + AUDIT_INTERVAL))
+        } else {
+            audit_at = None;
+            audit_attempt = 0;
+            None
+        };
         let mut deadline = worker
             .next_retry()
             .into_iter()
             .filter(|deadline| *deadline > now)
             .chain(deferred.values().copied())
+            .chain(audit_deadline)
             .min();
         if let Some(since) = closing_since {
             let end = since + std::time::Duration::from_secs(30);
@@ -1691,6 +1774,7 @@ mod tests {
         adds: usize,
         removes: usize,
         queries: usize,
+        query_times: Vec<tokio::time::Instant>,
         pause_add: bool,
         pause_query: bool,
         unknown_add: bool,
@@ -1744,6 +1828,7 @@ mod tests {
             let pause = {
                 let mut state = self.0.state.lock();
                 state.queries += 1;
+                state.query_times.push(tokio::time::Instant::now());
                 state.pause_query
             };
             self.0.changed.notify_waiters();
@@ -1810,6 +1895,429 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+    }
+
+    async fn claim_ready(claim: &easytier_core::host::route::RouteClaim, epoch: DeviceEpoch) {
+        tokio::time::timeout(Duration::from_secs(3), claim.wait_ready(Some(epoch)))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    /// Move the paused clock to just past the next scheduled audit and let the
+    /// driver observe it. Real-time tests never see this interval.
+    async fn advance_audit() {
+        tokio::time::advance(AUDIT_INTERVAL + std::time::Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+    }
+
+    fn ready_slots(worker: &Worker<Backend>) -> usize {
+        worker
+            .slots
+            .values()
+            .filter(|slot| matches!(slot.status, SlotStatus::Ready(_)))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn empty_controller_never_reads_the_os_on_the_audit_timer() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let (_, task) = start(&state, &fake);
+        tokio::time::pause();
+        for _ in 0..10 {
+            tokio::time::advance(AUDIT_INTERVAL * 3).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(fake.state.lock().queries, 0);
+        tokio::time::resume();
+        let (owner, _member, lifetime, _registry) =
+            member(&state, Uuid::new_v4(), "controller-after-idle", 7).await;
+        let claim = owner.handle().publish(extra("198.18.36.0/24")).unwrap();
+        claim_ready(&claim, lifetime.epoch()).await;
+        assert_eq!(fake.state.lock().queries, 0, "idle time is not audit debt");
+        tokio::time::pause();
+        tokio::time::advance(AUDIT_INTERVAL - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(fake.state.lock().queries, 0);
+        tokio::time::advance(Duration::from_millis(2)).await;
+        fake.until(|fake| fake.queries == 1).await;
+        tokio::time::resume();
+        finish(&state, task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stable_routes_are_observed_without_churn_and_input_updates_do_not_postpone_audits() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let run = Uuid::new_v4();
+        let (owner, _member, epoch, _registry) = member(&state, run, "controller-audit", 7).await;
+        let claim = owner.handle().publish(extra("198.18.30.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        claim_ready(&claim, epoch.epoch()).await;
+        assert_eq!(ready_slots(&*worker.lock().await), 1);
+        let baseline = fake.state.lock().queries;
+        // Independent input activity updates the controller's dirty state often
+        // enough to keep the loop busy for several audit intervals.
+        for index in 0..8 {
+            let other = state.open(Uuid::new_v4(), String::new()).unwrap();
+            other.bind_config(config()).unwrap();
+            let _claim = other
+                .handle()
+                .publish(extra(&format!("198.18.4{index}.0/24")))
+                .unwrap();
+            tokio::time::advance(AUDIT_INTERVAL / 8).await;
+            other.request_close();
+        }
+        advance_audit().await;
+        fake.until(|fake| fake.queries > baseline).await;
+        let (adds, removes) = {
+            let fake = fake.state.lock();
+            (fake.adds, fake.removes)
+        };
+        assert_eq!(adds, 1, "the stable route is never re-added by an audit");
+        assert_eq!(removes, 0, "an audit never deletes a present route");
+        let worker = worker.lock().await;
+        assert_eq!(ready_slots(&worker), 1);
+        assert!(worker.pending.is_empty());
+        assert!(worker.inspections.is_empty());
+        drop(worker);
+        claim_ready(&claim, epoch.epoch()).await;
+        finish(&state, task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silent_os_route_loss_is_detected_and_repaired_by_the_audit_timer() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let run = Uuid::new_v4();
+        let (owner, _member, epoch, _registry) = member(&state, run, "controller-repair", 7).await;
+        let claim = owner.handle().publish(extra("198.18.31.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        claim_ready(&claim, epoch.epoch()).await;
+        let baseline = fake.state.lock().queries;
+        let adds = fake.state.lock().adds;
+        // No input, device or OS notification accompanies the disappearance.
+        fake.state.lock().routes.clear();
+        advance_audit().await;
+        fake.until(|fake| fake.queries > baseline).await;
+        // The audit detected the loss, invalidated the input, and repaired the
+        // route through a fresh exclusive add ACK.
+        fake.until(|fake| fake.adds == adds + 1).await;
+        fake.until(|fake| !fake.routes.is_empty()).await;
+        claim_ready(&claim, epoch.epoch()).await;
+        assert_eq!(
+            fake.state.lock().removes,
+            0,
+            "no delete of a vanished route"
+        );
+        let (ready, owned) = {
+            let worker = worker.lock().await;
+            (
+                ready_slots(&worker),
+                worker
+                    .slots
+                    .values()
+                    .filter_map(|slot| slot.effect.as_ref())
+                    .filter(|effect| matches!(effect.phase, EffectPhase::Owned))
+                    .count(),
+            )
+        };
+        assert_eq!((ready, owned), (1, 1));
+        finish(&state, task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn repair_feedback_is_invalidated_before_a_paused_ack_completes() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let run = Uuid::new_v4();
+        let (owner, _member, epoch, _registry) = member(&state, run, "controller-paused", 7).await;
+        let claim = owner.handle().publish(extra("198.18.32.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        claim_ready(&claim, epoch.epoch()).await;
+        // Snapshot the live input exactly as a Ready-publishing consumer would.
+        let inputs = owner.inputs();
+        let before = inputs.snapshot();
+        let baseline = fake.state.lock().queries;
+        let adds = fake.state.lock().adds;
+        fake.state.lock().routes.clear();
+        // Pause the repair ACK so the window between detection and confirmation
+        // stays open while checking what a consumer observes.
+        fake.state.lock().pause_add = true;
+        advance_audit().await;
+        fake.until(|fake| fake.queries > baseline).await;
+        fake.until(|fake| fake.adds == adds + 1).await;
+        // The synchronous invalidation happens before the paused repair add, so
+        // the pre-audit input revision is already stale at this point.
+        assert!(
+            !inputs.is_current(&before),
+            "detection must invalidate inputs before the repair ACK wait"
+        );
+        // A consumer that captured Ready together with `before` cannot commit it.
+        assert!(
+            !inputs.publish_feedback(
+                &before,
+                easytier_core::host::route::InstanceRouteStatus::Active,
+                before
+                    .claims
+                    .keys()
+                    .map(|id| (*id, ClaimRouteStatus::Ready))
+                    .collect()
+            ),
+            "stale Ready must not be publishable during the repair ACK wait"
+        );
+        assert!(
+            claim
+                .wait_ready(Some(epoch.epoch()))
+                .now_or_never()
+                .is_none(),
+            "stale readiness must not survive into the repair ACK wait"
+        );
+        // The drive loop holds the worker across this unconfirmed write, so the
+        // stale Ready is observed through the input/feedback side only.
+        assert!(fake.state.lock().pause_add);
+        fake.state.lock().pause_add = false;
+        fake.add_ack.notify_waiters();
+        claim_ready(&claim, epoch.epoch()).await;
+        assert_eq!(ready_slots(&*worker.lock().await), 1);
+        finish(&state, task).await;
+    }
+
+    #[tokio::test]
+    async fn failed_audits_back_off_without_clearing_or_delaying_a_later_repair() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let (owner, _member, lifetime, _registry) =
+            member(&state, Uuid::new_v4(), "controller-audit-fail", 7).await;
+        let claim = owner.handle().publish(extra("198.18.33.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        claim_ready(&claim, lifetime.epoch()).await;
+        let inputs = owner.inputs();
+        let before = inputs.snapshot();
+        let baseline = fake.state.lock().queries;
+        tokio::time::pause();
+        fake.state.lock().fail_query = true;
+        advance_audit().await;
+        fake.until(|fake| fake.queries > baseline).await;
+        // Await notifications rather than advancing over the backoff. A busy
+        // loop prevents the paused clock from idling forward; a 60s retry hits
+        // until()'s 3s timeout. The recorded query instants prove actual delays.
+        fake.until(|fake| fake.queries >= baseline + 3).await;
+        {
+            let data = fake.state.lock();
+            let times = &data.query_times[baseline..baseline + 3];
+            // Tokio's timer wheel can round a deadline up to the next
+            // millisecond even with a paused clock; retries must never be early.
+            for (actual, expected) in [
+                (times[1] - times[0], Duration::from_millis(100)),
+                (times[2] - times[1], Duration::from_millis(200)),
+            ] {
+                assert!((expected..=expected + Duration::from_millis(2)).contains(&actual));
+            }
+            assert_eq!((data.adds, data.removes), (1, 0));
+        }
+        assert!(inputs.is_current(&before));
+        assert_eq!(ready_slots(&*worker.lock().await), 1);
+        fake.state.lock().fail_query = false;
+        fake.state.lock().routes.clear();
+        fake.until(|fake| fake.adds == 2).await;
+        claim_ready(&claim, lifetime.epoch()).await;
+        assert_eq!(fake.state.lock().removes, 0);
+        tokio::time::resume();
+        finish(&state, task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_loss_during_an_inflight_readback_cannot_restore_stale_readiness() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let run = Uuid::new_v4();
+        let (owner, _member, epoch, _registry) =
+            member(&state, run, "controller-audit-race", 7).await;
+        let claim = owner.handle().publish(extra("198.18.34.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        claim_ready(&claim, epoch.epoch()).await;
+        let baseline = fake.state.lock().queries;
+        let adds = fake.state.lock().adds;
+        let inputs = owner.inputs();
+        let before = inputs.snapshot();
+        // Hold the readback open, then let the observation baseline be lost and
+        // the route disappear together: the stale dump would otherwise "prove"
+        // presence and the stale snapshot would republish Ready.
+        fake.state.lock().pause_query = true;
+        advance_audit().await;
+        fake.until(|fake| fake.queries > baseline).await;
+        fake.state.lock().routes.clear();
+        state.observation_changed(false);
+        assert!(!inputs.is_current(&before));
+        fake.state.lock().pause_query = false;
+        fake.query_ack.notify_waiters();
+        // The superseded readback must not install authority from its snapshot:
+        // the observer loss keeps the input invalidated until the stronger
+        // verification path re-establishes absence.
+        assert!(!inputs.is_current(&before));
+        assert!(
+            claim
+                .wait_ready(Some(epoch.epoch()))
+                .now_or_never()
+                .is_none(),
+            "stale readiness must not return from a superseded readback"
+        );
+        // Reconnect plus complete absence observation then repairs normally.
+        state.observation_changed(true);
+        fake.until(|fake| fake.adds > adds).await;
+        claim_ready(&claim, epoch.epoch()).await;
+        assert_eq!(fake.state.lock().removes, 0);
+        assert_eq!(ready_slots(&*worker.lock().await), 1);
+        finish(&state, task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closing_an_input_during_an_inflight_readback_never_reinstalls_it() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let run = Uuid::new_v4();
+        let (owner, _member, epoch, _registry) =
+            member(&state, run, "controller-audit-close", 7).await;
+        let claim = owner.handle().publish(extra("198.18.35.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        claim_ready(&claim, epoch.epoch()).await;
+        let baseline = fake.state.lock().queries;
+        fake.state.lock().pause_query = true;
+        advance_audit().await;
+        fake.until(|fake| fake.queries > baseline).await;
+        // Close the only input and withdraw its route while the dump is open.
+        owner.request_close();
+        fake.state.lock().pause_query = false;
+        fake.query_ack.notify_waiters();
+        tokio::time::timeout(Duration::from_secs(3), owner.wait_drained())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fake.state.lock().adds,
+            1,
+            "a withdrawn request is never installed by an audit"
+        );
+        assert!(fake.state.lock().routes.is_empty());
+        {
+            let worker = worker.lock().await;
+            assert!(
+                worker.responsible_owners().is_empty(),
+                "a closed input keeps no responsibility"
+            );
+            assert!(
+                worker.slots.values().all(|slot| slot.effect.is_none()
+                    || !matches!(slot.effect.as_ref().unwrap().phase, EffectPhase::Owned)),
+                "an audit never reinstalls ownership for a withdrawn request"
+            );
+        }
+        assert!(matches!(
+            claim.wait_ready(Some(epoch.epoch())).await,
+            Err(easytier_core::host::route::RouteWaitError::Closed)
+        ));
+        finish(&state, task).await;
+    }
+
+    #[tokio::test]
+    async fn observation_recovery_precedes_new_route_mutations() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let (owner, _member, lifetime, _registry) =
+            member(&state, Uuid::new_v4(), "controller-unobserved", 7).await;
+        state.observation_changed(false);
+        let claim = owner.handle().publish(extra("198.18.37.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        tokio::task::yield_now().await;
+        assert_eq!(fake.state.lock().adds, 0);
+        assert!(
+            worker
+                .lock()
+                .await
+                .slots
+                .values()
+                .all(|slot| slot.effect.is_none())
+        );
+        assert!(
+            claim
+                .wait_ready(Some(lifetime.epoch()))
+                .now_or_never()
+                .is_none()
+        );
+        state.observation_changed(true);
+        claim_ready(&claim, lifetime.epoch()).await;
+        assert_eq!(fake.state.lock().adds, 1);
+        finish(&state, task).await;
+    }
+
+    #[tokio::test]
+    async fn replacing_a_claim_during_readback_installs_only_the_current_request() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let (owner, _member, lifetime, _registry) =
+            member(&state, Uuid::new_v4(), "controller-audit-replace", 7).await;
+        let claim = owner.handle().publish(extra("198.18.38.0/24")).unwrap();
+        let (_, task) = start(&state, &fake);
+        claim_ready(&claim, lifetime.epoch()).await;
+        let baseline = fake.state.lock().queries;
+        tokio::time::pause();
+        {
+            let mut data = fake.state.lock();
+            data.routes.clear();
+            data.pause_query = true;
+        }
+        advance_audit().await;
+        fake.until(|fake| fake.queries > baseline).await;
+        claim.replace(extra("198.18.39.0/24")).unwrap();
+        fake.state.lock().pause_query = false;
+        fake.query_ack.notify_one();
+        claim_ready(&claim, lifetime.epoch()).await;
+        {
+            let data = fake.state.lock();
+            assert_eq!((data.adds, data.removes), (2, 0));
+            assert_eq!(data.routes.len(), 1);
+            assert_eq!(
+                data.routes.first().unwrap().destination,
+                "198.18.39.0/24".parse().unwrap()
+            );
+        }
+        tokio::time::resume();
+        finish(&state, task).await;
+    }
+
+    #[tokio::test]
+    async fn slow_readback_schedules_the_next_audit_from_completion() {
+        let state = ControllerState::new(Handle::current());
+        let fake = Arc::new(Fake::default());
+        let (owner, _member, lifetime, _registry) =
+            member(&state, Uuid::new_v4(), "controller-audit-slow", 7).await;
+        let claim = owner.handle().publish(extra("198.18.40.0/24")).unwrap();
+        let (worker, task) = start(&state, &fake);
+        claim_ready(&claim, lifetime.epoch()).await;
+        let inputs = owner.inputs();
+        let before = inputs.snapshot();
+        let baseline = fake.state.lock().queries;
+        tokio::time::pause();
+        fake.state.lock().pause_query = true;
+        advance_audit().await;
+        fake.until(|fake| fake.queries > baseline).await;
+        tokio::time::advance(AUDIT_INTERVAL * 3).await;
+        fake.state.lock().pause_query = false;
+        fake.query_ack.notify_one();
+        // The worker lock is released after the completed read and its next
+        // deadline have been processed. No catch-up query may run first.
+        assert_eq!(ready_slots(&*worker.lock().await), 1);
+        assert_eq!(fake.state.lock().queries, baseline + 1);
+        assert!(inputs.is_current(&before));
+        tokio::time::advance(AUDIT_INTERVAL - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(fake.state.lock().queries, baseline + 1);
+        tokio::time::advance(Duration::from_millis(2)).await;
+        fake.until(|fake| fake.queries == baseline + 2).await;
+        assert!(inputs.is_current(&before));
+        tokio::time::resume();
+        finish(&state, task).await;
     }
 
     async fn kernel_member(
