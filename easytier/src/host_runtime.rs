@@ -21,6 +21,7 @@ use easytier_core::{
         udp::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocketFactory},
     },
 };
+use tokio::sync::watch;
 
 use crate::{
     common::{
@@ -46,6 +47,7 @@ pub struct NativeHostRuntime {
     shared_initialization: Mutex<()>,
     closing: AtomicBool,
     executor_stopping: AtomicBool,
+    shutdown_result: watch::Sender<Option<Result<(), Arc<str>>>>,
 }
 
 static NATIVE_HOST_RUNTIME: OnceLock<Arc<NativeHostRuntime>> = OnceLock::new();
@@ -66,6 +68,7 @@ impl NativeHostRuntime {
             shared_initialization: Mutex::new(()),
             closing: AtomicBool::new(false),
             executor_stopping: AtomicBool::new(false),
+            shutdown_result: watch::channel(None).0,
         }
     }
 
@@ -102,6 +105,79 @@ impl NativeHostRuntime {
     pub(crate) async fn wait_executor_stopped(&self) {
         if let Some(Ok(shared)) = self.shared.get() {
             shared.wait_stopped().await;
+        }
+    }
+
+    pub(crate) async fn shutdown(self: &Arc<Self>) -> anyhow::Result<()> {
+        self.request_service_shutdown();
+        let mut result = self.shutdown_result.subscribe();
+        let outcome = loop {
+            if let Some(result) = result.borrow_and_update().clone() {
+                break result;
+            }
+            result
+                .changed()
+                .await
+                .map_err(|_| anyhow::anyhow!("native shutdown result disappeared"))?;
+        };
+        self.wait_executor_stopped().await;
+        outcome.map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    fn request_service_shutdown(self: &Arc<Self>) {
+        if self.closing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let namespaces = self
+            .namespaces
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for namespace in &namespaces {
+            namespace.request_service_shutdown();
+        }
+        let host = self.clone();
+        let interrupted = guarden::guard!([host = host.clone()] {
+            host.shutdown_result.send_replace(Some(Err("native service shutdown was interrupted".into())));
+            host.request_executor_shutdown();
+        });
+        match self.shared_executor() {
+            Ok(shared) => {
+                shared.spawn(async move {
+                    use futures::stream::{FuturesUnordered, StreamExt};
+                    let mut pending = namespaces
+                        .into_iter()
+                        .map(|namespace| async move {
+                            namespace
+                                .wait_services_stopped()
+                                .await
+                                .map_err(|error| format!("{}: {error:#}", namespace.id()))
+                        })
+                        .collect::<FuturesUnordered<_>>();
+                    let mut errors = Vec::new();
+                    while let Some(result) = pending.next().await {
+                        if let Err(error) = result {
+                            errors.push(error);
+                        }
+                    }
+                    let outcome = if errors.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(errors.join("; ").into())
+                    };
+                    host.shutdown_result.send_replace(Some(outcome));
+                    let _ = interrupted.defuse();
+                    host.request_executor_shutdown();
+                });
+            }
+            Err(error) => {
+                self.shutdown_result
+                    .send_replace(Some(Err(error.to_string().into())));
+                let _ = interrupted.defuse();
+                self.request_executor_shutdown();
+            }
         }
     }
 
@@ -412,6 +488,50 @@ impl DnsRecordResolver for NativeHostRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn terminal_shutdown_closes_domain_admission_before_stopping_the_executor() {
+        use std::time::Duration;
+        let host = Arc::new(NativeHostRuntime::new());
+        let namespace = host.capture_default_namespace().unwrap();
+        let _driver = host.shared_executor().unwrap();
+        // Hold the asynchronous NIC directory, so the cleanup remains pending
+        // while checking the synchronous close boundary.
+        #[cfg(feature = "tun")]
+        let permit = namespace.nics.lock().await;
+        host.request_service_shutdown();
+        assert!(namespace.ensure_open().is_err());
+        assert!(host.capture_default_namespace().is_err());
+        assert!(host.shared_executor().is_ok());
+        #[cfg(feature = "tun")]
+        drop(permit);
+        tokio::time::timeout(Duration::from_secs(5), host.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(host.shared_executor().is_err());
+        assert!(host.namespace(&SocketContext::default()).is_err());
+        host.shutdown().await.unwrap();
+    }
+
+    #[cfg(feature = "tun")]
+    #[tokio::test]
+    async fn terminal_cleanup_survives_the_shutdown_waiter_being_cancelled() {
+        let host = Arc::new(NativeHostRuntime::new());
+        let namespace = host.capture_default_namespace().unwrap();
+        let permit = namespace.nics.lock().await;
+        let waiting = host.clone();
+        let waiter = tokio::spawn(async move { waiting.shutdown().await });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        let _ = waiter.await;
+        drop(permit);
+        tokio::time::timeout(std::time::Duration::from_secs(5), host.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(host.shared_executor().is_err());
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

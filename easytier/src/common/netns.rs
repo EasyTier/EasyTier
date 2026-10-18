@@ -22,7 +22,7 @@ pub static ROOT_NETNS_NAME: &str = "_root_ns";
 /// Obtain an Arc through current/open_existing; cloning an Arc shares authority.
 pub struct NetNS {
     platform: PlatformNamespace,
-    closing: AtomicBool,
+    closing: Arc<AtomicBool>,
     service_initialization: Mutex<()>,
     #[cfg(all(target_os = "linux", feature = "linux-netlink", feature = "tun"))]
     routes: OnceLock<Result<crate::instance::route::RouteController, Arc<str>>>,
@@ -69,16 +69,17 @@ impl NetNS {
     }
 
     pub(crate) fn from_platform(platform: PlatformNamespace) -> Self {
+        let closing = Arc::new(AtomicBool::new(false));
         Self {
             dns: RuntimeDnsResolver::in_namespace(platform.clone()),
             platform,
-            closing: AtomicBool::new(false),
+            closing: closing.clone(),
             service_initialization: Mutex::new(()),
             #[cfg(all(target_os = "linux", feature = "linux-netlink", feature = "tun"))]
             routes: OnceLock::new(),
             #[cfg(feature = "tun")]
             nics: Arc::new(tokio::sync::Mutex::new(
-                crate::instance::shared_virtual_nic::SharedVirtualNicRegistry::new(),
+                crate::instance::shared_virtual_nic::SharedVirtualNicRegistry::in_domain(closing),
             )),
         }
     }
@@ -149,6 +150,13 @@ impl NetNS {
     }
 
     pub(crate) async fn wait_services_stopped(&self) -> anyhow::Result<()> {
+        #[cfg(feature = "tun")]
+        {
+            let nics = self.nics.lock().await.take_for_shutdown();
+            for nic in nics {
+                nic.lock().await.invalidate_and_shutdown_dispatcher().await;
+            }
+        }
         #[cfg(all(target_os = "linux", feature = "linux-netlink", feature = "tun"))]
         if let Some(routes) = self.routes.get() {
             match routes {

@@ -48,6 +48,12 @@ pub fn create_native_instance(config: TomlConfig) -> anyhow::Result<Arc<NativeCo
     NativeInstanceFactory::new(CoreProcessRuntime::new()).create(config, ())
 }
 
+/// Terminal process cleanup. Stop instance owners first; this drains shared
+/// native domain services and stops their executor last. It cannot be reopened.
+pub async fn shutdown_native_services() -> anyhow::Result<()> {
+    crate::host_runtime::native_host_runtime().shutdown().await
+}
+
 /// Subscribes to native presentation events owned by this instance's runtime.
 pub fn subscribe_native_instance_event(
     instance: &NativeCoreInstance,

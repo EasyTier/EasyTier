@@ -1161,6 +1161,7 @@ async fn drive<B: RouteBackend>(
     let mut verifying = None;
     let mut unverified = BTreeSet::new();
     let mut closing_since = None;
+    let mut least_remaining = None;
     loop {
         let notified = state.wake.notified();
         tokio::pin!(notified);
@@ -1299,13 +1300,9 @@ async fn drive<B: RouteBackend>(
                 })
                 .cloned();
             if let Some(key) = next {
-                let before = worker.effect_owners(&key);
                 worker.advance(&key).await;
                 affected.insert(key.clone());
                 made_progress = true;
-                if before != worker.effect_owners(&key) {
-                    closing_since = closing_since.map(|_| tokio::time::Instant::now());
-                }
             }
         }
         // Both old and new owners need feedback, especially the last departing
@@ -1387,6 +1384,17 @@ async fn drive<B: RouteBackend>(
             state.compact_group(*nic, &worker);
         }
         let empty = state.catalog.lock().instances.is_empty();
+        if closing_since.is_some() {
+            let remaining: usize = worker
+                .responsibility_index
+                .values()
+                .map(BTreeSet::len)
+                .sum();
+            if least_remaining.is_none_or(|least| remaining < least) {
+                least_remaining = Some(remaining);
+                closing_since = Some(tokio::time::Instant::now());
+            }
+        }
         if closing_since.is_some() && empty && worker.responsible_owners().is_empty() {
             return Ok(());
         }
