@@ -2940,6 +2940,84 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
+async fn port_forward_survives_interface_recreation(#[values("tcp", "udp")] proto: &str) {
+    let network = prepare_linux_namespaces();
+    let namespace = network.namespace("net_a");
+    let create_tun = || {
+        run_ip_in_ns(
+            namespace,
+            &["tuntap", "add", "dev", "pf_tun", "mode", "tun"],
+        );
+        run_ip_in_ns(namespace, &["addr", "add", "192.0.2.1/24", "dev", "pf_tun"]);
+        run_ip_in_ns(namespace, &["link", "set", "pf_tun", "up"]);
+        run_ip_in_ns_output(namespace, &["-o", "link", "show", "pf_tun"])
+            .split(':')
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+    let original_index = create_tun();
+    let insts = init_three_node_ex(
+        &network,
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                cfg.set_port_forwards(vec![PortForwardConfig {
+                    bind_addr: "192.0.2.1:23456".parse().unwrap(),
+                    dst_addr: "10.144.144.3:23456".parse().unwrap(),
+                    proto: proto.to_owned(),
+                }]);
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    for recreated in [false, true] {
+        if recreated {
+            run_ip_in_ns(namespace, &["link", "del", "pf_tun"]);
+            assert_ne!(create_tun(), original_index);
+        }
+        // Keep the forwarding instance and its listener alive across deletion.
+        // Reusing the interface name and IP must not leave it bound to the old
+        // ifindex. Check an application round trip, including the return path.
+        let listener_url = format!("{proto}://0.0.0.0:23456").parse().unwrap();
+        let connector_url = format!("{proto}://192.0.2.1:23456").parse().unwrap();
+        let server_ns = NetNS::new(Some(network.namespace("net_c").into()));
+        let client_ns = NetNS::new(Some(namespace.into()));
+        let payload = b"port-forward interface recreation".to_vec();
+        let timeout = Duration::from_secs(5);
+        let result = if proto == "tcp" {
+            _tunnel_pingpong_netns_with_timeout(
+                core_tcp_listener(listener_url),
+                core_tcp_dialer(connector_url),
+                server_ns,
+                client_ns,
+                payload,
+                timeout,
+            )
+            .await
+        } else {
+            _tunnel_pingpong_netns_with_timeout(
+                core_udp_listener(listener_url),
+                core_udp_dialer(connector_url),
+                server_ns,
+                client_ns,
+                payload,
+                timeout,
+            )
+            .await
+        };
+        assert!(result.is_ok(), "{proto}, recreated={recreated}: {result:?}");
+    }
+
+    drop_insts(insts).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
 pub async fn port_forward_test(
     #[values(true, false)] no_tun: bool,
     #[values(64, 1900)] buf_size: u64,
