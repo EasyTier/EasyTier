@@ -936,26 +936,57 @@ where
             anyhow::bail!("runtime config cannot update while instance is stopping or stopped");
         }
         self.validate_runtime_config_capabilities(&config)?;
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        let prepared = self.prepare_port_forwards(&config).await?;
+        self.commit_runtime_config_under_operation(
+            config,
+            #[cfg(feature = "proxy-smoltcp-stack")]
+            prepared,
+            || (),
+        )
+        .await
+    }
+
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    pub(crate) async fn prepare_port_forwards(
+        &self,
+        config: &CoreInstanceRuntimeConfig,
+    ) -> anyhow::Result<Option<crate::gateway::PreparedPortForwards<H>>> {
+        self.port_forward_adapter
+            .prepare(&config.services.gateway.port_forwards)
+            .await
+    }
+
+    pub(crate) async fn commit_runtime_config_under_operation(
+        &self,
+        config: CoreInstanceRuntimeConfig,
+        #[cfg(feature = "proxy-smoltcp-stack")] prepared: Option<
+            crate::gateway::PreparedPortForwards<H>,
+        >,
+        commit_config: impl FnOnce(),
+    ) -> anyhow::Result<()> {
         #[cfg(feature = "test-utils")]
         let reload_acl = self.runtime_config.snapshot().services.acl != config.services.acl;
-        let published = self.peer_manager.update_runtime_config(config).await?;
+        let (published, cleanup) = self
+            .peer_manager
+            .update_runtime_config_with(config, || {
+                #[cfg(feature = "proxy-smoltcp-stack")]
+                let cleanup = prepared.map(|prepared| prepared.commit());
+                #[cfg(not(feature = "proxy-smoltcp-stack"))]
+                let cleanup: Option<tokio::task::JoinHandle<()>> = None;
+                commit_config();
+                cleanup
+            })
+            .await?;
         #[cfg(feature = "test-utils")]
         if reload_acl {
             self.acl_reload_count.fetch_add(1, Ordering::Relaxed);
         }
         self.proxy_cidr_table
             .update_snapshot(proxy_cidr_snapshot(&published));
-        #[cfg(feature = "proxy-smoltcp-stack")]
-        self.port_forward_adapter
-            .reload(
-                &self
-                    .runtime_config
-                    .snapshot()
-                    .services
-                    .gateway
-                    .port_forwards,
-            )
-            .await?;
+        if let Some(cleanup) = cleanup {
+            let _ = cleanup.await;
+        }
         Ok(())
     }
 

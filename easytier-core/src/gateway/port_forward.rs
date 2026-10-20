@@ -1,6 +1,7 @@
 //! Host port-forward adapter backed by the data-plane runtime.
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{
         Arc,
@@ -15,11 +16,11 @@ use quanta::Instant;
 use tokio::{
     select,
     sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore},
-    task::JoinSet,
+    task::{JoinHandle, JoinSet},
 };
 use tokio_util::{
-    sync::{CancellationToken, DropGuard},
-    task::AbortOnDropHandle,
+    sync::CancellationToken,
+    task::{AbortOnDropHandle, TaskTracker},
 };
 
 use crate::{
@@ -94,11 +95,119 @@ struct UdpClientReservation {
     admission: OwnedMutexGuard<()>,
 }
 
+struct PortForwardListener {
+    config: Arc<std::sync::Mutex<PortForwardConfig>>,
+    cancel: CancellationToken,
+    task: AbortOnDropHandle<()>,
+    udp_tasks: TaskTracker,
+}
+
+enum PortForwardSocket<H: VirtualTcpListenerFactory + VirtualUdpSocketFactory> {
+    Tcp(Arc<H::Listener>),
+    Udp(Arc<<H as VirtualUdpSocketFactory>::Socket>),
+}
+
+/// Bound additions stay private until persistence and validation have succeeded.
+/// Dropping a prepared update leaves every existing listener and target intact.
+pub(crate) struct PreparedPortForwards<H>
+where
+    H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
+{
+    adapter: Arc<PortForwardAdapter<H>>,
+    configs: HashMap<(String, SocketAddr), PortForwardConfig>,
+    sockets: Vec<(PortForwardConfig, PortForwardSocket<H>)>,
+    consumer_lease: Option<DataPlaneConsumerLease>,
+    // Release prepared sockets before allowing another update to bind them.
+    operation: OwnedMutexGuard<()>,
+}
+
+impl<H> PreparedPortForwards<H>
+where
+    H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
+{
+    /// All fallible work is complete. Publish targets and start the bound sockets
+    /// without yielding, then retain the operation lock until removals release
+    /// their sockets, even if the caller stops waiting for this cleanup.
+    pub(crate) fn commit(self) -> JoinHandle<()> {
+        let Self {
+            adapter,
+            operation,
+            configs,
+            sockets,
+            consumer_lease,
+        } = self;
+        let _runtime = adapter.runtime_handle.as_ref().map(|handle| handle.enter());
+        let mut listeners = adapter.listeners.lock().unwrap();
+        let mut removed = Vec::new();
+        let mut response_tasks = Vec::new();
+        let removed_keys = listeners
+            .keys()
+            .filter(|key| !configs.contains_key(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in removed_keys {
+            let listener = listeners.remove(&key).unwrap();
+            listener.cancel.cancel();
+            listener.task.abort();
+            {
+                let current = listener.config.lock().unwrap();
+                tracing::info!(?current, "port-forward removed by runtime config reload");
+                adapter.remove_udp_clients(&current, &mut response_tasks);
+            }
+            removed.push(listener);
+        }
+        for (key, listener) in listeners.iter() {
+            let mut current = listener.config.lock().unwrap();
+            if let Some(next) = configs.get(key)
+                && *current != *next
+            {
+                adapter.remove_udp_clients(&current, &mut response_tasks);
+                *current = next.clone();
+                adapter
+                    .events
+                    .emit(CoreEvent::GatewayPortForwardAdded(next.clone()));
+            }
+        }
+        for (cfg, socket) in sockets {
+            let key = (cfg.proto.clone(), cfg.bind_addr);
+            let listener = match socket {
+                PortForwardSocket::Tcp(socket) => adapter.add_tcp_port_forward(&cfg, socket),
+                PortForwardSocket::Udp(socket) => adapter.add_udp_port_forward(&cfg, socket),
+            };
+            listeners.insert(key, listener);
+            adapter.events.emit(CoreEvent::GatewayPortForwardAdded(cfg));
+        }
+        drop(listeners);
+        let mut lease = adapter.consumer_lease.lock().unwrap();
+        if let Some(consumer_lease) = consumer_lease {
+            lease.replace(consumer_lease);
+        }
+        let released_lease = if configs.is_empty() {
+            lease.take()
+        } else {
+            None
+        };
+        drop(lease);
+        tokio::spawn(async move {
+            let _operation = operation;
+            for listener in removed {
+                let _ = listener.task.await;
+                listener.udp_tasks.close();
+                listener.udp_tasks.wait().await;
+            }
+            for task in response_tasks {
+                let _ = task.await;
+            }
+            drop(released_lease);
+        })
+    }
+}
+
 pub(crate) struct PortForwardAdapter<H>
 where
     H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
-    operation: Mutex<()>,
+    operation: Arc<Mutex<()>>,
     started: AtomicBool,
     runtime_handle: Option<tokio::runtime::Handle>,
     runtime_config: CoreRuntimeConfigStore,
@@ -107,12 +216,12 @@ where
     socket_context: SocketContext,
     events: Arc<dyn CoreEventSink>,
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
-    cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
+    listeners: std::sync::Mutex<HashMap<(String, SocketAddr), PortForwardListener>>,
     udp_clients: Arc<DashMap<UdpClientKey, Arc<UdpClientInfo<H>>>>,
     udp_response_tasks: Arc<DashMap<UdpClientKey, AbortOnDropHandle<()>>>,
     udp_client_admission: Arc<Mutex<()>>,
     udp_client_slots: Arc<Semaphore>,
-    consumer_lease: Mutex<Option<DataPlaneConsumerLease>>,
+    consumer_lease: std::sync::Mutex<Option<DataPlaneConsumerLease>>,
 }
 
 impl<H> PortForwardAdapter<H>
@@ -128,7 +237,7 @@ where
         runtime_handle: Option<tokio::runtime::Handle>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            operation: Mutex::new(()),
+            operation: Arc::new(Mutex::new(())),
             started: AtomicBool::new(false),
             runtime_handle,
             runtime_config,
@@ -137,17 +246,17 @@ where
             socket_context,
             events,
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
-            cancel_tokens: Arc::new(DashMap::new()),
+            listeners: std::sync::Mutex::new(HashMap::new()),
             udp_clients: Arc::new(DashMap::new()),
             udp_response_tasks: Arc::new(DashMap::new()),
             udp_client_admission: Arc::new(Mutex::new(())),
             udp_client_slots: Arc::new(Semaphore::new(MAX_ACTIVE_UDP_CLIENTS)),
-            consumer_lease: Mutex::new(None),
+            consumer_lease: std::sync::Mutex::new(None),
         })
     }
 
-    pub(crate) async fn start(&self) -> anyhow::Result<()> {
-        let _operation = self.operation.lock().await;
+    pub(crate) async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        let operation = self.operation.clone().lock_owned().await;
         if self.started.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -163,110 +272,157 @@ where
             .gateway
             .port_forwards
             .clone();
-        if let Err(error) = self.apply_port_forwards(&cfgs).await {
-            self.stop_inner().await;
-            return Err(error);
-        }
+        let prepared = match self.prepare_inner(&cfgs, operation).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.stop_inner().await;
+                return Err(error);
+            }
+        };
+        let cleanup = prepared.commit();
         self.started.store(true, Ordering::Release);
+        let _ = cleanup.await;
         Ok(())
     }
 
-    pub(crate) async fn reload(self: &Arc<Self>, cfgs: &[PortForwardConfig]) -> anyhow::Result<()> {
+    pub(crate) async fn prepare(
+        self: &Arc<Self>,
+        cfgs: &[PortForwardConfig],
+    ) -> anyhow::Result<Option<PreparedPortForwards<H>>> {
         if let Some(runtime) = &self.runtime_handle {
             let adapter = self.clone();
             let cfgs = cfgs.to_vec();
-            // Binding and spawning must both happen on the instance executor,
-            // including reloads reached through management config patches.
+            // Binding must happen on the instance executor, including reloads
+            // reached through management config patches.
             return AbortOnDropHandle::new(
-                runtime.spawn(async move { adapter.reload_on_runtime(&cfgs).await }),
+                runtime.spawn(async move { adapter.prepare_on_runtime(&cfgs).await }),
             )
             .await
-            .map_err(|error| anyhow::anyhow!("port-forward reload task failed: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("port-forward prepare task failed: {error}"))?;
         }
-        self.reload_on_runtime(cfgs).await
+        self.prepare_on_runtime(cfgs).await
     }
 
-    async fn reload_on_runtime(&self, cfgs: &[PortForwardConfig]) -> anyhow::Result<()> {
-        let _operation = self.operation.lock().await;
+    async fn prepare_on_runtime(
+        self: &Arc<Self>,
+        cfgs: &[PortForwardConfig],
+    ) -> anyhow::Result<Option<PreparedPortForwards<H>>> {
+        let operation = self.operation.clone().lock_owned().await;
         if !self.started.load(Ordering::Acquire) {
-            return Ok(());
+            return Ok(None);
         }
-        self.apply_port_forwards(cfgs).await
+        self.prepare_inner(cfgs, operation).await.map(Some)
     }
 
-    async fn apply_port_forwards(&self, cfgs: &[PortForwardConfig]) -> anyhow::Result<()> {
+    async fn prepare_inner(
+        self: &Arc<Self>,
+        cfgs: &[PortForwardConfig],
+        operation: OwnedMutexGuard<()>,
+    ) -> anyhow::Result<PreparedPortForwards<H>> {
+        let mut configs = HashMap::new();
         for cfg in cfgs {
-            if !matches!(cfg.proto.to_lowercase().as_str(), "tcp" | "udp") {
+            let mut cfg = cfg.clone();
+            cfg.proto.make_ascii_lowercase();
+            if !matches!(cfg.proto.as_str(), "tcp" | "udp") {
                 anyhow::bail!(
                     "unsupported protocol: {}, only support udp / tcp",
                     cfg.proto
                 );
             }
-        }
-
-        if !cfgs.is_empty() {
-            let mut consumer_lease = self.consumer_lease.lock().await;
-            if consumer_lease.is_none() {
-                consumer_lease.replace(self.data_plane.acquire_consumer_lease()?);
+            let key = (cfg.proto.clone(), cfg.bind_addr);
+            if let Some(previous) = configs.insert(key, cfg.clone()) {
+                anyhow::ensure!(
+                    previous == cfg,
+                    "conflicting port-forward targets for {} {}",
+                    cfg.proto,
+                    cfg.bind_addr
+                );
             }
         }
-
-        self.cancel_tokens.retain(|current, _| {
-            let keep = cfgs.iter().any(|next| {
-                if next.dst_addr.ip().is_unspecified() {
-                    current.bind_addr == next.bind_addr && current.proto == next.proto
-                } else {
-                    current == next
-                }
-            });
-            if !keep {
-                tracing::info!(?current, "port-forward removed by runtime config reload");
-            }
-            keep
-        });
-        self.udp_clients
-            .retain(|key, _| self.cancel_tokens.contains_key(&key.forward));
-        self.udp_response_tasks
-            .retain(|key, _| self.udp_clients.contains_key(key));
+        let consumer_lease = if !configs.is_empty() && self.consumer_lease.lock().unwrap().is_none()
+        {
+            Some(self.data_plane.acquire_consumer_lease()?)
+        } else {
+            None
+        };
+        let mut sockets = Vec::new();
         for cfg in cfgs {
-            if !self.cancel_tokens.contains_key(cfg) {
-                self.add_port_forward(cfg.clone()).await?;
+            let mut cfg = cfg.clone();
+            cfg.proto.make_ascii_lowercase();
+            let key = (cfg.proto.clone(), cfg.bind_addr);
+            if self.listeners.lock().unwrap().contains_key(&key)
+                || sockets
+                    .iter()
+                    .any(|(bound, _): &(PortForwardConfig, PortForwardSocket<H>)| {
+                        bound.proto == cfg.proto && bound.bind_addr == cfg.bind_addr
+                    })
+            {
+                continue;
             }
-        }
-        if cfgs.is_empty() {
-            self.consumer_lease.lock().await.take();
-        }
-        Ok(())
-    }
-
-    async fn add_port_forward(&self, cfg: PortForwardConfig) -> anyhow::Result<()> {
-        match cfg.proto.to_lowercase().as_str() {
-            "tcp" => self.add_tcp_port_forward(&cfg).await?,
-            "udp" => self.add_udp_port_forward(&cfg).await?,
-            _ => {
-                anyhow::bail!(
-                    "unsupported protocol: {}, only support udp / tcp",
-                    cfg.proto
+            let socket = if cfg.proto == "tcp" {
+                PortForwardSocket::Tcp(
+                    self.host
+                        .bind_tcp(self.tcp_listen_options(cfg.bind_addr))
+                        .await?,
                 )
-            }
+            } else {
+                PortForwardSocket::Udp(
+                    self.host
+                        .bind_udp(
+                            UdpBindOptions::port_forward(cfg.bind_addr)
+                                .with_context(self.socket_context.clone()),
+                        )
+                        .await?,
+                )
+            };
+            sockets.push((cfg, socket));
         }
-        self.events.emit(CoreEvent::GatewayPortForwardAdded(cfg));
-        Ok(())
+        Ok(PreparedPortForwards {
+            adapter: self.clone(),
+            operation,
+            configs,
+            sockets,
+            consumer_lease,
+        })
     }
 
-    async fn add_tcp_port_forward(&self, cfg: &PortForwardConfig) -> anyhow::Result<()> {
-        let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
+    fn tcp_listen_options(&self, bind_addr: SocketAddr) -> TcpListenOptions {
         let options = TcpListenOptions::port_forward(bind_addr);
         let bind = options
             .bind
             .clone()
             .with_context(self.socket_context.clone());
-        let options = options.with_bind(bind);
-        let listener = self.host.bind_tcp(options.clone()).await?;
+        options.with_bind(bind)
+    }
+
+    fn remove_udp_clients(&self, cfg: &PortForwardConfig, tasks: &mut Vec<AbortOnDropHandle<()>>) {
+        self.udp_clients.retain(|key, _| key.forward != *cfg);
+        let keys = self
+            .udp_response_tasks
+            .iter()
+            .filter(|entry| entry.key().forward == *cfg)
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            if let Some((_, task)) = self.udp_response_tasks.remove(&key) {
+                task.abort();
+                tasks.push(task);
+            }
+        }
+    }
+
+    fn add_tcp_port_forward(
+        &self,
+        cfg: &PortForwardConfig,
+        listener: Arc<H::Listener>,
+    ) -> PortForwardListener {
+        let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
+        let options = self.tcp_listen_options(bind_addr);
         tracing::info!(?bind_addr, ?dst_addr, "TCP port-forward listener bound");
         let cancel = CancellationToken::new();
-        self.cancel_tokens
-            .insert(cfg.clone(), cancel.clone().drop_guard());
+        let config = Arc::new(std::sync::Mutex::new(cfg.clone()));
+        let task_cancel = cancel.clone();
+        let task_config = config.clone();
 
         let data_plane = self.data_plane.clone();
         let connections = Arc::new(std::sync::Mutex::new(JoinSet::new()));
@@ -275,7 +431,8 @@ where
             "TCP port-forward connections",
         ));
         let host = self.host.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        let task = AbortOnDropHandle::new(tokio::spawn(async move {
+            let cancel = task_cancel;
             let mut listener = Some(listener);
             loop {
                 let Some((incoming, source_addr)) =
@@ -283,6 +440,7 @@ where
                 else {
                     break;
                 };
+                let dst_addr = task_config.lock().unwrap().dst_addr;
                 tracing::info!(
                     ?bind_addr,
                     ?source_addr,
@@ -317,22 +475,27 @@ where
                 ?dst_addr,
                 "TCP port-forward listener task stopped"
             );
-        });
-        Ok(())
+        }));
+        PortForwardListener {
+            config,
+            cancel,
+            task,
+            udp_tasks: TaskTracker::new(),
+        }
     }
 
-    async fn add_udp_port_forward(&self, cfg: &PortForwardConfig) -> anyhow::Result<()> {
-        let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
-        let forward = cfg.clone();
-        let socket = self
-            .host
-            .bind_udp(
-                UdpBindOptions::port_forward(bind_addr).with_context(self.socket_context.clone()),
-            )
-            .await?;
+    fn add_udp_port_forward(
+        &self,
+        cfg: &PortForwardConfig,
+        socket: Arc<<H as VirtualUdpSocketFactory>::Socket>,
+    ) -> PortForwardListener {
+        let bind_addr = cfg.bind_addr;
         let cancel = CancellationToken::new();
-        self.cancel_tokens
-            .insert(cfg.clone(), cancel.clone().drop_guard());
+        let config = Arc::new(std::sync::Mutex::new(cfg.clone()));
+        let task_cancel = cancel.clone();
+        let task_config = config.clone();
+        let udp_tasks = TaskTracker::new();
+        let response_tracker = udp_tasks.clone();
 
         let data_plane = self.data_plane.clone();
         let host = self.host.clone();
@@ -341,7 +504,8 @@ where
         let response_tasks = self.udp_response_tasks.clone();
         let client_admission = self.udp_client_admission.clone();
         let client_slots = self.udp_client_slots.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        let task = AbortOnDropHandle::new(tokio::spawn(async move {
+            let cancel = task_cancel;
             let adapter = UdpFlowFactory {
                 data_plane,
                 host,
@@ -360,6 +524,8 @@ where
                         }
                     },
                 };
+                let forward = task_config.lock().unwrap().clone();
+                let dst_addr = forward.dst_addr;
                 let key = UdpClientKey {
                     client_addr,
                     forward: forward.clone(),
@@ -394,6 +560,13 @@ where
                             continue;
                         };
                         let UdpClientReservation { slot, admission } = reservation;
+                        // Commit uses this same lock when replacing the target
+                        // and removing its flows. Do not publish an old flow
+                        // after either operation, including after an async open.
+                        let current = task_config.lock().unwrap();
+                        if *current != forward || cancel.is_cancelled() {
+                            continue;
+                        }
                         let slot = Arc::new(slot);
                         let client = Arc::new(UdpClientInfo {
                             flow: flow.clone(),
@@ -408,7 +581,7 @@ where
                         let response_slot = slot;
                         response_tasks.insert(
                             key.clone(),
-                            AbortOnDropHandle::new(tokio::spawn(async move {
+                            AbortOnDropHandle::new(response_tracker.spawn(async move {
                                 let _slot = response_slot;
                                 let mut buf = vec![0u8; MAX_UDP_PAYLOAD_SIZE];
                                 loop {
@@ -435,6 +608,7 @@ where
                                 }
                             })),
                         );
+                        drop(current);
                         drop(admission);
                         client
                     }
@@ -444,9 +618,14 @@ where
                     tracing::error!(?error, ?dst_addr, "send UDP data-plane packet failed");
                 }
             }
-        });
+        }));
 
-        Ok(())
+        PortForwardListener {
+            config,
+            cancel,
+            task,
+            udp_tasks,
+        }
     }
 
     fn start_udp_reaper(&self) {
@@ -468,14 +647,29 @@ where
 
     async fn stop_inner(&self) {
         self.started.store(false, Ordering::Release);
+        let listeners = std::mem::take(&mut *self.listeners.lock().unwrap());
         tracing::info!(
-            forward_count = self.cancel_tokens.len(),
+            forward_count = listeners.len(),
             "port-forward adapter stopping"
         );
-        self.cancel_tokens.clear();
+        for listener in listeners.values() {
+            listener.cancel.cancel();
+            listener.task.abort();
+        }
+        // First stop publishers, then remove response handles. The trackers
+        // include responses whose handles the reaper/eviction already dropped.
+        let mut trackers = Vec::new();
+        for (_, listener) in listeners {
+            let _ = listener.task.await;
+            trackers.push(listener.udp_tasks);
+        }
         self.udp_response_tasks.clear();
         self.udp_clients.clear();
-        self.consumer_lease.lock().await.take();
+        for tracker in trackers {
+            tracker.close();
+            tracker.wait().await;
+        }
+        self.consumer_lease.lock().unwrap().take();
         let mut tasks = {
             let mut tasks = self.tasks.lock().unwrap();
             std::mem::replace(&mut *tasks, JoinSet::new())
@@ -638,6 +832,9 @@ where
         Err(error) => tracing::error!(?error, ?dst_addr, "port-forward connection failed"),
     }
 }
+
+#[cfg(test)]
+mod reload_tests;
 
 #[cfg(test)]
 mod tests {

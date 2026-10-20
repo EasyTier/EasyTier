@@ -6,11 +6,12 @@
 //! accept, UDP sockets never receive, and DNS answers only literal IP hosts.
 
 use std::{
+    collections::HashMap,
     io,
     net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
@@ -70,11 +71,16 @@ impl VirtualTcpSocket for TestTcpSocket {
 pub struct TestTcpListener {
     address: SocketAddr,
     active_listeners: Arc<AtomicUsize>,
+    listeners: Option<Arc<Mutex<TestTcpListeners>>>,
+    incoming: Option<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<TestTcpSocket>>>,
 }
 
 impl Drop for TestTcpListener {
     fn drop(&mut self) {
         self.active_listeners.fetch_sub(1, Ordering::Relaxed);
+        if let Some(listeners) = &self.listeners {
+            listeners.lock().unwrap().remove(&self.address);
+        }
     }
 }
 
@@ -87,6 +93,12 @@ impl VirtualTcpListener for TestTcpListener {
     }
 
     async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
+        if let Some(incoming) = &self.incoming {
+            let socket = incoming.lock().await.recv().await.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::ConnectionAborted, "test listener closed")
+            })?;
+            return Ok((socket, "127.0.0.1:20001".parse().unwrap()));
+        }
         std::future::pending().await
     }
 }
@@ -108,6 +120,8 @@ impl VirtualUdpSocket for TestUdpSocket {
     }
 }
 
+pub type TestTcpListeners = HashMap<SocketAddr, tokio::sync::mpsc::UnboundedSender<TestTcpSocket>>;
+
 #[derive(Default)]
 pub struct TestHost {
     pub tcp_binds: AtomicUsize,
@@ -115,7 +129,28 @@ pub struct TestHost {
     pub udp_binds: AtomicUsize,
     pub proxy_nat_connections:
         Option<tokio::sync::mpsc::UnboundedSender<(SocketAddr, tokio::io::DuplexStream)>>,
+    pub port_forward_connections:
+        Option<tokio::sync::mpsc::UnboundedSender<(SocketAddr, tokio::io::DuplexStream)>>,
+    pub tcp_listeners: Option<Arc<Mutex<TestTcpListeners>>>,
+    pub reject_tcp_bind: Mutex<Option<SocketAddr>>,
     pub reject_socks5_listener: bool,
+}
+
+impl TestHost {
+    #[cfg(all(feature = "management", feature = "proxy-smoltcp-stack"))]
+    pub fn connect_to_listener(&self, address: SocketAddr) -> tokio::io::DuplexStream {
+        let (socket, peer) = tokio::io::duplex(1024);
+        self.tcp_listeners
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .get(&address)
+            .expect("test listener must be bound")
+            .send(TestTcpSocket(socket))
+            .unwrap();
+        peer
+    }
 }
 
 #[async_trait::async_trait]
@@ -123,13 +158,13 @@ impl VirtualTcpSocketFactory for TestHost {
     type Socket = TestTcpSocket;
 
     async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
-        if options.purpose != TcpSocketPurpose::ProxyNat {
-            anyhow::bail!("test host does not connect non-proxy TCP sockets");
+        let connections = match options.purpose {
+            TcpSocketPurpose::ProxyNat => &self.proxy_nat_connections,
+            TcpSocketPurpose::PortForward => &self.port_forward_connections,
+            _ => anyhow::bail!("test host does not connect non-proxy TCP sockets"),
         }
-        let connections = self
-            .proxy_nat_connections
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("test host proxy NAT is disabled"))?;
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("test host TCP connections are disabled"))?;
         let (socket, peer) = tokio::io::duplex(1024);
         connections
             .send((options.remote_addr, peer))
@@ -159,10 +194,26 @@ impl VirtualTcpListenerFactory for TestHost {
         } else {
             address
         };
+        if *self.reject_tcp_bind.lock().unwrap() == Some(address) {
+            anyhow::bail!("test host rejected TCP bind to {address}");
+        }
+        let incoming = if let Some(listeners) = &self.tcp_listeners {
+            let mut listeners = listeners.lock().unwrap();
+            if listeners.contains_key(&address) {
+                return Err(io::Error::new(io::ErrorKind::AddrInUse, address.to_string()).into());
+            }
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            listeners.insert(address, sender);
+            Some(tokio::sync::Mutex::new(receiver))
+        } else {
+            None
+        };
         self.active_tcp_listeners.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(TestTcpListener {
             address,
             active_listeners: self.active_tcp_listeners.clone(),
+            listeners: self.tcp_listeners.clone(),
+            incoming,
         }))
     }
 }
