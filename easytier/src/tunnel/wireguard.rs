@@ -843,13 +843,18 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn bind_same_port() {
+    async fn bind_same_port_is_rejected() {
         let server_cfg = test_wg_config();
-        let mut listener = WgTunnelListener::new("wg://[::1]:31015".parse().unwrap(), server_cfg);
-        let server_cfg = test_wg_config();
-        let mut listener2 = WgTunnelListener::new("wg://[::1]:31015".parse().unwrap(), server_cfg);
+        let mut listener = WgTunnelListener::new("wg://[::1]:0".parse().unwrap(), server_cfg);
         listener.listen().await.unwrap();
-        listener2.listen().await.unwrap();
+
+        let mut listener2 = WgTunnelListener::new(listener.local_url(), test_wg_config());
+        let error = listener2.listen().await.unwrap_err();
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::AddrInUse)
+        }));
     }
 
     #[tokio::test]
