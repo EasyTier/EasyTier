@@ -843,6 +843,20 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn bind_ipv4_and_ipv6_same_port() {
+        let mut listener = WgTunnelListener::new("wg://[::]:0".parse().unwrap(), test_wg_config());
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+
+        let mut listener2 = WgTunnelListener::new(
+            format!("wg://0.0.0.0:{port}").parse().unwrap(),
+            test_wg_config(),
+        );
+        listener2.listen().await.unwrap();
+        assert_eq!(listener2.local_url().port(), Some(port));
+    }
+
+    #[tokio::test]
     async fn bind_same_port_is_rejected() {
         let server_cfg = test_wg_config();
         let mut listener = WgTunnelListener::new("wg://[::1]:0".parse().unwrap(), server_cfg);
