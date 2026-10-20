@@ -531,6 +531,7 @@ where
             public_ipv6_host,
             public_ipv6_events,
         );
+        let running_listeners = Arc::new(RunningListenerRegistry::default());
         let stun = (connectivity_mode == CoreConnectivityMode::Full)
             .then(|| Self::prepare_stun(&adapters, &config.connectivity));
         let (peer_stun, foreign_rpc_registrar): (
@@ -542,6 +543,7 @@ where
                 Arc::new(ForeignDirectConnectorRpcRegistrar::new(
                     adapters.host.clone(),
                     stun.clone(),
+                    running_listeners.clone(),
                 )),
             ),
             None => (Arc::new(()), Arc::new(())),
@@ -633,7 +635,6 @@ where
                 accepted_tunnel_handler.clone(),
             )),
         };
-        let running_listeners = Arc::new(RunningListenerRegistry::default());
         let PreparedListenerPlan {
             transports,
             external,
