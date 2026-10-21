@@ -2856,6 +2856,144 @@ pub async fn foreign_network_functional_cluster() {
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
+async fn foreign_network_advertises_listeners_for_direct_connect(
+    #[values("tcp", "udp")] protocol: &str,
+) {
+    use easytier_proto::{
+        peer_rpc::{DirectConnectorRpc, DirectConnectorRpcClientFactory, GetIpListRequest},
+        rpc_types::controller::BaseController,
+    };
+
+    let mut network = TestNetwork::new();
+    network.create_bridge("br");
+    let process_runtime = CoreProcessRuntime::new();
+    let mut instances = Vec::new();
+    for (index, name) in ["server_a", "server_b", "client_a", "client_b"]
+        .into_iter()
+        .enumerate()
+    {
+        network.create_namespace(
+            name,
+            &format!("10.81.0.{}/24", index + 1),
+            &format!("fd81::{}/64", index + 1),
+        );
+        network.add_to_bridge("br", name);
+        let config = TomlConfigLoader::default();
+        config.set_inst_name(name.to_owned());
+        config.set_netns(Some(network.namespace(name).to_owned()));
+        config.set_network_identity(NetworkIdentity::new(
+            if index < 2 {
+                "public-net"
+            } else {
+                "client-net"
+            }
+            .to_owned(),
+            String::new(),
+        ));
+        config.set_listeners(if index < 2 {
+            // Keep listener discovery independent of interface collection in netns.
+            vec![
+                format!("{protocol}://10.81.0.{}:11010", index + 1)
+                    .parse()
+                    .unwrap(),
+            ]
+        } else {
+            Vec::new()
+        });
+        let mut flags = config.get_flags();
+        flags.no_tun = true;
+        flags.enable_ipv6 = false;
+        flags.disable_udp_hole_punching = true;
+        flags.disable_tcp_hole_punching = true;
+        flags.relay_all_peer_rpc = true;
+        if index == 1 {
+            // The second server only relays RPC, as in the reported topology.
+            flags.relay_network_whitelist = String::new();
+            flags.disable_relay_data = true;
+        }
+        config.set_flags(flags);
+        assert!(config.get_mapped_listeners().is_empty());
+        let mut instance = Instance::new_with_process_runtime(config, process_runtime.clone());
+        instance.run().await.unwrap();
+        set_foreign_network_refresh_interval(&instance, 1).await;
+        instances.push(instance);
+    }
+    let [server_a, server_b, client_a, client_b] = instances.as_slice() else {
+        unreachable!()
+    };
+    // Bootstrap only the cluster link and each client's local server.
+    // Connections to the other server must use its advertised TCP/UDP listener.
+    server_a.add_connector_url(server_b.ring_listener_url());
+    client_a.add_connector_url(server_a.ring_listener_url());
+    client_b.add_connector_url(server_b.ring_listener_url());
+
+    for (client, remote_server) in [(client_a, server_b), (client_b, server_a)] {
+        let client = client.get_core_instance();
+        let remote_server = remote_server.get_core_instance();
+        wait_for_condition(
+            || async {
+                remote_server
+                    .foreign_network_snapshots(false)
+                    .await
+                    .contains_key("client-net")
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+        let remote_peer_id = remote_server.foreign_network_snapshots(false).await["client-net"]
+            .my_peer_id_for_this_network;
+        wait_for_condition(
+            || async {
+                client
+                    .route_snapshots()
+                    .await
+                    .iter()
+                    .any(|route| route.peer_id == remote_peer_id)
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+        let rpc = client
+            .peer_manager()
+            .get_peer_rpc_mgr()
+            .rpc_client()
+            .scoped_client::<DirectConnectorRpcClientFactory<BaseController>>(
+            client.peer_id(),
+            remote_peer_id,
+            "client-net".to_owned(),
+        );
+        let listeners = rpc
+            .get_ip_list(BaseController::default(), GetIpListRequest {})
+            .await
+            .unwrap()
+            .listeners
+            .into_iter()
+            .map(url::Url::from)
+            .collect::<Vec<_>>();
+        assert_eq!(listeners, remote_server.running_listeners());
+        wait_for_condition(
+            || async {
+                client.peer_snapshots().await.iter().any(|peer| {
+                    peer.peer_id == remote_peer_id
+                        && peer.conns.iter().any(|conn| {
+                            conn.is_client
+                                && conn
+                                    .tunnel
+                                    .as_ref()
+                                    .is_some_and(|tunnel| tunnel.tunnel_type == protocol)
+                        })
+                })
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+    }
+    drop_insts(instances).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
 pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     let network = prepare_linux_namespaces();
     let process_runtime = CoreProcessRuntime::new();

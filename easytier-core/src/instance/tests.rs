@@ -3748,6 +3748,52 @@ virtual_ip = "10.82.0.2/24"
     }
 
     #[tokio::test]
+    async fn foreign_direct_rpc_tracks_running_listeners() {
+        use crate::{
+            connectivity::direct::DirectConnectorRpcHandler,
+            proto::{
+                peer_rpc::{DirectConnectorRpc, GetIpListRequest},
+                rpc_types::controller::BaseController,
+            },
+        };
+
+        let mut config = test_config("foreign-listeners");
+        config.connectivity.listeners = Some(ListenerRuntimeConfig::new(
+            vec!["tcp://0.0.0.0:0".parse().unwrap()],
+            false,
+            SocketContext::default(),
+        ));
+        let instance = build_instance(config).unwrap();
+        let handler = DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
+            Arc::new(TestHost::default()),
+            instance.running_listeners.clone(),
+            SocketContext::default(),
+            None,
+        );
+        let advertised_listeners = || async {
+            handler
+                .get_ip_list(BaseController::default(), GetIpListRequest {})
+                .await
+                .unwrap()
+                .listeners
+                .into_iter()
+                .map(Url::from)
+                .collect::<Vec<_>>()
+        };
+
+        assert!(advertised_listeners().await.is_empty());
+        instance.start().await.unwrap();
+        assert!(
+            instance
+                .running_listeners()
+                .contains(&"tcp://0.0.0.0:20000".parse().unwrap())
+        );
+        assert_eq!(advertised_listeners().await, instance.running_listeners());
+        instance.stop().await;
+        assert!(advertised_listeners().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn external_listener_uses_core_running_listener_registry() {
         let external_url: Url = "unix:///tmp/easytier-external-listener-test"
             .parse()
