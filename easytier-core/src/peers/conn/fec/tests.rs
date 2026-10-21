@@ -305,6 +305,8 @@ fn initial_burst_protects_an_isolated_packet_without_waiting() {
     assert!(delivered(&rx, &source, now).is_empty());
     assert_eq!(stats(&rx).recovered_packets, 1);
     assert!(!rx.info().tx_active);
+    assert!(tx.repair_deadline().is_none());
+    assert!(repairs(&tx, now + Duration::from_millis(20)).is_empty());
 }
 
 #[test]
@@ -480,6 +482,52 @@ fn feedback_updates_after_the_coding_window_expires() {
     assert_eq!(parity.len(), 1);
     assert_eq!(delivered(&rx, &parity[0], later), vec![expected]);
     assert_eq!(stats(&rx).recovered_packets, 1);
+}
+
+#[test]
+fn clean_feedback_batches_do_not_immediately_erase_recent_loss() {
+    use super::feedback::Report;
+    let now = Instant::now();
+    let tx = active(config());
+    warmup_without_loss(&tx, now);
+    for id in 512..1024 {
+        send(&tx, packet(id as u8, 100), now);
+    }
+    for samples in [416, 448, 480] {
+        tx.receive(
+            Report {
+                highest: 1023,
+                samples,
+                lost: 1,
+            }
+            .encode(),
+            now,
+        );
+        assert!(
+            tx.info()
+                .tx_parameters
+                .unwrap()
+                .current_repair_percent
+                .unwrap()
+                > 0
+        );
+    }
+    // Sustained clean traffic does eventually replace the loss evidence.
+    for samples in (512..=992).step_by(32) {
+        tx.receive(
+            Report {
+                highest: 1023,
+                samples,
+                lost: 1,
+            }
+            .encode(),
+            now,
+        );
+    }
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(0)
+    );
 }
 
 #[test]

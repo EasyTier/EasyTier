@@ -16,6 +16,9 @@ use super::{
 
 const WINDOW_LIFETIME: Duration = Duration::from_millis(100);
 const TAIL_DELAY: Duration = Duration::from_millis(5);
+const MIN_REPORT_SAMPLES: u64 = 32;
+const LOSS_WINDOW_SAMPLES: u64 = 256;
+const REPORT_HISTORY_CAPACITY: usize = (LOSS_WINDOW_SAMPLES / MIN_REPORT_SAMPLES) as usize + 1;
 
 struct Source {
     id: u64,
@@ -70,6 +73,7 @@ pub(super) struct Tx {
     tail_deadline: Option<Instant>,
     rate: u32,
     report: Report,
+    report_history: VecDeque<Report>,
     _reservation: Reservation,
 }
 
@@ -80,10 +84,16 @@ impl Tx {
         stats: Arc<Counters>,
     ) -> anyhow::Result<Self> {
         let reservation = account
-            .reserve(WINDOW * (std::mem::size_of::<Source>() + std::mem::size_of::<usize>()) + 4096)
+            .reserve(
+                WINDOW * (std::mem::size_of::<Source>() + std::mem::size_of::<usize>())
+                    + REPORT_HISTORY_CAPACITY * std::mem::size_of::<Report>()
+                    + 4096,
+            )
             .ok_or_else(|| anyhow::anyhow!("FEC transmit state budget exhausted"))?;
         let credit_limit = u64::from(config.udp_payload_mtu) * 2 * 100;
         let rate = config.max_repair_percent;
+        let mut report_history = VecDeque::with_capacity(REPORT_HISTORY_CAPACITY);
+        report_history.push_back(Report::default());
         Ok(Self {
             config,
             account,
@@ -103,6 +113,7 @@ impl Tx {
             tail_deadline: None,
             rate,
             report: Report::default(),
+            report_history,
             _reservation: reservation,
         })
     }
@@ -297,21 +308,29 @@ impl Tx {
         }
         let samples = report.samples - self.report.samples;
         let lost = report.lost - self.report.lost;
-        if samples < 32 || lost > samples {
+        if samples < MIN_REPORT_SAMPLES || lost > samples {
             return;
         }
+        let Some(symbol_len) = self.source_lengths.iter().copied().max() else {
+            return;
+        };
+        // Keep at least one loss-estimation window, aligned to cumulative
+        // report boundaries. A small clean batch must not erase recent loss.
+        while self.report_history.len() > 1
+            && report.samples - self.report_history[1].samples >= LOSS_WINDOW_SAMPLES
+        {
+            self.report_history.pop_front();
+        }
+        let oldest = self.report_history.front().unwrap();
+        let recent_samples = report.samples - oldest.samples;
+        let recent_lost = report.lost - oldest.lost;
         // No useful parity estimate is available when all settled samples were
         // lost. Retain the rate; existing PeerConn liveness owns link failure.
-        if lost == samples {
-            self.report = report;
-            return;
-        }
-        let target = if lost == 0 {
+        let target = if lost == samples {
+            self.rate
+        } else if recent_lost == 0 {
             0
         } else {
-            let Some(symbol_len) = self.source_lengths.iter().copied().max() else {
-                return;
-            };
             // Loss is measured in packets, but credit is measured in bytes.
             // A repair is padded to the largest symbol, so mixed packet sizes
             // need more byte credit for the same number of repair equations.
@@ -320,8 +339,8 @@ impl Tx {
                 .iter()
                 .map(|len| len - 2 + UDP_TUNNEL_HEADER_SIZE)
                 .sum();
-            let received = u128::from(samples - lost);
-            let numerator = (u128::from(lost) * 125 + received * 2)
+            let received = u128::from(recent_samples - recent_lost);
+            let numerator = (u128::from(recent_lost) * 125 + received * 2)
                 * (wire::OVERHEAD + symbol_len) as u128
                 * self.source_lengths.len() as u128;
             numerator
@@ -329,6 +348,7 @@ impl Tx {
                 .min(u128::from(self.config.max_repair_percent)) as u32
         };
         self.report = report;
+        self.report_history.push_back(report);
         self.rate = if target > self.rate {
             (self.rate + 10).min(target)
         } else {
