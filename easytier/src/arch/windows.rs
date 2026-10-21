@@ -1,7 +1,6 @@
 use std::{io, mem::ManuallyDrop, net::SocketAddr, os::windows::io::AsRawSocket};
 
 use anyhow::Context;
-use network_interface::NetworkInterfaceConfig;
 use windows::{
     Win32::{
         Foundation::{ERROR_FILE_NOT_FOUND, FALSE},
@@ -65,12 +64,13 @@ pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
 }
 
 pub fn find_interface_index(iface_name: &str) -> io::Result<u32> {
-    let ifaces = network_interface::NetworkInterface::show().map_err(|e| {
-        io::Error::new(
+    let Some(ifaces) = crate::common::network::get_interfaces_cached() else {
+        tracing::error!("Failed to enumerate interfaces for {}", iface_name);
+        return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("Failed to get interfaces. {}, error: {}", iface_name, e),
-        )
-    })?;
+            format!("Failed to get interfaces for {}", iface_name),
+        ));
+    };
     if let Some(iface) = ifaces.iter().find(|iface| iface.name == iface_name) {
         return Ok(iface.index);
     }
