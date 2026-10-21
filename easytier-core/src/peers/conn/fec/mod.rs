@@ -271,6 +271,10 @@ impl PeerConnFec {
             .flatten()
     }
 
+    fn repair_deadline(&self) -> Option<Instant> {
+        self.state.lock().tx.as_ref().and_then(Tx::repair_deadline)
+    }
+
     fn maintain(&self, now: Instant) {
         let mut state = self.state.lock();
         if let Some(tx) = state.tx.as_mut() {

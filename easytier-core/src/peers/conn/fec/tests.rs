@@ -73,6 +73,27 @@ fn repairs(fec: &PeerConnFec, now: Instant) -> Vec<ZCPacket> {
     packets
 }
 
+fn warmup_without_loss(fec: &PeerConnFec, now: Instant) {
+    for id in 0..512 {
+        send(fec, packet(id as u8, 100), now);
+    }
+    for batch in 1..=6 {
+        fec.receive(
+            super::feedback::Report {
+                highest: 511,
+                samples: batch * 64,
+                lost: 0,
+            }
+            .encode(),
+            now,
+        );
+    }
+    assert_eq!(
+        fec.info().tx_parameters.unwrap().current_repair_percent,
+        Some(0)
+    );
+}
+
 fn delivered(fec: &PeerConnFec, frame: &ZCPacket, now: Instant) -> Vec<Vec<u8>> {
     let mut packets = Vec::new();
     if let Some(received) = fec.receive(frame.clone(), now) {
@@ -462,6 +483,64 @@ fn feedback_updates_after_the_coding_window_expires() {
 }
 
 #[test]
+fn idle_repairs_protect_sparse_packets_and_burst_tails_after_warmup() {
+    for burst in [1, 10] {
+        let now = Instant::now();
+        let tx = active(config());
+        let rx = active(FecConfig::default());
+        warmup_without_loss(&tx, now);
+        for second in 1..=60 {
+            let at = now + Duration::from_secs(second);
+            let mut expected = Vec::new();
+            for id in 0..burst {
+                let original = packet(id as u8, 100);
+                expected = original.tunnel_payload().to_vec();
+                let source = send(&tx, original, at);
+                if id + 1 != burst {
+                    assert_eq!(delivered(&rx, &source, at), vec![expected.clone()]);
+                }
+                assert!(repairs(&tx, at).is_empty());
+            }
+            assert!(repairs(&tx, at + Duration::from_millis(4)).is_empty());
+            let tail = at + Duration::from_millis(5);
+            let parity = repairs(&tx, tail);
+            assert_eq!(parity.len(), 1);
+            assert_eq!(delivered(&rx, &parity[0], tail), vec![expected]);
+            assert!(repairs(&tx, tail + Duration::from_millis(50)).is_empty());
+            assert!(tx.repair_deadline().is_none());
+            assert!(stats(&tx).tx_repair_bytes <= 1400 * second);
+        }
+        assert_eq!(stats(&rx).recovered_packets, 60);
+        assert_eq!(stats(&tx).tx_repair_packets, 60);
+    }
+}
+
+#[test]
+fn idle_credit_limits_large_packets_and_cancels_expired_opportunities() {
+    let now = Instant::now();
+    let tx = active(config());
+    warmup_without_loss(&tx, now);
+    for tick in 0..100 {
+        let at = now + Duration::from_secs(1) + Duration::from_millis(tick * 20);
+        send(&tx, packet(tick as u8, 1200), at);
+        repairs(&tx, at);
+        let tail = at + Duration::from_millis(5);
+        repairs(&tx, tail);
+        if let Some(deadline) = tx.repair_deadline() {
+            assert!(deadline > tail);
+            assert!(deadline < at + Duration::from_millis(100));
+        }
+        assert!(stats(&tx).tx_repair_bytes <= (1400 * (1005 + tick * 20)) / 1000);
+    }
+    assert!(stats(&tx).tx_repair_packets > 0);
+    assert!(stats(&tx).tx_repair_packets < 10);
+    tx.maintain(now + Duration::from_secs(4));
+    assert_eq!(stats(&tx).tx_window_packets, 0);
+    assert!(tx.repair_deadline().is_none());
+    assert!(repairs(&tx, now + Duration::from_secs(60)).is_empty());
+}
+
+#[test]
 fn adaptive_byte_rate_accounts_for_mixed_packet_padding() {
     use super::feedback::Report;
     let now = Instant::now();
@@ -615,6 +694,61 @@ async fn repairs_interleave_even_when_the_business_queue_stays_full() {
     }
     assert!(stats(&fec).tx_repair_packets >= 16);
     assert!(filter.sent.load(Ordering::Relaxed) <= 32);
+    io.close();
+}
+
+#[tokio::test]
+async fn idle_writer_sends_one_tail_repair_without_more_business_packets() {
+    let fec = Arc::new(active(config()));
+    warmup_without_loss(&fec, Instant::now() - Duration::from_secs(1));
+    let (mut io, _incoming, mut outgoing) = io(
+        fec.clone(),
+        Arc::new(Probe::default()),
+        Arc::new(FilterProbe::default()),
+    );
+    io.get_sink().send(packet(1, 100)).await.unwrap();
+    assert_eq!(
+        wire::decode(&next_frame(&mut outgoing).await)
+            .unwrap()
+            .header
+            .kind,
+        wire::SOURCE
+    );
+    assert_eq!(
+        wire::decode(&next_frame(&mut outgoing).await)
+            .unwrap()
+            .header
+            .kind,
+        wire::REPAIR
+    );
+    assert!(
+        timeout(Duration::from_millis(30), outgoing.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(stats(&fec).tx_repair_packets, 1);
+    io.close();
+}
+
+#[tokio::test(start_paused = true)]
+async fn tail_deadline_does_not_spin_while_a_control_send_is_blocked() {
+    let fec = Arc::new(active(config()));
+    warmup_without_loss(&fec, Instant::now() - Duration::from_secs(1));
+    let probe = Arc::new(Probe::default());
+    let (mut io, _incoming, mut outgoing) =
+        io(fec.clone(), probe.clone(), Arc::new(FilterProbe::default()));
+    io.get_sink().send(packet(1, 100)).await.unwrap();
+    next_frame(&mut outgoing).await;
+    probe.blocked.store(true, Ordering::Release);
+    io.get_sink().send(control()).await.unwrap();
+    next_frame(&mut outgoing).await;
+    let polls = probe.flush_polls.load(Ordering::Relaxed);
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(stats(&fec).tx_repair_packets, 0);
+    assert_eq!(stats(&fec).tx_window_packets, 0);
+    assert_eq!(probe.starts.load(Ordering::Acquire), 2);
+    assert!(probe.flush_polls.load(Ordering::Relaxed) - polls < 10);
+    assert!(fec.repair_deadline().is_none());
     io.close();
 }
 

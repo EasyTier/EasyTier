@@ -9,6 +9,7 @@ pub struct FecConfig {
     /// Request FEC sending from the peer on this connection.
     pub force_peer: bool,
     /// Adaptive repair byte budget as a percentage of source bytes, with a bounded burst.
+    /// Idle-tail protection also has a bounded one-payload-MTU-per-second allowance.
     pub max_repair_percent: u32,
     /// Complete EasyTier UDP payload budget, excluding the IP and UDP headers.
     pub udp_payload_mtu: u32,

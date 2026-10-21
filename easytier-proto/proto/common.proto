@@ -12,6 +12,7 @@ message FecConfig {
   // Request peer FEC sending independently of local sending.
   optional bool force_peer = 2;
   // Adaptive repair byte budget as a percentage of source bytes, with a bounded burst.
+  // Idle-tail protection also has a bounded one-payload-MTU-per-second allowance.
   optional uint32 max_repair_percent = 3;
   // Complete UDP payload bytes, excluding IP and UDP headers.
   optional uint32 udp_payload_mtu = 4;

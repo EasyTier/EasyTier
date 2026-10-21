@@ -343,7 +343,7 @@ struct NetworkOptions {
     #[arg(
         long,
         env = "ET_FEC_MAX_REPAIR_PERCENT",
-        help = "Maximum adaptive FEC repair byte budget as a percentage of source bytes (1..=100), allowing a bounded initial burst"
+        help = "Maximum adaptive FEC repair byte budget as a percentage of source bytes (1..=100), allowing a bounded initial burst; idle-tail protection also has a bounded one-payload-MTU-per-second allowance"
     )]
     fec_max_repair_percent: Option<u32>,
 

@@ -171,7 +171,7 @@ async fn writer<F: TunnelFilter + 'static>(
                     None => break,
                 },
                 _ = fec.writer_wake.notified() => None,
-                _ = deadline(fec.deadline().into_iter().chain(fec.feedback_deadline()).min()) => None,
+                _ = deadline(fec.deadline().into_iter().chain(fec.feedback_deadline()).chain(fec.repair_deadline()).min()) => None,
             }
         };
         if let Some(pending) = pending

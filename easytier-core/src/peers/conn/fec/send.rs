@@ -15,6 +15,7 @@ use super::{
 };
 
 const WINDOW_LIFETIME: Duration = Duration::from_millis(100);
+const TAIL_DELAY: Duration = Duration::from_millis(5);
 
 struct Source {
     id: u64,
@@ -62,6 +63,11 @@ pub(super) struct Tx {
     // Hundredths of a byte. Only accepted sources refill this bounded bucket.
     credit: u64,
     credit_limit: u64,
+    // Only an uncovered tail can spend this absolute allowance. Bulk repairs
+    // continue to use source-byte credit, even when the writer stays busy.
+    tail_credit: u64,
+    tail_credit_updated: Option<Instant>,
+    tail_deadline: Option<Instant>,
     rate: u32,
     report: Report,
     _reservation: Reservation,
@@ -92,6 +98,9 @@ impl Tx {
             repair_due: false,
             credit: credit_limit,
             credit_limit,
+            tail_credit: 0,
+            tail_credit_updated: None,
+            tail_deadline: None,
             rate,
             report: Report::default(),
             _reservation: reservation,
@@ -177,6 +186,8 @@ impl Tx {
                 self.sources.push_back(source);
                 self.highest_accepted = Some(sequence);
                 self.repair_due = true;
+                self.tail_credit_updated.get_or_insert(now);
+                self.tail_deadline = Some(now + TAIL_DELAY);
                 add(&self.stats.tx_source_packets, 1);
                 add(&self.stats.tx_source_bytes, bytes);
                 add(&self.stats.tx_source_baseline_bytes, baseline);
@@ -192,21 +203,51 @@ impl Tx {
 
     pub fn next_repair(&mut self, now: Instant) -> Option<PendingSend> {
         self.on_deadline(now);
-        if self.pending.is_some() || !self.repair_due || self.sources.is_empty() {
+        if self.pending.is_some() || self.sources.is_empty() {
             return None;
         }
-        self.repair_due = false;
+        let due = std::mem::take(&mut self.repair_due);
+        let tail_due = self.tail_deadline.is_some_and(|deadline| now >= deadline);
+        if !due && !tail_due {
+            return None;
+        }
         let len = self.sources.iter().map(|s| s.symbol.len()).max()?;
         let bytes = wire::OVERHEAD + len;
-        if self.rate == 0 || self.credit < bytes as u64 * 100 {
-            add(&self.stats.no_credit_repairs, 1);
-            return None;
+        let cost = bytes as u64 * 100;
+        let tail = !(due && self.rate != 0 && self.credit >= cost);
+        if tail {
+            if due {
+                add(&self.stats.no_credit_repairs, 1);
+            }
+            if !tail_due {
+                return None;
+            }
+            self.tail_deadline = None;
+            let updated = self.tail_credit_updated.replace(now).unwrap_or(now);
+            let elapsed = now
+                .saturating_duration_since(updated)
+                .min(Duration::from_secs(2));
+            let refill =
+                u64::from(self.config.udp_payload_mtu) * elapsed.as_nanos() as u64 / 10_000_000;
+            self.tail_credit = (self.tail_credit + refill).min(self.credit_limit);
+            if self.tail_credit < cost {
+                // Wait only while the newest source remains recoverable. This
+                // deadline is never part of maintenance during a blocked send.
+                let wait_ns = ((cost - self.tail_credit) * 10_000_000)
+                    .div_ceil(u64::from(self.config.udp_payload_mtu));
+                let ready = now + Duration::from_nanos(wait_ns);
+                let expires = self.sources.back()?.accepted_at + WINDOW_LIFETIME;
+                self.tail_deadline = (ready < expires).then_some(ready);
+                add(&self.stats.no_credit_repairs, 1);
+                return None;
+            }
         }
         if self.next_sequence == u64::MAX {
             return None;
         }
         // Admission precedes coding. No queued repair can expire after wasting
-        // encoding work, and at most one repair follows each accepted source.
+        // encoding work. A repair covers the newest source and consumes its
+        // tail opportunity as well as any immediate repair opportunity.
         let Some(mut reservation) = self.account.reserve(len + bytes + 128) else {
             add(&self.stats.resource_drops, 1);
             return None;
@@ -228,7 +269,12 @@ impl Tx {
         );
         self.next_repair = self.next_repair.wrapping_add(1);
         self.next_sequence += 1;
-        self.credit -= bytes as u64 * 100;
+        if tail {
+            self.tail_credit -= cost;
+        } else {
+            self.credit -= cost;
+        }
+        self.tail_deadline = None;
         Some(PendingSend {
             packet,
             accepted: Some(Accepted::Repair { bytes, sequence }),
@@ -296,6 +342,10 @@ impl Tx {
             .map(|s| s.accepted_at + WINDOW_LIFETIME)
     }
 
+    pub fn repair_deadline(&self) -> Option<Instant> {
+        self.tail_deadline
+    }
+
     pub fn on_deadline(&mut self, now: Instant) {
         while self
             .sources
@@ -306,6 +356,7 @@ impl Tx {
         }
         if self.sources.is_empty() {
             self.repair_due = false;
+            self.tail_deadline = None;
         }
     }
 }
