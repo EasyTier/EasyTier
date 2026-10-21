@@ -1,5 +1,4 @@
 use bon::builder;
-use network_interface::NetworkInterfaceConfig as _;
 use std::net::{IpAddr, SocketAddr};
 
 use crate::common::netns::NetNS;
@@ -10,11 +9,11 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     if local_ip.is_unspecified() || local_ip.is_multicast() {
         return None;
     }
-    let ifaces = network_interface::NetworkInterface::show().ok()?;
-    for iface in ifaces {
-        for addr in iface.addr {
+    let ifaces = crate::common::network::get_interfaces_cached()?;
+    for iface in ifaces.iter() {
+        for addr in &iface.addr {
             if addr.ip() == *local_ip {
-                return Some(iface.name);
+                return Some(iface.name.clone());
             }
         }
     }
@@ -244,6 +243,7 @@ pub async fn bind<B: Bindable>(
 #[cfg(test)]
 pub(crate) mod tests {
     use atomic_shim::AtomicU64;
+    use std::time::Duration;
     use std::{sync::Arc, time::Instant};
 
     use anyhow::Context as _;
@@ -260,6 +260,83 @@ pub(crate) mod tests {
     };
 
     use crate::common::netns::NetNS;
+
+    #[test]
+    fn interface_snapshot_cache_returns_consistent_results() {
+        let first =
+            crate::common::network::get_interfaces_cached().expect("interface lookup should work");
+        let second =
+            crate::common::network::get_interfaces_cached().expect("interface lookup should work");
+        assert!(!first.is_empty());
+        // The second call must be served from the TTL cache, so the snapshots
+        // are identical.
+        assert_eq!(&*first, &*second);
+    }
+
+    // Diagnostic probe for the issue #2735 slow candidate loop: run with
+    // `cargo test -p easytier --lib probe_candidate_bind -- --nocapture`.
+    // Not a pass/fail benchmark; it prints the per-candidate cost of the
+    // uncached lookup (old behavior) versus the cached snapshot (new).
+    #[tokio::test(flavor = "current_thread")]
+    async fn probe_candidate_bind_latency_with_and_without_cache() {
+        use std::net::{IpAddr, SocketAddr};
+
+        use network_interface::NetworkInterfaceConfig;
+
+        let ifaces = network_interface::NetworkInterface::show().unwrap();
+        let candidates: Vec<_> = ifaces
+            .iter()
+            .flat_map(|iface| {
+                iface.addr.iter().filter_map(move |addr| {
+                    matches!(addr.ip(), IpAddr::V4(_)).then(|| (iface.name.clone(), addr.ip()))
+                })
+            })
+            .collect();
+        println!("IPv4 bind candidates ({}):", candidates.len());
+
+        let mut uncached_total = Duration::from_secs(0);
+        for (name, ip) in &candidates {
+            let start = Instant::now();
+            // Old behavior: each Auto bind did two full enumerations per
+            // candidate — interface-name lookup (tunnel::common) plus
+            // name-to-index lookup (arch::windows::find_interface_index).
+            let _ = network_interface::NetworkInterface::show();
+            let _ = network_interface::NetworkInterface::show();
+            let lookup = start.elapsed();
+            let bind_ok = super::bind::<UdpSocket>()
+                .addr(SocketAddr::new(*ip, 0))
+                .dev(super::BindDev::Disabled)
+                .call()
+                .await
+                .is_ok();
+            let elapsed = start.elapsed();
+            uncached_total += elapsed;
+            println!(
+                "  [uncached] {ip:>16} ({name}): lookup {lookup:?}, total {elapsed:?}, ok={bind_ok}"
+            );
+        }
+
+        let mut cached_total = Duration::from_secs(0);
+        for (name, ip) in &candidates {
+            let start = Instant::now();
+            // New behavior: BindDev::Auto resolves the interface through the
+            // snapshot cache.
+            let bind_ok = super::bind::<UdpSocket>()
+                .addr(SocketAddr::new(*ip, 0))
+                .dev(super::BindDev::Auto)
+                .call()
+                .await
+                .is_ok();
+            let elapsed = start.elapsed();
+            cached_total += elapsed;
+            println!("  [cached  ] {ip:>16} ({name}): total {elapsed:?}, ok={bind_ok}");
+        }
+
+        println!(
+            "candidate loop totals: uncached {uncached_total:?} vs cached {cached_total:?} ({} candidates)",
+            candidates.len()
+        );
+    }
 
     #[tokio::test]
     async fn bind_rejects_occupied_ports() {

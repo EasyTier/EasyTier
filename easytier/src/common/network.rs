@@ -1,6 +1,8 @@
 #[cfg(not(mobile))]
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
@@ -301,6 +303,29 @@ pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<Netwo
         let _g = net_ns.guard();
         collect_interfaces_in_current_namespace(filter).await
     }
+}
+
+/// The Windows bind path resolves an interface name and then its index
+/// through full `NetworkInterface::show()` enumerations for every bind
+/// candidate. With 10+ adapters (VMware / Hyper-V / APIPA leftovers are
+/// common), one connect round turns into O(candidates) synchronous
+/// enumerations on the async worker. Interfaces rarely change within a
+/// connect round, so snapshots are reused for a short TTL.
+pub(crate) fn get_interfaces_cached() -> Option<Arc<Vec<NetworkInterface>>> {
+    const SNAPSHOT_TTL: Duration = Duration::from_secs(1);
+    static SNAPSHOT: RwLock<Option<(Instant, Arc<Vec<NetworkInterface>>)>> = RwLock::new(None);
+
+    if let Some((at, ifaces)) = SNAPSHOT.read().ok().and_then(|guard| guard.clone())
+        && at.elapsed() < SNAPSHOT_TTL
+    {
+        return Some(ifaces);
+    }
+
+    let ifaces = Arc::new(NetworkInterface::show().ok()?);
+    if let Ok(mut snapshot) = SNAPSHOT.write() {
+        *snapshot = Some((Instant::now(), ifaces.clone()));
+    }
+    Some(ifaces)
 }
 
 #[cfg(feature = "faketcp")]
