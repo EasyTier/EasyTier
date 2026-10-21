@@ -74,13 +74,13 @@ fn repairs(fec: &PeerConnFec, now: Instant) -> Vec<ZCPacket> {
 }
 
 fn warmup_without_loss(fec: &PeerConnFec, now: Instant) {
-    for id in 0..512 {
+    for id in 0..1024 {
         send(fec, packet(id as u8, 100), now);
     }
-    for batch in 1..=6 {
+    for batch in 1..=16 {
         fec.receive(
             super::feedback::Report {
-                highest: 511,
+                highest: 1023,
                 samples: batch * 64,
                 lost: 0,
             }
@@ -367,42 +367,46 @@ fn feedback_changes_only_the_local_rate_and_rejects_unaccepted_sequences() {
     use super::feedback::Report;
     let now = Instant::now();
     let tx = active(config());
+    warmup_without_loss(&tx, now);
     for id in 0..128 {
         send(&tx, packet(id, 100), now);
     }
     let pending = tx.prepare_send(packet(128, 100), now);
     let report = Report {
-        highest: 128,
-        samples: 96,
-        lost: 4,
+        highest: 1152,
+        samples: 1120,
+        lost: 16,
     };
     // The peer may have received start_send while our flush is still pending.
     tx.receive(report.encode(), now);
     assert_eq!(
         tx.info().tx_parameters.unwrap().current_repair_percent,
-        Some(30)
+        Some(0)
     );
     tx.on_accepted(pending.accepted, now);
     tx.receive(report.encode(), now);
-    assert_eq!(
-        tx.info().tx_parameters.unwrap().current_repair_percent,
-        Some(25)
-    );
+    let rate = tx
+        .info()
+        .tx_parameters
+        .unwrap()
+        .current_repair_percent
+        .unwrap();
+    assert!(rate > 0 && rate <= 30);
     tx.receive(report.encode(), now);
     assert_eq!(
         tx.info().tx_parameters.unwrap().current_repair_percent,
-        Some(25)
+        Some(rate)
     );
     assert_eq!(tx.config.max_repair_percent, 30);
-    for id in 129..1024 {
+    for id in 0..2048 {
         send(&tx, packet(id as u8, 100), now);
     }
-    for sample in (160..960).step_by(64) {
+    for samples in [2144, 3168] {
         tx.receive(
             Report {
-                highest: 1023,
-                samples: sample,
-                lost: 4,
+                highest: 3200,
+                samples,
+                lost: 16,
             }
             .encode(),
             now,
@@ -414,16 +418,20 @@ fn feedback_changes_only_the_local_rate_and_rejects_unaccepted_sequences() {
     );
     tx.receive(
         Report {
-            highest: 1023,
-            samples: 1000,
-            lost: 45,
+            highest: 3200,
+            samples: 3200,
+            lost: 48,
         }
         .encode(),
         now,
     );
-    assert_eq!(
-        tx.info().tx_parameters.unwrap().current_repair_percent,
-        Some(10)
+    assert!(
+        tx.info()
+            .tx_parameters
+            .unwrap()
+            .current_repair_percent
+            .unwrap()
+            > 0
     );
     // A feedback packet is consumed here and never becomes business traffic.
     assert!(tx.take_received().is_none());
@@ -435,42 +443,28 @@ fn feedback_updates_after_the_coding_window_expires() {
     let now = Instant::now();
     let tx = active(config());
     let rx = active(FecConfig::default());
-    for id in 0..512 {
-        send(&tx, packet(id as u8, 100), now);
+    warmup_without_loss(&tx, now);
+    for id in 0..128 {
+        send(&tx, packet(id, 100), now);
     }
-    for batch in 1..=6 {
-        tx.receive(
-            Report {
-                highest: 511,
-                samples: batch * 64,
-                lost: 0,
-            }
-            .encode(),
-            now,
-        );
-    }
-    assert_eq!(
-        tx.info().tx_parameters.unwrap().current_repair_percent,
-        Some(0)
-    );
     let later = now + Duration::from_secs(1);
     tx.maintain(later);
     assert_eq!(stats(&tx).tx_window_packets, 0);
 
     let report = Report {
-        highest: 511,
-        samples: 448,
+        highest: 1151,
+        samples: 1088,
         lost: 32,
     };
     tx.receive(report.encode(), later);
     assert_eq!(
         tx.info().tx_parameters.unwrap().current_repair_percent,
-        Some(10)
+        Some(30)
     );
     tx.receive(report.encode(), later);
     assert_eq!(
         tx.info().tx_parameters.unwrap().current_repair_percent,
-        Some(10)
+        Some(30)
     );
 
     // A subsequent isolated source uses the feedback even though none of the
@@ -490,13 +484,13 @@ fn clean_feedback_batches_do_not_immediately_erase_recent_loss() {
     let now = Instant::now();
     let tx = active(config());
     warmup_without_loss(&tx, now);
-    for id in 512..1024 {
+    for id in 1024..4096 {
         send(&tx, packet(id as u8, 100), now);
     }
-    for samples in [416, 448, 480] {
+    for samples in [1056, 1088, 1120, 1376] {
         tx.receive(
             Report {
-                highest: 1023,
+                highest: 4095,
                 samples,
                 lost: 1,
             }
@@ -513,10 +507,10 @@ fn clean_feedback_batches_do_not_immediately_erase_recent_loss() {
         );
     }
     // Sustained clean traffic does eventually replace the loss evidence.
-    for samples in (512..=992).step_by(32) {
+    for samples in (1408..=3072).step_by(32) {
         tx.receive(
             Report {
-                highest: 1023,
+                highest: 4095,
                 samples,
                 lost: 1,
             }
@@ -528,6 +522,100 @@ fn clean_feedback_batches_do_not_immediately_erase_recent_loss() {
         tx.info().tx_parameters.unwrap().current_repair_percent,
         Some(0)
     );
+}
+
+#[test]
+fn a_new_loss_burst_overrides_a_clean_slow_interval() {
+    use super::feedback::Report;
+    let now = Instant::now();
+    let tx = active(config());
+    warmup_without_loss(&tx, now);
+    for id in 1024..3072 {
+        send(&tx, packet(id as u8, 1000), now);
+    }
+    for batch in 1..=16u64 {
+        tx.receive(
+            Report {
+                highest: 3071,
+                samples: 1024 + batch * 64,
+                lost: batch.saturating_sub(12) * 3,
+            }
+            .encode(),
+            now,
+        );
+    }
+    // The latest quarter has almost 5% loss. Averaging it with the earlier
+    // clean traffic must not undo the fast increase at the slow boundary.
+    let rate = tx
+        .info()
+        .tx_parameters
+        .unwrap()
+        .current_repair_percent
+        .unwrap();
+    assert!(rate >= 19);
+    for samples in (2048..=3008).step_by(64) {
+        tx.receive(
+            Report {
+                highest: 3071,
+                samples,
+                lost: 12,
+            }
+            .encode(),
+            now,
+        );
+        assert_eq!(
+            tx.info().tx_parameters.unwrap().current_repair_percent,
+            Some(rate)
+        );
+    }
+    tx.receive(
+        Report {
+            highest: 3071,
+            samples: 3072,
+            lost: 12,
+        }
+        .encode(),
+        now,
+    );
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(0)
+    );
+}
+
+#[test]
+fn shorter_windows_and_total_loss_respect_the_byte_cap() {
+    use super::feedback::Report;
+    for (window, lost, cap, expected) in [(64, 51, 30, 20), (16, 51, 30, 30), (64, 1024, 17, 17)] {
+        let now = Instant::now();
+        let tx = active(FecConfig {
+            max_repair_percent: cap,
+            ..config()
+        });
+        warmup_without_loss(&tx, now);
+        for id in 0..2048 {
+            send(&tx, packet(id as u8, 1000), now);
+        }
+        let later = now + Duration::from_secs(1);
+        for id in 0..window {
+            send(&tx, packet(id as u8, 1000), later);
+        }
+        tx.maintain(later + Duration::from_millis(101));
+        assert_eq!(stats(&tx).tx_window_packets, 0);
+        tx.receive(
+            Report {
+                highest: 3071,
+                samples: 2048,
+                lost,
+            }
+            .encode(),
+            later,
+        );
+        assert_eq!(
+            tx.info().tx_parameters.unwrap().current_repair_percent,
+            Some(expected)
+        );
+    }
 }
 
 #[test]
@@ -592,19 +680,19 @@ fn idle_credit_limits_large_packets_and_cancels_expired_opportunities() {
 fn adaptive_byte_rate_accounts_for_mixed_packet_padding() {
     use super::feedback::Report;
     let now = Instant::now();
-    for (mixed, cap, expected) in [(false, 30, 9), (true, 30, 17), (true, 10, 10)] {
+    for (mixed, cap, expected) in [(false, 30, 20), (true, 100, 36), (true, 10, 10)] {
         let tx = active(FecConfig {
             max_repair_percent: cap,
             ..config()
         });
-        for id in 0..1024 {
+        for id in 0..2048 {
             let len = if mixed && id % 2 == 0 { 100 } else { 1000 };
             send(&tx, packet(id as u8, len), now);
         }
-        for batch in 1..=10 {
+        for batch in 1..=20 {
             tx.receive(
                 Report {
-                    highest: 1023,
+                    highest: 2047,
                     samples: batch * 100,
                     lost: batch * 5,
                 }
@@ -641,7 +729,7 @@ fn cumulative_feedback_survives_a_lost_report() {
     }
     assert_eq!(
         tx.info().tx_parameters.unwrap().current_repair_percent,
-        Some(25)
+        Some(30)
     );
     assert!(stats(&rx).loss_packets > 40);
     assert!(rx.next_feedback(now + Duration::from_secs(10)).is_none());

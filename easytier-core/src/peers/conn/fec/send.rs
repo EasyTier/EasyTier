@@ -18,6 +18,8 @@ const WINDOW_LIFETIME: Duration = Duration::from_millis(100);
 const TAIL_DELAY: Duration = Duration::from_millis(5);
 const MIN_REPORT_SAMPLES: u64 = 32;
 const LOSS_WINDOW_SAMPLES: u64 = 256;
+const RATE_DECREASE_SAMPLES: u64 = 1024;
+const WINDOW_FAILURE_TARGET: f64 = 0.0001;
 const REPORT_HISTORY_CAPACITY: usize = (LOSS_WINDOW_SAMPLES / MIN_REPORT_SAMPLES) as usize + 1;
 
 struct Source {
@@ -57,6 +59,7 @@ pub(super) struct Tx {
     // Feedback can arrive after the coding window expires. Retain only recent
     // lengths for the byte-rate estimate, independently of source payloads.
     source_lengths: VecDeque<usize>,
+    source_window_len: usize,
     pending: Option<Source>,
     next_source: u64,
     next_sequence: u64,
@@ -73,6 +76,7 @@ pub(super) struct Tx {
     tail_deadline: Option<Instant>,
     rate: u32,
     report: Report,
+    rate_report: Report,
     report_history: VecDeque<Report>,
     _reservation: Reservation,
 }
@@ -100,6 +104,7 @@ impl Tx {
             stats,
             sources: VecDeque::with_capacity(WINDOW),
             source_lengths: VecDeque::with_capacity(WINDOW),
+            source_window_len: 0,
             pending: None,
             next_source: 0,
             next_sequence: 0,
@@ -113,6 +118,7 @@ impl Tx {
             tail_deadline: None,
             rate,
             report: Report::default(),
+            rate_report: Report::default(),
             report_history,
             _reservation: reservation,
         })
@@ -195,6 +201,7 @@ impl Tx {
                 self.source_lengths.push_back(source.symbol.len());
                 source.accepted_at = now;
                 self.sources.push_back(source);
+                self.source_window_len = self.sources.len();
                 self.highest_accepted = Some(sequence);
                 self.repair_due = true;
                 self.tail_credit_updated.get_or_insert(now);
@@ -311,9 +318,9 @@ impl Tx {
         if samples < MIN_REPORT_SAMPLES || lost > samples {
             return;
         }
-        let Some(symbol_len) = self.source_lengths.iter().copied().max() else {
+        if self.source_lengths.is_empty() {
             return;
-        };
+        }
         // Keep at least one loss-estimation window, aligned to cumulative
         // report boundaries. A small clean batch must not erase recent loss.
         while self.report_history.len() > 1
@@ -324,36 +331,64 @@ impl Tx {
         let oldest = self.report_history.front().unwrap();
         let recent_samples = report.samples - oldest.samples;
         let recent_lost = report.lost - oldest.lost;
-        // No useful parity estimate is available when all settled samples were
-        // lost. Retain the rate; existing PeerConn liveness owns link failure.
-        let target = if lost == samples {
-            self.rate
-        } else if recent_lost == 0 {
-            0
+        let fast_target = self.repair_rate(recent_lost, recent_samples);
+        let rate_samples = report.samples - self.rate_report.samples;
+        // Increase promptly, but spend an independent sample interval before
+        // decreasing. Repeated reports over overlapping clean history must not
+        // repeatedly reduce protection for the same evidence.
+        let target = if rate_samples >= RATE_DECREASE_SAMPLES {
+            let slow_target = self.repair_rate(report.lost - self.rate_report.lost, rate_samples);
+            self.rate_report = report;
+            fast_target.max(slow_target)
         } else {
-            // Loss is measured in packets, but credit is measured in bytes.
-            // A repair is padded to the largest symbol, so mixed packet sizes
-            // need more byte credit for the same number of repair equations.
-            let baseline: usize = self
-                .source_lengths
-                .iter()
-                .map(|len| len - 2 + UDP_TUNNEL_HEADER_SIZE)
-                .sum();
-            let received = u128::from(recent_samples - recent_lost);
-            let numerator = (u128::from(recent_lost) * 125 + received * 2)
-                * (wire::OVERHEAD + symbol_len) as u128
-                * self.source_lengths.len() as u128;
-            numerator
-                .div_ceil(received * baseline as u128)
-                .min(u128::from(self.config.max_repair_percent)) as u32
+            self.rate.max(fast_target)
         };
         self.report = report;
         self.report_history.push_back(report);
-        self.rate = if target > self.rate {
-            (self.rate + 10).min(target)
-        } else {
-            self.rate.saturating_sub(5).max(target)
-        };
+        self.rate = target;
+    }
+
+    fn repair_rate(&self, lost: u64, samples: u64) -> u32 {
+        if lost == 0 {
+            return 0;
+        }
+        if lost == samples {
+            return self.config.max_repair_percent;
+        }
+        let probability = lost as f64 / samples as f64;
+        let sources = self.source_window_len;
+        let symbol_len = self.source_lengths.iter().copied().max().unwrap();
+        let baseline: usize = self
+            .source_lengths
+            .iter()
+            .map(|len| len - 2 + UDP_TUNNEL_HEADER_SIZE)
+            .sum();
+        // Use the last accepted source's window size, independently of payload
+        // expiry. This estimates insufficient equations in a finite window;
+        // scheduling, correlated loss and matrix rank still need measurement.
+        for repairs in 1..=sources {
+            let rate = (repairs as u128
+                * 100
+                * (wire::OVERHEAD + symbol_len) as u128
+                * self.source_lengths.len() as u128)
+                .div_ceil(sources as u128 * baseline as u128)
+                .min(u128::from(self.config.max_repair_percent)) as u32;
+            if rate == self.config.max_repair_percent {
+                return rate;
+            }
+            let packets = sources + repairs;
+            let mut term = (1.0 - probability).powi(packets as i32);
+            let mut recoverable = term;
+            for losses in 1..=repairs {
+                term *= (packets + 1 - losses) as f64 / losses as f64 * probability
+                    / (1.0 - probability);
+                recoverable += term;
+            }
+            if 1.0 - recoverable <= WINDOW_FAILURE_TARGET {
+                return rate;
+            }
+        }
+        self.config.max_repair_percent
     }
 
     pub fn deadline(&self) -> Option<Instant> {
