@@ -118,9 +118,10 @@ loss == 0: target = 0
                ceil(packet_percent * repair_udp_bytes / mean_source_baseline_bytes))
 ```
 
-`repair_udp_bytes` 与源包平均成本取当前发送窗口，包含变长包 padding。
+`repair_udp_bytes` 与源包平均成本取最近 64 个已接受源包的长度，包含变长包 padding。
 反馈是包丢失比例，必须先换算成字节额度；直接用包比例会使混合大小包
-得不到足够的修复方程。窗口已空时保持当前速率，等待后续有窗口的报告。
+得不到足够的修复方程。长度统计独立于 100ms 编码缓存；窗口已空时，
+反馈仍能调整后续流量的速率，不延长旧源包的可恢复时间。
 
 每次最多上升 10 个百分点、下降 5 个百分点。全部样本丢失时维持当前
 速率，由原有 PeerConn liveness 判断连接故障。无反馈也维持当前速率。

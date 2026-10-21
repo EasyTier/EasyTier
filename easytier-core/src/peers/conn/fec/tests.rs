@@ -407,6 +407,61 @@ fn feedback_changes_only_the_local_rate_and_rejects_unaccepted_sequences() {
 }
 
 #[test]
+fn feedback_updates_after_the_coding_window_expires() {
+    use super::feedback::Report;
+    let now = Instant::now();
+    let tx = active(config());
+    let rx = active(FecConfig::default());
+    for id in 0..512 {
+        send(&tx, packet(id as u8, 100), now);
+    }
+    for batch in 1..=6 {
+        tx.receive(
+            Report {
+                highest: 511,
+                samples: batch * 64,
+                lost: 0,
+            }
+            .encode(),
+            now,
+        );
+    }
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(0)
+    );
+    let later = now + Duration::from_secs(1);
+    tx.maintain(later);
+    assert_eq!(stats(&tx).tx_window_packets, 0);
+
+    let report = Report {
+        highest: 511,
+        samples: 448,
+        lost: 32,
+    };
+    tx.receive(report.encode(), later);
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(10)
+    );
+    tx.receive(report.encode(), later);
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(10)
+    );
+
+    // A subsequent isolated source uses the feedback even though none of the
+    // earlier source payloads remain available for coding.
+    let original = packet(99, 100);
+    let expected = original.tunnel_payload().to_vec();
+    send(&tx, original, later);
+    let parity = repairs(&tx, later);
+    assert_eq!(parity.len(), 1);
+    assert_eq!(delivered(&rx, &parity[0], later), vec![expected]);
+    assert_eq!(stats(&rx).recovered_packets, 1);
+}
+
+#[test]
 fn adaptive_byte_rate_accounts_for_mixed_packet_padding() {
     use super::feedback::Report;
     let now = Instant::now();

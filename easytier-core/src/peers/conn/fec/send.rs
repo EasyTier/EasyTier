@@ -50,6 +50,9 @@ pub(super) struct Tx {
     account: Arc<Account>,
     stats: Arc<Counters>,
     sources: VecDeque<Source>,
+    // Feedback can arrive after the coding window expires. Retain only recent
+    // lengths for the byte-rate estimate, independently of source payloads.
+    source_lengths: VecDeque<usize>,
     pending: Option<Source>,
     next_source: u64,
     next_sequence: u64,
@@ -71,7 +74,7 @@ impl Tx {
         stats: Arc<Counters>,
     ) -> anyhow::Result<Self> {
         let reservation = account
-            .reserve(WINDOW * std::mem::size_of::<Source>() + 4096)
+            .reserve(WINDOW * (std::mem::size_of::<Source>() + std::mem::size_of::<usize>()) + 4096)
             .ok_or_else(|| anyhow::anyhow!("FEC transmit state budget exhausted"))?;
         let credit_limit = u64::from(config.udp_payload_mtu) * 2 * 100;
         let rate = config.max_repair_percent;
@@ -80,6 +83,7 @@ impl Tx {
             account,
             stats,
             sources: VecDeque::with_capacity(WINDOW),
+            source_lengths: VecDeque::with_capacity(WINDOW),
             pending: None,
             next_source: 0,
             next_sequence: 0,
@@ -165,6 +169,10 @@ impl Tx {
                 let baseline = source.symbol.len() - 2 + UDP_TUNNEL_HEADER_SIZE;
                 self.credit =
                     (self.credit + baseline as u64 * u64::from(self.rate)).min(self.credit_limit);
+                if self.source_lengths.len() == WINDOW {
+                    self.source_lengths.pop_front();
+                }
+                self.source_lengths.push_back(source.symbol.len());
                 source.accepted_at = now;
                 self.sources.push_back(source);
                 self.highest_accepted = Some(sequence);
@@ -246,35 +254,35 @@ impl Tx {
         if samples < 32 || lost > samples {
             return;
         }
-        self.report = report;
         // No useful parity estimate is available when all settled samples were
         // lost. Retain the rate; existing PeerConn liveness owns link failure.
         if lost == samples {
+            self.report = report;
             return;
         }
         let target = if lost == 0 {
             0
         } else {
-            let Some(symbol_len) = self.sources.iter().map(|source| source.symbol.len()).max()
-            else {
+            let Some(symbol_len) = self.source_lengths.iter().copied().max() else {
                 return;
             };
             // Loss is measured in packets, but credit is measured in bytes.
             // A repair is padded to the largest symbol, so mixed packet sizes
             // need more byte credit for the same number of repair equations.
             let baseline: usize = self
-                .sources
+                .source_lengths
                 .iter()
-                .map(|source| source.symbol.len() - 2 + UDP_TUNNEL_HEADER_SIZE)
+                .map(|len| len - 2 + UDP_TUNNEL_HEADER_SIZE)
                 .sum();
             let received = u128::from(samples - lost);
             let numerator = (u128::from(lost) * 125 + received * 2)
                 * (wire::OVERHEAD + symbol_len) as u128
-                * self.sources.len() as u128;
+                * self.source_lengths.len() as u128;
             numerator
                 .div_ceil(received * baseline as u128)
                 .min(u128::from(self.config.max_repair_percent)) as u32
         };
+        self.report = report;
         self.rate = if target > self.rate {
             (self.rate + 10).min(target)
         } else {
