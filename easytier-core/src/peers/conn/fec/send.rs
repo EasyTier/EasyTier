@@ -198,6 +198,13 @@ impl Tx {
                 self.credit =
                     (self.credit + baseline as u64 * u64::from(self.rate)).min(self.credit_limit);
                 source.accepted_at = now;
+                // A clean report from an expired window cannot protect a new
+                // burst before its own feedback arrives. Restart sampling only
+                // from zero; repeated idle gaps must not prevent convergence.
+                if self.sources.is_empty() && self.rate == 0 {
+                    self.rate = self.config.max_repair_percent;
+                    self.rate_report = self.report;
+                }
                 self.sources.push_back(source);
                 self.source_window_len = self.sources.len();
                 self.source_symbol_len = 0;
