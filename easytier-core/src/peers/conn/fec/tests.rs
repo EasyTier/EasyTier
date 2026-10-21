@@ -592,7 +592,6 @@ fn shorter_windows_and_total_loss_respect_the_byte_cap() {
             max_repair_percent: cap,
             ..config()
         });
-        warmup_without_loss(&tx, now);
         for id in 0..2048 {
             send(&tx, packet(id as u8, 1000), now);
         }
@@ -604,8 +603,8 @@ fn shorter_windows_and_total_loss_respect_the_byte_cap() {
         assert_eq!(stats(&tx).tx_window_packets, 0);
         tx.receive(
             Report {
-                highest: 3071,
-                samples: 2048,
+                highest: 2047,
+                samples: 1024,
                 lost,
             }
             .encode(),
@@ -624,11 +623,21 @@ fn expired_large_sources_do_not_inflate_a_new_small_window() {
     let now = Instant::now();
     let tx = active(config());
     warmup_without_loss(&tx, now);
-    for id in 0..1023 {
-        send(&tx, packet(id as u8, 100), now);
-    }
-    send(&tx, packet(0, 1200), now);
     let later = now + Duration::from_secs(1);
+    for id in 0..1088 {
+        send(&tx, packet(id as u8, 100), later);
+    }
+    tx.receive(
+        Report {
+            highest: 1087,
+            samples: 1056,
+            lost: 0,
+        }
+        .encode(),
+        later,
+    );
+    send(&tx, packet(0, 1200), later);
+    let later = later + Duration::from_secs(1);
     for id in 0..32 {
         send(&tx, packet(id, 100), later);
     }
@@ -636,8 +645,8 @@ fn expired_large_sources_do_not_inflate_a_new_small_window() {
     assert_eq!(stats(&tx).tx_window_packets, 0);
     tx.receive(
         Report {
-            highest: 2079,
-            samples: 2048,
+            highest: 2144,
+            samples: 2080,
             lost: 10,
         }
         .encode(),
@@ -657,7 +666,7 @@ fn idle_bursts_restart_protection_without_resetting_active_sampling() {
     let now = Instant::now();
     let tx = active(config());
     warmup_without_loss(&tx, now);
-    for burst in 1..=16u64 {
+    for burst in 1..=17u64 {
         let at = now + Duration::from_millis(burst * 150);
         for id in 0..64 {
             send(&tx, packet(id, 1000), at);
@@ -676,8 +685,68 @@ fn idle_bursts_restart_protection_without_resetting_active_sampling() {
             at,
         );
     }
-    // Every gap expired the payload cache, but all 1024 clean samples still
-    // count toward leaving startup protection. No new credit was granted.
+    // The first new report starts the interval. Every subsequent gap expired
+    // the cache, but all 1024 clean samples still count toward decreasing.
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(0)
+    );
+}
+
+#[test]
+fn delayed_clean_feedback_cannot_cancel_a_new_bursts_protection() {
+    use super::feedback::Report;
+    let now = Instant::now();
+    let tx = active(config());
+    warmup_without_loss(&tx, now);
+    for id in 0..1088 {
+        send(&tx, packet(id as u8, 1000), now);
+    }
+    let later = now + Duration::from_millis(150);
+    send(&tx, packet(0, 1000), later);
+    tx.receive(
+        Report {
+            highest: 2111,
+            samples: 2080,
+            lost: 0,
+        }
+        .encode(),
+        later,
+    );
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(30)
+    );
+    // Settle the first source of the new burst. This report establishes its
+    // sampling boundary; none of the earlier clean traffic counts toward it.
+    for id in 0..32 {
+        send(&tx, packet(id, 1000), later);
+    }
+    tx.receive(
+        Report {
+            highest: 2144,
+            samples: 2113,
+            lost: 0,
+        }
+        .encode(),
+        later,
+    );
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(30)
+    );
+    for id in 0..1024 {
+        send(&tx, packet(id as u8, 1000), later);
+    }
+    tx.receive(
+        Report {
+            highest: 3168,
+            samples: 3137,
+            lost: 0,
+        }
+        .encode(),
+        later,
+    );
     assert_eq!(
         tx.info().tx_parameters.unwrap().current_repair_percent,
         Some(0)

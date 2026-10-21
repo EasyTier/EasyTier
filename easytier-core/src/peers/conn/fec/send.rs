@@ -78,6 +78,7 @@ pub(super) struct Tx {
     rate: u32,
     report: Report,
     rate_report: Report,
+    rate_start_sequence: Option<u64>,
     report_history: VecDeque<Report>,
     _reservation: Reservation,
 }
@@ -121,6 +122,7 @@ impl Tx {
             rate,
             report: Report::default(),
             rate_report: Report::default(),
+            rate_start_sequence: None,
             report_history,
             _reservation: reservation,
         })
@@ -203,7 +205,7 @@ impl Tx {
                 // from zero; repeated idle gaps must not prevent convergence.
                 if self.sources.is_empty() && self.rate == 0 {
                     self.rate = self.config.max_repair_percent;
-                    self.rate_report = self.report;
+                    self.rate_start_sequence = Some(sequence);
                 }
                 self.sources.push_back(source);
                 self.source_window_len = self.sources.len();
@@ -347,7 +349,15 @@ impl Tx {
         // Increase promptly, but spend an independent sample interval before
         // decreasing. Repeated reports over overlapping clean history must not
         // repeatedly reduce protection for the same evidence.
-        let target = if rate_samples >= RATE_DECREASE_SAMPLES {
+        let target = if let Some(sequence) = self.rate_start_sequence {
+            // Only a settled source from this burst can start its decrease
+            // interval. A delayed report may consist entirely of old traffic.
+            self.rate_report = report;
+            if report.samples > sequence {
+                self.rate_start_sequence = None;
+            }
+            self.rate.max(fast_target)
+        } else if rate_samples >= RATE_DECREASE_SAMPLES {
             let slow_target = self.repair_rate(report.lost - self.rate_report.lost, rate_samples);
             self.rate_report = report;
             fast_target.max(slow_target)
