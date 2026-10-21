@@ -619,6 +619,36 @@ fn shorter_windows_and_total_loss_respect_the_byte_cap() {
 }
 
 #[test]
+fn expired_large_sources_do_not_inflate_a_new_small_window() {
+    use super::feedback::Report;
+    let now = Instant::now();
+    let tx = active(config());
+    warmup_without_loss(&tx, now);
+    send(&tx, packet(0, 1200), now);
+    let later = now + Duration::from_secs(1);
+    for id in 0..32 {
+        send(&tx, packet(id, 100), later);
+    }
+    tx.maintain(later + Duration::from_millis(101));
+    assert_eq!(stats(&tx).tx_window_packets, 0);
+    tx.receive(
+        Report {
+            highest: 1056,
+            samples: 1056,
+            lost: 3,
+        }
+        .encode(),
+        later + Duration::from_millis(101),
+    );
+    // Recent loss is about 1%, requiring four repairs for this window.
+    // Its expired 1200-byte predecessor must not price those small repairs.
+    assert_eq!(
+        tx.info().tx_parameters.unwrap().current_repair_percent,
+        Some(18)
+    );
+}
+
+#[test]
 fn idle_repairs_protect_sparse_packets_and_burst_tails_after_warmup() {
     for burst in [1, 10] {
         let now = Instant::now();

@@ -56,10 +56,11 @@ pub(super) struct Tx {
     account: Arc<Account>,
     stats: Arc<Counters>,
     sources: VecDeque<Source>,
-    // Feedback can arrive after the coding window expires. Retain only recent
-    // lengths for the byte-rate estimate, independently of source payloads.
-    source_lengths: VecDeque<usize>,
+    // Feedback can arrive after the coding window expires. Retain a summary
+    // of the last accepted source's window, independently of source payloads.
     source_window_len: usize,
+    source_symbol_len: usize,
+    source_baseline_bytes: usize,
     pending: Option<Source>,
     next_source: u64,
     next_sequence: u64,
@@ -89,7 +90,7 @@ impl Tx {
     ) -> anyhow::Result<Self> {
         let reservation = account
             .reserve(
-                WINDOW * (std::mem::size_of::<Source>() + std::mem::size_of::<usize>())
+                WINDOW * std::mem::size_of::<Source>()
                     + REPORT_HISTORY_CAPACITY * std::mem::size_of::<Report>()
                     + 4096,
             )
@@ -103,8 +104,9 @@ impl Tx {
             account,
             stats,
             sources: VecDeque::with_capacity(WINDOW),
-            source_lengths: VecDeque::with_capacity(WINDOW),
             source_window_len: 0,
+            source_symbol_len: 0,
+            source_baseline_bytes: 0,
             pending: None,
             next_source: 0,
             next_sequence: 0,
@@ -195,13 +197,15 @@ impl Tx {
                 let baseline = source.symbol.len() - 2 + UDP_TUNNEL_HEADER_SIZE;
                 self.credit =
                     (self.credit + baseline as u64 * u64::from(self.rate)).min(self.credit_limit);
-                if self.source_lengths.len() == WINDOW {
-                    self.source_lengths.pop_front();
-                }
-                self.source_lengths.push_back(source.symbol.len());
                 source.accepted_at = now;
                 self.sources.push_back(source);
                 self.source_window_len = self.sources.len();
+                self.source_symbol_len = 0;
+                self.source_baseline_bytes = 0;
+                for source in &self.sources {
+                    self.source_symbol_len = self.source_symbol_len.max(source.symbol.len());
+                    self.source_baseline_bytes += source.symbol.len() - 2 + UDP_TUNNEL_HEADER_SIZE;
+                }
                 self.highest_accepted = Some(sequence);
                 self.repair_due = true;
                 self.tail_credit_updated.get_or_insert(now);
@@ -318,7 +322,7 @@ impl Tx {
         if samples < MIN_REPORT_SAMPLES || lost > samples {
             return;
         }
-        if self.source_lengths.is_empty() {
+        if self.source_window_len == 0 {
             return;
         }
         // Keep at least one loss-estimation window, aligned to cumulative
@@ -357,21 +361,12 @@ impl Tx {
         }
         let probability = lost as f64 / samples as f64;
         let sources = self.source_window_len;
-        let symbol_len = self.source_lengths.iter().copied().max().unwrap();
-        let baseline: usize = self
-            .source_lengths
-            .iter()
-            .map(|len| len - 2 + UDP_TUNNEL_HEADER_SIZE)
-            .sum();
         // Use the last accepted source's window size, independently of payload
         // expiry. This estimates insufficient equations in a finite window;
         // scheduling, correlated loss and matrix rank still need measurement.
         for repairs in 1..=sources {
-            let rate = (repairs as u128
-                * 100
-                * (wire::OVERHEAD + symbol_len) as u128
-                * self.source_lengths.len() as u128)
-                .div_ceil(sources as u128 * baseline as u128)
+            let rate = (repairs as u128 * 100 * (wire::OVERHEAD + self.source_symbol_len) as u128)
+                .div_ceil(self.source_baseline_bytes as u128)
                 .min(u128::from(self.config.max_repair_percent)) as u32;
             if rate == self.config.max_repair_percent {
                 return rate;
