@@ -10,7 +10,7 @@ mod management;
 mod management_extension;
 mod management_state;
 pub mod manager;
-mod packet_io;
+pub(crate) mod packet_io;
 mod packet_plane;
 #[cfg(feature = "proxy-packet")]
 mod packet_proxy_extension;
