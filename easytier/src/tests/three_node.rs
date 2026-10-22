@@ -2953,6 +2953,25 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
             Duration::from_secs(10),
         )
         .await;
+        // The reply is routed back by the remote server, so wait until it has
+        // learned the client peer in the client network as well.
+        let client_peer_id = client.peer_id();
+        wait_for_condition(
+            || async {
+                remote_server
+                    .foreign_network_snapshots(false)
+                    .await
+                    .get("client-net")
+                    .is_some_and(|network| {
+                        network
+                            .peers
+                            .iter()
+                            .any(|peer| peer.peer_id == client_peer_id)
+                    })
+            },
+            Duration::from_secs(10),
+        )
+        .await;
         let rpc = client
             .peer_manager()
             .get_peer_rpc_mgr()
