@@ -1328,6 +1328,22 @@ impl PeerManagerCore {
         self.acl_filter.get_stats()
     }
 
+    /// Bytes charged by the foreign network forward limiter, if configured.
+    #[doc(hidden)]
+    pub fn foreign_forward_metered_bytes(&self, network_name: &str) -> Option<u64> {
+        self.context
+            .foreign_forward_limiter(network_name)
+            .map(|limiter| limiter.metered_bytes())
+    }
+
+    /// Bytes charged by the instance-wide receive limiter, if configured.
+    #[doc(hidden)]
+    pub fn instance_recv_metered_bytes(&self) -> Option<u64> {
+        self.context
+            .recv_limiter("", false)
+            .map(|limiter| limiter.metered_bytes())
+    }
+
     pub fn acl_filter(&self) -> Arc<AclFilter> {
         self.acl_filter.clone()
     }
