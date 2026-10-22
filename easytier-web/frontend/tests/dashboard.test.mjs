@@ -43,7 +43,7 @@ function fixture() {
         online_member_count: 1, member_count: 2, network_secret: 'test-secret', peer_urls: i === 0 ? [] : ['tcp://192.0.2.1:11010'],
     }));
     const members = [{ member_id: id(101), device_id: id(1), hostname: 'Amsterdam gateway', hostname_override: null, virtual_ipv4: '10.126.126.1', online: true, running: true, version: '2.4.5', error_msg: null, runtime_virtual_ipv4: '10.126.126.1' }];
-    return { machines, networks, members, memberConfig: {}, aclPolicy: { default_action: 'allow', rules: [] }, credentials: [], temporaryPeers: [], nodeRoutes: [], nodePeers: [], nodeAclStats: [], loggerConfig: { level: 'INFO' }, writes: [], requests: [], failures: new Set(), gatewayDelay: 0, gatewayEnabled: true };
+    return { machines, networks, members, memberConfig: {}, aclPolicy: { default_action: 'allow', rules: [] }, credentials: [], temporaryPeers: [], nodeRoutes: [], nodePeers: [], nodeAclStats: [], loggerConfig: { level: 'INFO' }, writes: [], requests: [], failures: new Set(), gatewayDelay: 0, gatewayEnabled: true, configServerHost: null };
 }
 
 async function open(t, route = '/h', options = {}, configure = () => {}) {
@@ -83,7 +83,7 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
         if (state.failures.has(path)) return route.fulfill({ status: 503, json: { message: 'Test unavailable' } });
         let result = {};
         if (path === '/summary') result = { device_count: state.machines.length };
-        else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, webhook_auth: state.externalConsole ?? false };
+        else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, config_server_host: state.configServerHost, webhook_auth: state.externalConsole ?? false };
         else if (path === '/machines') result = { machines: state.machines };
         else if (path === '/networks/gateway-info') {
             await delay(state.gatewayDelay);
@@ -175,6 +175,19 @@ for (const [apiHost, hostname] of [
         const { page } = await open(t, '/h', {}, state => { state.apiHost = apiHost; });
         await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
         await page.getByText(`easytier-core --config-server udp://${hostname}:22020/test-user`).waitFor();
+    });
+}
+
+for (const [configured, expected] of [
+    ['et.example.com', 'udp://et.example.com:22020'],
+    ['et.example.com:8443', 'udp://et.example.com:8443'],
+    ['udp://et.example.com', 'udp://et.example.com:22020'],
+    ['tcp://et.example.com:11010', 'tcp://et.example.com:11010'],
+]) {
+    test(`enrollment command advertises the configured config server address ${configured}`, async t => {
+        const { page } = await open(t, '/h', {}, state => { state.configServerHost = configured; });
+        await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
+        await page.getByText(`easytier-core --config-server ${expected}/test-user`).waitFor();
     });
 }
 

@@ -95,6 +95,13 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_CONFIG_SERVER_HOST",
+        help = t!("cli.config_server_host").to_string(),
+    )]
+    config_server_host: Option<String>,
+
+    #[arg(
+        long,
         short='a',
         env = "ET_API_SERVER_PORT",
         default_value = "11211",
@@ -466,6 +473,7 @@ async fn main() {
         webhook_config,
         cli.config_server_protocol.clone(),
         cli.config_server_port,
+        cli.config_server_host.clone(),
     )
     .await
     .unwrap()
