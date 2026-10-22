@@ -9,7 +9,14 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     if local_ip.is_unspecified() || local_ip.is_multicast() {
         return None;
     }
+    #[cfg(target_os = "windows")]
     let ifaces = crate::common::network::get_interfaces_cached()?;
+    // Enumerate under the caller's namespace guard on non-Windows platforms.
+    #[cfg(not(target_os = "windows"))]
+    let ifaces = {
+        use network_interface::NetworkInterfaceConfig;
+        network_interface::NetworkInterface::show().ok()?
+    };
     for iface in ifaces.iter() {
         for addr in &iface.addr {
             if addr.ip() == *local_ip {
@@ -243,6 +250,7 @@ pub async fn bind<B: Bindable>(
 #[cfg(test)]
 pub(crate) mod tests {
     use atomic_shim::AtomicU64;
+    #[cfg(target_os = "windows")]
     use std::time::Duration;
     use std::{sync::Arc, time::Instant};
 
@@ -261,6 +269,7 @@ pub(crate) mod tests {
 
     use crate::common::netns::NetNS;
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn interface_snapshot_cache_returns_consistent_results() {
         let first =
@@ -270,13 +279,14 @@ pub(crate) mod tests {
         assert!(!first.is_empty());
         // The second call must be served from the TTL cache, so the snapshots
         // are identical.
-        assert_eq!(&*first, &*second);
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     // Diagnostic probe for the issue #2735 slow candidate loop: run with
     // `cargo test -p easytier --lib probe_candidate_bind -- --nocapture`.
     // Not a pass/fail benchmark; it prints the per-candidate cost of the
     // uncached lookup (old behavior) versus the cached snapshot (new).
+    #[cfg(target_os = "windows")]
     #[tokio::test(flavor = "current_thread")]
     async fn probe_candidate_bind_latency_with_and_without_cache() {
         use std::net::{IpAddr, SocketAddr};
