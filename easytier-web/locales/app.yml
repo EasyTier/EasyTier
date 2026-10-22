@@ -70,6 +70,9 @@ cli:
   allow_auto_create_user:
     en: "Allow auto-creating local user when easytier-core connects with an unknown username"
     zh-CN: "当 easytier-core 使用未知用户名连接时，允许自动创建本地用户"
+  disallow_username_tokens:
+    en: "Reject the legacy username-as-token enrollment path; only issued device tokens can register"
+    zh-CN: "拒绝旧的用户名即令牌接入方式，仅允许使用签发的设备令牌注册"
   oidc_disable_pkce:
     en: "Disable PKCE (Proof Key for Code Exchange) for OIDC authentication"
     zh-CN: "禁用 OIDC 认证的 PKCE（授权码交换证明密钥）"
