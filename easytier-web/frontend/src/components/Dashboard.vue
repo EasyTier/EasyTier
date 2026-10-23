@@ -45,6 +45,9 @@ const stats = computed(() => [
     { label: 'online_device_count', note: 'online_device_note', icon: 'pi-check-circle', value: devices.value?.filter(device => device.online).length },
     ...(props.centralEnabled ? [{ label: 'network_count', note: 'network_note', icon: 'pi-globe', value: networks.value?.length }] : []),
     { label: 'instance_count', note: 'instance_note', icon: 'pi-share-alt', value: devices.value?.reduce((sum, device) => sum + device.running_network_count, 0) },
+    ...(props.centralEnabled && (summary.value?.outdated_count ?? 0) > 0
+        ? [{ label: 'outdated_device_count', note: 'outdated_device_note', icon: 'pi-sync', value: summary.value?.outdated_count }]
+        : []),
 ]);
 </script>
 

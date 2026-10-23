@@ -32,6 +32,7 @@ mod config_server_listener_tests;
 mod db;
 mod migrator;
 mod restful;
+mod version_source;
 mod webhook;
 
 #[cfg(feature = "embed")]
@@ -228,6 +229,26 @@ pub struct FeatureFlags {
         help = t!("cli.allow_auto_create_user").to_string()
     )]
     pub allow_auto_create_user: bool,
+
+    /// Where the console learns the latest EasyTier release for the
+    /// outdated-device indicator: `github:<owner>/<repo>` (default),
+    /// `url:<endpoint>` returning `{"tag_name": ...}`, or `static:<version>`.
+    #[arg(
+        long,
+        env = "ET_LATEST_VERSION_SOURCE",
+        default_value = "github:EasyTier/EasyTier",
+        help = t!("cli.latest_version_source").to_string()
+    )]
+    pub latest_version_source: String,
+
+    /// Pin the expected version instead of fetching a source; overrides
+    /// --latest-version-source and never touches the network.
+    #[arg(
+        long,
+        env = "ET_EXPECTED_VERSION",
+        help = t!("cli.expected_version").to_string()
+    )]
+    pub expected_version: Option<String>,
 }
 
 impl LoggingConfigLoader for &Cli {
