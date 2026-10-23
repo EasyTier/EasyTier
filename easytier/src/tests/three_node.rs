@@ -2965,19 +2965,13 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
         wait_for_condition_with_reason(
             || async {
                 remote_server
-                    .foreign_network_snapshots(false)
+                    .foreign_network_has_gateway_for_test("client-net", client_peer_id)
                     .await
-                    .get("client-net")
-                    .is_some_and(|network| {
-                        network
-                            .peers
-                            .iter()
-                            .any(|peer| peer.peer_id == client_peer_id)
-                    })
+                    .unwrap_or(false)
             },
             Duration::from_secs(10),
             &format!(
-                "{remote_name} to learn {client_name} ({client_peer_id}) in the client-net foreign network"
+                "{remote_name} to be able to route back to {client_name} ({client_peer_id}) in the client-net foreign network"
             ),
         )
         .await;

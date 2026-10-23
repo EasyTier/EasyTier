@@ -1311,6 +1311,18 @@ impl PeerManagerCore {
         self.get_route().list_foreign_network_info().await
     }
 
+    /// Whether the foreign network peer map can route back to `peer_id`.
+    #[doc(hidden)]
+    pub async fn foreign_network_has_gateway(
+        &self,
+        network_name: &str,
+        peer_id: PeerId,
+    ) -> Option<bool> {
+        self.foreign_network_manager
+            .has_gateway_for_peer(network_name, peer_id)
+            .await
+    }
+
     pub async fn list_foreign_network_infos(
         &self,
         include_trusted_keys: bool,
