@@ -1,16 +1,17 @@
 package com.kkrainbow.easytier
 
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.OnBackPressedCallback
 
 class MainActivity : TauriActivity() {
-    private external fun initCertificateVerifier()
+    private external fun initCertificateVerifier(context: Context)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        initCertificateVerifier()
+        initCertificateVerifier(applicationContext)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 moveTaskToBack(true)
