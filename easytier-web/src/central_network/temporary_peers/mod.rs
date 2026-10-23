@@ -54,7 +54,7 @@ pub(crate) trait ConnFacts {
     fn is_credential_identity(&self) -> bool;
 }
 
-impl ConnFacts for easytier_proto::core_peer::peer::PeerConnInfo {
+impl ConnFacts for easytier_proto::core::peer::PeerConnInfo {
     fn peer_id(&self) -> u32 {
         self.peer_id
     }
@@ -106,8 +106,8 @@ pub(crate) fn conn_observation(
     })
 }
 
-impl From<&easytier_proto::core_peer::peer::Route> for RouteObservation {
-    fn from(route: &easytier_proto::core_peer::peer::Route) -> Self {
+impl From<&easytier_proto::core::peer::Route> for RouteObservation {
+    fn from(route: &easytier_proto::core::peer::Route) -> Self {
         Self {
             peer_id: route.peer_id,
             hostname: route.hostname.clone(),
@@ -367,7 +367,7 @@ mod tests {
                 ..Default::default()
             }
         };
-        let core_conn = easytier_proto::core_peer::peer::PeerConnInfo {
+        let core_conn = easytier_proto::core::peer::PeerConnInfo {
             peer_id: 42,
             network_name: "mesh".to_owned(),
             peer_identity_type: credential_identity,

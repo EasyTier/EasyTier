@@ -7,9 +7,17 @@ use std::collections::BTreeSet;
 
 type PeerId = u32;
 
-include!(concat!(env!("OUT_DIR"), "/peer_rpc.rs"));
-#[cfg(feature = "json-rpc")]
-include!(concat!(env!("OUT_DIR"), "/peer_rpc.serde.rs"));
+#[allow(clippy::all)]
+mod generated {
+    pub use crate::*;
+
+    pub mod peer_rpc {
+        include!(concat!(env!("OUT_DIR"), "/peer_rpc.rs"));
+        #[cfg(feature = "json-rpc")]
+        include!(concat!(env!("OUT_DIR"), "/peer_rpc.serde.rs"));
+    }
+}
+pub use generated::peer_rpc::*;
 
 impl PeerGroupInfo {
     pub fn generate_with_proof(group_name: String, group_secret: String, peer_id: PeerId) -> Self {
@@ -133,7 +141,7 @@ impl From<Vec<crate::api::instance::PeerInfo>> for PeerInfoForGlobalMap {
     }
 }
 
-impl From<RoutePeerInfo> for crate::core_peer::peer::Route {
+impl From<RoutePeerInfo> for crate::core::peer::Route {
     fn from(val: RoutePeerInfo) -> Self {
         let network_length = if val.network_length == 0 {
             24
@@ -141,7 +149,7 @@ impl From<RoutePeerInfo> for crate::core_peer::peer::Route {
             val.network_length
         };
 
-        crate::core_peer::peer::Route {
+        crate::core::peer::Route {
             peer_id: val.peer_id,
             ipv4_addr: val.ipv4_addr.map(|ipv4_addr| crate::common::Ipv4Inet {
                 address: Some(ipv4_addr),

@@ -64,9 +64,17 @@ runs:
         libxdo-dev
       shell: bash
 
-    - uses: actions-rust-lang/setup-rust-toolchain@v1
+    - name: Install Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        toolchain: 1.95
+        # Zig builds use Rust 1.95; an empty value uses rust-toolchain.toml.
+        toolchain: >-
+          ${{ ((contains(inputs.target, 'unknown-linux-musl') &&
+                !contains(inputs.target, 'mips') &&
+                !startsWith(inputs.target, 'x86_64-') &&
+                !startsWith(inputs.target, 'aarch64-')) ||
+               contains(inputs.target, 'freebsd')) && '1.95' || '' }}
+        override: true
         target: ${{ !contains(inputs.target, 'mips') && inputs.target || '' }}
         components: ${{ contains(inputs.target, 'mips') && 'rust-src' || '' }}
         cache: false

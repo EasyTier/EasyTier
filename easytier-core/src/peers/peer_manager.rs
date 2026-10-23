@@ -38,7 +38,7 @@ use crate::{
         compressor::{Compressor as _, DefaultCompressor},
     },
     proto::common::{Flags, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
-    proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
+    proto::core::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     tunnel::{
         Tunnel,
         encrypt::{
@@ -4540,8 +4540,8 @@ mod tests {
     fn route_with_ipv4(
         peer_id: u32,
         ipv4_addr: Option<std::net::Ipv4Addr>,
-    ) -> crate::proto::core_peer::peer::Route {
-        crate::proto::core_peer::peer::Route {
+    ) -> crate::proto::core::peer::Route {
+        crate::proto::core::peer::Route {
             peer_id,
             ipv4_addr: ipv4_addr.map(|addr| cidr::Ipv4Inet::new(addr, 24).unwrap().into()),
             ..Default::default()

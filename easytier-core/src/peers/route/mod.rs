@@ -19,7 +19,7 @@ use crate::{
     config::PeerId,
     peers::context::NetworkIdentity,
     proto::{
-        core_peer::peer::{ListPublicIpv6InfoResponse, Route as CoreRoute},
+        core::peer::{ListPublicIpv6InfoResponse, Route as CoreRoute},
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
             RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
