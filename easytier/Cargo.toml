@@ -99,7 +99,7 @@ rustls = { workspace = true, features = [
 
 # for websocket
 tokio-websockets = { version = "0.13.2", git = "https://github.com/EasyTier/tokio-websockets", optional = true, features = [
-    "rustls-webpki-roots",
+    "rustls-native-roots",
     "client",
     "server",
     "fastrand",

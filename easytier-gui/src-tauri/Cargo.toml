@@ -55,6 +55,10 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework-sys = "2.17.0"
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22.4"
+rustls-platform-verifier = "0.7"
+
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }

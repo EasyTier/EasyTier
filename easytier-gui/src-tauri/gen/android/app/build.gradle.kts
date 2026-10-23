@@ -44,6 +44,24 @@ val tauriVersionCode = if (tauriProperties.getProperty("tauri.android.versionNam
     major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
 }
 
+val rustlsVerifierPackage = run {
+    val metadata = providers.exec {
+        workingDir = file("../../..")
+        commandLine("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", "aarch64-linux-android")
+    }.standardOutput.asText.get()
+    val packages = (JsonSlurper().parseText(metadata) as Map<*, *>)["packages"] as List<*>
+    packages.map { it as Map<*, *> }.single { it["name"] == "rustls-platform-verifier-android" }
+}
+
+repositories {
+    maven {
+        // The Android verifier AAR is bundled with its Cargo package.
+        val manifest = File(rustlsVerifierPackage["manifest_path"] as String)
+        url = uri(File(manifest.parentFile, "maven"))
+        metadataSources { mavenPom() }
+    }
+}
+
 android {
     compileSdk = 34
     namespace = "com.kkrainbow.easytier"
@@ -104,6 +122,7 @@ rust {
 }
 
 dependencies {
+    implementation("rustls:rustls-platform-verifier:${rustlsVerifierPackage["version"]}")
     implementation("androidx.webkit:webkit:1.6.1")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.8.0")

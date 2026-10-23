@@ -1,5 +1,7 @@
 package com.easytier.jni
 
+import android.content.Context
+
 fun interface ConfigServerEventCallback {
     fun onEvent(eventJson: String)
 }
@@ -10,6 +12,9 @@ object EasyTierJNI {
         // 加载本地库
         System.loadLibrary("easytier_android_jni")
     }
+
+    /** Must be called with an application context before starting network instances. */
+    @JvmStatic external fun initializeCertificateVerifier(context: Context)
 
     /**
      * 设置 TUN 文件描述符

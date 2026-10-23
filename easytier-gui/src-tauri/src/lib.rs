@@ -1413,6 +1413,16 @@ mod service {
     }
 }
 
+#[cfg(target_os = "android")]
+#[jni::jni_mangle("com.kkrainbow.easytier.MainActivity")]
+pub fn init_certificate_verifier<'local>(
+    mut env: jni::EnvUnowned<'local>,
+    activity: jni::objects::JObject<'local>,
+) {
+    env.with_env(|env| rustls_platform_verifier::android::init_with_env(env, activity))
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run_gui() -> std::process::ExitCode {
     #[cfg(not(target_os = "android"))]

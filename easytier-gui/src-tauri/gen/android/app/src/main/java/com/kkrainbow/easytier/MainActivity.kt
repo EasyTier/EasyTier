@@ -6,8 +6,11 @@ import android.os.Bundle
 import androidx.activity.OnBackPressedCallback
 
 class MainActivity : TauriActivity() {
+    private external fun initCertificateVerifier()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        initCertificateVerifier()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 moveTaskToBack(true)

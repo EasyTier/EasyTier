@@ -35,7 +35,22 @@ wire {
 }
 ```
 
-4. 调用 easytier-contrib/easytier-android-jni/build.sh 生成 jni 和 ffi 的 so 文件。
-并将生成的 so 文件放到 android/app/src/main/jniLibs/arm64-v8a 目录下。
+4. 调用 easytier-contrib/easytier-android-jni/build.sh 生成 jni 和 ffi 的 so 文件及 rustls-platform-verifier.aar。
+将 so 文件放到 android/app/src/main/jniLibs/arm64-v8a，AAR 放到 android/app/libs，并在 app 的 Gradle 文件中加入：
+
+```
+dependencies {
+    implementation(files("libs/rustls-platform-verifier.aar"))
+}
+```
+
+若启用代码压缩，还需在 ProGuard 规则中加入：
+
+```
+-keep, includedescriptorclasses class org.rustls.platformverifier.** { *; }
+```
 
 5. 使用 EasyTierManager 可以拉起 EasyTier 实例并启动 Android VpnService 组件。
+它会在启动实例前初始化 Android 证书校验器。直接调用 EasyTierJNI.runNetworkInstance
+或 EasyTierJNI.startConfigServerClient 的应用，须先调用
+`EasyTierJNI.initializeCertificateVerifier(applicationContext)`。
