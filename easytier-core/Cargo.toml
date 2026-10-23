@@ -109,7 +109,10 @@ browser-config = ["config-write", "easytier-proto/api", "easytier-proto/json-rpc
 chacha20 = ["dep:chacha20poly1305"]
 openssl-crypto = ["dep:openssl"]
 ring-crypto = ["dep:ring"]
-wasi-crypto-offload = ["ring-crypto"]
+# The WASI host performs AEAD for the guest (easytier_host.crypto_aead_seal/open),
+# so the guest must not link a software backend: ring would emit env.ring_core_* imports
+# that the host module cannot provide.
+wasi-crypto-offload = []
 config-write = []
 endpoint-discovery = [
     "dep:http-body-util",
