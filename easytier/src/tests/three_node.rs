@@ -2975,14 +2975,27 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
             remote_peer_id,
             "client-net".to_owned(),
         );
-        let listeners = rpc
+        let listeners = match rpc
             .get_ip_list(BaseController::default(), GetIpListRequest {})
             .await
-            .unwrap()
-            .listeners
-            .into_iter()
-            .map(url::Url::from)
-            .collect::<Vec<_>>();
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                // Report the remote routing state so a timeout is attributable:
+                // (gateway for the client peer, whether that gateway is directly
+                // connected, peer ids currently connected in the foreign network).
+                let snapshot = remote_server
+                    .foreign_network_route_debug_snapshot_for_test("client-net", client_peer_id)
+                    .await;
+                panic!(
+                    "get_ip_list from {client_peer_id} to {remote_peer_id} failed: {err:?}, remote client-net (gateway, gateway_is_direct_peer, peers) = {snapshot:?}"
+                );
+            }
+        }
+        .listeners
+        .into_iter()
+        .map(url::Url::from)
+        .collect::<Vec<_>>();
         assert_eq!(listeners, remote_server.running_listeners());
         wait_for_condition(
             || async {

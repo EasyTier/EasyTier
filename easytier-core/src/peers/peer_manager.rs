@@ -1311,6 +1311,18 @@ impl PeerManagerCore {
         self.get_route().list_foreign_network_info().await
     }
 
+    /// Test-only routing snapshot for `peer_id` inside a foreign network.
+    #[doc(hidden)]
+    pub async fn foreign_network_route_debug_snapshot(
+        &self,
+        network_name: &str,
+        peer_id: PeerId,
+    ) -> Option<(Option<PeerId>, bool, Vec<PeerId>)> {
+        self.foreign_network_manager
+            .route_debug_snapshot(network_name, peer_id)
+            .await
+    }
+
     /// Whether the foreign network peer map can route back to `peer_id`.
     #[doc(hidden)]
     pub async fn foreign_network_has_gateway(
