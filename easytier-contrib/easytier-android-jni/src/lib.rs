@@ -35,18 +35,6 @@ use jni::JNIEnv;
 use jni::objects::{JClass, JObject, JObjectArray, JString};
 use jni::sys::{jboolean, jint, jstring};
 
-/// Initialize Android's certificate verifier before starting network instances.
-#[cfg(target_os = "android")]
-#[jni_22::jni_mangle("com.easytier.jni.EasyTierJNI")]
-pub fn initialize_certificate_verifier<'local>(
-    mut env: jni_22::EnvUnowned<'local>,
-    _class: jni_22::objects::JClass<'local>,
-    context: jni_22::objects::JObject<'local>,
-) {
-    env.with_env(|env| rustls_platform_verifier::android::init_with_env(env, context))
-        .resolve::<jni_22::errors::ThrowRuntimeExAndDefault>();
-}
-
 /// Attach a TUN file descriptor to an EasyTier network instance.
 ///
 /// Java signature:

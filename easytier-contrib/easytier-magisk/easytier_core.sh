@@ -7,15 +7,6 @@ LOG_FILE="${MODDIR}/log.log"
 MODULE_PROP="${MODDIR}/module.prop"
 EASYTIER="${MODDIR}/easytier-core"
 
-# Magisk 使用 Linux 构建，需显式指定 Android 的系统证书目录。
-if [ -z "${SSL_CERT_FILE:-}" ] && [ -z "${SSL_CERT_DIR:-}" ]; then
-    if [ -n "$(ls -A /apex/com.android.conscrypt/cacerts 2>/dev/null)" ]; then
-        export SSL_CERT_DIR=/apex/com.android.conscrypt/cacerts
-    else
-        export SSL_CERT_DIR=/system/etc/security/cacerts
-    fi
-fi
-
 # 处理获取到的设备型号中可能出现的空格
 BRAND=$(getprop ro.product.brand | tr ' ' '-')
 MODEL=$(getprop ro.product.model | tr ' ' '-')

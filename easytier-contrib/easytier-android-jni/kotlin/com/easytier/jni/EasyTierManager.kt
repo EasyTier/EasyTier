@@ -68,7 +68,6 @@ class EasyTierManager(
 
         try {
             // 启动 EasyTier 实例
-            EasyTierJNI.initializeCertificateVerifier(activity.applicationContext)
             val result = EasyTierJNI.runNetworkInstance(networkConfig)
             if (result == 0) {
                 isRunning = true

@@ -2632,10 +2632,8 @@ dependencies = [
  "easytier",
  "easytier-ffi",
  "jni 0.21.1",
- "jni 0.22.4",
  "log",
  "once_cell",
- "rustls-platform-verifier",
  "serde_json",
 ]
 
@@ -2704,6 +2702,7 @@ dependencies = [
  "url",
  "uuid",
  "wasm-bindgen",
+ "webpki-roots 1.0.9",
  "wildmatch",
  "x25519-dalek 2.0.1",
  "zerocopy 0.7.35",
@@ -2734,10 +2733,8 @@ dependencies = [
  "dashmap",
  "easytier",
  "easytier-core",
- "jni 0.22.4",
  "libc",
  "once_cell",
- "rustls-platform-verifier",
  "security-framework-sys",
  "serde",
  "serde_json",
@@ -10188,12 +10185,12 @@ dependencies = [
  "http",
  "httparse",
  "ring",
- "rustls-native-certs",
  "rustls-pki-types",
  "simdutf8",
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]

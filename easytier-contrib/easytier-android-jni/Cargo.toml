@@ -16,7 +16,3 @@ android_logger = "0.15"
 serde_json.workspace = true
 easytier = { workspace = true, default-features = true }
 easytier-ffi.workspace = true
-
-[target.'cfg(target_os = "android")'.dependencies]
-jni_22 = { package = "jni", version = "0.22.4" }
-rustls-platform-verifier = "0.7"

@@ -99,7 +99,7 @@ rustls = { workspace = true, features = [
 
 # for websocket
 tokio-websockets = { version = "0.13.2", git = "https://github.com/EasyTier/tokio-websockets", optional = true, features = [
-    "rustls-native-roots",
+    "rustls-webpki-roots",
     "client",
     "server",
     "fastrand",
@@ -426,6 +426,8 @@ endpoint-discovery = [
     "dep:rustls",
     "easytier-core/endpoint-discovery",
 ]
+# Trust policy is opt-in, including when building with full features.
+system-certificates = ["endpoint-discovery", "easytier-core/system-certificates"]
 dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]
 dhcp-ipv6 = ["easytier-core/dhcp-ipv6"]
 public-ipv6-provider = ["linux-netlink", "easytier-core/public-ipv6-provider"]

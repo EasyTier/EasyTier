@@ -113,22 +113,6 @@ for target in "${ANDROID_TARGETS[@]}"; do
     build_for_target "$target"
 done
 
-VERIFIER_AAR=$(python3 -c '
-import json
-import pathlib
-import subprocess
-
-metadata = json.loads(subprocess.check_output([
-    "cargo", "metadata", "--locked", "--format-version", "1",
-    "--filter-platform", "aarch64-linux-android",
-]))
-package = next(p for p in metadata["packages"] if p["name"] == "rustls-platform-verifier-android")
-root = pathlib.Path(package["manifest_path"]).parent
-print(root / "maven" / "rustls" / "rustls-platform-verifier" / package["version"] /
-      ("rustls-platform-verifier-" + package["version"] + ".aar"))
-')
-cp "$VERIFIER_AAR" "$OUTPUT_DIR/rustls-platform-verifier.aar"
-
 echo -e "${GREEN}构建完成！${NC}"
 echo -e "${GREEN}所有库文件已生成到: $OUTPUT_DIR${NC}"
 echo ""
@@ -138,9 +122,8 @@ ls -la "$OUTPUT_DIR"/*/
 echo ""
 echo -e "${YELLOW}使用说明:${NC}"
 echo "1. 将生成的 .so 文件复制到您的 Android 项目的 src/main/jniLibs/ 目录下"
-echo "2. 将 rustls-platform-verifier.aar 复制到 app/libs/ 并加入 Gradle 依赖"
-echo "3. 将 kotlin/com/easytier/jni/ 中的 Kotlin 文件复制到您的 Android 项目中"
-echo "4. 在启动网络实例前初始化 EasyTierJNI 的证书校验器"
+echo "2. 将 java/com/easytier/jni/EasyTierJNI.java 复制到您的 Android 项目中"
+echo "3. 在您的 Android 代码中调用 EasyTierJNI 类的方法"
 echo ""
 echo -e "${GREEN}注意: 此脚本使用 cargo-ndk 工具，无需手动设置复杂的环境变量${NC}"
 echo -e "${GREEN}cargo-ndk 会自动处理交叉编译所需的工具链配置${NC}"
