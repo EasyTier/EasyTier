@@ -637,8 +637,20 @@ pub(crate) mod tests {
         bps as usize
     }
 
-    pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration)
+    pub async fn wait_for_condition<F, FRet>(condition: F, timeout: std::time::Duration)
     where
+        F: FnMut() -> FRet + Send,
+        FRet: Future<Output = bool>,
+    {
+        wait_for_condition_named(condition, timeout, "condition").await
+    }
+
+    /// Like [`wait_for_condition`], but the panic names the gate that timed out.
+    pub async fn wait_for_condition_named<F, FRet>(
+        mut condition: F,
+        timeout: std::time::Duration,
+        what: &str,
+    ) where
         F: FnMut() -> FRet + Send,
         FRet: Future<Output = bool>,
     {
@@ -649,6 +661,6 @@ pub(crate) mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert!(condition().await, "Timeout")
+        assert!(condition().await, "Timeout waiting for {what}")
     }
 }
