@@ -2864,6 +2864,21 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
         rpc_types::controller::BaseController,
     };
 
+    // Keep the foreign network forwarding decisions in the test output: a
+    // reply that never arrives has to be explained by the packet path, not by
+    // the state sampled after the timeout.
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::filter::Targets::new()
+                .with_default(tracing::Level::WARN)
+                .with_target("easytier_core::peers", tracing::Level::DEBUG),
+        )
+        .with(tracing_subscriber::fmt::layer().with_test_writer())
+        .try_init();
+
     let mut network = TestNetwork::new();
     network.create_bridge("br");
     let process_runtime = CoreProcessRuntime::new();
