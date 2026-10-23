@@ -90,6 +90,8 @@ where
         Option<crate::config::PeerId>,
         bool,
         Vec<crate::config::PeerId>,
+        Option<crate::config::PeerId>,
+        bool,
     )> {
         self.peer_manager
             .foreign_network_route_debug_snapshot(network_name, peer_id)

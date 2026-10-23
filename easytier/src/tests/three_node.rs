@@ -2988,7 +2988,7 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
                     .foreign_network_route_debug_snapshot_for_test("client-net", client_peer_id)
                     .await;
                 panic!(
-                    "get_ip_list from {client_peer_id} to {remote_peer_id} failed: {err:?}, remote client-net (gateway, gateway_is_direct_peer, peers) = {snapshot:?}"
+                    "get_ip_list from {client_peer_id} to {remote_peer_id} failed: {err:?}, remote client-net (gateway, gateway_is_direct_peer, peers, gateway_origin_peer_id, origin_routable) = {snapshot:?}"
                 );
             }
         }
