@@ -309,6 +309,19 @@ mod tests {
         assert_eq!(config.fill_rate, 100_000);
     }
 
+    /// Freeze the lazy refill while a test asserts on the current balance.
+    ///
+    /// Refill is driven by `Instant::now()` inside `try_consume`, so a drained
+    /// bucket would otherwise gain a token as soon as the test thread is
+    /// descheduled long enough (one millisecond for the small buckets used
+    /// here). A `last_refill` in the future makes the elapsed time zero, so the
+    /// assertions below do not depend on scheduling delays.
+    fn freeze_refill(bucket: &TokenBucket) {
+        let mut state = bucket.state.lock();
+        state.last_refill = Instant::now() + Duration::from_secs(60);
+        state.refill_remainder = 0;
+    }
+
     /// Test initial state after creation
     #[tokio::test]
     async fn test_initial_state() {
@@ -316,6 +329,7 @@ mod tests {
 
         // Should have full capacity initially
         assert!(bucket.try_consume(1000));
+        freeze_refill(&bucket);
         assert!(!bucket.try_consume(1)); // Should be empty now
     }
 
@@ -326,6 +340,7 @@ mod tests {
 
         // First packet should succeed
         assert!(bucket.try_consume(1000));
+        freeze_refill(&bucket);
 
         // Second packet should fail (only 500 left)
         assert!(!bucket.try_consume(600));
