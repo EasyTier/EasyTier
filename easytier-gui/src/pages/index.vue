@@ -18,6 +18,7 @@ import {
 } from '~/composables/mobile_vpn'
 import { executeVpnTileAction } from '~/composables/mobile_vpn_tile'
 import { GUIRemoteClient } from '~/modules/api'
+import { loadDockHiddenPreference, saveDockHiddenPreference } from '~/modules/dock_visibility'
 
 import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
@@ -41,6 +42,8 @@ const manualDisconnect = ref(false)
 
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
+
+const dockHidden = ref(false)
 
 const showAutostartHint = ref(false)
 
@@ -246,6 +249,10 @@ onMounted(async () => {
   currentMode.value = loadMode()
   await initWithMode(currentMode.value);
 
+  if (type() === 'macos') {
+    dockHidden.value = await loadDockHiddenPreference()
+  }
+
   if (type() === 'android') {
     setMobileVpnTileActionHandler(handleMobileVpnTileAction)
     cleanupFns.push(() => setMobileVpnTileActionHandler())
@@ -425,6 +432,14 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     icon: 'pi pi-clock',
     command: openAutostartDialog,
     visible: () => type() !== 'android',
+  },
+  {
+    label: () => (dockHidden.value ? t('show_dock_icon') : t('hide_dock_icon')),
+    icon: 'pi pi-eye-slash',
+    command: async () => {
+      dockHidden.value = await saveDockHiddenPreference(!dockHidden.value)
+    },
+    visible: () => type() === 'macos',
   },
   {
     label: () => `${t('config-server.title')}${t('config-server.' + configServerConnectionStatus.value)}`,
