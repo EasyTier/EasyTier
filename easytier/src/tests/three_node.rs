@@ -42,7 +42,6 @@ use crate::{
     },
     tunnel::common::tests::{
         _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, wait_for_condition,
-        wait_for_condition_with_reason,
     },
 };
 
@@ -2928,13 +2927,10 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
     client_a.add_connector_url(server_a.ring_listener_url());
     client_b.add_connector_url(server_b.ring_listener_url());
 
-    for (client, remote_server, client_name, remote_name) in [
-        (client_a, server_b, "client_a", "server_b"),
-        (client_b, server_a, "client_b", "server_a"),
-    ] {
+    for (client, remote_server) in [(client_a, server_b), (client_b, server_a)] {
         let client = client.get_core_instance();
         let remote_server = remote_server.get_core_instance();
-        wait_for_condition_with_reason(
+        wait_for_condition(
             || async {
                 remote_server
                     .foreign_network_snapshots(false)
@@ -2942,12 +2938,11 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
                     .contains_key("client-net")
             },
             Duration::from_secs(10),
-            &format!("{remote_name} to see the client-net foreign network of {client_name}"),
         )
         .await;
         let remote_peer_id = remote_server.foreign_network_snapshots(false).await["client-net"]
             .my_peer_id_for_this_network;
-        wait_for_condition_with_reason(
+        wait_for_condition(
             || async {
                 client
                     .route_snapshots()
@@ -2956,13 +2951,12 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
                     .any(|route| route.peer_id == remote_peer_id)
             },
             Duration::from_secs(10),
-            &format!("{client_name} to learn the route to {remote_name} ({remote_peer_id})"),
         )
         .await;
         // The reply is routed back by the remote server, so wait until it has
         // learned the client peer in the client network as well.
         let client_peer_id = client.peer_id();
-        wait_for_condition_with_reason(
+        wait_for_condition(
             || async {
                 remote_server
                     .foreign_network_has_gateway_for_test("client-net", client_peer_id)
@@ -2970,9 +2964,6 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
                     .unwrap_or(false)
             },
             Duration::from_secs(10),
-            &format!(
-                "{remote_name} to be able to route back to {client_name} ({client_peer_id}) in the client-net foreign network"
-            ),
         )
         .await;
         let rpc = client
@@ -2993,7 +2984,7 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
             .map(url::Url::from)
             .collect::<Vec<_>>();
         assert_eq!(listeners, remote_server.running_listeners());
-        wait_for_condition_with_reason(
+        wait_for_condition(
             || async {
                 client.peer_snapshots().await.iter().any(|peer| {
                     peer.peer_id == remote_peer_id
@@ -3007,9 +2998,6 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
                 })
             },
             Duration::from_secs(10),
-            &format!(
-                "{client_name} to open a direct {protocol} connection to {remote_name} ({remote_peer_id})"
-            ),
         )
         .await;
     }
