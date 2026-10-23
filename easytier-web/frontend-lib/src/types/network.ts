@@ -387,7 +387,8 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   // admin-issued credential) surfaces its key in the form's credential
   // field instead of a raw secure_mode key.
   normalized.credential_secret = config.credential_secret
-  if (!normalized.network_secret && normalized.secure_mode?.local_private_key) {
+  if ((normalized.network_secret == null || config.credential_secret !== undefined)
+    && normalized.secure_mode?.local_private_key) {
     normalized.credential_secret ??= normalized.secure_mode.local_private_key
     normalized.secure_mode = { enabled: true }
   }
