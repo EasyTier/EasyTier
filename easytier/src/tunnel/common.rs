@@ -651,4 +651,23 @@ pub(crate) mod tests {
         }
         assert!(condition().await, "Timeout")
     }
+
+    /// Same as [`wait_for_condition`], but reports which convergence step timed out.
+    pub async fn wait_for_condition_with_reason<F, FRet>(
+        mut condition: F,
+        timeout: std::time::Duration,
+        reason: &str,
+    ) where
+        F: FnMut() -> FRet + Send,
+        FRet: Future<Output = bool>,
+    {
+        let now = std::time::Instant::now();
+        while now.elapsed() < timeout {
+            if condition().await {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(condition().await, "Timeout waiting for {reason}");
+    }
 }
