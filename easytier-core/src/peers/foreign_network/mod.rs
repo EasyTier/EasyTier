@@ -1216,27 +1216,6 @@ impl ForeignNetworkManager {
         });
     }
 
-    /// Gateway chosen for `peer_id`, whether that gateway is a direct peer and the
-    /// peer ids currently connected in `network_name`. Test-only diagnostics.
-    #[doc(hidden)]
-    pub async fn route_debug_snapshot(
-        &self,
-        network_name: &str,
-        peer_id: PeerId,
-    ) -> Option<(Option<PeerId>, bool, Vec<PeerId>)> {
-        let item = self
-            .data
-            .network_peer_maps
-            .get(network_name)
-            .map(|v| v.clone())?;
-        let gateway = item
-            .peer_map
-            .get_gateway_peer_id(peer_id, NextHopPolicy::LeastHop)
-            .await;
-        let direct = gateway.is_some_and(|gw| item.peer_map.has_peer(gw));
-        Some((gateway, direct, item.peer_map.list_peers()))
-    }
-
     /// Whether the peer map of `network_name` can route a packet back to
     /// `peer_id`, using the same gateway lookup the packet router performs.
     #[doc(hidden)]

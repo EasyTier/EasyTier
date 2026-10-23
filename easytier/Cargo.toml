@@ -296,7 +296,6 @@ thunk-rs = { workspace = true, features = [
 
 
 [dev-dependencies]
-tracing-subscriber = { workspace = true, features = ["fmt", "registry", "std"] }
 criterion = "0.8.2"
 easytier-core = { workspace = true, features = [
     "test-utils",

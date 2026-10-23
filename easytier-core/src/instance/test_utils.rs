@@ -82,23 +82,6 @@ where
     }
 
     #[doc(hidden)]
-    pub async fn foreign_network_route_debug_snapshot_for_test(
-        &self,
-        network_name: &str,
-        peer_id: crate::config::PeerId,
-    ) -> Option<(
-        Option<crate::config::PeerId>,
-        bool,
-        Vec<crate::config::PeerId>,
-        Option<crate::config::PeerId>,
-        bool,
-    )> {
-        self.peer_manager
-            .foreign_network_route_debug_snapshot(network_name, peer_id)
-            .await
-    }
-
-    #[doc(hidden)]
     pub async fn foreign_network_has_gateway_for_test(
         &self,
         network_name: &str,

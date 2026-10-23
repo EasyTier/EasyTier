@@ -16,9 +16,10 @@ test-group = 'subnet-proxy'
 
 # These tests modify or inspect host-wide interfaces, routes, or BPF state.
 # They must exclude all other tests, including the isolated network fixtures.
+# Foreign-network listener discovery also enumerates the default namespace.
 # Run exclusive tests first so the parallel pool does not repeatedly drain.
 [[profile.default.overrides]]
-filter = 'test(tests::upnp_test) | test(common::ifcfg::netlink::tests) | test(instance::public_ipv6_provider::platform::tests) | test(instance::dns_server::tests) | test(socket::fake_tcp::netfilter::linux_bpf::tests)'
+filter = 'test(tests::upnp_test) | test(common::ifcfg::netlink::tests) | test(instance::public_ipv6_provider::platform::tests) | test(instance::dns_server::tests) | test(socket::fake_tcp::netfilter::linux_bpf::tests) | test(tests::three_node::foreign_network_advertises_listeners_for_direct_connect)'
 threads-required = 'num-test-threads'
 priority = 100
 

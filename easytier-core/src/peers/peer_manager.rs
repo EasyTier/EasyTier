@@ -1311,36 +1311,6 @@ impl PeerManagerCore {
         self.get_route().list_foreign_network_info().await
     }
 
-    /// Test-only routing snapshot for `peer_id` inside a foreign network.
-    ///
-    /// Besides the foreign-network lookup, resolve the chosen gateway to the
-    /// origin peer id and check whether the parent peer map can route to it:
-    /// that is the path a wrapped foreign network packet takes.
-    #[doc(hidden)]
-    pub async fn foreign_network_route_debug_snapshot(
-        &self,
-        network_name: &str,
-        peer_id: PeerId,
-    ) -> Option<(Option<PeerId>, bool, Vec<PeerId>, Option<PeerId>, bool)> {
-        let (gateway, direct, peers) = self
-            .foreign_network_manager
-            .route_debug_snapshot(network_name, peer_id)
-            .await?;
-        let peer_map = self.get_peer_map();
-        let origin_peer_id = match gateway {
-            Some(gateway) => peer_map.get_origin_my_peer_id(network_name, gateway).await,
-            None => None,
-        };
-        let origin_routable = match origin_peer_id {
-            Some(origin) => peer_map
-                .get_gateway_peer_id(origin, NextHopPolicy::LeastHop)
-                .await
-                .is_some(),
-            None => false,
-        };
-        Some((gateway, direct, peers, origin_peer_id, origin_routable))
-    }
-
     /// Whether the foreign network peer map can route back to `peer_id`.
     #[doc(hidden)]
     pub async fn foreign_network_has_gateway(
