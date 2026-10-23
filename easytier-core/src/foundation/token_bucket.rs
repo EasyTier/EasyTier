@@ -139,7 +139,16 @@ impl TokenBucket {
         let tokens = tokens.min(self.config.capacity);
 
         let mut state = self.state.lock();
-        self.refill(&mut state, Instant::now());
+        let now = Instant::now();
+        self.try_consume_locked(&mut state, tokens, now)
+    }
+
+    /// Consume from an already locked state at an explicit instant.
+    ///
+    /// Production takes the lock first and then reads the clock, so tests can
+    /// pass the same instant twice to observe the bucket without any refill.
+    fn try_consume_locked(&self, state: &mut BucketState, tokens: u64, now: Instant) -> bool {
+        self.refill(state, now);
         if state.available_tokens < tokens {
             return false;
         }
@@ -313,10 +322,14 @@ mod tests {
     #[tokio::test]
     async fn test_initial_state() {
         let bucket = TokenBucket::new(1000, 1000);
+        // Refill is time based; reuse one instant so no token can appear
+        // between the two calls regardless of scheduling.
+        let now = Instant::now();
+        let mut state = bucket.state.lock();
 
         // Should have full capacity initially
-        assert!(bucket.try_consume(1000));
-        assert!(!bucket.try_consume(1)); // Should be empty now
+        assert!(bucket.try_consume_locked(&mut state, 1000, now));
+        assert!(!bucket.try_consume_locked(&mut state, 1, now)); // Should be empty now
     }
 
     /// Test token consumption behavior
@@ -324,14 +337,18 @@ mod tests {
     async fn test_consumption() {
         let bucket = TokenBucket::new(1500, 1000);
 
+        // Same instant for every call: no refill can happen between them.
+        let now = Instant::now();
+        let mut state = bucket.state.lock();
+
         // First packet should succeed
-        assert!(bucket.try_consume(1000));
+        assert!(bucket.try_consume_locked(&mut state, 1000, now));
 
         // Second packet should fail (only 500 left)
-        assert!(!bucket.try_consume(600));
+        assert!(!bucket.try_consume_locked(&mut state, 600, now));
 
         // Should be able to take remaining tokens
-        assert!(bucket.try_consume(500));
+        assert!(bucket.try_consume_locked(&mut state, 500, now));
     }
 
     #[tokio::test]
