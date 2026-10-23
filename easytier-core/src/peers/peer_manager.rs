@@ -2832,6 +2832,8 @@ impl PeerOutboundPacketRouter {
             ip_addr = meta.destination;
         }
 
+        msg.flow_key = crate::packet::flow::parse_flow_key(&msg);
+
         let packet_policy = self.context.packet_policy();
         let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
         if cur_to_peer_id != 0 {

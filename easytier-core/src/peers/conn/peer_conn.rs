@@ -31,6 +31,7 @@ use crate::foundation::time::{Duration, timeout};
 use super::{
     peer_conn_liveness::{FEATURE as LIVENESS_ECHO_FEATURE, PeerConnLiveness},
     peer_conn_ping::PeerConnPinger,
+    peer_conn_quality::PeerConnQuality,
     peer_session::{PeerSession, PeerSessionAction},
 };
 use crate::peers::{
@@ -298,6 +299,7 @@ pub struct PeerConn {
     ctrl_resp_sender: broadcast::Sender<ZCPacket>,
 
     latency_stats: Arc<WindowLatency>,
+    pub(super) quality: Arc<PeerConnQuality>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
     liveness: PeerConnLiveness,
@@ -398,6 +400,7 @@ impl PeerConn {
             ctrl_resp_sender: ctrl_sender,
 
             latency_stats: Arc::new(WindowLatency::new(15)),
+            quality: Arc::new(PeerConnQuality::default()),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
             liveness,
@@ -1385,22 +1388,31 @@ impl PeerConn {
             self.liveness.clone(),
             self.max_ping_interval(),
         );
+        pingpong.quality = self.quality.clone();
 
         let close_event_notifier = self.close_event_notifier.clone();
+        let conn_id = self.conn_id;
 
-        self.tasks.spawn(async move {
-            pingpong.pingpong().await;
+        self.tasks.spawn(
+            async move {
+                pingpong.pingpong().await;
 
-            tracing::warn!(?pingpong, "pingpong task exit");
+                tracing::warn!(?pingpong, "pingpong task exit");
 
-            close_event_notifier.notify_close();
+                close_event_notifier.notify_close();
 
-            Ok(())
-        });
+                Ok(())
+            }
+            .instrument(tracing::info_span!("peer_conn_pingpong", ?conn_id)),
+        );
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        Ok(self.sink.send(msg).await?)
+        if let Err(error) = self.sink.send(msg).await {
+            self.close_event_notifier.notify_close();
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     pub fn get_peer_id(&self) -> PeerId {

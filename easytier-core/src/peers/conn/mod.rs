@@ -5,5 +5,6 @@ pub(crate) mod peer;
 pub(crate) mod peer_conn;
 pub(crate) mod peer_conn_liveness;
 pub(crate) mod peer_conn_ping;
+mod peer_conn_quality;
 pub(crate) mod peer_map;
 pub(crate) mod peer_session;
