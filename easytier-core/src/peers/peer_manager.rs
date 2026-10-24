@@ -2793,7 +2793,7 @@ impl PeerOutboundPacketRouter {
     pub async fn send_msg_by_ip(
         &self,
         mut msg: ZCPacket,
-        ip_addr: IpAddr,
+        mut ip_addr: IpAddr,
         not_send_to_self: bool,
     ) -> Result<(), Error> {
         tracing::trace!(
@@ -2803,9 +2803,23 @@ impl PeerOutboundPacketRouter {
         );
 
         msg.fill_peer_manager_hdr(self.my_peer_id, 0, PacketType::Data as u8);
+        let filters_registered = !self.nic_packet_process_pipeline.load().is_empty();
         if !self.run_nic_packet_process_pipeline(&mut msg).await {
             return Ok(());
         }
+
+        if filters_registered
+            && let Ok(meta) = crate::instance::packet_io::parse_ip_packet(msg.payload())
+            && meta.destination != ip_addr
+        {
+            tracing::trace!(
+                original_dst = %ip_addr,
+                new_dst = %meta.destination,
+                "destination rewritten by nic packet filter"
+            );
+            ip_addr = meta.destination;
+        }
+
         let packet_policy = self.context.packet_policy();
         let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
         if cur_to_peer_id != 0 {
