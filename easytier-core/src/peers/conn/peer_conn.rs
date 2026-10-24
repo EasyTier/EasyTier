@@ -23,13 +23,15 @@ use tokio::{sync::broadcast, task::JoinSet};
 
 use tracing::Instrument;
 use zerocopy::AsBytes;
+use zeroize::Zeroizing;
 
 use snow::{HandshakeState, params::NoiseParams};
 
 use crate::foundation::time::{Duration, timeout};
 
 use super::{
-    peer_conn_liveness::{FEATURE as LIVENESS_ECHO_FEATURE, PeerConnLiveness},
+    fec::{PeerConnFec, PeerConnFecIo},
+    peer_conn_liveness::PeerConnLiveness,
     peer_conn_ping::PeerConnPinger,
     peer_session::{PeerSession, PeerSessionAction},
 };
@@ -238,18 +240,21 @@ impl TunnelFilter for PeerSessionTunnelFilter {
 pub struct PeerConnCloseNotify {
     conn_id: PeerConnId,
     sender: Arc<std::sync::Mutex<Option<broadcast::Sender<()>>>>,
+    fec: Arc<PeerConnFec>,
 }
 
 impl PeerConnCloseNotify {
-    fn new(conn_id: PeerConnId) -> Self {
+    fn new(conn_id: PeerConnId, fec: Arc<PeerConnFec>) -> Self {
         let (sender, _) = broadcast::channel(1);
         Self {
             conn_id,
             sender: Arc::new(std::sync::Mutex::new(Some(sender))),
+            fec,
         }
     }
 
     fn notify_close(&self) {
+        self.fec.close();
         self.sender.lock().unwrap().take();
     }
 
@@ -301,6 +306,7 @@ pub struct PeerConn {
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
     liveness: PeerConnLiveness,
+    fec: Arc<PeerConnFec>,
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
@@ -344,6 +350,14 @@ impl PeerConn {
     ) -> Self {
         let flags = context.flags();
         let tunnel_info = tunnel.info();
+        let fec_supported = tunnel_info
+            .as_ref()
+            .is_some_and(|info| info.tunnel_type == "udp");
+        let fec = Arc::new(PeerConnFec::new(
+            context.fec_config(),
+            fec_supported,
+            fec_supported.then(|| context.fec_budget()).flatten(),
+        ));
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
 
         let secure_mode_cfg = context.secure_mode();
@@ -360,10 +374,26 @@ impl PeerConn {
         let liveness = PeerConnLiveness::new();
         let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter)
             .chain(liveness.clone());
-        let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
-        let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
-
-        let (recv, sink) = (mpsc_tunnel.get_stream(), mpsc_tunnel.get_sink());
+        let (recv, sink, tunnel): (_, _, Box<dyn Any + Send + 'static>) = if fec.advertised() {
+            let mut fec_tunnel = PeerConnFecIo::new(tunnel, filter_chain, fec.clone());
+            let recv = fec_tunnel.get_stream();
+            let sink = fec_tunnel.get_sink();
+            (
+                recv,
+                sink,
+                Box::new(guard!([mut fec_tunnel] fec_tunnel.close())),
+            )
+        } else {
+            let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
+            let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
+            let recv = mpsc_tunnel.get_stream();
+            let sink = mpsc_tunnel.get_sink();
+            (
+                recv,
+                sink,
+                Box::new(guard!([mut mpsc_tunnel] mpsc_tunnel.close())),
+            )
+        };
 
         let conn_id = PeerConnId::new_v4();
         let my_encrypt_algo = flags.encryption_algorithm;
@@ -380,10 +410,7 @@ impl PeerConn {
             session_filter,
             noise_handshake_result: None,
 
-            tunnel: Arc::new(Mutex::new(
-                Box::new(guard!([mut mpsc_tunnel] mpsc_tunnel.close()))
-                    as Box<dyn Any + Send + 'static>,
-            )),
+            tunnel: Arc::new(Mutex::new(tunnel)),
             sink,
             recv: Mutex::new(Some(recv)),
             tunnel_info,
@@ -393,7 +420,7 @@ impl PeerConn {
             info: None,
             is_client: None,
 
-            close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id)),
+            close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id, fec.clone())),
 
             ctrl_resp_sender: ctrl_sender,
 
@@ -401,6 +428,7 @@ impl PeerConn {
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
             liveness,
+            fec,
 
             peer_session_store,
             my_encrypt_algo,
@@ -464,22 +492,7 @@ impl PeerConn {
     async fn wait_handshake(&self, need_retry: &mut bool) -> Result<HandshakeRequest, Error> {
         *need_retry = false;
 
-        let mut locked = self.recv.lock().await;
-        let recv = locked.as_mut().unwrap();
-        let rsp = match recv.next().await {
-            Some(Ok(rsp)) => rsp,
-            Some(Err(e)) => {
-                return Err(Error::WaitRespError(format!(
-                    "conn recv error during wait handshake response, err: {:?}",
-                    e
-                )));
-            }
-            None => {
-                return Err(Error::WaitRespError(
-                    "conn closed during wait handshake response".to_owned(),
-                ));
-            }
-        };
+        let rsp = self.recv_next_peer_manager_packet(None).await?;
 
         *need_retry = true;
         let rsp_len = rsp.buf_len() as u64;
@@ -532,6 +545,12 @@ impl PeerConn {
         .await?
     }
 
+    fn features(&self) -> Vec<String> {
+        let mut features = vec![super::peer_conn_liveness::FEATURE.to_owned()];
+        self.fec.append_features(&mut features);
+        features
+    }
+
     async fn send_handshake(
         &self,
         send_secret_digest: bool,
@@ -542,7 +561,7 @@ impl PeerConn {
             magic: MAGIC,
             my_peer_id: self.my_peer_id,
             version: VERSION,
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.features(),
             network_name: network.network_name.clone(),
             ..Default::default()
         };
@@ -658,22 +677,20 @@ impl PeerConn {
             .pinned_remote_static_pubkey(self.tunnel_info.as_ref())
     }
 
-    async fn send_noise_msg<Msg: prost::Message + Debug>(
+    async fn send_noise_msg(
         &self,
-        pb: Msg,
+        payload: Zeroizing<Vec<u8>>,
         packet_type: PacketType,
         remote_peer_id: PeerId,
         metric_network_name: &str,
         hs: &mut snow::HandshakeState,
     ) -> Result<(), Error> {
         tracing::info!(
-            "send noise msg: {:?}, packet_type: {:?}, from: {:?}, to: {:?}",
-            pb,
+            "send noise msg, packet_type: {:?}, from: {:?}, to: {:?}",
             packet_type,
             self.my_peer_id,
             remote_peer_id
         );
-        let payload = pb.encode_to_vec();
         let mut msg = vec![0u8; 4096];
         let msg_len = hs
             .write_message(&payload, &mut msg)
@@ -813,7 +830,7 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.my_encrypt_algo.clone(),
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.features(),
         };
 
         let mut hs = builder
@@ -822,7 +839,7 @@ impl PeerConn {
             .build_initiator()?;
 
         self.send_noise_msg(
-            msg1_pb,
+            Zeroizing::new(msg1_pb.encode_to_vec()),
             PacketType::NoiseHandshakeMsg1,
             PeerId::default(),
             &network.network_name,
@@ -880,7 +897,7 @@ impl PeerConn {
             secret_digest: secret_digest.clone(),
         };
         self.send_noise_msg(
-            msg3_pb,
+            Zeroizing::new(msg3_pb.encode_to_vec()),
             PacketType::NoiseHandshakeMsg3,
             remote_peer_id,
             &network.network_name,
@@ -991,7 +1008,7 @@ impl PeerConn {
 
         let msg = match hs {
             Some(hs) => {
-                let mut out = vec![0u8; 4096];
+                let mut out = Zeroizing::new(vec![0u8; 4096]);
                 let out_len = hs
                     .read_message(pkt.payload(), &mut out)
                     .map_err(|e| Error::WaitRespError(format!("noise read msg failed: {e:?}")))?;
@@ -1086,10 +1103,11 @@ impl PeerConn {
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
             server_encryption_algorithm: algo,
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.features(),
         };
+        let payload = Zeroizing::new(msg2_pb.encode_to_vec());
         self.send_noise_msg(
-            msg2_pb,
+            payload,
             PacketType::NoiseHandshakeMsg2,
             remote_peer_id,
             &remote_network_name,
@@ -1196,6 +1214,8 @@ impl PeerConn {
     where
         Fn: FnMut(&mut PeerConn, &str) -> Result<(), Error> + Send,
     {
+        let fec = self.fec.clone();
+        let close_fec_on_error = guard!([fec] fec.close());
         let first_pkt = timeout(
             Duration::from_secs(5),
             self.recv_next_peer_manager_packet(None),
@@ -1238,18 +1258,22 @@ impl PeerConn {
             )));
         }
 
-        self.liveness
-            .set_remote_features(&self.info.as_ref().unwrap().features);
-
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
         } else {
+            self.liveness
+                .set_remote_features(&self.info.as_ref().unwrap().features);
+            self.fec
+                .set_remote_features(&self.info.as_ref().unwrap().features);
+            close_fec_on_error.defuse();
             Ok(())
         }
     }
 
     #[tracing::instrument]
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
+        let fec = self.fec.clone();
+        let close_fec_on_error = guard!([fec] fec.close());
         if self.is_secure_mode_enabled() {
             let noise = self.do_noise_handshake_as_client().await?;
             self.session_filter.set_session(noise.session.clone());
@@ -1269,14 +1293,16 @@ impl PeerConn {
             self.is_client = Some(true);
         }
 
-        self.liveness
-            .set_remote_features(&self.info.as_ref().unwrap().features);
-
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError(
                 "peer id conflict, are you connecting to yourself?".to_owned(),
             ))
         } else {
+            self.liveness
+                .set_remote_features(&self.info.as_ref().unwrap().features);
+            self.fec
+                .set_remote_features(&self.info.as_ref().unwrap().features);
+            close_fec_on_error.defuse();
             Ok(())
         }
     }
@@ -1504,6 +1530,12 @@ impl PeerConn {
                 .as_ref()
                 .map(|x| x.peer_identity_type as i32)
                 .unwrap_or(PeerIdentityType::Admin as i32),
+            fec: Some(self.fec.info()),
+            session_replay_rejections: self
+                .noise_handshake_result
+                .as_ref()
+                .map(|noise| noise.session.replay_rejections())
+                .unwrap_or_default(),
         }
     }
 
@@ -1537,7 +1569,15 @@ impl Drop for PeerConn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::FecConfig,
+        packet::{FEC_HEADER_SIZE, ZCPacketType},
+        peers::{PacketRecvChanReceiver, conn::fec::FecInstanceBudget},
+        tunnel::SplitTunnel,
+    };
     use crate::{peers::test_support::NoopPeerContext, tunnel::ring::create_ring_tunnel_pair};
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use tokio::sync::Notify;
 
     #[tokio::test]
     async fn connection_origin_determines_hole_punch_and_ping_policy() {
@@ -1568,5 +1608,602 @@ mod tests {
             );
             assert_eq!(conn.is_attached(), origin == PeerConnectionOrigin::Attached);
         }
+    }
+
+    struct FecTestContext {
+        inner: NoopPeerContext,
+        fec: crate::config::FecConfig,
+        budget: Arc<FecInstanceBudget>,
+    }
+
+    impl crate::peers::context::PeerContext for FecTestContext {
+        fn network_identity(&self) -> NetworkIdentity {
+            self.inner.network_identity()
+        }
+        fn flags(&self) -> crate::proto::common::Flags {
+            self.inner.flags()
+        }
+        fn secure_mode(&self) -> Option<SecureModeConfig> {
+            self.inner.secure_mode()
+        }
+        fn secret_proof(&self, challenge: &[u8]) -> Option<hmac::Hmac<sha2::Sha256>> {
+            self.inner.secret_proof(challenge)
+        }
+        fn fec_config(&self) -> crate::config::FecConfig {
+            self.fec.clone()
+        }
+        fn fec_budget(&self) -> Option<Arc<FecInstanceBudget>> {
+            Some(self.budget.clone())
+        }
+    }
+
+    fn fec_context(
+        network: &str,
+        secret: Option<&str>,
+        secure: bool,
+        key: u8,
+        fec: FecConfig,
+    ) -> ArcPeerContext {
+        let mut inner = NoopPeerContext::new(NetworkIdentity {
+            network_name: network.to_owned(),
+            network_secret: secret.map(str::to_owned),
+            network_secret_digest: None,
+        });
+        if secure {
+            let private = x25519_dalek::StaticSecret::from([key; 32]);
+            let public = x25519_dalek::PublicKey::from(&private);
+            inner = inner.with_secure_mode(SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+                local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+            });
+        }
+        Arc::new(FecTestContext {
+            inner,
+            fec,
+            budget: Arc::new(FecInstanceBudget::default()),
+        })
+    }
+
+    // Exercise the real PeerConn adapter without depending on UDP socket internals.
+    // Each direction can erase one selected source and hold the final handshake
+    // while later source/repair frames continue reaching the remote adapter.
+    #[derive(Default)]
+    struct FecTestWire {
+        drop_source: Option<usize>,
+        source_count: AtomicUsize,
+        sent: parking_lot::Mutex<Vec<ZCPacket>>,
+        delay_handshake: Option<PacketType>,
+        handshake_held: AtomicBool,
+        release_handshake: Notify,
+    }
+
+    impl TunnelFilter for FecTestWire {
+        type FilterOutput = ();
+
+        fn before_send(&self, packet: ZCPacket) -> Option<ZCPacket> {
+            let packet_type = packet.peer_manager_header().unwrap().packet_type;
+            self.sent.lock().push(packet.clone());
+            if packet_type == PacketType::FecSource as u8 {
+                let index = self.source_count.fetch_add(1, Ordering::Relaxed);
+                if self.drop_source == Some(index) {
+                    return None;
+                }
+            }
+            Some(packet)
+        }
+
+        fn filter_output(&self) {}
+    }
+
+    struct FecTestTunnel {
+        inner: TunnelWithFilter<Box<dyn Tunnel>, Arc<FecTestWire>>,
+        incoming: Arc<FecTestWire>,
+        tunnel_type: &'static str,
+    }
+
+    impl Tunnel for FecTestTunnel {
+        fn split(&self) -> SplitTunnel {
+            let (stream, sink) = self.inner.split();
+            let incoming = self.incoming.clone();
+            let stream = futures::stream::unfold((stream, None), move |(mut stream, mut held)| {
+                let incoming = incoming.clone();
+                async move {
+                    loop {
+                        let packet = if held.is_some() {
+                            tokio::select! {
+                                _ = incoming.release_handshake.notified() => {
+                                    return Some((held.take().unwrap(), (stream, held)));
+                                }
+                                packet = stream.next() => packet?,
+                            }
+                        } else {
+                            stream.next().await?
+                        };
+                        if packet.as_ref().ok().is_some_and(|packet| {
+                            incoming.delay_handshake.is_some_and(|kind| {
+                                packet.peer_manager_header().unwrap().packet_type == kind as u8
+                            })
+                        }) {
+                            assert!(held.is_none());
+                            held = Some(packet);
+                            incoming.handshake_held.store(true, Ordering::Relaxed);
+                        } else {
+                            return Some((packet, (stream, held)));
+                        }
+                    }
+                }
+            });
+            (Box::pin(stream), sink)
+        }
+
+        fn info(&self) -> Option<TunnelInfo> {
+            Some(TunnelInfo {
+                tunnel_type: self.tunnel_type.to_owned(),
+                ..Default::default()
+            })
+        }
+    }
+
+    fn fec_peers(
+        a: ArcPeerContext,
+        b: ArcPeerContext,
+        tunnel_type: &'static str,
+        a_wire: Arc<FecTestWire>,
+        b_wire: Arc<FecTestWire>,
+    ) -> (PeerConn, PeerConn) {
+        let (a_tunnel, b_tunnel) = create_ring_tunnel_pair();
+        let a_tunnel = FecTestTunnel {
+            inner: TunnelWithFilter::new(a_tunnel, a_wire.clone()),
+            incoming: b_wire.clone(),
+            tunnel_type,
+        };
+        let b_tunnel = FecTestTunnel {
+            inner: TunnelWithFilter::new(b_tunnel, b_wire),
+            incoming: a_wire,
+            tunnel_type,
+        };
+        (
+            PeerConn::new(1, a, Box::new(a_tunnel), Arc::new(PeerSessionStore::new())),
+            PeerConn::new(2, b, Box::new(b_tunnel), Arc::new(PeerSessionStore::new())),
+        )
+    }
+
+    fn fec_policy(max_repair_percent: u32, udp_payload_mtu: u32) -> FecConfig {
+        FecConfig {
+            enabled: true,
+            force_peer: false,
+            udp_payload_mtu,
+            max_repair_percent,
+        }
+    }
+
+    fn erased_wire(delay_handshake: Option<PacketType>) -> Arc<FecTestWire> {
+        Arc::new(FecTestWire {
+            drop_source: Some(0),
+            delay_handshake,
+            ..Default::default()
+        })
+    }
+
+    async fn send_block(conn: &PeerConn, from: u32, to: u32, count: u8, size: usize) {
+        for index in 1..=count {
+            conn.send_msg(peer_data(from, to, &vec![index; size]))
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn receive_block(receiver: &mut PacketRecvChanReceiver, count: u8, size: usize) {
+        let mut payloads = Vec::new();
+        for _ in 0..count {
+            let packet = timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!packet.peer_manager_header().unwrap().is_encrypted());
+            payloads.push(packet.payload().to_vec());
+        }
+        payloads.sort();
+        assert_eq!(
+            payloads,
+            (1..=count).map(|i| vec![i; size]).collect::<Vec<_>>()
+        );
+    }
+
+    fn protected_source(wire: &FecTestWire) -> ZCPacket {
+        let sent = wire.sent.lock();
+        let source = sent
+            .iter()
+            .find(|packet| {
+                packet.peer_manager_header().unwrap().packet_type == PacketType::FecSource as u8
+            })
+            .expect("the erased packet must be a protected source");
+        ZCPacket::new_from_buf(
+            bytes::BytesMut::from(&source.payload()[FEC_HEADER_SIZE..]),
+            ZCPacketType::DummyTunnel,
+        )
+    }
+
+    fn assert_uncoded(wire: &FecTestWire) {
+        assert!(wire.sent.lock().iter().all(|packet| {
+            let kind = packet.peer_manager_header().unwrap().packet_type;
+            kind != PacketType::FecSource as u8 && kind != PacketType::FecRepair as u8
+        }));
+    }
+
+    async fn wait_early_recovery(fec: &PeerConnFec, wire: &FecTestWire) {
+        timeout(Duration::from_secs(1), async {
+            while fec.info().stats.unwrap().recovered_packets == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("early business must be decoded while the handshake is still waiting");
+        assert!(wire.handshake_held.load(Ordering::Relaxed));
+        assert!(!fec.info().tx_active);
+        assert!(!fec.info().rx_active);
+    }
+
+    async fn handshake_pair(a: &mut PeerConn, b: &mut PeerConn) {
+        let (a_result, b_result) = tokio::join!(
+            a.do_handshake_as_client(),
+            b.do_handshake_as_server_ext(|_, _| Ok(()))
+        );
+        a_result.unwrap();
+        b_result.unwrap();
+    }
+
+    fn peer_data(from: u32, to: u32, payload: &[u8]) -> ZCPacket {
+        let mut packet = ZCPacket::new_with_payload(payload);
+        packet.fill_peer_manager_hdr(from, to, PacketType::Data as u8);
+        packet
+    }
+
+    #[tokio::test]
+    async fn fec_legacy_and_noise_restore_asymmetric_erased_packets() {
+        for (secure, a_network, b_network, secret) in [
+            (false, "mesh", "mesh", Some("secret")),
+            (true, "mesh", "mesh", Some("secret")),
+            (false, "mesh", "mesh", None),
+            (true, "a-network", "b-network", None),
+        ] {
+            let a_wire = erased_wire(None);
+            let b_wire = erased_wire(None);
+            let (mut a, mut b) = fec_peers(
+                fec_context(a_network, secret, secure, 1, fec_policy(100, 900)),
+                fec_context(b_network, secret, secure, 2, fec_policy(100, 1800)),
+                "udp",
+                a_wire.clone(),
+                b_wire.clone(),
+            );
+            handshake_pair(&mut a, &mut b).await;
+            assert!(a.fec.info().tx_active && b.fec.info().tx_active);
+            let (a_tx, mut a_rx) = crate::peers::create_packet_recv_chan();
+            let (b_tx, mut b_rx) = crate::peers::create_packet_recv_chan();
+            a.start_recv_loop(a_tx).await;
+            b.start_recv_loop(b_tx).await;
+            send_block(&a, 1, 2, 4, 80).await;
+            // B's protected packets exceed A's local TX MTU.
+            send_block(&b, 2, 1, 8, 1100).await;
+            receive_block(&mut b_rx, 4, 80).await;
+            receive_block(&mut a_rx, 8, 1100).await;
+            assert_eq!(a.fec.info().stats.unwrap().recovered_packets, 1);
+            assert_eq!(b.fec.info().stats.unwrap().recovered_packets, 1);
+            for wire in [&a_wire, &b_wire] {
+                let protected = protected_source(wire);
+                assert_eq!(
+                    protected.peer_manager_header().unwrap().is_encrypted(),
+                    secure
+                );
+                if secure {
+                    assert_ne!(protected.payload(), vec![1; protected.payload().len()]);
+                }
+            }
+            assert_eq!(a.get_conn_info().session_replay_rejections, 0);
+            assert_eq!(b.get_conn_info().session_replay_rejections, 0);
+            a.close_event_notifier.notify_close();
+            assert!(!a.fec.info().tx_active);
+            assert_eq!(a.fec.info().stats.unwrap().memory_bytes, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn fec_sends_only_in_enabled_or_requested_directions() {
+        for secure in [false, true] {
+            for (a_enabled, a_force_peer, b_enabled, b_force_peer, tunnel_type) in [
+                (false, false, false, false, "udp"),
+                (true, false, false, false, "udp"),
+                (false, false, true, false, "udp"),
+                (true, false, true, false, "udp"),
+                (false, true, false, false, "udp"),
+                (false, false, false, true, "udp"),
+                (true, true, false, false, "udp"),
+                (false, false, true, true, "udp"),
+                (false, true, true, false, "udp"),
+                (true, false, false, true, "udp"),
+                (false, true, false, true, "udp"),
+                (true, true, false, true, "udp"),
+                (false, true, true, true, "udp"),
+                (true, false, true, true, "udp"),
+                (true, true, true, false, "udp"),
+                (true, true, true, true, "udp"),
+                (true, true, true, true, "tcp"),
+                (true, true, true, true, "quic"),
+            ] {
+                let a_wire = erased_wire(None);
+                let b_wire = erased_wire(None);
+                let (mut a, mut b) = fec_peers(
+                    fec_context(
+                        "mesh",
+                        Some("secret"),
+                        secure,
+                        1,
+                        FecConfig {
+                            enabled: a_enabled,
+                            force_peer: a_force_peer,
+                            ..fec_policy(100, 1400)
+                        },
+                    ),
+                    fec_context(
+                        "mesh",
+                        Some("secret"),
+                        secure,
+                        2,
+                        FecConfig {
+                            enabled: b_enabled,
+                            force_peer: b_force_peer,
+                            ..fec_policy(100, 1800)
+                        },
+                    ),
+                    tunnel_type,
+                    a_wire.clone(),
+                    b_wire.clone(),
+                );
+                handshake_pair(&mut a, &mut b).await;
+                let (a_tx, mut a_rx) = crate::peers::create_packet_recv_chan();
+                let (b_tx, mut b_rx) = crate::peers::create_packet_recv_chan();
+                a.start_recv_loop(a_tx).await;
+                b.start_recv_loop(b_tx).await;
+                send_block(&a, 1, 2, 4, 80).await;
+                send_block(&b, 2, 1, 8, 1100).await;
+                receive_block(&mut b_rx, 4, 80).await;
+                receive_block(&mut a_rx, 8, 1100).await;
+                for (conn, wire, enabled, force_peer, remote_enabled, remote_force_peer, count) in [
+                    (
+                        &a,
+                        &a_wire,
+                        a_enabled,
+                        a_force_peer,
+                        b_enabled,
+                        b_force_peer,
+                        4,
+                    ),
+                    (
+                        &b,
+                        &b_wire,
+                        b_enabled,
+                        b_force_peer,
+                        a_enabled,
+                        a_force_peer,
+                        8,
+                    ),
+                ] {
+                    let info = conn.fec.info();
+                    let tx_active = (enabled || remote_force_peer) && tunnel_type == "udp";
+                    assert_eq!(info.desired_enabled, enabled);
+                    assert_eq!(info.desired_force_peer, force_peer);
+                    assert_eq!(
+                        info.peer_requested,
+                        remote_force_peer && tunnel_type == "udp"
+                    );
+                    assert_eq!(conn.context.fec_config().enabled, enabled);
+                    assert_eq!(conn.context.fec_config().force_peer, force_peer);
+                    assert_eq!(info.tx_active, tx_active);
+                    assert_eq!(info.rx_active, tunnel_type == "udp");
+                    assert_eq!(info.tx_parameters.is_some(), tx_active);
+                    if let Some(parameters) = info.tx_parameters {
+                        assert_eq!(parameters.window_packets, Some(64));
+                        assert_eq!(
+                            parameters.udp_payload_mtu,
+                            Some(conn.context.fec_config().udp_payload_mtu)
+                        );
+                        assert_eq!(parameters.max_repair_percent, Some(100));
+                    }
+                    let stats = info.stats.unwrap();
+                    assert_eq!(stats.tx_source_packets, if tx_active { count } else { 0 });
+                    assert_eq!(
+                        stats.recovered_packets,
+                        u64::from((remote_enabled || force_peer) && tunnel_type == "udp")
+                    );
+                    if !tx_active {
+                        assert_uncoded(wire);
+                        assert_eq!(stats.tx_repair_packets, 0);
+                    }
+                    conn.close_event_notifier.notify_close();
+                    assert!(!conn.fec.info().tx_active);
+                    assert!(!conn.fec.info().rx_active);
+                    assert_eq!(conn.fec.info().stats.unwrap().memory_bytes, 0);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fec_force_peer_is_connection_local() {
+        for secure in [false, true] {
+            let shared = fec_context("mesh", Some("secret"), secure, 2, FecConfig::default());
+            let (mut a, mut b) = fec_peers(
+                fec_context(
+                    "mesh",
+                    Some("secret"),
+                    secure,
+                    1,
+                    FecConfig {
+                        force_peer: true,
+                        ..FecConfig::default()
+                    },
+                ),
+                shared.clone(),
+                "udp",
+                Arc::new(FecTestWire::default()),
+                Arc::new(FecTestWire::default()),
+            );
+            handshake_pair(&mut a, &mut b).await;
+            assert!(!a.fec.info().tx_active);
+            assert!(b.fec.info().tx_active);
+            assert!(b.fec.info().peer_requested);
+            assert_eq!(shared.fec_config(), FecConfig::default());
+
+            let (mut c, mut other) = fec_peers(
+                fec_context("mesh", Some("secret"), secure, 3, FecConfig::default()),
+                shared,
+                "udp",
+                Arc::new(FecTestWire::default()),
+                Arc::new(FecTestWire::default()),
+            );
+            handshake_pair(&mut c, &mut other).await;
+            assert!(!c.fec.info().tx_active);
+            assert!(!other.fec.info().tx_active);
+            assert!(!other.fec.info().peer_requested);
+            assert!(b.fec.info().tx_active);
+        }
+    }
+
+    #[tokio::test]
+    async fn fec_peer_without_support_uses_original_framing() {
+        let a_wire = Arc::new(FecTestWire::default());
+        let b_wire = Arc::new(FecTestWire::default());
+        let (mut a, mut b) = fec_peers(
+            fec_context(
+                "mesh",
+                Some("secret"),
+                false,
+                1,
+                FecConfig {
+                    force_peer: true,
+                    ..fec_policy(100, 1400)
+                },
+            ),
+            Arc::new(NoopPeerContext::new(NetworkIdentity {
+                network_name: "mesh".to_owned(),
+                network_secret: Some("secret".to_owned()),
+                network_secret_digest: None,
+            })),
+            "udp",
+            a_wire.clone(),
+            b_wire.clone(),
+        );
+        handshake_pair(&mut a, &mut b).await;
+        assert_eq!(a.fec.info().tx_reason, "remote_unsupported");
+        assert!(!a.fec.info().rx_active);
+        let (a_tx, mut a_rx) = crate::peers::create_packet_recv_chan();
+        let (b_tx, mut b_rx) = crate::peers::create_packet_recv_chan();
+        a.start_recv_loop(a_tx).await;
+        b.start_recv_loop(b_tx).await;
+        send_block(&a, 1, 2, 4, 80).await;
+        send_block(&b, 2, 1, 4, 80).await;
+        receive_block(&mut b_rx, 4, 80).await;
+        receive_block(&mut a_rx, 4, 80).await;
+        assert_uncoded(&a_wire);
+        assert_uncoded(&b_wire);
+        assert_eq!(a.fec.info().stats.unwrap().memory_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn fec_early_business_waits_for_legacy_response_and_noise_msg3() {
+        for (secure, force_peer) in [(false, false), (true, false), (false, true), (true, true)] {
+            let a_wire = erased_wire(secure.then_some(PacketType::NoiseHandshakeMsg3));
+            let b_wire = erased_wire((!secure).then_some(PacketType::HandShake));
+            let (mut a, mut b) = fec_peers(
+                fec_context(
+                    "mesh",
+                    Some("secret"),
+                    secure,
+                    1,
+                    FecConfig {
+                        enabled: secure && !force_peer,
+                        force_peer: !secure && force_peer,
+                        ..fec_policy(100, 1400)
+                    },
+                ),
+                fec_context(
+                    "mesh",
+                    Some("secret"),
+                    secure,
+                    2,
+                    FecConfig {
+                        enabled: !secure && !force_peer,
+                        force_peer: secure && force_peer,
+                        ..fec_policy(100, 1400)
+                    },
+                ),
+                "udp",
+                a_wire.clone(),
+                b_wire.clone(),
+            );
+            if secure {
+                let b_fec = b.fec.clone();
+                let b_session = b.session_filter.clone();
+                let ((), server_result) = tokio::join!(
+                    async {
+                        a.do_handshake_as_client().await.unwrap();
+                        send_block(&a, 1, 2, 4, 80).await;
+                        wait_early_recovery(&b_fec, &a_wire).await;
+                        assert!(b_session.session.load().is_none());
+                        assert!(
+                            protected_source(&a_wire)
+                                .peer_manager_header()
+                                .unwrap()
+                                .is_encrypted()
+                        );
+                        a_wire.release_handshake.notify_one();
+                    },
+                    b.do_handshake_as_server_ext(|_, _| Ok(())),
+                );
+                server_result.unwrap();
+            } else {
+                let a_fec = a.fec.clone();
+                let (client_result, ()) = tokio::join!(a.do_handshake_as_client(), async {
+                    b.do_handshake_as_server_ext(|_, _| Ok(())).await.unwrap();
+                    send_block(&b, 2, 1, 4, 80).await;
+                    wait_early_recovery(&a_fec, &b_wire).await;
+                    b_wire.release_handshake.notify_one();
+                },);
+                client_result.unwrap();
+            }
+            let (a_tx, mut a_rx) = crate::peers::create_packet_recv_chan();
+            let (b_tx, mut b_rx) = crate::peers::create_packet_recv_chan();
+            a.start_recv_loop(a_tx).await;
+            b.start_recv_loop(b_tx).await;
+            if secure {
+                receive_block(&mut b_rx, 4, 80).await;
+                assert_eq!(b.get_conn_info().session_replay_rejections, 0);
+            } else {
+                receive_block(&mut a_rx, 4, 80).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fec_handshake_rejection_releases_prepared_resources() {
+        let (a, mut b) = fec_peers(
+            fec_context("mesh", Some("secret"), false, 1, fec_policy(100, 1400)),
+            fec_context("mesh", Some("secret"), false, 2, fec_policy(100, 1400)),
+            "udp",
+            Arc::new(FecTestWire::default()),
+            Arc::new(FecTestWire::default()),
+        );
+        assert!(b.fec.advertised());
+        a.send_handshake(true, "mesh").await.unwrap();
+        assert!(
+            b.do_handshake_as_server_ext(|_, _| {
+                Err(Error::WaitRespError("admission rejected".to_owned()))
+            })
+            .await
+            .is_err()
+        );
+        assert!(!b.fec.info().tx_active);
+        assert_eq!(b.fec.info().stats.unwrap().memory_bytes, 0);
     }
 }

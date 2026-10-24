@@ -100,6 +100,9 @@ pub enum PacketType {
     NoiseHandshakeMsg3 = 15,
     RelayHandshake = 20,
     RelayHandshakeAck = 21,
+    FecSource = 22,
+    FecRepair = 23,
+    FecFeedback = 24,
 
     // used internally,
     DataWithKcpSrcModified = 18,
@@ -134,6 +137,13 @@ pub struct PeerManagerHeader {
     pub len: U32<DefaultEndian>,
 }
 pub const PEER_MANAGER_HEADER_SIZE: usize = std::mem::size_of::<PeerManagerHeader>();
+
+/// PeerConn FEC metadata following its outer peer header.
+pub(crate) const FEC_HEADER_SIZE: usize = 24;
+/// Largest FEC envelope around an original peer packet, including UDP framing
+/// and the encoded source length, but excluding operating-system IP/UDP headers.
+pub(crate) const FEC_MAX_OVERHEAD: usize =
+    UDP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE + FEC_HEADER_SIZE + 2;
 
 impl PeerManagerHeader {
     pub fn is_encrypted(&self) -> bool {
@@ -803,9 +813,15 @@ impl ZCPacket {
     }
 
     pub fn is_lossy(&self) -> bool {
-        self.peer_manager_header()
-            .map(|hdr| hdr.packet_type == PacketType::Data as u8)
-            .unwrap_or(false)
+        self.peer_manager_header().is_some_and(|hdr| {
+            if hdr.packet_type == PacketType::FecRepair as u8 {
+                true
+            } else if hdr.packet_type == PacketType::FecSource as u8 {
+                self.payload().get(FEC_HEADER_SIZE + 8) == Some(&(PacketType::Data as u8))
+            } else {
+                hdr.packet_type == PacketType::Data as u8
+            }
+        })
     }
 
     pub fn foreign_network_hdr(&self) -> Option<&ForeignNetworkPacketHeader> {

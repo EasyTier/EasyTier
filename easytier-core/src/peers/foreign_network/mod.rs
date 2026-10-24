@@ -119,6 +119,7 @@ fn build_foreign_peer_context(
         host_routing: parent_context_dyn.host_routing_policy(),
     };
     let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
+    snapshot.fec = parent_context_dyn.fec_config();
     snapshot.easytier_version = parent_context_dyn.easytier_version();
     snapshot.ospf_update_my_foreign_network_interval_sec =
         parent_context_dyn.ospf_update_my_foreign_network_interval_sec();
