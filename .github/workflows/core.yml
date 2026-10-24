@@ -290,6 +290,7 @@ jobs:
           cargo build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
 
       - name: Compress
+        id: compress
         run: |
           mkdir -p ./artifacts/objects/
 
@@ -329,16 +330,25 @@ jobs:
 
           for BIN in ./target/$TARGET/release/easytier-{core,cli,web,web-embed}"$SUFFIX"; do
             if [[ -f "$BIN" ]]; then
-              if [[ -n "$UPX_BIN" ]]; then
-                $UPX_BIN --lzma --best "$BIN" || true
-              fi
-
-              mv "$BIN" ./artifacts/objects/
+              cp "$BIN" ./artifacts/objects/
             fi
           done
 
           mv ./artifacts/objects/* ./artifacts/
           rm -rf ./artifacts/objects/
+
+          if [[ -n "$UPX_BIN" ]]; then
+            mkdir -p ./artifacts-compressed/
+            cp -r ./artifacts/* ./artifacts-compressed/
+            for BIN in ./artifacts-compressed/easytier-{core,cli,web,web-embed}"$SUFFIX"; do
+              if [[ -f "$BIN" ]]; then
+                $UPX_BIN --lzma --best "$BIN" || true
+              fi
+            done
+            echo "has_compressed=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_compressed=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Archive artifact
         uses: actions/upload-artifact@v5
@@ -346,6 +356,14 @@ jobs:
           name: easytier-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*
+
+      - name: Archive compressed artifact
+        if: steps.compress.outputs.has_compressed == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: easytier-${{ matrix.ARTIFACT_NAME }}-compressed
+          path: |
+            ./artifacts-compressed/*
 
       - name: Prepare SignPath test artifact
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
