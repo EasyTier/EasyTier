@@ -546,6 +546,14 @@ web:
     delete_confirm: 确定删除网络 {name}？所有成员的托管配置将被回收
     delete_hint: 删除网络会移除所有成员并回收其托管配置
     gateway_followed: 初始节点仅保留控制台接入点，成员配置将跟随接入点地址自动更新
+    member_peers_hint: 选择网络中的设备作为初始节点，控制台按其监听端口生成连接地址，且不会下发给该设备自己；未配置监听的设备将自动监听 TCP/UDP 11010
+    member_peer_member: 初始节点设备
+    member_peer_host: 公网地址
+    member_peer_host_placeholder: 其他设备连接它所用的 IP 或域名
+    member_peer_remove: 移除该初始节点
+    member_peer_detected: 设备当前上报的公网 IP 为 {address}
+    member_peer_use_detected: 使用该地址
+    add_member_peer: 添加成员设备为初始节点
     advanced_config: 高级配置
     has_override: 该成员已配置高级覆盖
     identity_ignored: 网络名称与密码由网络设置统一管理，本次修改将被忽略
