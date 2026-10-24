@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use easytier_core::config::toml::DnsConfig;
 use easytier_core::gateway::magic_dns::{
     MagicDnsRoutePublisher, MagicDnsRouteSnapshot, run_magic_dns_route_publisher,
 };
@@ -22,11 +23,13 @@ pub struct MagicDnsClientInstance {
     rpc_client: RuntimeRpcClient,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,
     route_source: Arc<CorePacketPlane>,
+    dns: Option<String>,
     tasks: JoinSet<()>,
 }
 
 struct RpcMagicDnsRoutePublisher {
     rpc_stub: Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>,
+    dns: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -57,6 +60,7 @@ impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
                 })
                 .collect(),
             zone: snapshot.zone.clone(),
+            dns: self.dns.clone(),
         };
         tracing::debug!(
             "MagicDnsClientInstance::update_dns_task: update dns records: {:?}",
@@ -70,7 +74,11 @@ impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
 }
 
 impl MagicDnsClientInstance {
-    pub(crate) async fn new(route_source: Arc<CorePacketPlane>) -> Result<Self, anyhow::Error> {
+    pub(crate) async fn new(
+        route_source: Arc<CorePacketPlane>,
+        dns: Option<DnsConfig>,
+    ) -> Result<Self, anyhow::Error> {
+        let dns = dns.as_ref().map(toml::to_string).transpose()?;
         let mut rpc_client = runtime_rpc_client(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
         let rpc_stub = rpc_client
             .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>("".to_string())
@@ -79,6 +87,7 @@ impl MagicDnsClientInstance {
             rpc_client,
             rpc_stub: Some(rpc_stub),
             route_source,
+            dns,
             tasks: JoinSet::new(),
         })
     }
@@ -86,8 +95,9 @@ impl MagicDnsClientInstance {
     async fn update_dns_task(
         route_source: Arc<CorePacketPlane>,
         rpc_stub: Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>,
+        dns: Option<String>,
     ) -> Result<(), anyhow::Error> {
-        let mut publisher = RpcMagicDnsRoutePublisher { rpc_stub };
+        let mut publisher = RpcMagicDnsRoutePublisher { rpc_stub, dns };
         run_magic_dns_route_publisher(
             route_source.as_ref(),
             &mut publisher,
@@ -99,8 +109,9 @@ impl MagicDnsClientInstance {
     pub async fn run_and_wait(&mut self) {
         let rpc_stub = self.rpc_stub.take().unwrap();
         let route_source = self.route_source.clone();
+        let dns = self.dns.clone();
         self.tasks.spawn(async move {
-            let ret = Self::update_dns_task(route_source, rpc_stub).await;
+            let ret = Self::update_dns_task(route_source, rpc_stub, dns).await;
             if let Err(e) = ret {
                 tracing::error!("MagicDnsServerInstanceData::run_and_wait: {:?}", e);
             }

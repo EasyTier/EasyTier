@@ -20,6 +20,24 @@ pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
 pub use crate::proto::common::{Flags, FlagsPatch};
 
+// Interim record-only models. dns-policy replaces these with its Raw/Parsed
+// configuration; the management protocol already uses its TOML representation.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DnsConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zone: Vec<DnsZoneConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DnsZoneConfig {
+    pub origin: String,
+    pub ttl: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<String>,
+}
+
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
 }
@@ -31,6 +49,9 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_hostname(&self) -> String;
     fn set_hostname(&self, name: Option<String>);
+
+    fn get_dns(&self) -> Option<DnsConfig>;
+    fn set_dns(&self, dns: Option<DnsConfig>);
 
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
@@ -409,6 +430,7 @@ impl std::fmt::Debug for ManagedCredentialConfig {
 struct Config {
     netns: Option<String>,
     hostname: Option<String>,
+    dns: Option<DnsConfig>,
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
@@ -670,6 +692,14 @@ impl ConfigLoader for TomlConfig {
 
     fn set_hostname(&self, name: Option<String>) {
         self.config.lock().unwrap().hostname = name;
+    }
+
+    fn get_dns(&self) -> Option<DnsConfig> {
+        self.config.lock().unwrap().dns.clone()
+    }
+
+    fn set_dns(&self, dns: Option<DnsConfig>) {
+        self.config.lock().unwrap().dns = dns;
     }
 
     fn get_netns(&self) -> Option<String> {
