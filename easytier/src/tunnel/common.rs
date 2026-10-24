@@ -220,6 +220,7 @@ pub async fn bind<B: Bindable>(
 ) -> Result<B, TunnelError> {
     let (socket, dev) = {
         let _g = net_ns.as_ref().map(|n| n.guard());
+        #[cfg(not(target_os = "windows"))]
         let dev = match dev {
             BindDev::Auto => get_interface_name_by_ip(&addr.ip()),
             BindDev::Disabled => None,
@@ -233,10 +234,36 @@ pub async fn bind<B: Bindable>(
         (socket, dev)
     };
     crate::socket_protector::protect_native_socket(&socket, need_protect).await?;
-    // Restore the requested namespace for synchronous bind/device lookup only.
+    #[cfg(target_os = "windows")]
+    let socket = run_blocking_socket_setup(move || {
+        // Both interface lookups and bind can be slow on Windows. Keep them
+        // off the async worker, after protection and before Tokio registration.
+        let dev = match dev {
+            BindDev::Auto => get_interface_name_by_ip(&addr.ip()),
+            BindDev::Disabled => None,
+            BindDev::Custom(s) => Some(s),
+        };
+        setup_socket2_ext(&socket, &addr, dev, only_v6, reuse_addr, reuse_port)?;
+        Ok(socket)
+    })
+    .await?;
+
+    #[cfg(not(target_os = "windows"))]
     let _g = net_ns.as_ref().map(|n| n.guard());
+    #[cfg(not(target_os = "windows"))]
     setup_socket2_ext(&socket, &addr, dev, only_v6, reuse_addr, reuse_port)?;
     B::finalize(socket)
+}
+
+// A cancelled waiter does not stop an in-flight system call. The blocking task
+// owns the socket, so its result is dropped if the connection attempt times out.
+#[cfg(any(target_os = "windows", test))]
+async fn run_blocking_socket_setup(
+    setup: impl FnOnce() -> Result<socket2::Socket, TunnelError> + Send + 'static,
+) -> Result<socket2::Socket, TunnelError> {
+    tokio::task::spawn_blocking(setup)
+        .await
+        .map_err(|error| TunnelError::InternalError(format!("socket setup task failed: {error}")))?
 }
 
 // endregion
@@ -260,6 +287,36 @@ pub(crate) mod tests {
     };
 
     use crate::common::netns::NetNS;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn slow_socket_setup_does_not_block_other_candidates() {
+        use std::time::Duration;
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let slow = tokio::spawn(super::run_blocking_socket_setup(move || {
+            started_tx.send(()).unwrap();
+            // Bound the wait so a regression cannot hang the test runtime.
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                .map_err(Into::into)
+        }));
+        started_rx.await.unwrap();
+
+        let fast = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::run_blocking_socket_setup(|| {
+                socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                    .map_err(Into::into)
+            }),
+        )
+        .await;
+        // Release the worker even if the fast candidate failed.
+        let _ = release_tx.send(());
+        slow.await.unwrap().unwrap();
+        fast.expect("another candidate must progress during slow setup")
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn bind_rejects_occupied_ports() {
