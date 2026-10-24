@@ -367,6 +367,7 @@ impl PeerSession {
         }
     }
 
+    #[easytier_profiling::instrument("PeerSession::encrypt_payload")]
     pub fn encrypt_payload(
         &self,
         sender_peer_id: PeerId,
@@ -380,6 +381,7 @@ impl PeerSession {
             .encrypt_payload(Self::dir_for_sender(sender_peer_id, receiver_peer_id), pkt)
     }
 
+    #[easytier_profiling::instrument("PeerSession::decrypt_payload")]
     pub fn decrypt_payload(
         &self,
         sender_peer_id: PeerId,

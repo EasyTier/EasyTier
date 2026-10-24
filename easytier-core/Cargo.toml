@@ -18,6 +18,7 @@ crate-type = ["rlib", "cdylib"]
 wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 
 [dependencies]
+easytier-profiling.workspace = true
 optionize.workspace = true
 anyhow.workspace = true
 ariadne = { version = "0.6", optional = true }
@@ -166,6 +167,11 @@ proxy-smoltcp-stack = [
 wasm-host-tunnel = []
 wasm-host-tunnel-outbound = ["wasm-host-tunnel"]
 test-utils = []
+profiling = ["easytier-profiling/tracing"]
+lttng = ["profiling", "easytier-profiling/lttng"]
+hotpath = ["easytier-profiling/hotpath"]
+hotpath-cpu = ["hotpath", "easytier-profiling/hotpath-cpu"]
+hotpath-alloc = ["hotpath", "easytier-profiling/hotpath-alloc"]
 tracing-log = ["tracing/log"]
 zstd = ["dep:zstd"]
 

@@ -1,38 +1,54 @@
-#[cfg(not(feature = "tracing"))]
+#[cfg(not(any(feature = "tracing", feature = "profiling")))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(feature = "tracing")]
+#[cfg(any(feature = "tracing", feature = "profiling"))]
 use tracing::{Event, subscriber::SetGlobalDefaultError};
-#[cfg(not(feature = "tracing"))]
+#[cfg(not(any(feature = "tracing", feature = "profiling")))]
 use tracing::{
     Metadata,
     span::{Attributes, Id, Record as SpanRecord},
     subscriber::{Interest, SetGlobalDefaultError},
 };
-#[cfg(feature = "tracing")]
+#[cfg(any(feature = "tracing", feature = "profiling"))]
 use tracing_subscriber::prelude::*;
 
-#[cfg(not(feature = "tracing"))]
+#[cfg(not(any(feature = "tracing", feature = "profiling")))]
 use super::tracing_level;
 use super::{Logger, emit_event};
 
-#[cfg(not(feature = "tracing"))]
+#[cfg(not(any(feature = "tracing", feature = "profiling")))]
 pub(super) fn install(logger: &'static Logger) -> Result<(), SetGlobalDefaultError> {
     tracing::subscriber::set_global_default(EventSubscriber::new(logger))
 }
 
-#[cfg(feature = "tracing")]
+#[cfg(any(feature = "tracing", feature = "profiling"))]
 pub(super) fn install(logger: &'static Logger) -> Result<(), SetGlobalDefaultError> {
-    let subscriber = tracing_subscriber::registry()
-        .with(console_subscriber::ConsoleLayer::builder().spawn())
-        .with(EventLayer(logger));
-    tracing::subscriber::set_global_default(subscriber)
+    tracing::subscriber::set_global_default(layered_subscriber(logger))
 }
 
-#[cfg(feature = "tracing")]
+#[cfg(any(feature = "tracing", feature = "profiling"))]
+fn layered_subscriber(logger: &'static Logger) -> impl tracing::Subscriber {
+    let subscriber = tracing_subscriber::registry();
+    #[cfg(feature = "tracing")]
+    let subscriber = subscriber.with(console_subscriber::ConsoleLayer::builder().spawn());
+    #[cfg(feature = "lttng")]
+    let subscriber = subscriber.with(easytier_profiling::lttng::LttngLayer.with_filter(
+        tracing_subscriber::filter::filter_fn(|metadata| {
+            metadata.target() == "easytier::profiling"
+        }),
+    ));
+    // Do not globally filter the registry by log level: profiling spans are TRACE.
+    subscriber.with(
+        EventLayer(logger).with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+            metadata.target() != "easytier::profiling"
+        })),
+    )
+}
+
+#[cfg(any(feature = "tracing", feature = "profiling"))]
 struct EventLayer(&'static Logger);
 
-#[cfg(feature = "tracing")]
+#[cfg(any(feature = "tracing", feature = "profiling"))]
 impl<S> tracing_subscriber::Layer<S> for EventLayer
 where
     S: tracing::Subscriber,
@@ -42,13 +58,13 @@ where
     }
 }
 
-#[cfg(not(feature = "tracing"))]
+#[cfg(not(any(feature = "tracing", feature = "profiling")))]
 pub(super) struct EventSubscriber {
     logger: &'static Logger,
     next_span_id: AtomicUsize,
 }
 
-#[cfg(not(feature = "tracing"))]
+#[cfg(not(any(feature = "tracing", feature = "profiling")))]
 impl EventSubscriber {
     pub(super) fn new(logger: &'static Logger) -> Self {
         Self {
@@ -58,7 +74,7 @@ impl EventSubscriber {
     }
 }
 
-#[cfg(not(feature = "tracing"))]
+#[cfg(not(any(feature = "tracing", feature = "profiling")))]
 impl tracing::Subscriber for EventSubscriber {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
         metadata.is_event()
@@ -117,5 +133,23 @@ impl tracing::Subscriber for EventSubscriber {
 
     fn try_close(&self, _id: Id) -> bool {
         true
+    }
+}
+
+#[cfg(all(test, feature = "lttng", not(feature = "tracing")))]
+mod tests {
+    #[test]
+    fn disabled_text_logging_does_not_disable_profiling() {
+        use crate::common::log::{Logger, TargetFilter, file::FileSink};
+        let logger = Box::leak(Box::new(Logger::new(
+            TargetFilter::console(Some(log::LevelFilter::Off)).unwrap(),
+            FileSink::disabled(),
+        )));
+        tracing::subscriber::with_default(super::layered_subscriber(logger), || {
+            assert!(tracing::enabled!(target: "easytier::profiling", tracing::Level::TRACE));
+            let span = tracing::trace_span!(target: "easytier::profiling", "test");
+            assert!(!span.is_disabled());
+            span.in_scope(|| easytier_profiling::event!("test", value = 1));
+        });
     }
 }

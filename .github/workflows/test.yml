@@ -45,7 +45,7 @@ jobs:
         ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
         ".config/nextest.toml",
         "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "easytier/**",
-        "easytier-core/**", "easytier-proto/**", "easytier-rpc-build/**",
+        "easytier-core/**", "easytier-profiling/**", "easytier-proto/**", "easytier-rpc-build/**",
         "easytier-web/**", "easytier-gui/src-tauri/**",
         "tauri-plugin-vpnservice/**", "easytier-contrib/**",
         ".github/workflows/test.yml", ".github/actions/**"]
@@ -118,6 +118,57 @@ jobs:
       - name: Check Clippy
         if: ${{ !cancelled() }}
         run: cargo clippy --all-targets --features full --all -- -D warnings
+
+      - name: Install LTTng build dependencies
+        run: sudo apt-get update && sudo apt-get install -y liblttng-ust-dev libclang-dev lttng-tools babeltrace2
+
+      - name: Test profiling backends
+        run: |
+          for features in '' tracing hotpath hotpath-cpu hotpath-alloc lttng; do
+            cargo test --locked -p easytier-profiling --no-default-features --features "$features"
+          done
+          cargo check --locked -p easytier --features lttng
+          cargo check --locked -p easytier --features hotpath
+          cargo check --locked -p easytier --features hotpath-alloc
+          cargo test --locked -p easytier --features lttng --lib common::log
+          cargo test --locked -p easytier-core --features hotpath tunnel::mpsc
+          if cargo check -p easytier-profiling --features hotpath,lttng > conflict.log 2>&1; then
+            echo "Incompatible profiling backends unexpectedly compiled"
+            exit 1
+          fi
+          grep -q 'select either hotpath or tracing/lttng profiling' conflict.log
+
+      - name: Check profiling runtime artifacts
+        run: |
+          artifacts="$RUNNER_TEMP/profiling"
+          mkdir -p "$artifacts"
+          for backend in off tracing hotpath hotpath-alloc; do
+            features="$backend"
+            if [ "$backend" = off ]; then features=""; fi
+            HOTPATH_REPORT=all HOTPATH_OUTPUT_FORMAT=json HOTPATH_OUTPUT_PATH="$artifacts/$backend.json" \
+              cargo run --locked -q -p easytier-profiling --example smoke --features "$features" \
+              > "$artifacts/$backend.stdout" 2> "$artifacts/$backend.stderr"
+            grep -qx 'rounds=32 checksum=3622563998815325168' "$artifacts/$backend.stdout"
+            artifact="$artifacts/$backend.json"
+            if [ "$backend" = off ] || [ "$backend" = tracing ]; then artifact="$artifacts/$backend.stderr"; fi
+            python3 easytier-profiling/tests/check_runtime.py "$backend" "$artifact"
+          done
+
+      - name: Check real LTTng capture
+        run: |
+          artifacts="$RUNNER_TEMP/profiling"
+          lttng-sessiond --daemonize --no-kernel
+          lttng create profiling-ci --output="$artifacts/ctf"
+          trap 'lttng stop profiling-ci || true; lttng destroy profiling-ci || true' EXIT
+          lttng enable-event --userspace 'easytier:*'
+          lttng start
+          cargo run --locked -q -p easytier-profiling --example smoke --features lttng \
+            > "$artifacts/lttng.stdout" 2> "$artifacts/lttng.stderr"
+          lttng stop
+          lttng destroy profiling-ci
+          trap - EXIT
+          babeltrace2 "$artifacts/ctf" > "$artifacts/lttng.txt"
+          python3 easytier-profiling/tests/check_runtime.py lttng "$artifacts/lttng.txt"
 
       - name: Check features
         if: ${{ !cancelled() && needs.pre_job.outputs.full_build == 'true' }}

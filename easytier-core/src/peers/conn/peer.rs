@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 use crossbeam_utils::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
-use parking_lot::{Mutex, RwLock};
+use easytier_profiling::wrap::parking_lot::{Mutex, RwLock};
 
 use tokio::{select, sync::mpsc};
 
@@ -63,10 +63,12 @@ impl Peer {
         let shutdown_notifier = Arc::new(tokio::sync::Notify::new());
         let peer_identity_type = Arc::new(AtomicCell::new(None));
         let peer_identity_type_copy = peer_identity_type.clone();
-        let peer_public_key = Arc::new(RwLock::new(None));
+        let peer_public_key =
+            Arc::new(easytier_profiling::rw_lock!(parking_lot::RwLock::new(None)));
         let peer_public_key_copy = peer_public_key.clone();
         let default_conn = Arc::new(ArcSwapOption::empty());
-        let default_conn_update_lock = Arc::new(Mutex::new(()));
+        let default_conn_update_lock =
+            Arc::new(easytier_profiling::mutex!(parking_lot::Mutex::new(())));
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
@@ -237,6 +239,7 @@ impl Peer {
         selected
     }
 
+    #[easytier_profiling::instrument("Peer::send_msg")]
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         let default_conn = self.default_conn.load();
         if let Some(conn) = default_conn.as_ref() {

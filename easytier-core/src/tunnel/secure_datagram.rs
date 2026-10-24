@@ -687,6 +687,7 @@ impl SecureDatagramSession {
         accepted
     }
 
+    #[easytier_profiling::instrument("SecureDatagramSession::encrypt_payload")]
     pub fn encrypt_payload(
         &self,
         dir: SecureDatagramDirection,
@@ -705,6 +706,7 @@ impl SecureDatagramSession {
         Ok(())
     }
 
+    #[easytier_profiling::instrument("SecureDatagramSession::decrypt_payload")]
     pub fn decrypt_payload(
         &self,
         dir: SecureDatagramDirection,

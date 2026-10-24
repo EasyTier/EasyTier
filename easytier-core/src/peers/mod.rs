@@ -94,7 +94,7 @@ impl PeerPacketEnvelope {
 }
 
 #[derive(Clone)]
-pub struct PacketRecvChan(tokio::sync::mpsc::Sender<PeerPacketEnvelope>);
+pub struct PacketRecvChan(easytier_profiling::wrap::tokio::sync::mpsc::Sender<PeerPacketEnvelope>);
 
 impl PacketRecvChan {
     /// Injects a packet produced by a local subsystem. Local injection never carries
@@ -107,7 +107,9 @@ impl PacketRecvChan {
     }
 }
 
-pub struct PacketRecvChanReceiver(tokio::sync::mpsc::Receiver<PeerPacketEnvelope>);
+pub struct PacketRecvChanReceiver(
+    easytier_profiling::wrap::tokio::sync::mpsc::Receiver<PeerPacketEnvelope>,
+);
 
 impl PacketRecvChanReceiver {
     pub async fn recv(&mut self) -> Option<ZCPacket> {
@@ -116,7 +118,7 @@ impl PacketRecvChanReceiver {
 }
 
 pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
-    let (sender, receiver) = tokio::sync::mpsc::channel(128);
+    let (sender, receiver) = easytier_profiling::channel!(tokio::sync::mpsc::channel(128));
     (PacketRecvChan(sender), PacketRecvChanReceiver(receiver))
 }
 
@@ -137,6 +139,7 @@ pub(crate) async fn send_peer_packet_to_chan(
     }
 }
 
+#[easytier_profiling::instrument("recv_packet_envelope_from_chan")]
 pub(crate) async fn recv_packet_envelope_from_chan(
     packet_recv_chan_receiver: &mut PacketRecvChanReceiver,
 ) -> Result<PeerPacketEnvelope, anyhow::Error> {
