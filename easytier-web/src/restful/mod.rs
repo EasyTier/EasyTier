@@ -50,6 +50,9 @@ pub struct RestfulServer {
     webhook_config: SharedWebhookConfig,
     config_server_protocol: String,
     config_server_port: u16,
+    /// Address advertised in the device enrollment command. When unset the
+    /// dashboard falls back to the origin the browser used.
+    config_server_host: Option<String>,
     db: Db,
     oidc_config: oidc::OidcConfig,
     web_router: Option<Router>,
@@ -70,6 +73,7 @@ struct GetSummaryJsonResp {
 struct ConsoleInfoConfig {
     config_server_protocol: String,
     config_server_port: u16,
+    config_server_host: Option<String>,
     webhook_auth: bool,
 }
 
@@ -78,6 +82,8 @@ struct GetConsoleInfoJsonResp {
     username: String,
     config_server_protocol: String,
     config_server_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_server_host: Option<String>,
     webhook_auth: bool,
 }
 
@@ -155,6 +161,7 @@ impl RestfulServer {
         webhook_config: SharedWebhookConfig,
         config_server_protocol: String,
         config_server_port: u16,
+        config_server_host: Option<String>,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
@@ -166,6 +173,9 @@ impl RestfulServer {
             webhook_config,
             config_server_protocol,
             config_server_port,
+            config_server_host: config_server_host
+                .map(|host| host.trim().to_string())
+                .filter(|host| !host.is_empty()),
             db,
             oidc_config,
             web_router,
@@ -222,6 +232,7 @@ impl RestfulServer {
             username: user.db_user.username,
             config_server_protocol: config.config_server_protocol,
             config_server_port: config.config_server_port,
+            config_server_host: config.config_server_host,
             webhook_auth: config.webhook_auth,
         }
         .into())
@@ -361,6 +372,7 @@ impl RestfulServer {
             .layer(Extension(ConsoleInfoConfig {
                 config_server_protocol: self.config_server_protocol.clone(),
                 config_server_port: self.config_server_port,
+                config_server_host: self.config_server_host.clone(),
                 webhook_auth: self.webhook_config.has_external_endpoint(),
             }))
             .layer(MessagesManagerLayer)
