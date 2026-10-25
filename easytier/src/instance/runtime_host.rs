@@ -41,7 +41,7 @@ pub(crate) struct NativeInstanceRuntimeHost {
     cancel: CancellationToken,
     event_journal: EventJournal,
     tun: NativeTunRuntime,
-    executor: Option<NativeInstanceExecutor>,
+    executor: Option<Arc<NativeInstanceExecutor>>,
 }
 
 impl NativeInstanceRuntimeHost {
@@ -61,7 +61,7 @@ impl NativeInstanceRuntimeHost {
     pub(super) fn new_with_executor(
         global_ctx: ArcGlobalCtx,
         #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
-        executor: Option<NativeInstanceExecutor>,
+        executor: Option<Arc<NativeInstanceExecutor>>,
     ) -> Arc<Self> {
         let cancel = CancellationToken::new();
         let tun = NativeTunRuntime::new(

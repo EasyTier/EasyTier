@@ -1,4 +1,4 @@
-//! Native ownership and continuous driving of one instance's Tokio runtime.
+//! Native ownership and continuous driving of an instance or shared Tokio runtime.
 
 use std::sync::mpsc;
 
@@ -22,7 +22,7 @@ impl NativeInstanceExecutor {
             .spawn(move || {
                 let mut builder = if multi_thread {
                     let mut builder = Builder::new_multi_thread();
-                    builder.worker_threads(2.max(thread_count as usize));
+                    builder.worker_threads(1.max(thread_count as usize));
                     builder
                 } else {
                     Builder::new_current_thread()
@@ -67,8 +67,8 @@ mod tests {
     async fn honors_runtime_flavor_and_worker_count() {
         for (multi_thread, count, expected_workers) in [
             (false, 8, 1),
-            (true, 0, 2),
-            (true, 1, 2),
+            (true, 0, 1),
+            (true, 1, 1),
             (true, 2, 2),
             (true, 4, 4),
         ] {
