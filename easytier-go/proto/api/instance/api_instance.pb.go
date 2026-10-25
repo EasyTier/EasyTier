@@ -4399,17 +4399,17 @@ var file_api_instance_proto_goTypes = []any{
 	nil, // 66: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
 	(*ListGlobalForeignNetworkResponse_OneForeignNetwork)(nil), // 67: api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
 	(*ListGlobalForeignNetworkResponse_ForeignNetworks)(nil),   // 68: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
-	nil,                                         // 69: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
-	nil,                                         // 70: api.instance.MetricSnapshot.LabelsEntry
-	(*common.UUID)(nil),                         // 71: common.UUID
-	(*common.TunnelInfo)(nil),                   // 72: common.TunnelInfo
-	(peer_rpc.SecureAuthLevel)(0),               // 73: peer_rpc.SecureAuthLevel
-	(peer_rpc.PeerIdentityType)(0),              // 74: peer_rpc.PeerIdentityType
-	(*common.Ipv4Inet)(nil),                     // 75: common.Ipv4Inet
-	(*common.StunInfo)(nil),                     // 76: common.StunInfo
-	(*common.PeerFeatureFlag)(nil),              // 77: common.PeerFeatureFlag
-	(*common.Ipv6Inet)(nil),                     // 78: common.Ipv6Inet
-	(*peer_rpc.GetIpListResponse)(nil),          // 79: peer_rpc.GetIpListResponse
+	nil,                                // 69: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
+	nil,                                // 70: api.instance.MetricSnapshot.LabelsEntry
+	(*common.UUID)(nil),                // 71: common.UUID
+	(*common.TunnelInfo)(nil),          // 72: common.TunnelInfo
+	(peer_rpc.SecureAuthLevel)(0),      // 73: peer_rpc.SecureAuthLevel
+	(peer_rpc.PeerIdentityType)(0),     // 74: peer_rpc.PeerIdentityType
+	(*common.Ipv4Inet)(nil),            // 75: common.Ipv4Inet
+	(*common.StunInfo)(nil),            // 76: common.StunInfo
+	(*common.PeerFeatureFlag)(nil),     // 77: common.PeerFeatureFlag
+	(*common.Ipv6Inet)(nil),            // 78: common.Ipv6Inet
+	(*peer_rpc.GetIpListResponse)(nil), // 79: peer_rpc.GetIpListResponse
 	(*peer_rpc.RouteForeignNetworkSummary)(nil), // 80: peer_rpc.RouteForeignNetworkSummary
 	(*common.Url)(nil),                          // 81: common.Url
 	(*common.SocketAddr)(nil),                   // 82: common.SocketAddr
