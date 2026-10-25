@@ -426,6 +426,8 @@ endpoint-discovery = [
     "dep:rustls",
     "easytier-core/endpoint-discovery",
 ]
+# Trust policy is opt-in, including when building with full features.
+system-certificates = ["endpoint-discovery", "easytier-core/system-certificates"]
 dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]
 dhcp-ipv6 = ["easytier-core/dhcp-ipv6"]
 public-ipv6-provider = ["linux-netlink", "easytier-core/public-ipv6-provider"]

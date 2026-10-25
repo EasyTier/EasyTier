@@ -1311,6 +1311,18 @@ impl PeerManagerCore {
         self.get_route().list_foreign_network_info().await
     }
 
+    /// Whether the foreign network peer map can route back to `peer_id`.
+    #[doc(hidden)]
+    pub async fn foreign_network_has_gateway(
+        &self,
+        network_name: &str,
+        peer_id: PeerId,
+    ) -> Option<bool> {
+        self.foreign_network_manager
+            .has_gateway_for_peer(network_name, peer_id)
+            .await
+    }
+
     pub async fn list_foreign_network_infos(
         &self,
         include_trusted_keys: bool,
@@ -1326,6 +1338,22 @@ impl PeerManagerCore {
 
     pub fn acl_stats(&self) -> crate::proto::acl::AclStats {
         self.acl_filter.get_stats()
+    }
+
+    /// Bytes charged by the foreign network forward limiter, if configured.
+    #[doc(hidden)]
+    pub fn foreign_forward_metered_bytes(&self, network_name: &str) -> Option<u64> {
+        self.context
+            .foreign_forward_limiter(network_name)
+            .map(|limiter| limiter.metered_bytes())
+    }
+
+    /// Bytes charged by the instance-wide receive limiter, if configured.
+    #[doc(hidden)]
+    pub fn instance_recv_metered_bytes(&self) -> Option<u64> {
+        self.context
+            .recv_limiter("", false)
+            .map(|limiter| limiter.metered_bytes())
     }
 
     pub fn acl_filter(&self) -> Arc<AclFilter> {

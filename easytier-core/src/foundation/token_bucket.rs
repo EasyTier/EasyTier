@@ -12,6 +12,11 @@ use crate::foundation::time;
 
 pub(crate) trait ByteLimiter: Send + Sync {
     fn try_consume(&self, bytes: u64) -> bool;
+
+    /// Bytes charged by this limiter so far.
+    fn metered_bytes(&self) -> u64 {
+        0
+    }
 }
 
 impl ByteLimiter for () {
@@ -37,6 +42,7 @@ struct BucketState {
     available_tokens: u64,
     last_refill: Instant,
     refill_remainder: u64,
+    metered_bytes: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -78,6 +84,7 @@ impl TokenBucket {
                 available_tokens: config.capacity,
                 last_refill: Instant::now(),
                 refill_remainder: 0,
+                metered_bytes: 0,
             }),
             config,
             stop_notifier: Notify::new(),
@@ -138,7 +145,13 @@ impl TokenBucket {
         }
 
         state.available_tokens -= tokens;
+        state.metered_bytes = state.metered_bytes.saturating_add(tokens);
         true
+    }
+
+    /// Total bytes charged by this bucket so far.
+    pub fn metered_bytes(&self) -> u64 {
+        self.state.lock().metered_bytes
     }
 
     /// Consume tokens, sleeping until they become available.
@@ -166,6 +179,7 @@ impl TokenBucket {
                 self.refill(&mut state, Instant::now());
                 if state.available_tokens >= tokens {
                     state.available_tokens -= tokens;
+                    state.metered_bytes = state.metered_bytes.saturating_add(tokens);
                     return;
                 }
 
@@ -194,6 +208,10 @@ impl TokenBucket {
 impl ByteLimiter for TokenBucket {
     fn try_consume(&self, bytes: u64) -> bool {
         TokenBucket::try_consume(self, bytes)
+    }
+
+    fn metered_bytes(&self) -> u64 {
+        TokenBucket::metered_bytes(self)
     }
 }
 
