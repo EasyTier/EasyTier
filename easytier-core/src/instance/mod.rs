@@ -988,6 +988,12 @@ where
         if let Some(cleanup) = cleanup {
             let _ = cleanup.await;
         }
+        #[cfg(feature = "proxy-packet")]
+        if self.state() == CoreInstanceState::Running && self.startup_plan.packet_proxy {
+            // A running instance may gain its first proxy network here. Start
+            // from the published configuration, just as during initial startup.
+            self.start_packet_proxy().await?;
+        }
         Ok(())
     }
 
