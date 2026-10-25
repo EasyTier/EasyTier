@@ -82,6 +82,17 @@ where
     }
 
     #[doc(hidden)]
+    pub async fn foreign_network_has_gateway_for_test(
+        &self,
+        network_name: &str,
+        peer_id: crate::config::PeerId,
+    ) -> Option<bool> {
+        self.peer_manager
+            .foreign_network_has_gateway(network_name, peer_id)
+            .await
+    }
+
+    #[doc(hidden)]
     pub fn evict_unused_peer_sessions_for_test(&self, idle: Duration) {
         self.peer_manager
             .get_peer_session_store()
