@@ -1,6 +1,7 @@
 pub(crate) mod compressor;
 pub(crate) mod flow;
 mod hole_punch;
+pub(crate) mod ip;
 pub mod stun;
 
 pub use flow::FlowKey;

@@ -1,8 +1,11 @@
 //! Local IP flow metadata for unfragmented TCP and UDP packets.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 
-use super::ZCPacket;
+use super::{
+    ZCPacket,
+    ip::{parse_ip_packet, parse_transport_ports},
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FlowKey {
@@ -12,84 +15,16 @@ pub struct FlowKey {
 }
 
 pub(crate) fn parse_flow_key(packet: &ZCPacket) -> Option<FlowKey> {
-    let payload = packet.payload();
-    let (src, dst, mut protocol, mut offset, end) = match payload.first()? >> 4 {
-        4 => {
-            let header = payload.get(..20)?;
-            let offset = usize::from(header[0] & 0xf) * 4;
-            let end = usize::from(u16::from_be_bytes([header[2], header[3]]));
-            if offset < 20 || end < offset || end > payload.len() {
-                return None;
-            }
-            let flags = u16::from_be_bytes([header[6], header[7]]);
-            // Skip every actual fragment, including the first one with ports.
-            if flags & 0x3fff != 0 {
-                return None;
-            }
-            (
-                IpAddr::V4(Ipv4Addr::from(<[u8; 4]>::try_from(&header[12..16]).ok()?)),
-                IpAddr::V4(Ipv4Addr::from(<[u8; 4]>::try_from(&header[16..20]).ok()?)),
-                header[9],
-                offset,
-                end,
-            )
-        }
-        6 => {
-            let header = payload.get(..40)?;
-            let end = 40 + usize::from(u16::from_be_bytes([header[4], header[5]]));
-            if end > payload.len() {
-                return None;
-            }
-            (
-                IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&header[8..24]).ok()?)),
-                IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&header[24..40]).ok()?)),
-                header[6],
-                40,
-                end,
-            )
-        }
-        _ => return None,
-    };
-
-    if src.is_ipv6() {
-        loop {
-            let header = payload.get(offset..end)?;
-            match protocol {
-                0 | 43 | 60 | 51 => {
-                    let len = usize::from(*header.get(1)?);
-                    offset += if protocol == 51 {
-                        (len + 2) * 4
-                    } else {
-                        (len + 1) * 8
-                    };
-                    if offset > end {
-                        return None;
-                    }
-                    protocol = header[0];
-                }
-                44 => {
-                    let header = header.get(..8)?;
-                    let flags = u16::from_be_bytes([header[2], header[3]]);
-                    // An atomic fragment has its complete transport header.
-                    if flags & 0xfff9 != 0 {
-                        return None;
-                    }
-                    protocol = header[0];
-                    offset += 8;
-                }
-                _ => break,
-            }
-        }
-    }
-
-    if !matches!(protocol, 6 | 17) {
+    let parsed = parse_ip_packet(packet.payload())?;
+    // Skip every actual fragment, including the first one with ports.
+    if parsed.is_fragment || !parsed.has_valid_length {
         return None;
     }
-    let ports = payload.get(offset..end)?.get(..4)?;
+    let (src_port, dst_port) = parse_transport_ports(parsed.protocol, parsed.transport_payload)?;
     Some(FlowKey {
-        src: SocketAddr::new(src, u16::from_be_bytes([ports[0], ports[1]])),
-        dst: SocketAddr::new(dst, u16::from_be_bytes([ports[2], ports[3]])),
-        protocol,
+        src: SocketAddr::new(parsed.src_ip, src_port?),
+        dst: SocketAddr::new(parsed.dst_ip, dst_port?),
+        protocol: parsed.protocol,
     })
 }
 
@@ -99,9 +34,10 @@ mod tests {
     use crate::packet::{PacketType, ZCPacketType};
 
     fn ipv4(protocol: u8, flags: u16, id: u16) -> ZCPacket {
-        let mut bytes = vec![0; 28];
+        let len = if protocol == 6 { 40 } else { 28 };
+        let mut bytes = vec![0; len];
         bytes[0] = 0x45;
-        bytes[2..4].copy_from_slice(&28u16.to_be_bytes());
+        bytes[2..4].copy_from_slice(&(len as u16).to_be_bytes());
         bytes[4..6].copy_from_slice(&id.to_be_bytes());
         bytes[6..8].copy_from_slice(&flags.to_be_bytes());
         bytes[9] = protocol;
@@ -143,7 +79,11 @@ mod tests {
         let udp = parse_flow_key(&ipv4(17, 0, 0)).unwrap();
         assert_eq!(udp.src, "10.0.0.1:4660".parse().unwrap());
         assert_eq!(udp.dst, "10.0.0.2:22136".parse().unwrap());
-        assert_ne!(Some(udp), parse_flow_key(&ipv4(6, 0, 0)));
+        let tcp = parse_flow_key(&ipv4(6, 0, 0)).unwrap();
+        assert_eq!(tcp.src, udp.src);
+        assert_eq!(tcp.dst, udp.dst);
+        assert_eq!(tcp.protocol, 6);
+        assert_ne!(udp, tcp);
         assert_eq!(Some(udp), parse_flow_key(&ipv4(17, 0x4000, 0)));
         let v6 = parse_flow_key(&ipv6(None)).unwrap();
         assert_eq!(v6.src, "[::1]:4660".parse().unwrap());
@@ -197,6 +137,35 @@ mod tests {
         for original in [ipv4(17, 0, 0), ipv6(None), ipv6(Some(0))] {
             for len in 0..original.payload().len() {
                 assert!(parse_flow_key(&packet(original.payload()[..len].to_vec())).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_ip_header_lengths_do_not_supply_a_flow_key() {
+        for ihl in [0, 4, 15] {
+            let mut packet = ipv4(17, 0, 0);
+            packet.mut_payload()[0] = 0x40 | ihl;
+            assert!(parse_flow_key(&packet).is_none());
+        }
+    }
+
+    #[test]
+    fn incomplete_transport_headers_do_not_supply_a_flow_key() {
+        for (protocol, header_len) in [(6, 20), (17, 8)] {
+            for len in 0..header_len {
+                let mut v4 = ipv4(protocol, 0, 0);
+                let offset = v4.payload_offset();
+                v4.mut_inner().truncate(offset + 20 + len);
+                v4.mut_payload()[2..4].copy_from_slice(&((20 + len) as u16).to_be_bytes());
+                assert!(parse_flow_key(&v4).is_none());
+
+                let mut v6 = ipv6(None);
+                let offset = v6.payload_offset();
+                v6.mut_inner().resize(offset + 48 + len, 0);
+                v6.mut_payload()[4..6].copy_from_slice(&((8 + len) as u16).to_be_bytes());
+                v6.mut_payload()[40] = protocol;
+                assert!(parse_flow_key(&v6).is_none());
             }
         }
     }

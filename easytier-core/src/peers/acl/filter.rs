@@ -12,35 +12,20 @@ use quanta::Instant;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    packet::{PacketType, ZCPacket},
+    packet::{
+        PacketType, ZCPacket,
+        ip::{
+            IP_PROTO_ICMP, IP_PROTO_ICMPV6, IP_PROTO_TCP, IP_PROTO_UDP, IP_PROTO_UNSPECIFIED,
+            ParsedIpPacket, parse_ip_packet, parse_transport_ports,
+        },
+    },
     peers::acl::processor::{AclProcessor, AclResult, AclStatKey, AclStatType, PacketInfo},
 };
-
-const IP_PROTO_ICMP: u8 = 1;
-const IP_PROTO_TCP: u8 = 6;
-const IP_PROTO_UDP: u8 = 17;
-const IP_PROTO_ICMPV6: u8 = 58;
-const IP_PROTO_UNSPECIFIED: u8 = u8::MAX;
 
 const ICMP_ECHO_REPLY: u8 = 0;
 const ICMP_ECHO_REQUEST: u8 = 8;
 const ICMPV6_ECHO_REQUEST: u8 = 128;
 const ICMPV6_ECHO_REPLY: u8 = 129;
-
-const IPV6_HOP_BY_HOP: u8 = 0;
-const IPV6_ROUTING: u8 = 43;
-const IPV6_FRAGMENT: u8 = 44;
-const IPV6_AUTHENTICATION: u8 = 51;
-const IPV6_DESTINATION_OPTIONS: u8 = 60;
-
-#[derive(Clone, Copy)]
-struct ParsedIpPacket<'a> {
-    src_ip: IpAddr,
-    dst_ip: IpAddr,
-    protocol: u8,
-    transport_payload: &'a [u8],
-    is_non_initial_fragment: bool,
-}
 
 impl ParsedIpPacket<'_> {
     fn can_use_allow_record(&self, is_in: bool) -> bool {
@@ -62,159 +47,6 @@ impl ParsedIpPacket<'_> {
             && self.transport_payload[0] == expected_type
             && self.transport_payload[1] == 0
     }
-}
-
-fn parse_ip_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
-    let version = payload.first()? >> 4;
-    match version {
-        4 => parse_ipv4_packet(payload),
-        6 => parse_ipv6_packet(payload),
-        _ => None,
-    }
-}
-
-fn parse_ipv4_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
-    if payload.len() < 20 {
-        return None;
-    }
-    let header_len = usize::from(payload[0] & 0x0f) * 4;
-    let options_len = header_len.saturating_sub(20);
-    let payload_offset = 20 + options_len;
-    let payload_start = payload_offset.min(payload.len());
-    let total_length = usize::from(u16::from_be_bytes([payload[2], payload[3]]));
-    let payload_len = total_length.saturating_sub(header_len);
-    let payload_end = payload_start.saturating_add(payload_len).min(payload.len());
-
-    Some(ParsedIpPacket {
-        src_ip: IpAddr::V4(Ipv4Addr::new(
-            payload[12],
-            payload[13],
-            payload[14],
-            payload[15],
-        )),
-        dst_ip: IpAddr::V4(Ipv4Addr::new(
-            payload[16],
-            payload[17],
-            payload[18],
-            payload[19],
-        )),
-        protocol: payload[9],
-        transport_payload: payload.get(payload_start..payload_end)?,
-        is_non_initial_fragment: u16::from_be_bytes([payload[6], payload[7]]) & 0x1fff != 0,
-    })
-}
-
-fn parse_ipv6_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
-    if payload.len() < 40 {
-        return None;
-    }
-
-    // A valid base header still supplies the addresses needed for ACL rules,
-    // even when the upper-layer headers cannot be decoded.
-    let parsed = ParsedIpPacket {
-        src_ip: IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&payload[8..24]).ok()?)),
-        dst_ip: IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&payload[24..40]).ok()?)),
-        protocol: IP_PROTO_UNSPECIFIED,
-        transport_payload: &[],
-        is_non_initial_fragment: false,
-    };
-
-    let payload_len = usize::from(u16::from_be_bytes([payload[4], payload[5]]));
-    let payload_end = 40usize.saturating_add(payload_len).min(payload.len());
-    let mut protocol = payload[6];
-    let mut payload_offset = 40;
-    let mut is_non_initial_fragment = false;
-    let mut saw_fragment_header = false;
-
-    loop {
-        match protocol {
-            IPV6_HOP_BY_HOP | IPV6_ROUTING | IPV6_DESTINATION_OPTIONS => {
-                let header = &payload[payload_offset..payload_end];
-                let Some(&header_len) = header.get(1) else {
-                    return Some(parsed);
-                };
-                let extension_len = (usize::from(header_len) + 1) * 8;
-                let next_protocol = header[0];
-                let extension_end = payload_offset + extension_len;
-                if extension_end > payload_end {
-                    return Some(parsed);
-                }
-                protocol = next_protocol;
-                payload_offset = extension_end;
-            }
-            IPV6_AUTHENTICATION => {
-                let header = &payload[payload_offset..payload_end];
-                let Some(&header_len) = header.get(1) else {
-                    return Some(parsed);
-                };
-                let extension_len = (usize::from(header_len) + 2) * 4;
-                let next_protocol = header[0];
-                let extension_end = payload_offset + extension_len;
-                if extension_end > payload_end {
-                    return Some(parsed);
-                }
-                protocol = next_protocol;
-                payload_offset = extension_end;
-            }
-            IPV6_FRAGMENT => {
-                if saw_fragment_header {
-                    return Some(parsed);
-                }
-                saw_fragment_header = true;
-
-                let fragment_end = payload_offset + 8;
-                if fragment_end > payload_end {
-                    return Some(parsed);
-                }
-                let header = &payload[payload_offset..fragment_end];
-                let fragment_field = u16::from_be_bytes([header[2], header[3]]);
-                is_non_initial_fragment = fragment_field & 0xfff8 != 0;
-                let next_protocol = header[0];
-                payload_offset = fragment_end;
-
-                protocol = next_protocol;
-                if is_non_initial_fragment {
-                    // Extension headers after the Fragment Header are only in the first
-                    // fragment. Do not interpret tail data as an extension header.
-                    // Only ICMPv6 tails can use the response records without a
-                    // transport header. Leave other tails to address/group ACLs.
-                    if protocol != IP_PROTO_ICMPV6 {
-                        protocol = IP_PROTO_UNSPECIFIED;
-                    }
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-
-    let transport_payload = &payload[payload_offset..payload_end];
-    if payload_offset != 40 && parse_transport_ports(protocol, transport_payload).is_none() {
-        return Some(parsed);
-    }
-
-    Some(ParsedIpPacket {
-        protocol,
-        transport_payload,
-        is_non_initial_fragment,
-        ..parsed
-    })
-}
-
-fn parse_transport_ports(protocol: u8, payload: &[u8]) -> Option<(Option<u16>, Option<u16>)> {
-    let min_len = match protocol {
-        IP_PROTO_TCP => 20,
-        IP_PROTO_UDP => 8,
-        _ => return Some((None, None)),
-    };
-    if payload.len() < min_len {
-        return None;
-    }
-
-    Some((
-        Some(u16::from_be_bytes([payload[0], payload[1]])),
-        Some(u16::from_be_bytes([payload[2], payload[3]])),
-    ))
 }
 
 fn acl_protocol(protocol: u8) -> Protocol {
@@ -568,13 +400,18 @@ mod tests {
 
     use easytier_proto::acl::{Acl, AclV1, Action, Chain, ChainType, Protocol, Rule};
 
-    use crate::peers::acl::processor::PacketInfo;
+    use crate::{
+        packet::ip::{
+            IPV6_AUTHENTICATION, IPV6_DESTINATION_OPTIONS, IPV6_FRAGMENT, IPV6_HOP_BY_HOP,
+            IPV6_ROUTING,
+        },
+        peers::acl::processor::PacketInfo,
+    };
 
     use super::{
         AclFilter, ICMP_ECHO_REPLY, ICMP_ECHO_REQUEST, ICMPV6_ECHO_REPLY, ICMPV6_ECHO_REQUEST,
         IP_PROTO_ICMP, IP_PROTO_ICMPV6, IP_PROTO_TCP, IP_PROTO_UDP, IP_PROTO_UNSPECIFIED,
-        IPV6_AUTHENTICATION, IPV6_DESTINATION_OPTIONS, IPV6_FRAGMENT, IPV6_HOP_BY_HOP,
-        IPV6_ROUTING, OutboundAllowRecord, PacketType, ZCPacket, acl_protocol, parse_ip_packet,
+        OutboundAllowRecord, PacketType, ZCPacket, acl_protocol, parse_ip_packet,
         parse_transport_ports,
     };
 
