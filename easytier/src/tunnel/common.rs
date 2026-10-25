@@ -571,7 +571,8 @@ pub(crate) mod tests {
         connector: C,
         netns_l: NetNS,
         netns_c: NetNS,
-    ) -> usize
+        meter: Option<&(dyn Fn() -> u64 + Sync)>,
+    ) -> (usize, Option<(u64, std::time::Duration)>)
     where
         L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
         C: TunnelDialer,
@@ -618,11 +619,23 @@ pub(crate) mod tests {
         }
 
         let now = Instant::now();
+        let mut meter_base = None;
         while now.elapsed().as_secs() < 10 {
+            // Skip the initial burst so the metered window reflects the
+            // sustained rate the limiter enforces.
+            if meter_base.is_none() && now.elapsed() >= std::time::Duration::from_secs(1) {
+                meter_base = meter.map(|meter| (meter(), now.elapsed()));
+            }
             // send.feed(item)
             let item = ZCPacket::new_with_payload(send_buf.as_ref());
             send.feed(item).await.unwrap();
         }
+        let metered = match (meter_base, meter) {
+            (Some((metered, started)), Some(meter)) => {
+                Some((meter().saturating_sub(metered), now.elapsed() - started))
+            }
+            _ => None,
+        };
 
         send.close().await.unwrap();
         drop(send);
@@ -634,7 +647,7 @@ pub(crate) mod tests {
         println!("bps: {}", bps);
 
         lis.abort();
-        bps as usize
+        (bps as usize, metered)
     }
 
     pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration)

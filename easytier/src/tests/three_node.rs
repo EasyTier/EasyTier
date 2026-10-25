@@ -2959,15 +2959,9 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
         wait_for_condition(
             || async {
                 remote_server
-                    .foreign_network_snapshots(false)
+                    .foreign_network_has_gateway_for_test("client-net", client_peer_id)
                     .await
-                    .get("client-net")
-                    .is_some_and(|network| {
-                        network
-                            .peers
-                            .iter()
-                            .any(|peer| peer.peer_id == client_peer_id)
-                    })
+                    .unwrap_or(false)
             },
             Duration::from_secs(10),
         )
@@ -3384,18 +3378,26 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
     let tcp_listener = core_tcp_listener("tcp://0.0.0.0:22223".parse().unwrap());
     let tcp_connector = core_tcp_dialer("tcp://10.144.144.3:22223".parse().unwrap());
 
-    let bps = _tunnel_bench_netns(
+    // The relay keys its forward limiter by the peer network name, which is
+    // the dialing instance's identity, not inst2's own "public" one.
+    let relay_network = insts[0].get_core_instance().network_name_for_test();
+    let meter = || relay_forward_metered_bytes(&insts[1], &relay_network);
+
+    let (bps, metered) = _tunnel_bench_netns(
         tcp_listener,
         tcp_connector,
         NetNS::new(Some(network.namespace("net_c").into())),
         NetNS::new(Some(network.namespace("net_a").into())),
+        Some(&meter),
     )
     .await;
+    let metered = metered.expect("metered window should be sampled");
 
-    println!("bps: {}", bps);
-
-    let bps = bps as u64 / 1024;
-    assert_limited_payload_bps(bps, bps_limit);
+    println!(
+        "payload bps: {}, metered: {} over {:?}",
+        bps, metered.0, metered.1
+    );
+    assert_limited_bps(metered, bps, bps_limit);
 
     drop_insts(insts).await;
 }
@@ -3423,33 +3425,67 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
     let tcp_listener = core_tcp_listener("tcp://0.0.0.0:22223".parse().unwrap());
     let tcp_connector = core_tcp_dialer("tcp://10.144.144.3:22223".parse().unwrap());
 
-    let bps = _tunnel_bench_netns(
+    let meter = || instance_recv_metered_bytes(&insts[1]);
+
+    let (bps, metered) = _tunnel_bench_netns(
         tcp_listener,
         tcp_connector,
         NetNS::new(Some(network.namespace("net_c").into())),
         NetNS::new(Some(network.namespace("net_a").into())),
+        Some(&meter),
     )
     .await;
+    let metered = metered.expect("metered window should be sampled");
 
-    println!("bps: {}", bps);
-
-    let bps = bps as u64 / 1024;
-    assert_limited_payload_bps(bps, bps_limit);
+    println!(
+        "payload bps: {}, metered: {} over {:?}",
+        bps, metered.0, metered.1
+    );
+    assert_limited_bps(metered, bps, bps_limit);
 
     drop_insts(insts).await;
 }
 
-fn assert_limited_payload_bps(bps: u64, bps_limit: u64) {
-    // The benchmark measures TCP application payload while the limiter counts
-    // EasyTier data payload, including the inner IP and transport headers.
-    let min_bps = bps_limit.saturating_sub((bps_limit / 10).max(50));
-    let max_bps = bps_limit + 50;
+fn relay_forward_metered_bytes(inst: &Instance, network_name: &str) -> u64 {
+    inst.get_core_instance()
+        .foreign_forward_metered_bytes_for_test(network_name)
+        .expect("relay forward limiter should be configured")
+}
+
+fn instance_recv_metered_bytes(inst: &Instance) -> u64 {
+    inst.get_core_instance()
+        .instance_recv_metered_bytes_for_test()
+        .expect("instance receive limiter should be configured")
+}
+
+fn assert_limited_bps(metered: (u64, Duration), payload_bps: usize, bps_limit: u64) {
+    // The limiter charges each packet with its EasyTier payload length, which
+    // includes the inner IP and transport headers, so its counter is the rate
+    // it actually enforced. The benchmark only sees TCP application payload,
+    // so comparing the two directly made this assertion flaky. The window
+    // starts once the initial bucket burst is drained.
+    let (bytes, window) = metered;
+    let expected = bps_limit as f64 * 1024.0 * window.as_secs_f64();
+    let slack = expected * 0.05;
     assert!(
-        bps >= min_bps && bps <= max_bps,
-        "bps: {}, expected: {}..={}",
-        bps,
-        min_bps,
-        max_bps
+        (bytes as f64) >= expected - slack && (bytes as f64) <= expected + slack,
+        "metered: {} over {:?}, expected: {:.0}..={:.0}",
+        bytes,
+        window,
+        expected - slack,
+        expected + slack
+    );
+
+    // Encapsulation only shrinks the payload the receiver sees, so a limiter
+    // whose rejection the forwarding path ignores still shows up here. The
+    // benchmark rounds its window down to whole seconds, which inflates the
+    // payload rate by a few percent, hence the same 50 KiB/s headroom.
+    let payload_bps = payload_bps as u64 / 1024;
+    assert!(
+        payload_bps <= bps_limit + 50,
+        "payload bps: {}, expected: <= {}",
+        payload_bps,
+        bps_limit + 50
     );
 }
 

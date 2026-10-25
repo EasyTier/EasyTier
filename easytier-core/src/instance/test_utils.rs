@@ -82,9 +82,36 @@ where
     }
 
     #[doc(hidden)]
+    pub async fn foreign_network_has_gateway_for_test(
+        &self,
+        network_name: &str,
+        peer_id: crate::config::PeerId,
+    ) -> Option<bool> {
+        self.peer_manager
+            .foreign_network_has_gateway(network_name, peer_id)
+            .await
+    }
+
+    #[doc(hidden)]
     pub fn evict_unused_peer_sessions_for_test(&self, idle: Duration) {
         self.peer_manager
             .get_peer_session_store()
             .evict_unused_sessions_idle(idle);
+    }
+
+    #[doc(hidden)]
+    pub fn foreign_forward_metered_bytes_for_test(&self, network_name: &str) -> Option<u64> {
+        self.peer_manager
+            .foreign_forward_metered_bytes(network_name)
+    }
+
+    #[doc(hidden)]
+    pub fn network_name_for_test(&self) -> String {
+        self.peer_manager.network_name().to_owned()
+    }
+
+    #[doc(hidden)]
+    pub fn instance_recv_metered_bytes_for_test(&self) -> Option<u64> {
+        self.peer_manager.instance_recv_metered_bytes()
     }
 }
