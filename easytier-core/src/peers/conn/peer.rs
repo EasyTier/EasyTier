@@ -64,6 +64,9 @@ fn conn_selection_key(conn: &PeerConn) -> (bool, u8, u64) {
             0
         } else if previous > 0 {
             1
+        } else if conn.is_hole_punched() {
+            // Prefer regular connections until hole punching has a measured RTT.
+            3
         } else {
             2
         },
@@ -344,7 +347,9 @@ impl Peer {
             return Ok(());
         }
         let default_conn = self.default_conn.load();
-        if let Some(conn) = default_conn.as_ref() {
+        if let Some(conn) = default_conn.as_ref()
+            && !conn.is_closed()
+        {
             conn.send_msg(msg).await?;
             return Ok(());
         }
@@ -448,6 +453,7 @@ mod tests {
     use crate::{
         packet::PacketType,
         peers::{
+            PeerConnectionOrigin,
             conn::{peer_conn_quality::QualityHistory, peer_session::PeerSessionStore},
             create_packet_recv_chan, recv_packet_envelope_from_chan,
             test_support::NoopPeerContext,
@@ -517,6 +523,79 @@ mod tests {
         .await
         .unwrap();
         assert!(conn.is_closed());
+    }
+
+    #[tokio::test]
+    async fn unkeyed_packet_skips_failed_connection_before_cache_cleanup() {
+        let peer = new_peer();
+        let (sender, mut receiver) = create_packet_recv_chan();
+        let (old, old_server) = add_connection(&peer, sender.clone(), Some(20_000)).await;
+        let (_, new_server) = add_connection(&peer, sender, Some(1_000)).await;
+        let old_conn = peer.conns.get(&old).unwrap().value().clone();
+        peer.default_conn.store(Some(old_conn.clone()));
+        // Keep the stale cache entry so the result cannot depend on task ordering.
+        peer.close_event_listener.abort();
+        drop(old_server);
+        crate::foundation::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let mut packet = ZCPacket::new_with_payload(b"closed sink");
+                packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+                if old_conn.send_msg(packet).await.is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(old_conn.is_closed());
+        assert_eq!(peer.get_default_conn_id(), old);
+
+        let mut packet = ZCPacket::new_with_payload(b"unkeyed packet");
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        assert!(packet.flow_key.is_none());
+        peer.send_msg(packet).await.unwrap();
+        let envelope = crate::foundation::time::timeout(
+            Duration::from_secs(1),
+            recv_packet_envelope_from_chan(&mut receiver),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (packet, ingress) = envelope.into_parts();
+        assert_eq!(packet.payload(), b"unkeyed packet");
+        assert_eq!(
+            ingress.peer_connection().unwrap().1,
+            new_server.get_conn_id()
+        );
+    }
+
+    #[tokio::test]
+    async fn unmeasured_regular_connection_precedes_unverified_hole_punch() {
+        let (tunnel, _remote) = create_ring_tunnel_pair();
+        let regular = PeerConn::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            tunnel,
+            Arc::new(PeerSessionStore::new()),
+        );
+        for origin in [
+            PeerConnectionOrigin::TcpHolePunch,
+            PeerConnectionOrigin::UdpHolePunch,
+        ] {
+            let (tunnel, _remote) = create_ring_tunnel_pair();
+            let hole_punched = PeerConn::new_with_peer_id_hint_and_origin(
+                1,
+                Arc::new(NoopPeerContext::default()),
+                tunnel,
+                None,
+                Arc::new(PeerSessionStore::new()),
+                origin,
+            );
+            assert!(conn_selection_key(&regular) < conn_selection_key(&hole_punched));
+            QualityHistory::default().record(&hole_punched.quality, Some(1_000), Instant::now());
+            assert!(conn_selection_key(&hole_punched) < conn_selection_key(&regular));
+        }
     }
 
     fn distinct_flow(peer: &Peer, existing: FlowKey) -> FlowKey {

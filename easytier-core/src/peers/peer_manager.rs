@@ -2659,6 +2659,10 @@ impl PeerOutboundPacketRouter {
         self.mark_recent_traffic_with_policy(dst_peer_id, packet_policy);
         self.check_p2p_only_before_send(dst_peer_id, packet_policy)?;
 
+        if msg.peer_manager_header().unwrap().packet_type == PacketType::Data as u8 {
+            msg.flow_key = crate::packet::flow::parse_flow_key(&msg);
+        }
+
         self.counters
             .compress_tx_bytes_before
             .add(msg.buf_len() as u64);
@@ -3926,6 +3930,88 @@ mod tests {
 
         assert!(peers.is_empty());
         assert!(!is_self);
+    }
+
+    #[cfg(feature = "aes-gcm")]
+    #[tokio::test]
+    async fn proxy_ip_responses_get_flow_keys_without_classifying_fragments_or_wrapped_data() {
+        struct CaptureProxyPackets(mpsc::UnboundedSender<ZCPacket>);
+
+        #[async_trait::async_trait]
+        impl PeerPacketFilter for CaptureProxyPackets {
+            async fn try_process_packet_from_peer(
+                &self,
+                packet: ZCPacket,
+            ) -> PeerPacketFilterResult {
+                let packet_type = packet.peer_manager_header().unwrap().packet_type;
+                if [
+                    PacketType::Data,
+                    PacketType::KcpSrc,
+                    PacketType::KcpDst,
+                    PacketType::QuicSrc,
+                    PacketType::QuicDst,
+                ]
+                .iter()
+                .any(|kind| *kind as u8 == packet_type)
+                {
+                    self.0.send(packet).unwrap();
+                    PeerPacketFilterResult::Consumed
+                } else {
+                    PeerPacketFilterResult::Pass(packet)
+                }
+            }
+        }
+
+        let mut config = PortablePeerManagerConfig::new(portable_runtime_config("proxy-flow-key"));
+        config.snapshot.flags.enable_encryption = true;
+        config.snapshot.flags.encryption_algorithm = "aes-gcm".to_owned();
+        let core = build_portable_config_for_test(config).unwrap();
+        core.run().await.unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        core.add_packet_process_pipeline(Box::new(CaptureProxyPackets(tx)))
+            .await;
+
+        let expected = crate::packet::FlowKey {
+            src: ([10, 0, 0, 1], 1234).into(),
+            dst: ([10, 0, 0, 2], 5000).into(),
+            protocol: 17,
+        };
+        for (packet_type, fragment_flags, key) in [
+            (PacketType::Data, 0u16, Some(expected)),
+            (PacketType::Data, 0x2000, None),
+            (PacketType::Data, 1, None),
+            (PacketType::KcpSrc, 0, None),
+            (PacketType::KcpDst, 0, None),
+            (PacketType::QuicSrc, 0, None),
+            (PacketType::QuicDst, 0, None),
+        ] {
+            // Wrapped payloads deliberately resemble IP to check the packet-type guard.
+            let mut bytes = vec![0u8; 28];
+            bytes[0] = 0x45;
+            bytes[2..4].copy_from_slice(&28u16.to_be_bytes());
+            bytes[6..8].copy_from_slice(&fragment_flags.to_be_bytes());
+            bytes[8] = 64;
+            bytes[9] = 17;
+            bytes[12..16].copy_from_slice(&[10, 0, 0, 1]);
+            bytes[20..22].copy_from_slice(&1234u16.to_be_bytes());
+            bytes[22..24].copy_from_slice(&5000u16.to_be_bytes());
+            bytes[24..26].copy_from_slice(&8u16.to_be_bytes());
+            set_packet_destination(&mut bytes, expected.dst.ip());
+            let mut packet = ZCPacket::new_with_payload(&bytes);
+            packet.fill_peer_manager_hdr(core.my_peer_id(), core.my_peer_id(), packet_type as u8);
+            packet.mut_peer_manager_header().unwrap().set_no_proxy(true);
+            assert!(packet.flow_key.is_none());
+            core.send_msg_for_proxy(packet, core.my_peer_id())
+                .await
+                .unwrap();
+            let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(received.flow_key, key, "{packet_type:?}/{fragment_flags}");
+            assert_eq!(received.payload(), bytes);
+        }
+        core.clear_resources().await;
     }
 
     fn set_packet_destination(packet: &mut [u8], destination: IpAddr) {
