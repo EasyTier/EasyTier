@@ -1,6 +1,5 @@
 use std::{
-    collections::{HashMap, hash_map::RandomState},
-    hash::BuildHasher,
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -17,7 +16,10 @@ use tokio::{select, sync::mpsc};
 
 use tracing::Instrument;
 
-use super::peer_conn::{PeerConn, PeerConnId};
+use super::{
+    peer_conn::{PeerConn, PeerConnId},
+    peer_flow::FlowBindings,
+};
 use crate::peers::{
     PacketRecvChan,
     context::{ArcPeerContext, PeerEvent},
@@ -35,31 +37,11 @@ use tokio_util::task::AbortOnDropHandle;
 type ArcPeerConn = Arc<PeerConn>;
 type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
 
-struct FlowBinding {
-    conn_id: PeerConnId,
-    last_active: Instant,
-}
-
-#[derive(Default)]
-struct FlowBindings {
-    hash: RandomState,
-    buckets: HashMap<usize, FlowBinding>,
-}
-
-impl FlowBindings {
-    const BUCKETS: usize = 4096;
-    const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-
-    fn bucket(&self, key: FlowKey) -> usize {
-        self.hash.hash_one(key) as usize % Self::BUCKETS
-    }
-}
-
-fn conn_selection_key(conn: &PeerConn) -> (bool, u8, u64) {
-    let latency = conn.quality.latency();
+fn conn_selection_key(conn: &PeerConn) -> (u8, usize, u64) {
+    let quality = conn.quality.snapshot();
+    let latency = quality.latency(Instant::now());
     let previous = conn.get_stats().latency_us;
     (
-        conn.quality.is_degraded(),
         if latency.is_some() {
             0
         } else if previous > 0 {
@@ -70,6 +52,7 @@ fn conn_selection_key(conn: &PeerConn) -> (bool, u8, u64) {
         } else {
             2
         },
+        quality.missing_probes(),
         latency.unwrap_or(if previous > 0 { previous } else { u64::MAX }),
     )
 }
@@ -89,7 +72,7 @@ pub struct Peer {
 
     default_conn: Arc<ArcSwapOption<PeerConn>>,
     default_conn_update_lock: Arc<Mutex<()>>,
-    flow_bindings: Mutex<FlowBindings>,
+    flow_bindings: Arc<Mutex<FlowBindings>>,
     data_active: Arc<AtomicBool>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
@@ -113,6 +96,7 @@ impl Peer {
         let default_conn = Arc::new(ArcSwapOption::empty());
         let default_conn_update_lock = Arc::new(Mutex::new(()));
         let data_active = Arc::new(AtomicBool::new(false));
+        let flow_bindings = Arc::new(Mutex::new(FlowBindings::default()));
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
@@ -178,17 +162,29 @@ impl Peer {
         let conns_copy = conns.clone();
         let default_conn_copy = default_conn.clone();
         let data_active_copy = data_active.clone();
+        let flow_bindings_copy = flow_bindings.clone();
         let default_conn_clear_task = AbortOnDropHandle::new(tokio::spawn(async move {
+            let mut last_reselect = Instant::now();
             loop {
-                crate::foundation::time::sleep(std::time::Duration::from_secs(5)).await;
-                if conns_copy.len() > 1 {
-                    default_conn_copy.store(None);
+                crate::foundation::time::sleep(Duration::from_secs(1)).await;
+                let now = Instant::now();
+                if now.duration_since(last_reselect) >= Duration::from_secs(5) {
+                    last_reselect = now;
+                    if conns_copy.len() > 1 {
+                        default_conn_copy.store(None);
+                    }
+                    let active = data_active_copy.swap(false, Ordering::Relaxed);
+                    let fast_ping = conns_copy.len() > 1 && active;
+                    for conn in conns_copy.iter() {
+                        conn.quality.fast_ping.store(fast_ping, Ordering::Relaxed);
+                    }
                 }
-                let active = data_active_copy.swap(false, Ordering::Relaxed);
-                let fast_ping = conns_copy.len() > 1 && active;
-                for conn in conns_copy.iter() {
-                    conn.quality.fast_ping.store(fast_ping, Ordering::Relaxed);
-                }
+                let connections: HashMap<_, _> = conns_copy
+                    .iter()
+                    .filter(|conn| !conn.is_closed())
+                    .map(|conn| (*conn.key(), conn.quality.snapshot()))
+                    .collect();
+                flow_bindings_copy.lock().update(&connections, now);
             }
         }));
 
@@ -204,7 +200,7 @@ impl Peer {
             shutdown_notifier,
             default_conn,
             default_conn_update_lock,
-            flow_bindings: Mutex::new(FlowBindings::default()),
+            flow_bindings,
             data_active,
             peer_identity_type,
             peer_public_key,
@@ -269,7 +265,6 @@ impl Peer {
         let _update_guard = self.default_conn_update_lock.lock();
         if let Some(conn) = self.default_conn.load_full()
             && !conn.is_closed()
-            && !conn.quality.is_degraded()
         {
             return Some(conn);
         }
@@ -289,10 +284,10 @@ impl Peer {
         selected
     }
 
-    fn select_flow_conn(&self, key: FlowKey) -> Option<ArcPeerConn> {
+    fn select_flow_conn(&self, key: FlowKey) -> Option<(ArcPeerConn, u64)> {
         let mut flows = self.flow_bindings.lock();
         let bucket = flows.bucket(key);
-        if let Some(binding) = flows.buckets.get_mut(&bucket)
+        if let Some(binding) = flows.buckets.get(&bucket)
             && binding.last_active.elapsed() < FlowBindings::IDLE_TIMEOUT
         {
             let bound = self
@@ -300,39 +295,14 @@ impl Peer {
                 .get(&binding.conn_id)
                 .map(|conn| conn.value().clone());
             if let Some(conn) = bound.filter(|conn| !conn.is_closed()) {
-                binding.last_active = Instant::now();
-                if conn.quality.is_degraded() {
-                    let replacement = self
-                        .conns
-                        .iter()
-                        .filter(|entry| {
-                            !entry.is_closed()
-                                && !entry.quality.is_degraded()
-                                && entry.quality.latency().is_some()
-                        })
-                        .min_by_key(|entry| conn_selection_key(entry.value()))
-                        .map(|entry| entry.value().clone());
-                    if let Some(replacement) = replacement {
-                        tracing::debug!(peer_id = self.peer_node_id, old = ?binding.conn_id,
-                            new = ?replacement.get_conn_id(), "migrate flow bucket from degraded connection");
-                        binding.conn_id = replacement.get_conn_id();
-                        return Some(replacement);
-                    }
-                }
-                return Some(conn);
+                return Some((conn, binding.generation));
             }
         }
         let conn = self.select_conn()?;
         // A collision joins the bucket's active binding rather than evicting an
         // existing flow. This bounds memory without migrating flows under load.
-        flows.buckets.insert(
-            bucket,
-            FlowBinding {
-                conn_id: conn.get_conn_id(),
-                last_active: Instant::now(),
-            },
-        );
-        Some(conn)
+        let generation = flows.bind(bucket, conn.get_conn_id(), Instant::now());
+        Some((conn, generation))
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
@@ -340,10 +310,18 @@ impl Peer {
             self.data_active.store(true, Ordering::Relaxed);
         }
         if let Some(key) = msg.flow_key {
-            let conn = self
+            let (conn, generation) = self
                 .select_flow_conn(key)
                 .ok_or(Error::PeerNoConnectionError(self.peer_node_id))?;
+            let bytes = msg.payload_len();
             conn.send_msg(msg).await?;
+            self.flow_bindings.lock().record_packet(
+                key,
+                conn.get_conn_id(),
+                generation,
+                bytes,
+                Instant::now(),
+            );
             return Ok(());
         }
         let default_conn = self.default_conn.load();
@@ -487,7 +465,12 @@ mod tests {
         right.unwrap();
         server.start_recv_loop(recv).await;
         if let Some(rtt) = rtt {
-            QualityHistory::default().record(&client.quality, Some(rtt), Instant::now());
+            QualityHistory::default().record(
+                &client.quality,
+                Some(rtt),
+                Instant::now(),
+                Instant::now(),
+            );
         }
         let id = client.get_conn_id();
         peer.add_peer_conn(client).await.unwrap();
@@ -593,7 +576,12 @@ mod tests {
                 origin,
             );
             assert!(conn_selection_key(&regular) < conn_selection_key(&hole_punched));
-            QualityHistory::default().record(&hole_punched.quality, Some(1_000), Instant::now());
+            QualityHistory::default().record(
+                &hole_punched.quality,
+                Some(1_000),
+                Instant::now(),
+                Instant::now(),
+            );
             assert!(conn_selection_key(&hole_punched) < conn_selection_key(&regular));
         }
     }
@@ -612,12 +600,12 @@ mod tests {
         let (sender, mut receiver) = create_packet_recv_chan();
         let (old, old_server) = add_connection(&peer, sender.clone(), Some(20_000)).await;
         let key = flow(1234);
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
+        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), old);
         let (new, new_server) = add_connection(&peer, sender, Some(1_000)).await;
         peer.default_conn.store(None);
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
+        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), old);
         let new_key = distinct_flow(&peer, key);
-        assert_eq!(peer.select_flow_conn(new_key).unwrap().get_conn_id(), new);
+        assert_eq!(peer.select_flow_conn(new_key).unwrap().0.get_conn_id(), new);
 
         for (key, expected) in [
             (key, old_server.get_conn_id()),
@@ -646,7 +634,7 @@ mod tests {
         let (sender, _receiver) = create_packet_recv_chan();
         let (old, _old_server) = add_connection(&peer, sender.clone(), Some(20_000)).await;
         let key = flow(1234);
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
+        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), old);
         let (new, _new_server) = add_connection(&peer, sender, Some(1_000)).await;
         peer.default_conn.store(None);
         {
@@ -654,7 +642,7 @@ mod tests {
             let bucket = flows.bucket(key);
             flows.buckets.get_mut(&bucket).unwrap().last_active -= FlowBindings::IDLE_TIMEOUT;
         }
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), new);
+        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), new);
         peer.close_peer_conn(&new).await.unwrap();
         crate::foundation::time::timeout(Duration::from_secs(1), async {
             while peer.conns.contains_key(&new) {
@@ -663,7 +651,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
+        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), old);
     }
 
     #[tokio::test]
@@ -673,7 +661,7 @@ mod tests {
         let (old, _old_server) = add_connection(&peer, sender.clone(), Some(20_000)).await;
         for port in 1..=u16::MAX {
             assert_eq!(
-                peer.select_flow_conn(flow(port)).unwrap().get_conn_id(),
+                peer.select_flow_conn(flow(port)).unwrap().0.get_conn_id(),
                 old
             );
         }
@@ -682,41 +670,31 @@ mod tests {
         peer.default_conn.store(None);
         for port in 1..=u16::MAX {
             assert_eq!(
-                peer.select_flow_conn(flow(port)).unwrap().get_conn_id(),
+                peer.select_flow_conn(flow(port)).unwrap().0.get_conn_id(),
                 old
             );
         }
     }
 
     #[tokio::test]
-    async fn degraded_flow_migrates_only_to_a_measured_healthy_connection() {
+    async fn new_flows_compare_absolute_rtt_instead_of_relative_degradation() {
         let peer = new_peer();
         let (sender, _receiver) = create_packet_recv_chan();
-        let (old, _old_server) = add_connection(&peer, sender.clone(), Some(15_000)).await;
-        let key = flow(1234);
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
-        let (new, _new_server) = add_connection(&peer, sender, None).await;
-        // Unknown RTT must not become a zero-latency winner for a new flow.
-        peer.default_conn.store(None);
-        assert_eq!(peer.select_conn().unwrap().get_conn_id(), old);
+        let (old, _old_server) = add_connection(&peer, sender.clone(), Some(10_000)).await;
+        let (_new, _new_server) = add_connection(&peer, sender, Some(200_000)).await;
         let quality = peer.conns.get(&old).unwrap().quality.clone();
         let mut history = QualityHistory::default();
-        history.record(&quality, Some(15_000), Instant::now());
+        let now = Instant::now();
+        history.record(&quality, Some(10_000), now, now);
         for _ in 0..3 {
-            history.record(&quality, Some(500_000), Instant::now());
+            history.record(&quality, Some(150_000), now, now);
         }
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
-        QualityHistory::default().record(
-            &peer.conns.get(&new).unwrap().quality,
-            Some(20_000),
-            Instant::now(),
-        );
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), new);
-        // The original path becoming idle and faster cannot steal the old flow.
-        for _ in 0..3 {
-            history.record(&quality, Some(1_000), Instant::now());
-        }
+        assert!(quality.is_degraded());
         peer.default_conn.store(None);
-        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), new);
+        assert_eq!(peer.select_conn().unwrap().get_conn_id(), old);
+        assert_eq!(
+            peer.select_flow_conn(flow(1234)).unwrap().0.get_conn_id(),
+            old
+        );
     }
 }
