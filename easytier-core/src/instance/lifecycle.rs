@@ -82,14 +82,23 @@ where
     }
 
     #[cfg(feature = "proxy-packet")]
-    async fn start_packet_proxy(&self) -> anyhow::Result<()> {
+    pub(super) async fn start_packet_proxy(&self) -> anyhow::Result<()> {
         let config = self.runtime_config.snapshot();
         let has_proxy_networks = !config.peer.runtime.core.routes.proxy_networks.is_empty();
         if config.services.proxy.should_start(has_proxy_networks) {
-            self.packet_proxy
-                .start()
+            if let Some(runtime) = self.runtime_handle() {
+                let proxy = self.packet_proxy.clone();
+                tokio_util::task::AbortOnDropHandle::new(
+                    runtime.spawn(async move { proxy.start().await }),
+                )
                 .await
-                .map_err(anyhow::Error::new)?;
+                .map_err(|error| anyhow::anyhow!("packet proxy start task failed: {error}"))??;
+            } else {
+                self.packet_proxy
+                    .start()
+                    .await
+                    .map_err(anyhow::Error::new)?;
+            }
         }
         Ok(())
     }
