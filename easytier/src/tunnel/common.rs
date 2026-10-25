@@ -271,29 +271,42 @@ pub(crate) mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn interface_snapshot_cache_returns_consistent_results() {
-        let first =
-            crate::common::network::get_interfaces_cached().expect("interface lookup should work");
-        let second =
-            crate::common::network::get_interfaces_cached().expect("interface lookup should work");
-        assert!(!first.is_empty());
-        // The second call must be served from the TTL cache, so the snapshots
-        // are identical.
-        assert!(Arc::ptr_eq(&first, &second));
+    fn interface_snapshot_lookup_smoke_test() {
+        // The process-global cache may expire between reads. Identity checks
+        // belong to the isolated helper tests in common::network instead.
+        for _ in 0..2 {
+            let ifaces = crate::common::network::get_interfaces_cached()
+                .expect("interface lookup should work");
+            assert!(!ifaces.is_empty());
+        }
     }
 
     // Diagnostic probe for the issue #2735 slow candidate loop: run with
-    // `cargo test -p easytier --lib probe_candidate_bind -- --nocapture`.
-    // Not a pass/fail benchmark; it prints the per-candidate cost of the
-    // uncached lookup (old behavior) versus the cached snapshot (new).
+    // `cargo test -p easytier --lib probe_interface_lookup -- --ignored --nocapture`.
+    // Compare only IP-to-name and name-to-index lookups, not socket binding.
     #[cfg(target_os = "windows")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn probe_candidate_bind_latency_with_and_without_cache() {
-        use std::net::{IpAddr, SocketAddr};
+    #[test]
+    #[ignore = "diagnostic probe; enumerates live Windows adapters"]
+    fn probe_interface_lookup_latency_with_and_without_cache() {
+        use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+        use std::net::IpAddr;
 
-        use network_interface::NetworkInterfaceConfig;
+        type EnumerateInterfaces = fn() -> Option<Arc<Vec<NetworkInterface>>>;
 
-        let ifaces = network_interface::NetworkInterface::show().unwrap();
+        fn lookup_index(ip: IpAddr, enumerate: EnumerateInterfaces) -> Option<u32> {
+            let ifaces = enumerate()?;
+            let name = &ifaces
+                .iter()
+                .find(|iface| iface.addr.iter().any(|addr| addr.ip() == ip))?
+                .name;
+            let ifaces = enumerate()?;
+            ifaces
+                .iter()
+                .find(|iface| iface.name == *name)
+                .map(|iface| iface.index)
+        }
+
+        let ifaces = NetworkInterface::show().unwrap();
         let candidates: Vec<_> = ifaces
             .iter()
             .flat_map(|iface| {
@@ -302,50 +315,26 @@ pub(crate) mod tests {
                 })
             })
             .collect();
-        println!("IPv4 bind candidates ({}):", candidates.len());
+        println!("IPv4 lookup candidates ({}):", candidates.len());
 
-        let mut uncached_total = Duration::from_secs(0);
-        for (name, ip) in &candidates {
-            let start = Instant::now();
-            // Old behavior: each Auto bind did two full enumerations per
-            // candidate — interface-name lookup (tunnel::common) plus
-            // name-to-index lookup (arch::windows::find_interface_index).
-            let _ = network_interface::NetworkInterface::show();
-            let _ = network_interface::NetworkInterface::show();
-            let lookup = start.elapsed();
-            let bind_ok = super::bind::<UdpSocket>()
-                .addr(SocketAddr::new(*ip, 0))
-                .dev(super::BindDev::Disabled)
-                .call()
-                .await
-                .is_ok();
-            let elapsed = start.elapsed();
-            uncached_total += elapsed;
+        let providers: [(&str, EnumerateInterfaces); 2] = [
+            ("uncached", || NetworkInterface::show().ok().map(Arc::new)),
+            ("cached", crate::common::network::get_interfaces_cached),
+        ];
+        for (label, enumerate) in providers {
+            let mut total = Duration::ZERO;
+            for (name, ip) in &candidates {
+                let start = Instant::now();
+                let index = lookup_index(*ip, enumerate);
+                let elapsed = start.elapsed();
+                total += elapsed;
+                println!("  [{label}] {ip:>16} ({name}): lookup {elapsed:?}, index={index:?}");
+            }
             println!(
-                "  [uncached] {ip:>16} ({name}): lookup {lookup:?}, total {elapsed:?}, ok={bind_ok}"
+                "{label} lookup total: {total:?} ({} candidates)",
+                candidates.len()
             );
         }
-
-        let mut cached_total = Duration::from_secs(0);
-        for (name, ip) in &candidates {
-            let start = Instant::now();
-            // New behavior: BindDev::Auto resolves the interface through the
-            // snapshot cache.
-            let bind_ok = super::bind::<UdpSocket>()
-                .addr(SocketAddr::new(*ip, 0))
-                .dev(super::BindDev::Auto)
-                .call()
-                .await
-                .is_ok();
-            let elapsed = start.elapsed();
-            cached_total += elapsed;
-            println!("  [cached  ] {ip:>16} ({name}): total {elapsed:?}, ok={bind_ok}");
-        }
-
-        println!(
-            "candidate loop totals: uncached {uncached_total:?} vs cached {cached_total:?} ({} candidates)",
-            candidates.len()
-        );
     }
 
     #[tokio::test]

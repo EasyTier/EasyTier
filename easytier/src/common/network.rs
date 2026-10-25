@@ -313,6 +313,8 @@ pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<Netwo
 /// common), one connect round turns into O(candidates) synchronous
 /// enumerations on the async worker. Interfaces rarely change within a
 /// connect round, so snapshots are reused for a short TTL.
+/// Only use this cache for socket binding; interface configuration needs
+/// fresh enumeration to observe adapter creation and replacement immediately.
 #[cfg(target_os = "windows")]
 pub(crate) fn get_interfaces_cached() -> Option<Arc<Vec<NetworkInterface>>> {
     static SNAPSHOT: InterfaceSnapshot = RwLock::new(None);

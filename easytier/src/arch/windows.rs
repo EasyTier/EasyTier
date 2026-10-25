@@ -1,6 +1,7 @@
 use std::{io, mem::ManuallyDrop, net::SocketAddr, os::windows::io::AsRawSocket};
 
 use anyhow::Context;
+use network_interface::NetworkInterfaceConfig;
 use windows::{
     Win32::{
         Foundation::{ERROR_FILE_NOT_FOUND, FALSE},
@@ -63,14 +64,14 @@ pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
     Ok(())
 }
 
+// Configuration operations must see newly created or recreated adapters immediately.
 pub fn find_interface_index(iface_name: &str) -> io::Result<u32> {
-    let Some(ifaces) = crate::common::network::get_interfaces_cached() else {
-        tracing::error!("Failed to enumerate interfaces for {}", iface_name);
-        return Err(io::Error::new(
+    let ifaces = network_interface::NetworkInterface::show().map_err(|e| {
+        io::Error::new(
             io::ErrorKind::NotFound,
-            format!("Failed to get interfaces for {}", iface_name),
-        ));
-    };
+            format!("Failed to get interfaces. {}, error: {}", iface_name, e),
+        )
+    })?;
     if let Some(iface) = ifaces.iter().find(|iface| iface.name == iface_name) {
         return Ok(iface.index);
     }
@@ -81,8 +82,22 @@ pub fn find_interface_index(iface_name: &str) -> io::Result<u32> {
     ))
 }
 
+fn find_interface_index_for_bind(iface_name: &str) -> io::Result<u32> {
+    let ifaces = crate::common::network::get_interfaces_cached().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Failed to get interfaces for {}", iface_name),
+        )
+    })?;
+    ifaces
+        .iter()
+        .find(|iface| iface.name == iface_name)
+        .map(|iface| iface.index)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, iface_name.to_string()))
+}
+
 pub fn set_ip_unicast_if(socket: SOCKET, addr: &SocketAddr, iface: &str) -> io::Result<()> {
-    let if_index = find_interface_index(iface)?;
+    let if_index = find_interface_index_for_bind(iface)?;
 
     unsafe {
         // https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-ip-socket-options
