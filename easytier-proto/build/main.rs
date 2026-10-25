@@ -84,15 +84,18 @@ fn bundled_protoc_include(protoc: &Path) -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn ensure_protoc_for_windows() {
-    // prost-build resolves well-known types (google/protobuf/*.proto) solely
-    // through the PROTOC_INCLUDE environment variable, so a bare protoc.exe
-    // without its bundled include/ directory cannot be used as-is.
-    if env::var_os("PROTOC").is_some() && env::var_os("PROTOC_INCLUDE").is_some() {
+    // Preserve an explicit include directory even when protoc is found on PATH
+    // or downloaded. Only infer the bundled directory when it is not configured.
+    let protoc_include = env::var_os("PROTOC_INCLUDE").map(PathBuf::from);
+    if env::var_os("PROTOC").is_some() && protoc_include.is_some() {
         return;
     }
 
     if let Some(path) = check_protoc_exist() {
-        if let Some(include) = bundled_protoc_include(&path) {
+        if let Some(include) = protoc_include
+            .clone()
+            .or_else(|| bundled_protoc_include(&path))
+        {
             println!("cargo:info=use os existing protoc: {:?}", path);
             unsafe {
                 env::set_var("PROTOC", path);
@@ -107,7 +110,9 @@ fn ensure_protoc_for_windows() {
     }
 
     let protoc_path = download_protoc();
-    let include = bundled_protoc_include(&protoc_path).expect("downloaded protoc zip should contain include dir");
+    let include = protoc_include
+        .or_else(|| bundled_protoc_include(&protoc_path))
+        .expect("downloaded protoc zip should contain include dir");
     unsafe {
         env::set_var("PROTOC", protoc_path);
         env::set_var("PROTOC_INCLUDE", include);
