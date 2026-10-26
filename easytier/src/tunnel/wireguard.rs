@@ -609,12 +609,8 @@ impl WgTunnelListener {
             };
 
             tracing::info!("New peer: {}", addr);
-            let mut wg = WgPeer::new(
-                Box::new(session_listener.clone()),
-                session,
-                config.clone(),
-                addr,
-            );
+            // Accepted sessions already keep their UDP layer alive until close.
+            let mut wg = WgPeer::new(Box::new(()), session, config.clone(), addr);
             let (stream, sink) = wg.start_and_get_tunnel().split();
             wg.spawn_session_recv_task(None);
             let tunnel = Box::new(TunnelWrapper::new(

@@ -46,6 +46,14 @@ pub(crate) async fn recv_from_with_dst_ip(
             loop {
                 match recv_from_with_dst_ip_once(socket, buf) {
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                    // WSARecvMsg consumed this oversized datagram. Discard it
+                    // just as the Unix adapter discards MSG_TRUNC packets.
+                    Err(err)
+                        if err.raw_os_error()
+                            == Some(windows::Win32::Networking::WinSock::WSAEMSGSIZE.0) =>
+                    {
+                        continue;
+                    }
                     ret => break ret,
                 }
             }
