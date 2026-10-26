@@ -28,11 +28,15 @@ import {
   saveVpnTileStoppedInstanceIds,
 } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
+import GuiSettings from '~/components/GuiSettings.vue'
+import { getGuiSettings, startConfiguredNetwork } from '~/composables/settings'
 import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
 const aboutVisible = ref(false)
+const settingsVisible = ref(false)
+let startupSettingsApplied = false
 const modeDialogVisible = ref(false)
 const currentMode = ref<Mode>({ mode: 'normal' })
 const editingMode = ref<Mode>({ mode: 'normal' })
@@ -42,18 +46,8 @@ const manualDisconnect = ref(false)
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
 
-const showAutostartHint = ref(false)
-
 async function openModeDialog() {
   editingMode.value = JSON.parse(JSON.stringify(loadMode()))
-  showAutostartHint.value = false
-  modeDialogVisible.value = true
-}
-
-async function openAutostartDialog() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
-  editingMode.value.mode = 'service'
-  showAutostartHint.value = true
   modeDialogVisible.value = true
 }
 
@@ -227,6 +221,18 @@ async function initWithMode(mode: Mode) {
   currentMode.value = mode
   saveMode(mode)
   clientRunning.value = await isClientRunning()
+  if (!startupSettingsApplied && clientRunning.value) {
+    startupSettingsApplied = true
+    if (mode.mode === 'normal' && !['android', 'ios'].includes(type())) {
+      try {
+        const startedId = await startConfiguredNetwork(remoteClient.value, await getGuiSettings())
+        if (startedId) instanceId.value = startedId
+      }
+      catch (error) {
+        toast.add({ severity: 'error', summary: t('gui_settings.network_start_failed'), detail: String(error), life: 10000 })
+      }
+    }
+  }
 }
 
 onMounted(async () => {
@@ -421,12 +427,6 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     visible: () => type() !== 'android',
   },
   {
-    label: () => t('mode.autostart'),
-    icon: 'pi pi-clock',
-    command: openAutostartDialog,
-    visible: () => type() !== 'android',
-  },
-  {
     label: () => `${t('config-server.title')}${t('config-server.' + configServerConnectionStatus.value)}`,
     icon: 'pi pi-globe',
     command: openConfigServerDialog,
@@ -449,10 +449,22 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     label: () => t('exit'),
     icon: 'pi pi-power-off',
     command: async () => {
-      await exit(1)
+      await exit(0)
     },
   },
 ])
+
+const visibleSettingItems = computed(() => setting_menu_items.value.filter(item =>
+  typeof item.visible === 'function' ? item.visible() : item.visible !== false))
+
+function runSettingAction(item: MenuItem, event: Event) {
+  if (item.key === 'logging_menu') {
+    toggle_log_menu(event)
+    return
+  }
+  settingsVisible.value = false
+  item.command?.({ originalEvent: event, item })
+}
 
 async function connectRpcClient(isNormalMode: boolean, url?: string) {
   await initRpcConnection(isNormalMode, url)
@@ -519,13 +531,20 @@ const configServerConnectionStatus = computed(() => {
 
 <template>
   <div id="root" class="flex flex-col">
+    <div class="flex justify-end px-3 py-2 border-b border-surface-200 dark:border-surface-700">
+      <Button :label="t('gui_settings.title')" icon="pi pi-cog" text severity="secondary"
+        :aria-label="t('gui_settings.title')" @click="settingsVisible = true" />
+    </div>
+    <GuiSettings v-model:visible="settingsVisible" :api="remoteClient" :mode="currentMode" :client-running="clientRunning">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <Button v-for="(item, index) in visibleSettingItems" :key="index" :label="getLabel(item)" :icon="item.icon"
+          severity="secondary" text class="!justify-start" @click="runSettingAction(item, $event)" />
+      </div>
+    </GuiSettings>
     <Dialog v-model:visible="aboutVisible" modal :header="t('about.title')" :style="{ width: '70%' }">
       <About />
     </Dialog>
     <Dialog v-model:visible="modeDialogVisible" modal :header="t('mode.switch_mode')" :style="{ width: '50vw' }">
-      <Message v-if="showAutostartHint" severity="info" :closable="false" class="mb-4">
-        {{ t('mode.autostart_hint') }}
-      </Message>
       <ModeSwitcher v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
       <template #footer>
         <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="modeDialogVisible = false" text />
@@ -560,19 +579,6 @@ const configServerConnectionStatus = computed(() => {
         iconPos="left" />
     </div>
 
-    <Menubar :model="setting_menu_items" breakpoint="795px">
-      <template #item="{ item, props }">
-        <a v-if="item.key === 'logging_menu'" v-bind="props.action" @click="toggle_log_menu">
-          <span :class="item.icon" />
-          <span class="p-menubar-item-label">{{ getLabel(item) }}</span>
-          <span class="pi pi-angle-down p-menubar-item-icon text-[9px]"></span>
-        </a>
-        <a v-else v-bind="props.action">
-          <span :class="item.icon" />
-          <span class="p-menubar-item-label">{{ getLabel(item) }}</span>
-        </a>
-      </template>
-    </Menubar>
   </div>
 </template>
 
@@ -594,10 +600,6 @@ body {
   padding: 0;
   margin: 0;
   overflow: hidden;
-}
-
-.p-menubar .p-menuitem {
-  margin: 0;
 }
 
 .p-select-overlay {

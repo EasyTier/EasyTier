@@ -69,6 +69,7 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2.4.4"
+tauri-plugin-autostart = "2.5.1"
 
 [package.metadata.cargo-machete]
 ignored = [
