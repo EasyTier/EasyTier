@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
@@ -31,7 +31,6 @@ use crate::foundation::time::{Duration, timeout};
 use super::{
     peer_conn_liveness::{FEATURE as LIVENESS_ECHO_FEATURE, PeerConnLiveness},
     peer_conn_ping::PeerConnPinger,
-    peer_conn_quality::PeerConnQuality,
     peer_session::{PeerSession, PeerSessionAction},
 };
 use crate::peers::{
@@ -299,7 +298,7 @@ pub struct PeerConn {
     ctrl_resp_sender: broadcast::Sender<ZCPacket>,
 
     latency_stats: Arc<WindowLatency>,
-    pub(super) quality: Arc<PeerConnQuality>,
+    pub(super) fast_ping: Arc<AtomicBool>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
     liveness: PeerConnLiveness,
@@ -400,7 +399,7 @@ impl PeerConn {
             ctrl_resp_sender: ctrl_sender,
 
             latency_stats: Arc::new(WindowLatency::new(15)),
-            quality: Arc::new(PeerConnQuality::default()),
+            fast_ping: Arc::new(AtomicBool::new(false)),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
             liveness,
@@ -1388,7 +1387,7 @@ impl PeerConn {
             self.liveness.clone(),
             self.max_ping_interval(),
         );
-        pingpong.quality = self.quality.clone();
+        pingpong.fast_ping = self.fast_ping.clone();
 
         let close_event_notifier = self.close_event_notifier.clone();
         let conn_id = self.conn_id;
@@ -1469,6 +1468,11 @@ impl PeerConn {
 
     pub fn get_close_notifier(&self) -> Arc<PeerConnCloseNotify> {
         self.close_event_notifier.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn record_latency_for_test(&self, latency_us: u32) {
+        self.latency_stats.record_latency(latency_us);
     }
 
     pub fn get_stats(&self) -> PeerConnStats {

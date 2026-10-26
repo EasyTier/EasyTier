@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -37,23 +36,18 @@ use tokio_util::task::AbortOnDropHandle;
 type ArcPeerConn = Arc<PeerConn>;
 type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
 
-fn conn_selection_key(conn: &PeerConn) -> (u8, usize, u64) {
-    let quality = conn.quality.snapshot();
-    let latency = quality.latency(Instant::now());
-    let previous = conn.get_stats().latency_us;
+fn conn_selection_key(conn: &PeerConn) -> (u8, u64) {
+    let latency = conn.get_stats().latency_us;
     (
-        if latency.is_some() {
+        if latency > 0 {
             0
-        } else if previous > 0 {
-            1
         } else if conn.is_hole_punched() {
             // Prefer regular connections until hole punching has a measured RTT.
-            3
-        } else {
             2
+        } else {
+            1
         },
-        quality.missing_probes(),
-        latency.unwrap_or(if previous > 0 { previous } else { u64::MAX }),
+        latency,
     )
 }
 
@@ -72,7 +66,7 @@ pub struct Peer {
 
     default_conn: Arc<ArcSwapOption<PeerConn>>,
     default_conn_update_lock: Arc<Mutex<()>>,
-    flow_bindings: Arc<Mutex<FlowBindings>>,
+    flow_bindings: Mutex<FlowBindings>,
     data_active: Arc<AtomicBool>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
@@ -96,7 +90,7 @@ impl Peer {
         let default_conn = Arc::new(ArcSwapOption::empty());
         let default_conn_update_lock = Arc::new(Mutex::new(()));
         let data_active = Arc::new(AtomicBool::new(false));
-        let flow_bindings = Arc::new(Mutex::new(FlowBindings::default()));
+        let flow_bindings = Mutex::new(FlowBindings::default());
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
@@ -162,29 +156,17 @@ impl Peer {
         let conns_copy = conns.clone();
         let default_conn_copy = default_conn.clone();
         let data_active_copy = data_active.clone();
-        let flow_bindings_copy = flow_bindings.clone();
         let default_conn_clear_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            let mut last_reselect = Instant::now();
             loop {
-                crate::foundation::time::sleep(Duration::from_secs(1)).await;
-                let now = Instant::now();
-                if now.duration_since(last_reselect) >= Duration::from_secs(5) {
-                    last_reselect = now;
-                    if conns_copy.len() > 1 {
-                        default_conn_copy.store(None);
-                    }
-                    let active = data_active_copy.swap(false, Ordering::Relaxed);
-                    let fast_ping = conns_copy.len() > 1 && active;
-                    for conn in conns_copy.iter() {
-                        conn.quality.fast_ping.store(fast_ping, Ordering::Relaxed);
-                    }
+                crate::foundation::time::sleep(Duration::from_secs(5)).await;
+                if conns_copy.len() > 1 {
+                    default_conn_copy.store(None);
                 }
-                let connections: HashMap<_, _> = conns_copy
-                    .iter()
-                    .filter(|conn| !conn.is_closed())
-                    .map(|conn| (*conn.key(), conn.quality.snapshot()))
-                    .collect();
-                flow_bindings_copy.lock().update(&connections, now);
+                let active = data_active_copy.swap(false, Ordering::Relaxed);
+                let fast_ping = conns_copy.len() > 1 && active;
+                for conn in conns_copy.iter() {
+                    conn.fast_ping.store(fast_ping, Ordering::Relaxed);
+                }
             }
         }));
 
@@ -270,7 +252,7 @@ impl Peer {
         }
 
         // Unmeasured paths are usable for startup/recovery, but cannot outrank a
-        // healthy path with a fresh Pong merely because their RTT is still zero.
+        // measured path merely because their RTT is still zero.
         let selected = self
             .conns
             .iter()
@@ -284,10 +266,10 @@ impl Peer {
         selected
     }
 
-    fn select_flow_conn(&self, key: FlowKey) -> Option<(ArcPeerConn, u64)> {
+    fn select_flow_conn(&self, key: FlowKey) -> Option<ArcPeerConn> {
         let mut flows = self.flow_bindings.lock();
         let bucket = flows.bucket(key);
-        if let Some(binding) = flows.buckets.get(&bucket)
+        if let Some(binding) = flows.buckets.get_mut(&bucket)
             && binding.last_active.elapsed() < FlowBindings::IDLE_TIMEOUT
         {
             let bound = self
@@ -295,14 +277,15 @@ impl Peer {
                 .get(&binding.conn_id)
                 .map(|conn| conn.value().clone());
             if let Some(conn) = bound.filter(|conn| !conn.is_closed()) {
-                return Some((conn, binding.generation));
+                binding.last_active = Instant::now();
+                return Some(conn);
             }
         }
         let conn = self.select_conn()?;
         // A collision joins the bucket's active binding rather than evicting an
         // existing flow. This bounds memory without migrating flows under load.
-        let generation = flows.bind(bucket, conn.get_conn_id(), Instant::now());
-        Some((conn, generation))
+        flows.bind(bucket, conn.get_conn_id(), Instant::now());
+        Some(conn)
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
@@ -310,19 +293,10 @@ impl Peer {
             self.data_active.store(true, Ordering::Relaxed);
         }
         if let Some(key) = msg.flow_key {
-            let (conn, generation) = self
+            let conn = self
                 .select_flow_conn(key)
                 .ok_or(Error::PeerNoConnectionError(self.peer_node_id))?;
-            let bytes = msg.payload_len();
-            conn.send_msg(msg).await?;
-            self.flow_bindings.lock().record_packet(
-                key,
-                conn.get_conn_id(),
-                generation,
-                bytes,
-                Instant::now(),
-            );
-            return Ok(());
+            return conn.send_msg(msg).await;
         }
         let default_conn = self.default_conn.load();
         if let Some(conn) = default_conn.as_ref()
@@ -431,10 +405,8 @@ mod tests {
     use crate::{
         packet::PacketType,
         peers::{
-            PeerConnectionOrigin,
-            conn::{peer_conn_quality::QualityHistory, peer_session::PeerSessionStore},
-            create_packet_recv_chan, recv_packet_envelope_from_chan,
-            test_support::NoopPeerContext,
+            PeerConnectionOrigin, conn::peer_session::PeerSessionStore, create_packet_recv_chan,
+            recv_packet_envelope_from_chan, test_support::NoopPeerContext,
         },
         tunnel::ring::create_ring_tunnel_pair,
     };
@@ -450,7 +422,7 @@ mod tests {
     async fn add_connection(
         peer: &Peer,
         recv: PacketRecvChan,
-        rtt: Option<u64>,
+        rtt: Option<u32>,
     ) -> (PeerConnId, PeerConn) {
         let (left, right) = create_ring_tunnel_pair();
         let sessions = Arc::new(PeerSessionStore::new());
@@ -465,12 +437,7 @@ mod tests {
         right.unwrap();
         server.start_recv_loop(recv).await;
         if let Some(rtt) = rtt {
-            QualityHistory::default().record(
-                &client.quality,
-                Some(rtt),
-                Instant::now(),
-                Instant::now(),
-            );
+            client.record_latency_for_test(rtt);
         }
         let id = client.get_conn_id();
         peer.add_peer_conn(client).await.unwrap();
@@ -508,14 +475,16 @@ mod tests {
         assert!(conn.is_closed());
     }
 
-    #[tokio::test]
-    async fn unkeyed_packet_skips_failed_connection_before_cache_cleanup() {
+    async fn packet_skips_failed_connection_before_cache_cleanup(flow_key: Option<FlowKey>) {
         let peer = new_peer();
         let (sender, mut receiver) = create_packet_recv_chan();
         let (old, old_server) = add_connection(&peer, sender.clone(), Some(20_000)).await;
         let (_, new_server) = add_connection(&peer, sender, Some(1_000)).await;
         let old_conn = peer.conns.get(&old).unwrap().value().clone();
         peer.default_conn.store(Some(old_conn.clone()));
+        if let Some(key) = flow_key {
+            assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
+        }
         // Keep the stale cache entry so the result cannot depend on task ordering.
         peer.close_event_listener.abort();
         drop(old_server);
@@ -534,9 +503,9 @@ mod tests {
         assert!(old_conn.is_closed());
         assert_eq!(peer.get_default_conn_id(), old);
 
-        let mut packet = ZCPacket::new_with_payload(b"unkeyed packet");
+        let mut packet = ZCPacket::new_with_payload(b"packet after failure");
         packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
-        assert!(packet.flow_key.is_none());
+        packet.flow_key = flow_key;
         peer.send_msg(packet).await.unwrap();
         let envelope = crate::foundation::time::timeout(
             Duration::from_secs(1),
@@ -546,11 +515,21 @@ mod tests {
         .unwrap()
         .unwrap();
         let (packet, ingress) = envelope.into_parts();
-        assert_eq!(packet.payload(), b"unkeyed packet");
+        assert_eq!(packet.payload(), b"packet after failure");
         assert_eq!(
             ingress.peer_connection().unwrap().1,
             new_server.get_conn_id()
         );
+    }
+
+    #[tokio::test]
+    async fn unkeyed_packet_skips_failed_connection_before_cache_cleanup() {
+        packet_skips_failed_connection_before_cache_cleanup(None).await;
+    }
+
+    #[tokio::test]
+    async fn active_flow_skips_failed_connection_before_cache_cleanup() {
+        packet_skips_failed_connection_before_cache_cleanup(Some(flow(1234))).await;
     }
 
     #[tokio::test]
@@ -576,12 +555,7 @@ mod tests {
                 origin,
             );
             assert!(conn_selection_key(&regular) < conn_selection_key(&hole_punched));
-            QualityHistory::default().record(
-                &hole_punched.quality,
-                Some(1_000),
-                Instant::now(),
-                Instant::now(),
-            );
+            hole_punched.record_latency_for_test(1_000);
             assert!(conn_selection_key(&hole_punched) < conn_selection_key(&regular));
         }
     }
@@ -600,12 +574,19 @@ mod tests {
         let (sender, mut receiver) = create_packet_recv_chan();
         let (old, old_server) = add_connection(&peer, sender.clone(), Some(20_000)).await;
         let key = flow(1234);
-        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), old);
+        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
         let (new, new_server) = add_connection(&peer, sender, Some(1_000)).await;
+        // A slow but open connection must keep its existing flow.
+        for _ in 0..15 {
+            peer.conns
+                .get(&old)
+                .unwrap()
+                .record_latency_for_test(500_000);
+        }
         peer.default_conn.store(None);
-        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), old);
+        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
         let new_key = distinct_flow(&peer, key);
-        assert_eq!(peer.select_flow_conn(new_key).unwrap().0.get_conn_id(), new);
+        assert_eq!(peer.select_flow_conn(new_key).unwrap().get_conn_id(), new);
 
         for (key, expected) in [
             (key, old_server.get_conn_id()),
@@ -634,15 +615,25 @@ mod tests {
         let (sender, _receiver) = create_packet_recv_chan();
         let (old, _old_server) = add_connection(&peer, sender.clone(), Some(20_000)).await;
         let key = flow(1234);
-        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), old);
+        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
         let (new, _new_server) = add_connection(&peer, sender, Some(1_000)).await;
         peer.default_conn.store(None);
+        // Activity renews the idle timeout even across repeated intervals.
+        for _ in 0..2 {
+            {
+                let mut flows = peer.flow_bindings.lock();
+                let bucket = flows.bucket(key);
+                flows.buckets.get_mut(&bucket).unwrap().last_active -=
+                    FlowBindings::IDLE_TIMEOUT - Duration::from_secs(1);
+            }
+            assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
+        }
         {
             let mut flows = peer.flow_bindings.lock();
             let bucket = flows.bucket(key);
             flows.buckets.get_mut(&bucket).unwrap().last_active -= FlowBindings::IDLE_TIMEOUT;
         }
-        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), new);
+        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), new);
         peer.close_peer_conn(&new).await.unwrap();
         crate::foundation::time::timeout(Duration::from_secs(1), async {
             while peer.conns.contains_key(&new) {
@@ -651,7 +642,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(peer.select_flow_conn(key).unwrap().0.get_conn_id(), old);
+        assert_eq!(peer.select_flow_conn(key).unwrap().get_conn_id(), old);
     }
 
     #[tokio::test]
@@ -661,7 +652,7 @@ mod tests {
         let (old, _old_server) = add_connection(&peer, sender.clone(), Some(20_000)).await;
         for port in 1..=u16::MAX {
             assert_eq!(
-                peer.select_flow_conn(flow(port)).unwrap().0.get_conn_id(),
+                peer.select_flow_conn(flow(port)).unwrap().get_conn_id(),
                 old
             );
         }
@@ -670,31 +661,9 @@ mod tests {
         peer.default_conn.store(None);
         for port in 1..=u16::MAX {
             assert_eq!(
-                peer.select_flow_conn(flow(port)).unwrap().0.get_conn_id(),
+                peer.select_flow_conn(flow(port)).unwrap().get_conn_id(),
                 old
             );
         }
-    }
-
-    #[tokio::test]
-    async fn new_flows_compare_absolute_rtt_instead_of_relative_degradation() {
-        let peer = new_peer();
-        let (sender, _receiver) = create_packet_recv_chan();
-        let (old, _old_server) = add_connection(&peer, sender.clone(), Some(10_000)).await;
-        let (_new, _new_server) = add_connection(&peer, sender, Some(200_000)).await;
-        let quality = peer.conns.get(&old).unwrap().quality.clone();
-        let mut history = QualityHistory::default();
-        let now = Instant::now();
-        history.record(&quality, Some(10_000), now, now);
-        for _ in 0..3 {
-            history.record(&quality, Some(150_000), now, now);
-        }
-        assert!(quality.is_degraded());
-        peer.default_conn.store(None);
-        assert_eq!(peer.select_conn().unwrap().get_conn_id(), old);
-        assert_eq!(
-            peer.select_flow_conn(flow(1234)).unwrap().0.get_conn_id(),
-            old
-        );
     }
 }

@@ -1,12 +1,11 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use super::peer_conn_quality::{PeerConnQuality, QualityHistory};
 use rand::{Rng, thread_rng};
 use tokio::{
     sync::{broadcast, mpsc::error::TrySendError},
@@ -125,7 +124,7 @@ impl PingIntervalController {
 }
 
 pub struct PeerConnPinger {
-    pub(super) quality: Arc<PeerConnQuality>,
+    pub(super) fast_ping: Arc<AtomicBool>,
     my_peer_id: PeerId,
     peer_id: PeerId,
     sink: MpscTunnelSender,
@@ -165,7 +164,7 @@ impl PeerConnPinger {
     ) -> Self {
         Self {
             my_peer_id,
-            quality: Arc::new(PeerConnQuality::default()),
+            fast_ping: Arc::new(AtomicBool::new(false)),
             peer_id,
             sink,
             latency_stats,
@@ -260,13 +259,13 @@ impl PeerConnPinger {
         let throughput = self.throughput_stats.clone();
         let controller_loss_counter = loss_counter.clone();
         let max_interval = self.max_interval;
-        let quality = self.quality.clone();
+        let fast_ping = self.fast_ping.clone();
         controller_tasks.spawn(async move {
             let mut controller =
                 PingIntervalController::new(throughput, controller_loss_counter, max_interval);
             loop {
                 controller.tick().await;
-                controller.max_interval = if quality.fast_ping.load(Ordering::Relaxed) {
+                controller.max_interval = if fast_ping.load(Ordering::Relaxed) {
                     Duration::from_secs(1)
                 } else {
                     max_interval
@@ -282,7 +281,6 @@ impl PeerConnPinger {
         });
 
         let mut req_seq = 0u32;
-        let mut quality_history = QualityHistory::default();
         while trigger_receiver.recv().await.is_some() {
             tracing::debug!(
                 "pingpong controller send pingpong task, seq: {}, node_id: {}",
@@ -294,21 +292,14 @@ impl PeerConnPinger {
                 .then(|| self.liveness.start_probe())
                 .flatten();
             let mut receiver = self.ctrl_sender.subscribe();
-            let probe_started = Instant::now();
             let ret = self
                 .do_pingpong_once(&mut receiver, req_seq, liveness_token)
                 .await;
             req_seq = req_seq.wrapping_add(1);
 
-            // A liveness echo proves reachability, not prompt delivery of a
-            // queued packet. Only a matching Pong is a quality sample.
-            let rtt = match &ret {
-                Ok(PingResponse::Pong(lat)) => Some(*lat as u64),
-                _ => None,
-            };
-            quality_history.record(&self.quality, rtt, probe_started, Instant::now());
-
             if let Ok(response) = &ret {
+                // A liveness echo proves reachability, not prompt delivery of a
+                // queued packet. Only a matching Pong supplies an RTT sample.
                 if let PingResponse::Pong(lat) = response {
                     self.latency_stats.record_latency(*lat as u32);
                 }
