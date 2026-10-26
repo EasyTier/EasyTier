@@ -623,7 +623,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(feature = "management", not(feature = "tracing")))]
+    #[cfg(all(
+        feature = "management",
+        not(any(feature = "tracing", feature = "profiling"))
+    ))]
     #[serial_test::serial]
     fn tracing_events_and_direct_log_records_share_the_file_sink() {
         let _env = EnvVarGuard::set(None);

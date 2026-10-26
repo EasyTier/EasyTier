@@ -1,8 +1,9 @@
 use std::{pin::Pin, time::Duration};
 
+use easytier_profiling::wrap::tokio::sync::mpsc::{Receiver, Sender};
 use futures::SinkExt;
 use tokio::{
-    sync::mpsc::{Receiver, Sender, channel, error::TrySendError},
+    sync::mpsc::{channel, error::TrySendError},
     task::JoinHandle,
 };
 
@@ -17,6 +18,7 @@ use crate::{
 pub struct MpscTunnelSender(Sender<ZCPacket>);
 
 impl MpscTunnelSender {
+    #[easytier_profiling::instrument("MpscTunnelSender::send")]
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
         match self.0.try_send(item) {
             Ok(()) => Ok(()),
@@ -44,7 +46,7 @@ pub struct MpscTunnel<T> {
 
 impl<T: Tunnel> MpscTunnel<T> {
     pub fn new(tunnel: T, send_timeout: Option<Duration>) -> Self {
-        let (tx, mut rx) = channel(32);
+        let (tx, mut rx) = easytier_profiling::channel!(channel(32));
         let (stream, mut sink) = tunnel.split();
 
         let task = tokio::spawn(async move {
@@ -67,6 +69,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         }
     }
 
+    #[easytier_profiling::instrument("MpscTunnel::forward_one_round")]
     async fn forward_one_round(
         rx: &mut Receiver<ZCPacket>,
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
@@ -80,6 +83,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         }
     }
 
+    #[easytier_profiling::instrument("MpscTunnel::forward_one_round_no_timeout")]
     async fn forward_one_round_no_timeout(
         rx: &mut Receiver<ZCPacket>,
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
@@ -97,6 +101,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         sink.flush().await
     }
 
+    #[easytier_profiling::instrument("MpscTunnel::forward_one_round_with_timeout")]
     async fn forward_one_round_with_timeout(
         rx: &mut Receiver<ZCPacket>,
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
@@ -150,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     async fn sender_falls_back_to_waiting_when_channel_is_full() {
-        let (tx, mut rx) = channel(1);
+        let (tx, mut rx) = easytier_profiling::channel!(channel(1));
         let sender = MpscTunnelSender(tx);
         sender
             .send(ZCPacket::new_with_payload(b"first"))

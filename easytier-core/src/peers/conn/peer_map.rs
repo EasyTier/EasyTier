@@ -153,6 +153,7 @@ impl PeerMap {
         peer_id == self.my_peer_id
     }
 
+    #[easytier_profiling::instrument("PeerMap::send_msg_directly")]
     pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         if dst_peer_id == self.my_peer_id {
             let packet_send = self.packet_send.clone();
@@ -184,6 +185,7 @@ impl PeerMap {
         Ok(())
     }
 
+    #[easytier_profiling::instrument("PeerMap::get_gateway_peer_id")]
     pub async fn get_gateway_peer_id(
         &self,
         dst_peer_id: PeerId,
@@ -223,6 +225,7 @@ impl PeerMap {
         ret
     }
 
+    #[easytier_profiling::instrument("PeerMap::send_msg")]
     pub async fn send_msg(
         &self,
         msg: ZCPacket,

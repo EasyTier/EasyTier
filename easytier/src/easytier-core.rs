@@ -1,13 +1,21 @@
 use easytier::core;
 
-#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[cfg(all(
+    feature = "mimalloc",
+    not(feature = "jemalloc"),
+    not(feature = "hotpath-alloc")
+))]
 use mimalloc::MiMalloc;
 
-#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[cfg(all(
+    feature = "mimalloc",
+    not(feature = "jemalloc"),
+    not(feature = "hotpath-alloc")
+))]
 #[global_allocator]
 static GLOBAL_MIMALLOC: MiMalloc = MiMalloc;
 
-#[cfg(feature = "jemalloc")]
+#[cfg(all(feature = "jemalloc", not(feature = "hotpath-alloc")))]
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
@@ -21,9 +29,21 @@ pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19,d
 #[unsafe(export_name = "malloc_conf")]
 pub static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:1000,retain:false\0";
 
+#[cfg(all(
+    feature = "hotpath-alloc",
+    any(feature = "mimalloc", feature = "jemalloc")
+))]
+compile_error!("hotpath-alloc requires the system allocator; disable mimalloc and jemalloc");
+#[cfg(feature = "hotpath-alloc")]
+#[global_allocator]
+static PROFILED_ALLOCATOR: easytier_profiling::CountingAllocator =
+    easytier_profiling::CountingAllocator::new();
+
 rust_i18n::i18n!("locales", fallback = "en");
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
+    #[cfg(feature = "hotpath")]
+    let _profiler = easytier_profiling::HotpathGuardBuilder::new("easytier-core").build();
     core::main().await
 }

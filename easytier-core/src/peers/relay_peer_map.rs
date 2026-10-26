@@ -213,6 +213,7 @@ impl RelayPeerMap {
         Ok(())
     }
 
+    #[easytier_profiling::instrument("RelayPeerMap::send_via_next_hop")]
     async fn send_via_next_hop(
         &self,
         msg: ZCPacket,
@@ -224,6 +225,7 @@ impl RelayPeerMap {
             .await
     }
 
+    #[easytier_profiling::instrument("RelayPeerMap::send_msg")]
     pub async fn send_msg(
         self: &Arc<Self>,
         mut msg: ZCPacket,
@@ -692,6 +694,7 @@ impl RelayPeerMap {
         Ok(())
     }
 
+    #[easytier_profiling::instrument("RelayPeerMap::decrypt_if_needed")]
     pub async fn decrypt_if_needed(self: &Arc<Self>, packet: &mut ZCPacket) -> Result<bool, Error> {
         if !self.is_secure_mode_enabled() {
             return Ok(false);

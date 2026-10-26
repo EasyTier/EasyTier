@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "easytier-core",
+    "easytier-profiling",
+    "easytier-profiling/macros",
     "easytier-proto",
     "easytier",
     "easytier-web",
@@ -42,6 +44,7 @@ crossbeam = "0.8.5"
 crossbeam-utils = "0.8.23"
 dashmap = "6.2.1"
 easytier = { version = "2.7.0", path = "easytier", default-features = false }
+easytier-profiling = { version = "0.1.0", path = "easytier-profiling", default-features = false }
 easytier-core = { version = "2.7.0", path = "easytier-core", default-features = false }
 easytier-ffi = { version = "0.1.0", path = "easytier-contrib/easytier-ffi", default-features = false }
 easytier-ohos-core = { version = "0.1.0", path = "easytier-contrib/easytier-ohrs/crates/easytier-ohos-core", default-features = false }
