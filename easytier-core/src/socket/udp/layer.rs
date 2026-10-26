@@ -295,7 +295,15 @@ where
         let accept = self.classified_accept(protocol)?;
         accept.accept_enabled.store(true, Ordering::Relaxed);
         let mut accepted_rx = accept.accepted_rx.lock().await;
-        accepted_rx.recv().await.ok_or_else(|| {
+        let mut shutdown = self.session_shutdown_tx.subscribe();
+        // The layer owns the classified senders, so recv() alone does not
+        // finish when the socket receive task fails.
+        let session = tokio::select! {
+            biased;
+            _ = shutdown.wait_for(|closed| *closed) => None,
+            session = accepted_rx.recv() => session,
+        };
+        session.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("{protocol:?} udp listener closed"),
@@ -1175,7 +1183,7 @@ where
             self.factory.clone(),
         ));
         let mut session = layer.open_classified_session(request.protocol, request.remote_addr)?;
-        session._cleanup.layer_guard = Some(Box::new(layer));
+        session.keep_layer_alive(layer);
         Ok(session)
     }
 }

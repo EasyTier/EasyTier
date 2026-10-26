@@ -199,7 +199,6 @@ impl ClientManager {
         self.listeners_cnt.fetch_add(1, Ordering::Relaxed);
         let sessions = self.client_sessions.clone();
         let storage = self.storage.weak_ref();
-        let listeners_cnt = self.listeners_cnt.clone();
         let next_session_epoch = self.next_session_epoch.clone();
         let geoip_db = self.geoip_db.clone();
         let heartbeat_policy = self.heartbeat_policy;
@@ -207,15 +206,15 @@ impl ClientManager {
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
             let mut handshakes = JoinSet::new();
-            'accept: loop {
+            loop {
                 // Some listeners include a WebSocket upgrade in accept(). Keep
                 // that future alive while processing completed handshakes.
-                let accepting = listener.accept();
+                let accepting = easytier_core::socket::retry::accept_with_rebind(&mut listener);
                 tokio::pin!(accepting);
                 loop {
                     let result = tokio::select! {
                         accepted = &mut accepting, if handshakes.len() < MAX_PENDING_HANDSHAKES => {
-                            let Ok(tunnel) = accepted else { break 'accept };
+                            let tunnel = accepted;
                             handshakes.spawn(web_security::accept_or_upgrade_server_tunnel(tunnel));
                             break;
                         }
@@ -258,7 +257,6 @@ impl ClientManager {
                     session.mark_route_ready();
                 }
             }
-            listeners_cnt.fetch_sub(1, Ordering::Relaxed);
         });
 
         Ok(local_url)
