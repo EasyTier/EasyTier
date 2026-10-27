@@ -541,7 +541,7 @@ pub(crate) struct UdpSessionCleanup {
     session_close: Option<UdpSessionClose>,
     shutdown: Option<watch::Sender<bool>>,
     tasks: Vec<JoinHandle<()>>,
-    pub(super) layer_guard: Option<Box<dyn Send + Sync>>,
+    layer_guard: Arc<StdMutex<Option<Box<dyn Send + Sync>>>>,
 }
 
 impl std::fmt::Debug for UdpSessionCleanup {
@@ -550,7 +550,10 @@ impl std::fmt::Debug for UdpSessionCleanup {
             .field("has_session_close", &self.session_close.is_some())
             .field("has_shutdown", &self.shutdown.is_some())
             .field("tasks", &self.tasks.len())
-            .field("has_layer_guard", &self.layer_guard.is_some())
+            .field(
+                "has_layer_guard",
+                &self.layer_guard.lock().unwrap().is_some(),
+            )
             .finish()
     }
 }
@@ -594,10 +597,12 @@ impl UdpSession {
             rings.session_send_rx,
             close.clone(),
         ));
+        let layer_guard = Arc::new(StdMutex::new(None));
         let shutdown_task = tokio::spawn(close_udp_session_on_shutdown(
             shutdown,
             close.clone(),
             send_task.abort_handle(),
+            layer_guard.clone(),
         ));
 
         Self {
@@ -612,7 +617,7 @@ impl UdpSession {
                 session_close: Some(close),
                 shutdown: None,
                 tasks: vec![send_task, shutdown_task],
-                layer_guard: None,
+                layer_guard,
             },
         }
     }
@@ -621,7 +626,12 @@ impl UdpSession {
     where
         T: Send + Sync + 'static,
     {
-        self._cleanup.layer_guard = Some(Box::new(layer_guard));
+        let mut guard = self._cleanup.layer_guard.lock().unwrap();
+        // Accept may finish after shutdown. Synchronize with cleanup so a
+        // closed session cannot retain a failed listener's socket.
+        if !*self.closed.borrow() {
+            *guard = Some(Box::new(layer_guard));
+        }
     }
 
     pub(crate) fn into_tunnel_parts(self) -> UdpSessionTunnelParts {
@@ -899,12 +909,26 @@ async fn close_udp_session_on_shutdown(
     mut shutdown: watch::Receiver<bool>,
     close: UdpSessionClose,
     send_task: tokio::task::AbortHandle,
+    layer_guard: Arc<StdMutex<Option<Box<dyn Send + Sync>>>>,
 ) {
-    if !*shutdown.borrow() {
-        let _ = shutdown.changed().await;
+    let mut closed = close.close.subscribe();
+    if !*closed.borrow() {
+        if *shutdown.borrow() {
+            close.close();
+        } else {
+            tokio::select! {
+                biased;
+                _ = closed.changed() => {},
+                _ = shutdown.changed() => {
+                    if !*closed.borrow() {
+                        close.close();
+                    }
+                },
+            }
+        }
     }
-    close.close();
     send_task.abort();
+    layer_guard.lock().unwrap().take();
 }
 
 pub(super) fn dispatch_payload_to_session(
@@ -933,6 +957,31 @@ pub(super) fn dispatch_payload_to_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn closed_session_cleanup_preserves_replacement_with_same_key() {
+        let sessions = Arc::new(DashMap::new());
+        let key = UdpSessionKey::new("127.0.0.1:12001".parse().unwrap(), 1);
+        let old = create_udp_session_rings();
+        sessions.insert(key, udp_session_registry_entry(&old));
+        let close = UdpSessionClose::easy_tier(key, old.close_tx.clone(), sessions.clone());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let send_task = tokio::spawn(std::future::pending::<()>());
+        let mut cleanup = Box::pin(close_udp_session_on_shutdown(
+            shutdown_rx,
+            close.clone(),
+            send_task.abort_handle(),
+            Arc::new(StdMutex::new(None)),
+        ));
+        assert!(futures::poll!(&mut cleanup).is_pending());
+        close.close();
+        let replacement = create_udp_session_rings();
+        sessions.insert(key, udp_session_registry_entry(&replacement));
+        shutdown_tx.send(true).unwrap();
+        cleanup.await;
+        assert!(sessions.contains_key(&key));
+        assert!(!*replacement.close_rx.borrow());
+    }
 
     impl UdpSessionClose {
         fn signal_only(close: watch::Sender<bool>) -> Self {

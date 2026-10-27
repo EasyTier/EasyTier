@@ -457,6 +457,8 @@ fn connect_ns_to_bridge(ns: &str, guest_if: &str, host_if: &str, bridge: &str) {
 
 struct PublicIpv6Lab {
     network: TestNetwork,
+    #[cfg(feature = "tun")]
+    shared_virtual_nic_registry: crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry,
 }
 
 #[derive(Clone, Copy)]
@@ -643,7 +645,30 @@ impl PublicIpv6Lab {
             "net.ipv6.conf.all.forwarding=1",
         );
 
-        Self { network }
+        Self {
+            network,
+            #[cfg(feature = "tun")]
+            shared_virtual_nic_registry: Instance::new_shared_virtual_nic_registry(),
+        }
+    }
+
+    fn new_instance(
+        &self,
+        config: TomlConfigLoader,
+        process_runtime: Arc<CoreProcessRuntime>,
+    ) -> Instance {
+        // Reconnect through the same registry, as NativeInstanceFactory does,
+        // so old member cleanup and new registration share the TUN owner.
+        #[cfg(feature = "tun")]
+        {
+            Instance::new_with_process_runtime_and_shared_virtual_nic_registry(
+                config,
+                process_runtime,
+                self.shared_virtual_nic_registry.clone(),
+            )
+        }
+        #[cfg(not(feature = "tun"))]
+        Instance::new_with_process_runtime(config, process_runtime)
     }
 }
 
@@ -702,8 +727,8 @@ async fn init_public_ipv6_two_node_with_topology(
     );
     client_cfg.set_ipv6_public_addr_auto(true);
 
-    let mut provider = Instance::new_with_process_runtime(provider_cfg, process_runtime.clone());
-    let mut client = Instance::new_with_process_runtime(client_cfg, process_runtime.clone());
+    let mut provider = lab.new_instance(provider_cfg, process_runtime.clone());
+    let mut client = lab.new_instance(client_cfg, process_runtime.clone());
 
     provider.run().await.unwrap();
     client.run().await.unwrap();
@@ -985,7 +1010,7 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
         client_id,
     );
     client_cfg.set_ipv6_public_addr_auto(true);
-    let mut client = Instance::new_with_process_runtime(client_cfg, process_runtime.clone());
+    let mut client = lab.new_instance(client_cfg, process_runtime.clone());
     client.run().await.unwrap();
     provider.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
 

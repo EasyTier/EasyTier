@@ -1,5 +1,4 @@
 use bon::builder;
-use network_interface::NetworkInterfaceConfig as _;
 use std::net::{IpAddr, SocketAddr};
 
 use crate::common::netns::NetNS;
@@ -10,11 +9,18 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     if local_ip.is_unspecified() || local_ip.is_multicast() {
         return None;
     }
-    let ifaces = network_interface::NetworkInterface::show().ok()?;
-    for iface in ifaces {
-        for addr in iface.addr {
+    #[cfg(target_os = "windows")]
+    let ifaces = crate::common::network::get_interfaces_cached()?;
+    // Enumerate under the caller's namespace guard on non-Windows platforms.
+    #[cfg(not(target_os = "windows"))]
+    let ifaces = {
+        use network_interface::NetworkInterfaceConfig;
+        network_interface::NetworkInterface::show().ok()?
+    };
+    for iface in ifaces.iter() {
+        for addr in &iface.addr {
             if addr.ip() == *local_ip {
-                return Some(iface.name);
+                return Some(iface.name.clone());
             }
         }
     }
@@ -244,6 +250,8 @@ pub async fn bind<B: Bindable>(
 #[cfg(test)]
 pub(crate) mod tests {
     use atomic_shim::AtomicU64;
+    #[cfg(target_os = "windows")]
+    use std::time::Duration;
     use std::{sync::Arc, time::Instant};
 
     use anyhow::Context as _;
@@ -260,6 +268,74 @@ pub(crate) mod tests {
     };
 
     use crate::common::netns::NetNS;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn interface_snapshot_lookup_smoke_test() {
+        // The process-global cache may expire between reads. Identity checks
+        // belong to the isolated helper tests in common::network instead.
+        for _ in 0..2 {
+            let ifaces = crate::common::network::get_interfaces_cached()
+                .expect("interface lookup should work");
+            assert!(!ifaces.is_empty());
+        }
+    }
+
+    // Diagnostic probe for the issue #2735 slow candidate loop: run with
+    // `cargo test -p easytier --lib probe_interface_lookup -- --ignored --nocapture`.
+    // Compare only IP-to-name and name-to-index lookups, not socket binding.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "diagnostic probe; enumerates live Windows adapters"]
+    fn probe_interface_lookup_latency_with_and_without_cache() {
+        use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+        use std::net::IpAddr;
+
+        type EnumerateInterfaces = fn() -> Option<Arc<Vec<NetworkInterface>>>;
+
+        fn lookup_index(ip: IpAddr, enumerate: EnumerateInterfaces) -> Option<u32> {
+            let ifaces = enumerate()?;
+            let name = &ifaces
+                .iter()
+                .find(|iface| iface.addr.iter().any(|addr| addr.ip() == ip))?
+                .name;
+            let ifaces = enumerate()?;
+            ifaces
+                .iter()
+                .find(|iface| iface.name == *name)
+                .map(|iface| iface.index)
+        }
+
+        let ifaces = NetworkInterface::show().unwrap();
+        let candidates: Vec<_> = ifaces
+            .iter()
+            .flat_map(|iface| {
+                iface.addr.iter().filter_map(move |addr| {
+                    matches!(addr.ip(), IpAddr::V4(_)).then(|| (iface.name.clone(), addr.ip()))
+                })
+            })
+            .collect();
+        println!("IPv4 lookup candidates ({}):", candidates.len());
+
+        let providers: [(&str, EnumerateInterfaces); 2] = [
+            ("uncached", || NetworkInterface::show().ok().map(Arc::new)),
+            ("cached", crate::common::network::get_interfaces_cached),
+        ];
+        for (label, enumerate) in providers {
+            let mut total = Duration::ZERO;
+            for (name, ip) in &candidates {
+                let start = Instant::now();
+                let index = lookup_index(*ip, enumerate);
+                let elapsed = start.elapsed();
+                total += elapsed;
+                println!("  [{label}] {ip:>16} ({name}): lookup {elapsed:?}, index={index:?}");
+            }
+            println!(
+                "{label} lookup total: {total:?} ({} candidates)",
+                candidates.len()
+            );
+        }
+    }
 
     #[tokio::test]
     async fn bind_rejects_occupied_ports() {

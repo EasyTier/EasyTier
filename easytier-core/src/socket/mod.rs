@@ -6,6 +6,7 @@
 //! egress, environment facts, and the WASI mechanism backend) live in
 //! [`crate::host`].
 
+pub mod retry;
 pub mod ring;
 pub mod tcp;
 pub mod udp;

@@ -114,6 +114,7 @@ pub(crate) struct TcpPacketSummary {
     pub(crate) control: TcpControl,
     pub(crate) sequence: TcpSeqNumber,
     pub(crate) dst_port: u16,
+    pub(crate) ack_number: Option<TcpSeqNumber>,
 }
 
 pub(crate) async fn recv_tcp(receiver: &mut mpsc::Receiver<Vec<u8>>) -> TcpPacketSummary {
@@ -133,6 +134,7 @@ pub(crate) async fn recv_tcp(receiver: &mut mpsc::Receiver<Vec<u8>>) -> TcpPacke
         control: repr.control,
         sequence: repr.seq_number,
         dst_port: repr.dst_port,
+        ack_number: repr.ack_number,
     }
 }
 
