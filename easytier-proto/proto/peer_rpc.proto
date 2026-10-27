@@ -372,6 +372,65 @@ message PeerConnNoiseMsg2Pb {
   repeated string features = 11;
 }
 
+// Local transmit policy, not a negotiated connection profile.
+message PeerConnFecParameters {
+  optional uint32 window_packets = 1;
+  optional uint32 max_repair_percent = 2;
+  optional uint32 current_repair_percent = 3;
+  optional uint32 udp_payload_mtu = 4;
+}
+
+message PeerConnFecStats {
+  uint64 tx_source_packets = 1;
+  uint64 tx_source_bytes = 2;
+  uint64 tx_source_baseline_bytes = 3;
+  uint64 tx_repair_packets = 4;
+  uint64 tx_repair_bytes = 5;
+  uint64 rx_source_packets = 6;
+  uint64 rx_source_bytes = 7;
+  uint64 rx_repair_packets = 8;
+  uint64 rx_repair_bytes = 9;
+  uint64 recovered_packets = 10;
+  uint64 recovered_bytes = 11;
+  uint64 duplicate_packets = 12;
+  uint64 expired_symbols = 13;
+  uint64 window_drops = 14;
+  uint64 protocol_errors = 15;
+  uint64 bypass_oversize = 16;
+  uint64 bypass_ineligible = 17;
+  uint64 no_credit_repairs = 18;
+  uint64 rx_queue_drops = 19;
+  uint64 resource_drops = 20;
+  uint64 cache_evictions = 21;
+  uint64 memory_bytes = 22;
+  uint64 peak_memory_bytes = 23;
+  uint64 tx_window_packets = 24;
+  uint64 rx_window_packets = 25;
+  // Non-cumulative buckets: <=1ms, <=2ms, <=5ms, <=10ms, <=20ms, >20ms.
+  repeated uint64 recovery_latency_buckets = 26;
+  uint64 rx_equations = 27;
+  uint64 tx_feedback_packets = 28;
+  uint64 tx_feedback_bytes = 29;
+  uint64 rx_feedback_packets = 30;
+  uint64 rx_feedback_bytes = 31;
+  uint64 loss_samples = 32;
+  uint64 loss_packets = 33;
+}
+
+message PeerConnFecInfo {
+  // Local transmit policy captured when the connection was created.
+  bool desired_enabled = 1;
+  bool tx_active = 2;
+  // Ready to receive after the existing PeerConn handshake completes.
+  bool rx_active = 3;
+  string tx_reason = 4;
+  PeerConnFecParameters tx_parameters = 5;
+  PeerConnFecStats stats = 6;
+  bool desired_force_peer = 7;
+  // The peer requested FEC sending on this connection.
+  bool peer_requested = 8;
+}
+
 message RelayNoiseMsg1Pb {
   uint32 version = 1;
   optional uint32 a_session_generation = 3;

@@ -133,6 +133,7 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "socks5_proxy",
     "port_forward",
     "secure_mode",
+    "fec",
     "acl",
     "credential_file",
     "managed_credentials",
@@ -547,6 +548,11 @@ impl NetworkConfigExt for NetworkConfig {
             instance_recv_bps_limit: self.instance_recv_bps_limit,
             ..Default::default()
         });
+        if let Some(fec) = &self.fec {
+            let fec = crate::config::FecConfig::from(*fec);
+            fec.validate()?;
+            cfg.set_fec_config(fec);
+        }
         Ok(cfg)
     }
 
@@ -674,6 +680,7 @@ impl NetworkConfigExt for NetworkConfig {
         }
 
         result.secure_mode = config.get_secure_mode();
+        result.fec = Some(config.get_fec_config().into());
         result.credential_file = config
             .get_credential_file()
             .map(|path| path.to_string_lossy().into_owned());
@@ -927,6 +934,38 @@ mod tests {
             .gen_config()
             .is_err()
         );
+    }
+
+    #[test]
+    fn disabled_fec_round_trip_does_not_narrow_unvalidated_desired_values() {
+        let mut input = standalone_config();
+        input.fec = Some(easytier_proto::common::FecConfig {
+            enabled: Some(false),
+            force_peer: Some(true),
+            max_repair_percent: Some(0),
+            udp_payload_mtu: Some(u32::MAX),
+        });
+        let config = input.gen_config().unwrap();
+        let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+        assert!(crate::instance::CoreInstanceConfig::from_toml(&restored).is_ok());
+        let mut readback = NetworkConfig::new_from_config(&restored).unwrap();
+        assert_eq!(readback.fec, input.fec);
+        readback.fec.as_mut().unwrap().enabled = Some(true);
+        assert!(readback.gen_config().is_err());
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn full_toml_merge_replaces_fec_policy_instead_of_resurrecting_old_table() {
+        let original = "ipv4 = '10.0.0.1/24'\n[flags]\nmtu = 1320\n[fec]\nenabled = true\nudp_payload_mtu = 1600\n";
+        let parsed = TomlConfigLoader::new_from_str(original).unwrap();
+        let mut form = NetworkConfig::new_from_config(&parsed).unwrap();
+        form.fec.as_mut().unwrap().udp_payload_mtu = Some(576);
+        let merged = merge_network_config_toml(original, &form).unwrap();
+        let merged = TomlConfigLoader::new_from_str(&merged).unwrap();
+        let normalized = crate::instance::CoreInstanceConfig::from_toml(&merged).unwrap();
+        assert_eq!(normalized.peer.snapshot.fec.udp_payload_mtu, 576);
+        assert_eq!(normalized.peer.snapshot.flags.mtu, 1320);
     }
 
     #[test]

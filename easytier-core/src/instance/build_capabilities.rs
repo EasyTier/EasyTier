@@ -27,6 +27,7 @@ fn validate_snapshot(
     runtime: &CoreRuntimeConfig,
     peer: &PeerRuntimeSnapshot,
 ) -> anyhow::Result<()> {
+    peer.fec.validate()?;
     let core = &peer.runtime.core;
     require(DHCP_IPV4_AVAILABLE, runtime.dhcp_ipv4, "DHCP IPv4")?;
     require(DHCP_IPV6_AVAILABLE, runtime.dhcp_ipv6, "DHCP IPv6")?;

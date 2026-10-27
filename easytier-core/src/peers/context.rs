@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     net::IpAddr,
     sync::{
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -73,6 +73,8 @@ pub struct PeerRuntimeSnapshotInput {
     pub network_identity: NetworkIdentity,
     pub stun_info: StunInfo,
     pub flags: Flags,
+    pub fec: crate::config::FecConfig,
+    pub fec_supported: bool,
     pub secure_mode: Option<SecureModeConfig>,
     pub host_routing: HostRoutingPolicy,
     pub acl: Option<Acl>,
@@ -122,6 +124,8 @@ impl PeerRuntimeSnapshot {
             network_identity,
             stun_info,
             flags,
+            fec,
+            fec_supported,
             secure_mode,
             host_routing,
             acl,
@@ -182,6 +186,8 @@ impl PeerRuntimeSnapshot {
             easytier_version,
             avoid_relay_data_preference,
             flags,
+            fec,
+            fec_supported,
             pinned_peers,
             peer_group_memberships,
             acl_group_declarations,
@@ -262,6 +268,8 @@ pub(crate) struct CorePeerContextAdapters {
 /// runtime resources.
 pub(crate) struct CorePeerContext {
     config: CoreRuntimeConfigStore,
+    fec_config_source: CoreRuntimeConfigStore,
+    fec_budget: Arc<LazyLock<Arc<crate::peers::conn::fec::FecInstanceBudget>>>,
     avoid_relay_data_preference: AtomicBool,
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
@@ -284,6 +292,10 @@ impl CorePeerContext {
             public_ipv6_state,
             adapters,
             Arc::new(StatsManager::new()),
+            Arc::new(LazyLock::new(|| {
+                Arc::new(crate::peers::conn::fec::FecInstanceBudget::default())
+            })),
+            None,
         )
     }
 
@@ -295,7 +307,14 @@ impl CorePeerContext {
         adapters: CorePeerContextAdapters,
         parent: &CorePeerContext,
     ) -> Self {
-        Self::new_with_stats_manager(config, Arc::new(()), adapters, parent.stats_manager())
+        Self::new_with_stats_manager(
+            config,
+            Arc::new(()),
+            adapters,
+            parent.stats_manager(),
+            parent.fec_budget.clone(),
+            Some(parent.fec_config_source.clone()),
+        )
     }
 
     fn new_with_stats_manager(
@@ -303,6 +322,8 @@ impl CorePeerContext {
         public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
         adapters: CorePeerContextAdapters,
         stats_manager: Arc<StatsManager>,
+        fec_budget: Arc<LazyLock<Arc<crate::peers::conn::fec::FecInstanceBudget>>>,
+        fec_config_source: Option<CoreRuntimeConfigStore>,
     ) -> Self {
         let avoid_relay_data_preference =
             AtomicBool::new(config.snapshot().peer.avoid_relay_data_preference);
@@ -312,6 +333,8 @@ impl CorePeerContext {
                 .map_or_else(CredentialManager::new, CredentialManager::from_storage),
         );
         Self {
+            fec_config_source: fec_config_source.unwrap_or_else(|| config.clone()),
+            fec_budget,
             config,
             avoid_relay_data_preference,
             stun_info_source: adapters.stun_info_source,
@@ -554,6 +577,14 @@ pub(crate) trait PeerContext: Send + Sync {
         Flags::default()
     }
 
+    fn fec_config(&self) -> crate::config::FecConfig {
+        crate::config::FecConfig::default()
+    }
+
+    fn fec_budget(&self) -> Option<Arc<crate::peers::conn::fec::FecInstanceBudget>> {
+        None
+    }
+
     fn packet_policy(&self) -> PeerPacketPolicy {
         PeerPacketPolicy::from_flags(&self.flags())
     }
@@ -746,6 +777,18 @@ impl PeerContext for CorePeerContext {
 
     fn flags(&self) -> Flags {
         self.snapshot().flags.clone()
+    }
+
+    fn fec_config(&self) -> crate::config::FecConfig {
+        self.fec_config_source.snapshot().peer.fec.clone()
+    }
+
+    fn fec_budget(&self) -> Option<Arc<crate::peers::conn::fec::FecInstanceBudget>> {
+        self.fec_config_source
+            .snapshot()
+            .peer
+            .fec_supported
+            .then(|| LazyLock::force(&self.fec_budget).clone())
     }
 
     fn packet_policy(&self) -> PeerPacketPolicy {
@@ -1119,6 +1162,8 @@ pub(crate) mod tests {
             network_identity: NetworkIdentity::new("host-network".to_owned(), "secret".to_owned()),
             stun_info: StunInfo::default(),
             flags,
+            fec: crate::config::FecConfig::default(),
+            fec_supported: true,
             secure_mode: None,
             host_routing: HostRoutingPolicy {
                 local_exit_node_fallback: true,
@@ -1323,6 +1368,73 @@ pub(crate) mod tests {
 
     fn submitted_config(snapshot: PeerRuntimeSnapshot) -> CoreRuntimeConfigStore {
         CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot))
+    }
+
+    #[test]
+    fn fec_budget_is_lazy_shared_with_foreign_contexts_and_isolated_per_instance() {
+        use crate::peers::conn::fec::{FecInstanceBudget, PeerConnFec};
+
+        let store = submitted_config(submitted_snapshot("parent", false));
+        let mut parent = CorePeerContext::new(
+            store.clone(),
+            Arc::new(()),
+            test_core_context_adapters(Arc::new(())),
+        );
+        parent.fec_budget = Arc::new(LazyLock::new(|| {
+            Arc::new(FecInstanceBudget::new(1024 * 1024))
+        }));
+        let foreign = CorePeerContext::new_foreign(
+            submitted_config(submitted_snapshot("foreign", true)),
+            test_core_context_adapters(Arc::new(())),
+            &parent,
+        );
+        assert!(parent.fec_budget().is_none());
+        assert!(foreign.fec_budget().is_none());
+        store.update_peer_with(|snapshot| snapshot.fec_supported = true);
+        let receive_only = PeerConnFec::new(parent.fec_config(), true, parent.fec_budget());
+        assert!(receive_only.advertised());
+        assert!(!receive_only.info().desired_enabled);
+        receive_only.close();
+        let disabled = parent.fec_config();
+        store.update_peer_with(|snapshot| snapshot.fec.enabled = true);
+        assert!(!disabled.enabled);
+        assert!(foreign.fec_config().enabled);
+        assert_eq!(foreign.hostname(), "foreign");
+        assert!(foreign.flags().disable_relay_data);
+        assert!(!parent.flags().disable_relay_data);
+        let parent_budget = parent.fec_budget().unwrap();
+        let foreign_budget = foreign.fec_budget().unwrap();
+        assert!(Arc::ptr_eq(&parent_budget, &foreign_budget));
+        let mut connections = Vec::new();
+        for index in 0..64 {
+            let context = if index % 2 == 0 { &parent } else { &foreign };
+            let fec = PeerConnFec::new(context.fec_config(), true, context.fec_budget());
+            if !fec.advertised() {
+                break;
+            }
+            connections.push(fec);
+        }
+        for context in [&parent, &foreign] {
+            assert!(
+                !PeerConnFec::new(context.fec_config(), true, context.fec_budget()).advertised()
+            );
+        }
+        let other = CorePeerContext::new(
+            store,
+            Arc::new(()),
+            test_core_context_adapters(Arc::new(())),
+        );
+        let independent = PeerConnFec::new(other.fec_config(), true, other.fec_budget());
+        assert!(independent.advertised());
+        independent.close();
+        for fec in connections {
+            fec.close();
+        }
+        assert_eq!(foreign_budget.used_bytes(), 0);
+        let later = PeerConnFec::new(foreign.fec_config(), true, Some(foreign_budget));
+        assert!(later.advertised());
+        later.close();
+        assert_eq!(parent_budget.used_bytes(), 0);
     }
 
     #[test]

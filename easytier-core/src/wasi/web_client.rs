@@ -122,6 +122,7 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
         p2p_only: config.p2p_only,
         disable_tcp_hole_punching: config.disable_tcp_hole_punching,
         secure_mode: config.secure_mode.clone(),
+        fec: config.fec.clone(),
         acl: config.acl.clone(),
         port_forwards: config.port_forwards.clone(),
         lazy_p2p: config.lazy_p2p,

@@ -55,6 +55,7 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
         magic_dns_enabled: cfg!(feature = "magic-dns"),
         kcp_enabled: cfg!(feature = "kcp"),
         quic_enabled: cfg!(feature = "quic"),
+        udp_fec_enabled: true,
         udp_broadcast_enabled: cfg!(all(target_os = "windows", feature = "tun")),
         upnp_enabled: cfg!(feature = "upnp"),
         tcp_hole_punching_enabled: cfg!(feature = "tcp-hole-punch"),
@@ -76,6 +77,7 @@ pub(crate) fn compact_runtime_core_host_config() -> CoreInstanceHostConfig {
     config.magic_dns_enabled = false;
     config.kcp_enabled = false;
     config.quic_enabled = false;
+    config.udp_fec_enabled = false;
     config.udp_broadcast_enabled = false;
     config.upnp_enabled = false;
     config.tcp_hole_punching_enabled = false;
@@ -152,6 +154,29 @@ mod tests {
             cfg!(all(target_os = "linux", feature = "public-ipv6-provider"))
         );
         assert_eq!(config.easytier_version, EASYTIER_VERSION);
+    }
+
+    #[test]
+    fn compact_host_retains_desired_fec_without_activating_it() {
+        use easytier_core::config::toml::ConfigLoader as _;
+
+        let config = TomlConfig::new_from_str(
+            "ipv4 = '10.0.0.1/24'\n[fec]\nenabled = true\nudp_payload_mtu = 576\n",
+        )
+        .unwrap();
+        let native = easytier_core::instance::CoreInstanceConfig::from_toml_with_host(
+            &config,
+            &runtime_core_host_config(),
+        )
+        .unwrap();
+        assert!(native.peer.snapshot.fec.enabled);
+        let compact = easytier_core::instance::CoreInstanceConfig::from_toml_with_host(
+            &config,
+            &compact_runtime_core_host_config(),
+        )
+        .unwrap();
+        assert!(!compact.peer.snapshot.fec.enabled);
+        assert!(config.get_fec_config().enabled);
     }
 
     #[test]

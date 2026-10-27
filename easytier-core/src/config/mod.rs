@@ -12,6 +12,7 @@ pub mod api_input;
 mod browser;
 mod dhcp;
 mod encryption;
+mod fec;
 pub mod gateway;
 pub mod peers;
 pub mod runtime;
@@ -20,6 +21,7 @@ pub mod toml;
 pub use dhcp::DhcpConfig;
 pub(crate) use dhcp::valid_ipv6_subnet;
 pub use encryption::EncryptionAlgorithm;
+pub use fec::FecConfig;
 
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",

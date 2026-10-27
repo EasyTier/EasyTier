@@ -142,6 +142,10 @@ pub(super) fn new_wasi_core_runtime(
     let mut adapters = CoreHostAdapters::new(host, dns, packet_sink, process_runtime);
     adapters.instance_runtime = Arc::new(WasiInstanceRuntimeHost);
     adapters.events = Arc::new(WasiHostEventSink::new(event_sink));
+    #[cfg(feature = "wasm-host-tunnel")]
+    {
+        adapters.config.udp_fec_enabled = false;
+    }
     #[cfg(feature = "wasm-host-tunnel-outbound")]
     {
         adapters.config.connectivity = crate::instance::CoreConnectivityMode::OutboundOnly;

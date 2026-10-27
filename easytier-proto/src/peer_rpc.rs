@@ -11,6 +11,27 @@ include!(concat!(env!("OUT_DIR"), "/peer_rpc.rs"));
 #[cfg(feature = "json-rpc")]
 include!(concat!(env!("OUT_DIR"), "/peer_rpc.serde.rs"));
 
+impl std::fmt::Debug for PeerConnNoiseMsg2Pb {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PeerConnNoiseMsg2Pb")
+            .field("b_network_name", &self.b_network_name)
+            .field("role_hint", &self.role_hint)
+            .field("action", &self.action)
+            .field("b_session_generation", &self.b_session_generation)
+            .field("root_key_32", &"<redacted>")
+            .field("initial_epoch", &self.initial_epoch)
+            .field("b_conn_id", &self.b_conn_id)
+            .field("a_conn_id_echo", &self.a_conn_id_echo)
+            .field(
+                "server_encryption_algorithm",
+                &self.server_encryption_algorithm,
+            )
+            .field("features", &self.features)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PeerGroupInfo {
     pub fn generate_with_proof(group_name: String, group_secret: String, peer_id: PeerId) -> Self {
         let mut mac = Hmac::<Sha256>::new_from_slice(group_secret.as_bytes())
@@ -244,6 +265,17 @@ impl RouteConnBitmap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn noise_response_debug_does_not_disclose_session_secrets() {
+        let response = PeerConnNoiseMsg2Pb {
+            root_key_32: Some((1u8..=32).collect()),
+            ..Default::default()
+        };
+
+        let debug = format!("{response:?}");
+        assert!(!debug.contains(&format!("{:?}", response.root_key_32.as_ref().unwrap())));
+    }
 
     #[test]
     fn test_peer_group_info_new() {

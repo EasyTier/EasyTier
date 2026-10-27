@@ -30,6 +30,10 @@ message PeerConnInfo {
   bytes noise_remote_static_pubkey = 12;
   peer_rpc.SecureAuthLevel secure_auth_level = 13;
   peer_rpc.PeerIdentityType peer_identity_type = 14;
+  peer_rpc.PeerConnFecInfo fec = 15;
+  // Shared secure-session lifetime counter, not a per-connection/FEC counter.
+  // Connections sharing a session expose the same value; do not sum them.
+  uint64 session_replay_rejections = 16;
 }
 
 message PeerInfo {

@@ -206,6 +206,19 @@ Core owns scheduling, backpressure, cancellation, UDP session state, and
 protocol state even when each actual operation crosses a Host Adapter. A Host
 Adapter owns the real resource and performs the OS operation.
 
+UDP FEC lives in the `peers/conn/fec` Module, owned by each PeerConn. Existing
+handshake features advertise `udp-fec-v1` receive support independently of
+the local transmit switch. A `force_peer` handshake flag can request sending
+on that connection using the peer's own policy; there is no separate FEC negotiation
+or key exchange. Its asynchronous Adapter applies coding after the existing
+outbound filters and recovery before inbound filters, using ordinary UDP
+Tunnel packets. The Module owns bounded state, timers and shared-instance
+budgets without exposing handles through the generic Tunnel Interface or
+adding FEC policy to UDP sessions. Coding parameters are self-describing;
+received frames have no additional FEC authentication. Instance budgets cover
+FEC-owned storage, and send accounting measures Tunnel Sink acceptance.
+See [PeerConn UDP FEC](udp-fec-design.md) for wire, lifecycle and validation rules.
+
 For host-owned tunnels, ownership crosses the guest ABI only after a bounded
 Host listener queue accepts the tunnel. The queue is registered through
 `CoreHostAdapters` and consumed by the normal `CoreListenerRuntime`, so the
