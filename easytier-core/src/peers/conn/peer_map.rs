@@ -453,12 +453,12 @@ pub(crate) async fn direct_peer_info(peer_maps: &[Arc<PeerMap>]) -> PeerInfoForG
                 break;
             }
         }
-        let Some(min_lat) = conns
-            .into_iter()
-            .flatten()
-            .map(|conn| conn.stats.as_ref().unwrap().latency_us)
-            .min()
-        else {
+        let Some(min_lat) = min_measured_latency_us(
+            conns
+                .into_iter()
+                .flatten()
+                .map(|conn| conn.stats.as_ref().unwrap().latency_us),
+        ) else {
             continue;
         };
 
@@ -470,4 +470,38 @@ pub(crate) async fn direct_peer_info(peer_maps: &[Arc<PeerMap>]) -> PeerInfoForG
         );
     }
     ret
+}
+
+/// Lowest latency among the connections that already have a latency sample.
+///
+/// A freshly established connection reports `latency_us == 0` until its first
+/// ping completes. Treating that as a real value would advertise the peer as
+/// 1 ms away to the peer center, so latency-first routing could detour through
+/// a slow or lossy link until the next report. Unmeasured connections are
+/// skipped instead; a peer with none measured is left out of the report and is
+/// reported once its first sample arrives, because the peer list changes then.
+fn min_measured_latency_us(latencies_us: impl IntoIterator<Item = u64>) -> Option<u64> {
+    latencies_us.into_iter().filter(|lat| *lat > 0).min()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::min_measured_latency_us;
+
+    #[test]
+    fn unmeasured_connections_are_not_reported_as_fastest() {
+        assert_eq!(min_measured_latency_us([0, 306_000]), Some(306_000));
+        assert_eq!(min_measured_latency_us([306_000, 0, 93_000]), Some(93_000));
+    }
+
+    #[test]
+    fn peer_without_measured_connection_is_skipped() {
+        assert_eq!(min_measured_latency_us([0, 0]), None);
+        assert_eq!(min_measured_latency_us([]), None);
+    }
+
+    #[test]
+    fn sub_millisecond_lan_latency_is_still_reported() {
+        assert_eq!(min_measured_latency_us([400]), Some(400));
+    }
 }
