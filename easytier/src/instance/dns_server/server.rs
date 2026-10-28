@@ -197,6 +197,10 @@ impl Server {
         self.catalog.write().await.upsert(name, vec![authority]);
     }
 
+    pub async fn remove(&self, name: &LowerName) {
+        self.catalog.write().await.remove(name);
+    }
+
     pub async fn read_catalog(&self) -> RwLockReadGuard<'_, Catalog> {
         self.catalog.read().await
     }

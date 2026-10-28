@@ -8,7 +8,7 @@
 
 use super::{
     MAGIC_DNS_INSTANCE_SOCKET_ADDR,
-    config::{GeneralConfigBuilder, RunConfigBuilder},
+    config::{self, ConfiguredRecordStore, GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
     system_config::{OSConfig, SystemConfig},
 };
@@ -48,7 +48,14 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use std::sync::Mutex;
-use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    net::Ipv4Addr,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
@@ -58,8 +65,10 @@ pub(super) struct MagicDnsServerInstanceData {
     manage_fake_ip_route: bool,
     route_store: MagicDnsRecordStore,
     record_apply: tokio::sync::Mutex<()>,
+    configured_records: Mutex<ConfiguredRecordStore>,
+    default_zone: String,
 
-    system_config: Option<Box<dyn SystemConfig>>,
+    system_config: Option<Arc<dyn SystemConfig>>,
 }
 
 impl MagicDnsServerInstanceData {
@@ -105,7 +114,18 @@ impl MagicDnsServerInstanceData {
             .build()?;
         records.push(soa_record);
 
-        let authority = build_authority(zone, &records)?;
+        let mut authority = build_authority(zone, &records)?;
+        {
+            let configured = self.configured_records.lock().unwrap();
+            for record in configured
+                .clients
+                .values()
+                .filter_map(|zones| zones.get(zone))
+                .flatten()
+            {
+                authority.upsert_mut(record.clone(), 0);
+            }
+        }
 
         self.dns_server
             .upsert(
@@ -122,35 +142,82 @@ impl MagicDnsServerInstanceData {
 
     pub async fn update(&self) {
         let snapshot = self.route_store.snapshot();
-        for (zone, routes) in &snapshot.zones {
-            if let Err(e) = self.update_dns_records(routes.iter(), zone).await {
+        let zones: BTreeSet<_> = {
+            let configured = self.configured_records.lock().unwrap();
+            configured
+                .route_zones
+                .iter()
+                .cloned()
+                .chain(
+                    configured
+                        .clients
+                        .values()
+                        .flat_map(|zones| zones.keys().cloned()),
+                )
+                .collect()
+        };
+        for zone in &zones {
+            let routes = snapshot.zones.get(zone).into_iter().flatten();
+            if let Err(e) = self.update_dns_records(routes, zone).await {
                 tracing::error!("Failed to update DNS records for zone {}: {:?}", zone, e);
             }
         }
     }
 
-    async fn keep_zone_authoritative(&self, zone: &str) {
-        if let Err(e) = self
-            .update_dns_records(std::iter::empty::<&MagicDnsRoute>(), zone)
-            .await
-        {
-            tracing::error!(
-                "Failed to keep DNS zone {} authoritative after route prune: {:?}",
-                zone,
-                e
-            );
+    async fn remove_unused_zones(&self, zones: impl IntoIterator<Item = String>) {
+        for zone in zones {
+            let in_use = {
+                let configured = self.configured_records.lock().unwrap();
+                configured.route_zones.contains(&zone)
+                    || configured
+                        .clients
+                        .values()
+                        .any(|zones| zones.contains_key(&zone))
+            };
+            if !in_use {
+                self.dns_server.remove(&zone.parse().unwrap()).await;
+            }
         }
     }
 
-    fn do_system_config(&self, zone: &str) -> Result<(), anyhow::Error> {
-        if let Some(c) = &self.system_config {
-            c.set_dns(&OSConfig {
-                nameservers: vec![self.fake_ip.to_string()],
-                search_domains: vec![zone.to_string()],
-                match_domains: vec![zone.to_string()],
-            })?;
+    async fn do_system_config(&self) -> Result<(), anyhow::Error> {
+        let Some(configer) = self.system_config.clone() else {
+            return Ok(());
+        };
+        if self.configured_records.lock().unwrap().system_closed {
+            return Ok(());
         }
+        let domains: BTreeSet<_> = std::iter::once(self.default_zone.clone())
+            .chain(
+                self.configured_records
+                    .lock()
+                    .unwrap()
+                    .clients
+                    .values()
+                    .flat_map(|zones| zones.keys().cloned()),
+            )
+            .collect();
+        if self.configured_records.lock().unwrap().applied_domains == domains {
+            return Ok(());
+        }
+        let config = OSConfig {
+            nameservers: vec![self.fake_ip.to_string()],
+            search_domains: vec![self.default_zone.clone()],
+            match_domains: domains.iter().cloned().collect(),
+        };
+        tokio::task::spawn_blocking(move || configer.set_dns(&config)).await??;
+        self.configured_records.lock().unwrap().applied_domains = domains;
         Ok(())
+    }
+
+    async fn close_system_config(&self) {
+        let _apply = self.record_apply.lock().await;
+        self.configured_records.lock().unwrap().system_closed = true;
+        if let Some(configer) = &self.system_config
+            && let Err(error) = configer.close()
+        {
+            tracing::error!(?error, "Failed to close system config");
+        }
     }
 }
 
@@ -184,9 +251,25 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         let Some(remote_addr) = &tunnel_info.remote_addr else {
             return Err(anyhow::anyhow!("No remote addr").into());
         };
+        let config = input
+            .dns
+            .as_deref()
+            .map(toml::from_str)
+            .transpose()
+            .context("invalid DNS configuration")?;
+        let zones = config::parse_records(config.as_ref())?;
+        let zone = config::dns_origin(&input.zone)?;
         let _apply = self.record_apply.lock().await;
-        let zone = input.zone.clone();
         let remote_addr: url::Url = remote_addr.clone().into();
+        let client = remote_addr.to_string();
+        let removed = {
+            let mut configured = self.configured_records.lock().unwrap();
+            configured.route_zones.insert(zone.clone());
+            configured
+                .clients
+                .insert(client.clone(), zones)
+                .unwrap_or_default()
+        };
         let routes = input
             .routes
             .into_iter()
@@ -195,15 +278,11 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
                 ipv4_addr: route.ipv4_addr.unwrap_or_default().address.map(Into::into),
             })
             .collect();
-        let zone_removed =
-            self.route_store
-                .replace_client_routes(zone.clone(), remote_addr.to_string(), routes);
-
-        if zone_removed {
-            self.keep_zone_authoritative(&zone).await;
-        }
+        self.route_store.replace_client_routes(zone, client, routes);
 
         self.update().await;
+        self.remove_unused_zones(removed.into_keys()).await;
+        self.do_system_config().await?;
         Ok(Default::default())
     }
 
@@ -325,10 +404,22 @@ impl RpcServerHook for MagicDnsServerInstanceData {
         };
         let _apply = self.record_apply.lock().await;
         let remote_addr: url::Url = remote_addr.into();
-        for zone in self.route_store.remove_client(remote_addr.as_ref()) {
-            self.keep_zone_authoritative(&zone).await;
-        }
+        self.route_store.remove_client(remote_addr.as_ref());
+        let removed = self
+            .configured_records
+            .lock()
+            .unwrap()
+            .clients
+            .remove(remote_addr.as_ref())
+            .unwrap_or_default();
         self.update().await;
+        self.remove_unused_zones(removed.into_keys()).await;
+        if let Err(error) = self.do_system_config().await {
+            tracing::warn!(
+                ?error,
+                "failed to update system DNS after client disconnect"
+            );
+        }
     }
 }
 
@@ -444,6 +535,11 @@ impl MagicDnsServerInstance {
             Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
         }
 
+        let tld_dns_zone_clone = config::dns_origin(&global_ctx.get_flags().tld_dns_zone)?;
+        let configured_records = ConfiguredRecordStore {
+            route_zones: BTreeSet::from([tld_dns_zone_clone.clone()]),
+            ..Default::default()
+        };
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
             tun_dev: tun_dev.clone(),
@@ -452,7 +548,9 @@ impl MagicDnsServerInstance {
             manage_fake_ip_route,
             route_store: MagicDnsRecordStore::default(),
             record_apply: tokio::sync::Mutex::new(()),
-            system_config: get_system_config(tun_dev.as_deref())?,
+            configured_records: Mutex::new(configured_records),
+            default_zone: tld_dns_zone_clone.clone(),
+            system_config: get_system_config(tun_dev.as_deref())?.map(Arc::from),
         });
 
         rpc_server
@@ -460,18 +558,15 @@ impl MagicDnsServerInstance {
             .register(MagicDnsServerRpcServer::new_arc(data.clone()), "");
         rpc_server.set_hook(data.clone());
 
-        // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
-        let flags = global_ctx.get_flags();
-        let tld_dns_zone_clone = flags.tld_dns_zone.clone();
-
-        data.update_dns_records(std::iter::empty(), &tld_dns_zone_clone)
-            .await
-            .context("Failed to initialize DNS zone")?;
-
-        let data_clone = data.clone();
-        tokio::task::spawn_blocking(move || data_clone.do_system_config(&tld_dns_zone_clone))
-            .await
-            .context("Failed to configure system")??;
+        {
+            let _apply = data.record_apply.lock().await;
+            data.update_dns_records(std::iter::empty(), &tld_dns_zone_clone)
+                .await
+                .context("Failed to initialize DNS zone")?;
+            data.do_system_config()
+                .await
+                .context("Failed to configure system")?;
+        }
 
         // Install the resolver only after all fallible initialization has
         // completed, so construction failure cannot leave a managed pipeline
@@ -489,12 +584,7 @@ impl MagicDnsServerInstance {
     }
 
     pub async fn clean_env(&self) {
-        if let Some(configer) = &self.data.system_config {
-            let ret = configer.close();
-            if let Err(e) = ret {
-                tracing::error!("Failed to close system config: {:?}", e);
-            }
-        }
+        self.data.close_system_config().await;
 
         if self.data.manage_fake_ip_route
             && !self.tun_inet.contains(&self.data.fake_ip)
@@ -510,5 +600,290 @@ impl MagicDnsServerInstance {
 impl Drop for MagicDnsServerInstance {
     fn drop(&mut self) {
         println!("MagicDnsServerInstance dropped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::api::instance::Route;
+    use easytier_core::config::toml::{DnsConfig, DnsZoneConfig};
+    use hickory_proto::{
+        op::{Message, Query},
+        rr::{RData, RecordType},
+    };
+
+    #[derive(Default)]
+    struct SystemConfigSpy(Mutex<Vec<Vec<String>>>);
+
+    impl SystemConfig for SystemConfigSpy {
+        fn set_dns(&self, config: &OSConfig) -> io::Result<()> {
+            self.0.lock().unwrap().push(config.match_domains.clone());
+            Ok(())
+        }
+
+        fn close(&self) -> io::Result<()> {
+            self.0.lock().unwrap().push(Vec::new());
+            Ok(())
+        }
+    }
+
+    async fn data() -> MagicDnsServerInstanceData {
+        let data = MagicDnsServerInstanceData {
+            dns_server: Server::new(
+                RunConfigBuilder::default()
+                    .general(GeneralConfigBuilder::default().build().unwrap())
+                    .build()
+                    .unwrap(),
+            ),
+            tun_dev: None,
+            net_ns: NetNS::new(None),
+            fake_ip: "100.100.100.101".parse().unwrap(),
+            manage_fake_ip_route: false,
+            route_store: MagicDnsRecordStore::default(),
+            record_apply: tokio::sync::Mutex::new(()),
+            configured_records: Mutex::new(ConfiguredRecordStore {
+                route_zones: BTreeSet::from(["et.net.".to_owned()]),
+                ..Default::default()
+            }),
+            default_zone: "et.net.".to_owned(),
+            system_config: None,
+        };
+        data.update_dns_records(std::iter::empty(), "et.net.")
+            .await
+            .unwrap();
+        data
+    }
+
+    fn controller(port: u16) -> BaseController {
+        let mut ctrl = BaseController::default();
+        ctrl.set_tunnel_info(Some(TunnelInfo {
+            remote_addr: Some(
+                url::Url::parse(&format!("tcp://127.0.0.1:{port}"))
+                    .unwrap()
+                    .into(),
+            ),
+            ..Default::default()
+        }));
+        ctrl
+    }
+
+    fn request(origin: &str, records: &[&str], ip: &str) -> UpdateDnsRecordRequest {
+        UpdateDnsRecordRequest {
+            zone: "et.net.".to_owned(),
+            routes: vec![Route {
+                hostname: "node".to_owned(),
+                ipv4_addr: Some(Ipv4Inet::from_str(ip).unwrap().into()),
+                ..Default::default()
+            }],
+            dns: Some(
+                toml::to_string(&DnsConfig {
+                    zone: vec![DnsZoneConfig {
+                        origin: origin.to_owned(),
+                        ttl: Some(60),
+                        records: records.iter().map(|record| (*record).to_owned()).collect(),
+                    }],
+                })
+                .unwrap(),
+            ),
+        }
+    }
+
+    async fn query(
+        data: &MagicDnsServerInstanceData,
+        name: &str,
+        record_type: RecordType,
+    ) -> Message {
+        let mut request = Message::new();
+        request.add_query(Query::query(name.parse().unwrap(), record_type));
+        let response = data
+            .resolve_query_inner(MagicDnsQuery {
+                source: "127.0.0.1:5353".parse().unwrap(),
+                payload: request.to_vec().unwrap(),
+            })
+            .await
+            .unwrap();
+        Message::from_vec(&response).unwrap()
+    }
+
+    async fn a(data: &MagicDnsServerInstanceData, name: &str) -> Vec<Ipv4Addr> {
+        let mut answers = query(data, name, RecordType::A)
+            .await
+            .answers()
+            .iter()
+            .filter_map(|record| match record.data() {
+                RData::A(ip) => Some(ip.0),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        answers.sort();
+        answers
+    }
+
+    #[tokio::test]
+    async fn custom_records_survive_route_refresh_and_support_common_types() {
+        let data = data().await;
+        let records = [
+            "nas IN A 10.0.0.8",
+            "nas IN AAAA fd00::8",
+            "alias IN CNAME nas",
+            "info IN TXT \"local record\"",
+        ];
+        for ip in ["10.0.0.1/24", "10.0.0.2/24"] {
+            data.update_dns_record(controller(54001), request("ET.NET", &records, ip))
+                .await
+                .unwrap();
+            assert_eq!(
+                a(&data, "nas.et.net.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 8)]
+            );
+            assert!(query(&data, "alias.et.net.", RecordType::A).await.answers().iter()
+                .any(|record| matches!(record.data(), RData::CNAME(name) if name.0.to_string() == "nas.et.net.")));
+            assert_eq!(
+                a(&data, "node.et.net.").await,
+                vec![Ipv4Inet::from_str(ip).unwrap().address()]
+            );
+        }
+        assert!(matches!(
+            query(&data, "nas.et.net.", RecordType::AAAA)
+                .await
+                .answers()[0]
+                .data(),
+            RData::AAAA(_)
+        ));
+        assert!(matches!(
+            query(&data, "info.et.net.", RecordType::TXT)
+                .await
+                .answers()[0]
+                .data(),
+            RData::TXT(_)
+        ));
+        assert_eq!(
+            query(&data, "nas.et.net.", RecordType::A).await.answers()[0].ttl(),
+            60
+        );
+        data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
+            .await;
+        assert!(
+            query(&data, "nas.et.net.", RecordType::A)
+                .await
+                .answers()
+                .is_empty()
+        );
+        assert!(
+            data.dns_server
+                .read_catalog()
+                .await
+                .contains(&"et.net.".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_records_merge_clients_and_withdraw_only_their_records() {
+        let mut data = data().await;
+        let system_config = Arc::new(SystemConfigSpy::default());
+        data.system_config = Some(system_config.clone());
+        let first = controller(54001);
+        let second = controller(54002);
+        data.update_dns_record(
+            first.clone(),
+            request("example.test.", &["nas IN A 10.0.0.8"], "10.0.0.1/24"),
+        )
+        .await
+        .unwrap();
+        data.update_dns_record(
+            second.clone(),
+            request("EXAMPLE.TEST", &["nas IN A 10.0.0.9"], "10.0.0.2/24"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            a(&data, "nas.example.test.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 8), Ipv4Addr::new(10, 0, 0, 9)]
+        );
+        data.on_client_disconnected(first.get_tunnel_info().cloned())
+            .await;
+        assert_eq!(
+            a(&data, "nas.example.test.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 9)]
+        );
+        // An unrelated route update must keep the surviving client's records.
+        data.update_dns_record(
+            second.clone(),
+            request("example.test.", &["nas IN A 10.0.0.9"], "10.0.0.3/24"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            a(&data, "nas.example.test.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 9)]
+        );
+        assert_eq!(system_config.0.lock().unwrap().len(), 1);
+        data.on_client_disconnected(second.get_tunnel_info().cloned())
+            .await;
+        assert_eq!(
+            *system_config.0.lock().unwrap(),
+            vec![
+                vec!["et.net.".to_owned(), "example.test.".to_owned()],
+                vec!["et.net.".to_owned()]
+            ]
+        );
+        let catalog = data.dns_server.read_catalog().await;
+        assert!(!catalog.contains(&"example.test.".parse().unwrap()));
+        assert!(catalog.contains(&"et.net.".parse().unwrap()));
+        drop(catalog);
+        data.close_system_config().await;
+        data.update_dns_record(
+            controller(54003),
+            request("late.test.", &["nas IN A 10.0.0.10"], "10.0.0.3/24"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(system_config.0.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn custom_records_reject_invalid_replacements_and_allow_clearing() {
+        let data = data().await;
+        let ctrl = controller(54001);
+        data.update_dns_record(
+            ctrl.clone(),
+            request("example.test.", &["nas IN A 10.0.0.8"], "10.0.0.1/24"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            data.update_dns_record(
+                ctrl.clone(),
+                request("example.test.", &["nas IN A invalid"], "10.0.0.2/24")
+            )
+            .await
+            .is_err()
+        );
+        let mut invalid_toml = request("example.test.", &[], "10.0.0.2/24");
+        invalid_toml.dns = Some("zone = [".to_owned());
+        assert!(
+            data.update_dns_record(ctrl.clone(), invalid_toml)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            a(&data, "nas.example.test.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 8)]
+        );
+        assert_eq!(
+            a(&data, "node.et.net.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 1)]
+        );
+        let mut clear = request("example.test.", &[], "10.0.0.1/24");
+        clear.dns = None;
+        data.update_dns_record(ctrl, clear).await.unwrap();
+        assert!(
+            !data
+                .dns_server
+                .read_catalog()
+                .await
+                .contains(&"example.test.".parse().unwrap())
+        );
     }
 }

@@ -31,6 +31,8 @@ message DnsRecordList {
 message UpdateDnsRecordRequest {
     string zone = 1;
     repeated api.instance.Route routes = 2;
+    // Local-only configuration; this RPC is replaced by dns-policy's node RPC.
+    optional string dns = 3;
 }
 
 message GetDnsRecordResponse {
