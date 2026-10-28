@@ -8,8 +8,8 @@ license-file = "../../LICENSE"
 build = "build.rs"
 
 [dependencies]
-anyhow = "1.0"
-easytier = { path = "../../easytier", version = "2.7.0", default-features = false, features = [
+anyhow.workspace = true
+easytier = { workspace = true, features = [
     "aes-gcm",
     "dhcp-ipv4",
     "logging",
@@ -18,4 +18,4 @@ easytier = { path = "../../easytier", version = "2.7.0", default-features = fals
     "tun",
     "web-client",
 ] }
-tokio = { version = "1", default-features = false, features = ["macros", "rt", "signal"] }
+tokio = { workspace = true, features = ["macros", "rt", "signal"] }

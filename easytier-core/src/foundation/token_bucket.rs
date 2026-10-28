@@ -10,17 +10,16 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::foundation::time;
 
-#[async_trait::async_trait]
 pub(crate) trait ByteLimiter: Send + Sync {
-    async fn consume(&self, bytes: u64);
-
     fn try_consume(&self, bytes: u64) -> bool;
+
+    /// Bytes charged by this limiter so far.
+    fn metered_bytes(&self) -> u64 {
+        0
+    }
 }
 
-#[async_trait::async_trait]
 impl ByteLimiter for () {
-    async fn consume(&self, _bytes: u64) {}
-
     fn try_consume(&self, _bytes: u64) -> bool {
         true
     }
@@ -43,6 +42,7 @@ struct BucketState {
     available_tokens: u64,
     last_refill: Instant,
     refill_remainder: u64,
+    metered_bytes: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -84,6 +84,7 @@ impl TokenBucket {
                 available_tokens: config.capacity,
                 last_refill: Instant::now(),
                 refill_remainder: 0,
+                metered_bytes: 0,
             }),
             config,
             stop_notifier: Notify::new(),
@@ -123,25 +124,43 @@ impl TokenBucket {
 
     /// Attempt to consume tokens without blocking
     ///
+    /// Requests larger than the bucket capacity are charged one full
+    /// bucket instead of being rejected, so oversized packets can still
+    /// pass whenever the bucket holds a full burst; traffic consisting
+    /// only of oversized packets can therefore sustain up to
+    /// packet-size/capacity times the nominal rate.
+    ///
     /// # Returns
     /// `true` if tokens were consumed, `false` if insufficient tokens
     pub fn try_consume(&self, tokens: u64) -> bool {
         if self.stopped.load(Ordering::Acquire) {
             return true;
         }
-        // Fast path for oversized packets
-        if tokens > self.config.capacity {
-            return false;
-        }
+        let tokens = tokens.min(self.config.capacity);
 
         let mut state = self.state.lock();
-        self.refill(&mut state, Instant::now());
+        let now = Instant::now();
+        self.try_consume_locked(&mut state, tokens, now)
+    }
+
+    /// Consume from an already locked state at an explicit instant.
+    ///
+    /// Production takes the lock first and then reads the clock, so tests can
+    /// pass the same instant twice to observe the bucket without any refill.
+    fn try_consume_locked(&self, state: &mut BucketState, tokens: u64, now: Instant) -> bool {
+        self.refill(state, now);
         if state.available_tokens < tokens {
             return false;
         }
 
         state.available_tokens -= tokens;
+        state.metered_bytes = state.metered_bytes.saturating_add(tokens);
         true
+    }
+
+    /// Total bytes charged by this bucket so far.
+    pub fn metered_bytes(&self) -> u64 {
+        self.state.lock().metered_bytes
     }
 
     /// Consume tokens, sleeping until they become available.
@@ -169,6 +188,7 @@ impl TokenBucket {
                 self.refill(&mut state, Instant::now());
                 if state.available_tokens >= tokens {
                     state.available_tokens -= tokens;
+                    state.metered_bytes = state.metered_bytes.saturating_add(tokens);
                     return;
                 }
 
@@ -194,14 +214,13 @@ impl TokenBucket {
     }
 }
 
-#[async_trait::async_trait]
 impl ByteLimiter for TokenBucket {
-    async fn consume(&self, bytes: u64) {
-        TokenBucket::consume(self, bytes).await;
-    }
-
     fn try_consume(&self, bytes: u64) -> bool {
         TokenBucket::try_consume(self, bytes)
+    }
+
+    fn metered_bytes(&self) -> u64 {
+        TokenBucket::metered_bytes(self)
     }
 }
 
@@ -303,10 +322,14 @@ mod tests {
     #[tokio::test]
     async fn test_initial_state() {
         let bucket = TokenBucket::new(1000, 1000);
+        // Refill is time based; reuse one instant so no token can appear
+        // between the two calls regardless of scheduling.
+        let now = Instant::now();
+        let mut state = bucket.state.lock();
 
         // Should have full capacity initially
-        assert!(bucket.try_consume(1000));
-        assert!(!bucket.try_consume(1)); // Should be empty now
+        assert!(bucket.try_consume_locked(&mut state, 1000, now));
+        assert!(!bucket.try_consume_locked(&mut state, 1, now)); // Should be empty now
     }
 
     /// Test token consumption behavior
@@ -314,14 +337,18 @@ mod tests {
     async fn test_consumption() {
         let bucket = TokenBucket::new(1500, 1000);
 
+        // Same instant for every call: no refill can happen between them.
+        let now = Instant::now();
+        let mut state = bucket.state.lock();
+
         // First packet should succeed
-        assert!(bucket.try_consume(1000));
+        assert!(bucket.try_consume_locked(&mut state, 1000, now));
 
         // Second packet should fail (only 500 left)
-        assert!(!bucket.try_consume(600));
+        assert!(!bucket.try_consume_locked(&mut state, 600, now));
 
         // Should be able to take remaining tokens
-        assert!(bucket.try_consume(500));
+        assert!(bucket.try_consume_locked(&mut state, 500, now));
     }
 
     #[tokio::test]
@@ -469,13 +496,19 @@ mod tests {
     /// Test behavior when packet size exceeds capacity
     #[tokio::test]
     async fn test_oversized_packet() {
-        let bucket = TokenBucket::new(1500, 1000);
+        // Fill rate of 1 token/s keeps the test independent of timing:
+        // even a long scheduling stall cannot refill a meaningful amount.
+        let bucket = TokenBucket::new(1500, 1);
 
-        // Packet larger than capacity should be rejected
-        assert!(!bucket.try_consume(1600));
+        // Oversized packets are charged one full bucket instead of
+        // being rejected, so a full bucket always admits them.
+        assert!(bucket.try_consume(1600));
+        assert_eq!(bucket.state.lock().available_tokens, 0);
 
-        // Regular packets should still work
+        // A partially drained bucket still rejects them.
+        let bucket = TokenBucket::new(1500, 1);
         assert!(bucket.try_consume(1000));
+        assert!(!bucket.try_consume(1600));
     }
 
     #[tokio::test]

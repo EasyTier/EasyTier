@@ -14,6 +14,7 @@ use tokio::{sync::mpsc, task::JoinSet};
 use crate::{
     config::PeerId,
     foundation::{
+        small_map_shard_amount,
         stats::{ArcRpcMetrics, RpcMetricLabels, RpcMetricsProvider},
         time::timeout,
     },
@@ -109,8 +110,8 @@ impl Client {
         Self {
             mpsc: Mutex::new(MpscTunnel::new(ring_a, None)),
             transport: Mutex::new(MpscTunnel::new(ring_b, None)),
-            inflight_requests: Arc::new(DashMap::new()),
-            peer_info: Arc::new(DashMap::new()),
+            inflight_requests: Arc::new(DashMap::with_shard_amount(small_map_shard_amount())),
+            peer_info: Arc::new(DashMap::with_shard_amount(small_map_shard_amount())),
             tasks: Mutex::new(JoinSet::new()),
             metrics: None,
         }

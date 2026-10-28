@@ -66,6 +66,33 @@ instance, err := host.CreateInstanceTOML(ctx, "office", "", configTOML)
 `Instance.ShowNodeInfo` returns this instance's virtual IPv4 address and
 advertised hostname.
 
+### Logging
+
+Logging belongs to the Host and is independent of instance TOML and lifecycle.
+Pass an `io.Writer` when creating the Host to receive guest logs; nil discards
+them. The default level is `LogLevelInfo`. Change it before creating instances
+or at runtime through the Host:
+
+```go
+host, err := corehost.New(ctx, corehost.Options{LogWriter: os.Stdout})
+if err != nil {
+    return err
+}
+defer host.Close(ctx)
+if err := host.SetLogLevel(ctx, corehost.LogLevelDebug); err != nil {
+    return err
+}
+```
+
+`host.LogLevel(ctx)` reads the current level. `LogLevelOff` disables all logs.
+The level applies to every instance and the WebClient in this Host; other
+Hosts are independent. The WebClient's existing `LoggerRpc` controls the same
+level. Creating or closing an instance never resets it.
+
+Writes are synchronous, so the writer must not call back into this Host.
+Writer errors do not interrupt guest execution, and the Host does not close
+the writer.
+
 ### Web Client management
 
 A host can also connect to an EasyTier Web configuration server. The embedded

@@ -12,6 +12,8 @@ pub mod abi;
 pub mod adapter;
 #[cfg(target_os = "wasi")]
 pub(crate) mod imports;
+#[cfg(any(test, target_os = "wasi"))]
+mod logger;
 #[cfg(target_os = "wasi")]
 pub(crate) mod runtime;
 #[cfg(any(test, target_os = "wasi"))]

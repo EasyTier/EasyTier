@@ -350,7 +350,7 @@ pub(crate) fn prepare_proxy_tcp_socket(stream: &TcpStream) -> io::Result<()> {
 
     let socket = SockRef::from(stream);
     socket.set_tcp_keepalive(&keepalive)?;
-    if let Err(error) = socket.set_nodelay(true) {
+    if let Err(error) = socket.set_tcp_nodelay(true) {
         tracing::warn!(?error, "set_nodelay failed, ignore it");
     }
 

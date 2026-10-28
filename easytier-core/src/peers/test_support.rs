@@ -6,7 +6,7 @@
 use std::net::IpAddr;
 
 use cidr::{Ipv4Inet, Ipv6Inet};
-use easytier_proto::common::{FlagsInConfig, SecureModeConfig};
+use easytier_proto::common::{Flags, SecureModeConfig};
 use hmac::Hmac;
 use sha2::Sha256;
 
@@ -58,7 +58,7 @@ fn ipv6_inet_to_config(value: Ipv6Inet) -> IpPrefix {
 #[derive(Debug, Clone)]
 pub(crate) struct NoopPeerContext {
     network_identity: NetworkIdentity,
-    flags: FlagsInConfig,
+    flags: Flags,
     secure_mode: Option<SecureModeConfig>,
 }
 
@@ -66,7 +66,7 @@ impl NoopPeerContext {
     pub(crate) fn new(network_identity: NetworkIdentity) -> Self {
         Self {
             network_identity,
-            flags: FlagsInConfig::default(),
+            flags: Flags::default(),
             secure_mode: None,
         }
     }
@@ -77,7 +77,7 @@ impl NoopPeerContext {
         self
     }
 
-    pub(crate) fn with_flags(mut self, flags: FlagsInConfig) -> Self {
+    pub(crate) fn with_flags(mut self, flags: Flags) -> Self {
         self.flags = flags;
         self
     }
@@ -94,7 +94,7 @@ impl PeerContext for NoopPeerContext {
         self.network_identity.clone()
     }
 
-    fn flags(&self) -> FlagsInConfig {
+    fn flags(&self) -> Flags {
         self.flags.clone()
     }
 

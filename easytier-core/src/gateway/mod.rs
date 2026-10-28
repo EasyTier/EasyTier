@@ -27,6 +27,6 @@ pub use dataplane::{
     DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket,
 };
 #[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) use port_forward::PortForwardAdapter;
+pub(crate) use port_forward::{PortForwardAdapter, PreparedPortForwards};
 #[cfg(feature = "proxy-smoltcp-stack")]
 pub(crate) use socks5::Socks5GatewayAdapter;

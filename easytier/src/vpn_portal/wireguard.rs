@@ -9,7 +9,7 @@ mod engine;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt,
+    fmt, io,
     net::{Ipv6Addr, SocketAddr, SocketAddrV6},
     sync::{Arc, Mutex as StdMutex, RwLock, Weak},
 };
@@ -32,16 +32,51 @@ use sha2::Sha256;
 use tokio::{sync::mpsc, task::JoinSet};
 
 use crate::{
-    common::global_ctx::ArcGlobalCtx,
-    host_runtime::{NativeHostRuntime, native_host_runtime},
+    common::global_ctx::ArcGlobalCtx, host_runtime::native_host_runtime,
     socket::udp::RuntimeUdpSocket,
 };
 
 use self::engine::{DerivedClient, PortalEngine};
 
+// Endpoints retain this family-specific slot, not a socket generation. Holding
+// the read guard during send lets the reader release the old binding on failure.
+struct PortalSocket {
+    socket: tokio::sync::RwLock<Option<Arc<RuntimeUdpSocket>>>,
+    options: UdpBindOptions,
+}
+
+impl PortalSocket {
+    async fn send_to(&self, data: &[u8], remote: SocketAddr) -> io::Result<usize> {
+        let socket = self.socket.read().await;
+        match socket.as_ref() {
+            Some(socket) => socket.send_to(data, remote).await,
+            None => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "portal socket is rebinding",
+            )),
+        }
+    }
+
+    async fn rebind(&self) {
+        self.socket.write().await.take();
+        loop {
+            easytier_core::socket::retry::wait().await;
+            match native_host_runtime().bind_udp(self.options.clone()).await {
+                Ok(socket) => {
+                    *self.socket.write().await = Some(socket);
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(target: "CORE", %error, address = ?self.options.local_addr, "WireGuard portal UDP bind failed; retrying")
+                }
+            }
+        }
+    }
+}
+
 struct WireGuardPortalListener {
     url: url::Url,
-    sockets: Vec<Arc<RuntimeUdpSocket>>,
+    sockets: Vec<Arc<PortalSocket>>,
     receiver: mpsc::UnboundedReceiver<PortalSession>,
     engine: Arc<PortalEngine>,
     tasks: JoinSet<anyhow::Result<()>>,
@@ -66,15 +101,24 @@ impl SocketListener for WireGuardPortalListener {
             return Ok(());
         }
         self.listened = true;
-        for socket in &self.sockets {
-            let socket = socket.clone();
+        for socket in self.sockets.drain(..) {
             let engine = self.engine.clone();
             self.tasks.spawn(async move {
                 loop {
-                    let datagram = socket
-                        .recv_session_datagram()
-                        .await
-                        .context("WireGuard portal UDP receive failed")?;
+                    let datagram = {
+                        // Do not hold a read lock while waiting for traffic, or
+                        // retain this generation while trying to rebind its port.
+                        let current = socket.socket.read().await.as_ref().unwrap().clone();
+                        current.recv_session_datagram().await
+                    };
+                    let datagram = match datagram {
+                        Ok(datagram) => datagram,
+                        Err(error) => {
+                            tracing::warn!(target: "CORE", %error, address = ?socket.options.local_addr, "WireGuard portal UDP socket failed; rebinding");
+                            socket.rebind().await;
+                            continue;
+                        }
+                    };
                     engine
                         .handle_datagram(socket.clone(), datagram.remote_addr, &datagram.payload)
                         .await;
@@ -191,20 +235,21 @@ impl WireGuardPortalHost {
 
     async fn bind_socket(
         &self,
-        runtime: &NativeHostRuntime,
         address: SocketAddr,
         only_v6: bool,
-    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
+    ) -> anyhow::Result<Arc<PortalSocket>> {
         let context = SocketContext::default()
             .with_socket_mark(self.global_ctx.get_flags().socket_mark)
             .with_netns(self.global_ctx.net_ns.name().map(NetNamespace::new));
-        runtime
-            .bind_udp(
-                UdpBindOptions::port_bound_listener(address)
-                    .with_context(context)
-                    .with_only_v6(only_v6),
-            )
-            .await
+        let mut options = UdpBindOptions::port_bound_listener(address)
+            .with_context(context)
+            .with_only_v6(only_v6);
+        let socket = native_host_runtime().bind_udp(options.clone()).await?;
+        options.local_addr = Some(socket.local_addr()?);
+        Ok(Arc::new(PortalSocket {
+            socket: tokio::sync::RwLock::new(Some(socket)),
+            options,
+        }))
     }
 
     async fn apply_client_updates(&self, clients: &[PortalClientConfig]) -> anyhow::Result<()> {
@@ -285,16 +330,15 @@ impl PortalHost for WireGuardPortalHost {
             .setup
             .as_ref()
             .map_err(|error| anyhow::anyhow!(error.clone()))?;
-        let runtime = native_host_runtime();
         let primary = self
-            .bind_socket(&runtime, self.config.wireguard_listen, false)
+            .bind_socket(self.config.wireguard_listen, false)
             .await
             .context("failed to bind WireGuard VPN portal")?;
-        let local = primary.local_addr()?;
-        let mut sockets = vec![primary.clone()];
+        let local = primary.options.local_addr.unwrap();
+        let mut sockets = vec![primary];
         if let Some(v6_address) =
             secondary_ipv6_bind_address(self.config.wireguard_listen, local.port())
-            && let Ok(v6) = self.bind_socket(&runtime, v6_address, true).await
+            && let Ok(v6) = self.bind_socket(v6_address, true).await
         {
             sockets.push(v6);
         }
@@ -391,10 +435,71 @@ pub(crate) fn test_wireguard_keys(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn portal_socket_rebinds_while_endpoints_keep_their_reference() {
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut options = UdpBindOptions::port_bound_listener("127.0.0.1:0".parse().unwrap())
+            .with_need_protect(false);
+        let initial = native_host_runtime()
+            .bind_udp(options.clone())
+            .await
+            .unwrap();
+        let local = initial.local_addr().unwrap();
+        options.local_addr = Some(local);
+        let old_socket = Arc::downgrade(&initial);
+        let socket = Arc::new(PortalSocket {
+            socket: tokio::sync::RwLock::new(Some(initial)),
+            options,
+        });
+        let endpoint = socket.clone();
+        let mut rebind = Box::pin(socket.rebind());
+        assert!(futures::poll!(&mut rebind).is_pending());
+        assert!(old_socket.upgrade().is_none());
+        assert_eq!(
+            endpoint
+                .send_to(b"during-rebind", client.local_addr().unwrap())
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), rebind)
+                .await
+                .is_err()
+        );
+        assert!(socket.socket.read().await.is_none());
+        socket.rebind().await;
+
+        endpoint
+            .send_to(b"after-rebind", client.local_addr().unwrap())
+            .await
+            .unwrap();
+        let mut buffer = [0; 32];
+        let (len, source) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.recv_from(&mut buffer),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(&buffer[..len], b"after-rebind");
+        assert_eq!(source, local);
+    }
+
     #[test]
     fn named_wireguard_keys_are_stable_and_client_scoped() {
         let master = [7; 32];
         let client = derive_named_key(&master, b"wireguard-client", "laptop").unwrap();
+        // Pin the derived key across crypto dependency upgrades/downgrades.
+        // Independently calculated with RFC 5869 HKDF-SHA256.
+        assert_eq!(
+            client,
+            [
+                5, 98, 244, 32, 245, 111, 41, 24, 163, 149, 201, 218, 22, 228, 8, 224, 134, 16,
+                173, 29, 62, 138, 202, 41, 172, 230, 189, 237, 207, 100, 51, 236,
+            ]
+        );
         assert_eq!(
             client,
             derive_named_key(&master, b"wireguard-client", "laptop").unwrap()
@@ -409,6 +514,7 @@ mod tests {
     fn explicit_server_key_is_the_derivation_master() {
         let key = [9; 32];
         let config = VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "127.0.0.1:51820".parse().unwrap(),
             wireguard_private_key: Some(BASE64_STANDARD.encode(key)),
             clients: Vec::new(),
@@ -419,6 +525,7 @@ mod tests {
     #[test]
     fn portal_key_has_no_network_secret_fallback() {
         let config = VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "127.0.0.1:51820".parse().unwrap(),
             wireguard_private_key: None,
             clients: Vec::new(),

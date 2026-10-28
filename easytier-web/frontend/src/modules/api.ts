@@ -59,6 +59,156 @@ export interface ParseConfigResponse {
     error?: string;
 }
 
+export interface CentralNetworkSettings {
+    display_name: string;
+    network_name?: string | null;
+    networking_method: string;
+    public_server_url?: string | null;
+    peer_urls: string[];
+    virtual_cidr?: string | null;
+    secure_mode?: boolean;
+}
+
+export interface CentralNetworkSummary {
+    network_id: string;
+    display_name: string;
+    network_name: string;
+    networking_method: string;
+    virtual_cidr?: string | null;
+    secure_mode?: boolean;
+    member_count: number;
+    online_member_count: number;
+}
+
+export interface CentralNetworkDetail extends CentralNetworkSummary {
+    network_secret: string;
+    virtual_cidr?: string | null;
+    public_server_url?: string | null;
+    peer_urls: string[];
+}
+
+export interface CentralNetworkMember {
+    member_id: string;
+    device_id: string;
+    hostname: string | null;
+    hostname_override: string | null;
+    alias?: string | null;
+    virtual_ipv4: string | null;
+    allocated_ipv4?: string | null;
+    online: boolean;
+    running: boolean | null;
+    runtime_virtual_ipv4: string | null;
+    version: string | null;
+    error_msg: string | null;
+    has_override?: boolean;
+    proxy_cidrs?: string[];
+    temporary?: boolean;
+    credential_id?: string | null;
+    credential_expiry_unix?: number | null;
+}
+
+export interface GatewayInfo {
+    enabled: boolean;
+    peer_url?: string;
+    relay_data: boolean;
+}
+
+export interface NodeRouteInfo {
+    peer_id: number;
+    hostname: string;
+    ipv4_addr?: { address?: { addr?: number }, network_length?: number } | null;
+    cost: number;
+    path_latency: number;
+    proxy_cidrs: string[];
+    version: string;
+    next_hop_peer_id: number;
+}
+
+export interface NodePeerConn {
+    conn_id: string;
+    tunnel?: { tunnel_type?: string, local_addr?: any, remote_addr?: any } | null;
+    stats?: { latency_us?: number, rx_bytes?: number, tx_bytes?: number } | null;
+    loss_rate?: number;
+    is_closed?: boolean;
+}
+
+export interface NodePeerInfo {
+    peer_id: number;
+    conns: NodePeerConn[];
+}
+
+export interface NodeAclRuleStat {
+    rule?: { name?: string };
+    stat?: { packet_count?: number, byte_count?: number };
+}
+
+export interface NetworkCredential {
+    credential_id: string;
+    credential_secret: string;
+    expiry_unix: number;
+    reusable: boolean;
+    online_peers: TemporaryPeer[];
+}
+
+/// A device currently online through a credential; `credential_id` is null
+/// when it matches no stored credential anymore (e.g. revoked mid-flight).
+export interface TemporaryPeer {
+    peer_id: number;
+    credential_id: string | null;
+    credential_expiry_unix: number | null;
+    hostname: string | null;
+    ipv4: string | null;
+    version: string | null;
+}
+
+export interface BlockedDevice {
+    id: string;
+    user_id: number;
+    hostname: string;
+    alias?: string | null;
+    blocked_time: string;
+    attempt_count: number;
+    last_attempt_time?: string | null;
+}
+
+export interface ConsoleInfo {
+    username: string;
+    config_server_protocol: string;
+    config_server_port: number;
+    webhook_auth: boolean;
+}
+
+export type AclSelector =
+    | { type: 'all' }
+    | { type: 'member'; member_id: string }
+    | { type: 'subnet'; member_id: string; cidrs: string[] }
+    | { type: 'group'; name: string };
+
+export interface AclProtocolTarget {
+    protocol: 'tcp' | 'udp' | 'icmp' | 'icmpv6' | 'any';
+    ports: string[];
+    stateful: boolean;
+}
+
+export interface AclPolicyRule {
+    id: string;
+    name: string;
+    enabled: boolean;
+    action: 'allow' | 'deny';
+    sources: AclSelector[];
+    destinations: AclSelector[];
+    protocols: AclProtocolTarget[];
+}
+
+export interface AclPolicy {
+    default_action: 'allow' | 'deny';
+    rules: AclPolicyRule[];
+}
+
+export interface AclPolicyInfo {
+    policy: AclPolicy;
+}
+
 export class ApiClient {
     private client: AxiosInstance;
     private authFailedCb: Function | undefined;
@@ -169,9 +319,195 @@ export class ApiClient {
         return response.machines;
     }
 
+    public async delete_machine(machine_id: string, block = false): Promise<undefined> {
+        await this.client.delete(`/machines/${machine_id}`, { params: block ? { block: true } : {} });
+    }
+
+    public async update_machine_alias(machine_id: string, alias: string): Promise<undefined> {
+        await this.client.put(`/machines/${machine_id}/alias`, { alias });
+    }
+
+    public async list_blocked_devices(): Promise<BlockedDevice[]> {
+        const response = await this.client.get<any, { blocked: BlockedDevice[] }>('/blocked-devices');
+        return response.blocked;
+    }
+
+    public async unblock_device(machine_id: string): Promise<undefined> {
+        await this.client.delete(`/blocked-devices/${machine_id}`);
+    }
+
+    public async get_console_info(): Promise<ConsoleInfo> {
+        const response = await this.client.get<any, ConsoleInfo>('/console-info');
+        return response;
+    }
+
     public async get_summary(): Promise<Summary> {
         const response = await this.client.get<any, Summary>('/summary');
         return response;
+    }
+
+    // --- Central networks ---
+
+    public async list_networks(): Promise<CentralNetworkSummary[]> {
+        const response = await this.client.get<any, { networks: CentralNetworkSummary[] }>('/networks');
+        return response.networks;
+    }
+
+    public async create_network(settings: CentralNetworkSettings, network_secret?: string): Promise<CentralNetworkDetail> {
+        return await this.client.post<any, CentralNetworkDetail>('/networks', {
+            settings,
+            network_secret,
+        });
+    }
+
+    public async get_network(network_id: string): Promise<CentralNetworkDetail> {
+        return await this.client.get<any, CentralNetworkDetail>(`/networks/${network_id}`);
+    }
+
+    public async update_network(network_id: string, settings: CentralNetworkSettings, network_secret?: string): Promise<CentralNetworkDetail> {
+        return await this.client.patch<any, CentralNetworkDetail>(`/networks/${network_id}`, {
+            settings,
+            network_secret,
+        });
+    }
+
+    public async delete_network(network_id: string): Promise<undefined> {
+        await this.client.delete(`/networks/${network_id}`);
+    }
+
+    public async list_network_members(network_id: string): Promise<{ members: CentralNetworkMember[]; temporary_peers: TemporaryPeer[] }> {
+        const response = await this.client.get<any, { members: CentralNetworkMember[]; temporary_peers?: TemporaryPeer[] }>(`/networks/${network_id}/members`);
+        return { members: response.members, temporary_peers: response.temporary_peers ?? [] };
+    }
+
+    public async add_network_members(network_id: string, device_ids: string[], temporary = false, ttl_seconds?: number): Promise<undefined> {
+        await this.client.post(`/networks/${network_id}/members`, { device_ids, temporary, ttl_seconds });
+    }
+
+    public async get_network_acl_policy(network_id: string): Promise<AclPolicyInfo> {
+        const response = await this.client.get<any, AclPolicyInfo>(`/networks/${network_id}/acl-policy`);
+        return response;
+    }
+
+    public async update_network_acl_policy(network_id: string, policy: AclPolicy): Promise<AclPolicyInfo> {
+        const response = await this.client.put<any, AclPolicyInfo>(`/networks/${network_id}/acl-policy`, policy);
+        return response;
+    }
+
+    public async update_network_member(network_id: string, device_id: string, update: { hostname_override?: string | null, virtual_ipv4?: string | null, proxy_cidrs?: string[] }): Promise<CentralNetworkMember> {
+        return await this.client.patch<any, CentralNetworkMember>(`/networks/${network_id}/members/${device_id}`, update);
+    }
+
+    public async remove_network_member(network_id: string, device_id: string): Promise<undefined> {
+        await this.client.delete(`/networks/${network_id}/members/${device_id}`);
+    }
+
+    // --- Node runtime detail (per network instance, via proxy-rpc) ---
+
+    public async get_node_routes(machine_id: string, inst_id: string): Promise<NodeRouteInfo[]> {
+        const response = await this.client.post<any, { routes?: NodeRouteInfo[] }>(`/machines/${machine_id}/proxy-rpc`, {
+            service_name: 'api.instance.PeerManageRpcService',
+            method_name: 'list_route',
+            payload: { instance: { id: Utils.StrToUuid(inst_id) } },
+        });
+        return response.routes ?? [];
+    }
+
+    public async get_node_peers(machine_id: string, inst_id: string): Promise<NodePeerInfo[]> {
+        const response = await this.client.post<any, { peer_infos?: NodePeerInfo[] }>(`/machines/${machine_id}/proxy-rpc`, {
+            service_name: 'api.instance.PeerManageRpcService',
+            method_name: 'list_peer',
+            payload: { instance: { id: Utils.StrToUuid(inst_id) } },
+        });
+        return response.peer_infos ?? [];
+    }
+
+    public async get_node_acl_stats(machine_id: string, inst_id: string): Promise<NodeAclRuleStat[]> {
+        const response = await this.client.post<any, { acl_stats?: { rules?: NodeAclRuleStat[] } }>(`/machines/${machine_id}/proxy-rpc`, {
+            service_name: 'api.instance.AclManageRpcService',
+            method_name: 'get_acl_stats',
+            payload: { instance: { id: Utils.StrToUuid(inst_id) } },
+        });
+        return response.acl_stats?.rules ?? [];
+    }
+
+    public async get_member_config(network_id: string, device_id: string): Promise<any> {
+        return await this.client.get(`/networks/${network_id}/members/${device_id}/config`);
+    }
+
+    public async set_member_config(network_id: string, device_id: string, config: object): Promise<CentralNetworkMember> {
+        return await this.client.put(`/networks/${network_id}/members/${device_id}/config`, { config });
+    }
+
+    public async clear_member_config(network_id: string, device_id: string): Promise<undefined> {
+        await this.client.delete(`/networks/${network_id}/members/${device_id}/config`);
+    }
+
+    /// Full TOML config of the member's instance (what `easytier-cli node
+    /// config` prints), via proxy-rpc.
+    public async get_node_toml_config(machine_id: string, inst_id: string): Promise<string> {
+        const response = await this.client.post<any, { node_info?: { config?: string } }>(`/machines/${machine_id}/proxy-rpc`, {
+            service_name: 'api.instance.PeerManageRpcService',
+            method_name: 'show_node_info',
+            payload: { instance: { id: Utils.StrToUuid(inst_id) } },
+        });
+        return response.node_info?.config ?? '';
+    }
+
+    /// Device-wide logger level (0=disabled .. 5=trace), via proxy-rpc.
+    public async get_node_logger_level(machine_id: string): Promise<number> {
+        const response = await this.client.post<any, { level?: number | string }>(`/machines/${machine_id}/proxy-rpc`, {
+            service_name: 'api.logger.LoggerRpcService',
+            method_name: 'get_logger_config',
+            payload: {},
+        });
+        const level = response.level ?? 0;
+        return typeof level === 'number' ? level
+            : ['DISABLED', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'TRACE'].indexOf(level);
+    }
+
+    public async set_node_logger_level(machine_id: string, level: number): Promise<undefined> {
+        await this.client.post(`/machines/${machine_id}/proxy-rpc`, {
+            service_name: 'api.logger.LoggerRpcService',
+            method_name: 'set_logger_config',
+            payload: { level },
+        });
+    }
+
+    /// Interface IPv4 addresses reported by the device (per instance),
+    /// used to suggest selectable subnets in the member editor.
+    public async get_node_interface_ips(machine_id: string, inst_id: string): Promise<number[]> {
+        const response = await this.client.post<any, {
+            node_info?: { ip_list?: { interface_ipv4s?: Array<{ addr?: number }> } },
+        }>(`/machines/${machine_id}/proxy-rpc`, {
+            service_name: 'api.instance.PeerManageRpcService',
+            method_name: 'show_node_info',
+            payload: { instance: { id: Utils.StrToUuid(inst_id) } },
+        });
+        return (response.node_info?.ip_list?.interface_ipv4s ?? [])
+            .map(entry => entry.addr)
+            .filter((addr): addr is number => addr != null);
+    }
+
+    public async list_credentials(network_id: string): Promise<NetworkCredential[]> {
+        const response = await this.client.get<any, { credentials: NetworkCredential[] }>(`/networks/${network_id}/credentials`);
+        return response.credentials;
+    }
+
+    public async generate_credential(network_id: string, ttl_seconds: number, reusable = true, credential_id?: string): Promise<NetworkCredential> {
+        return await this.client.post<any, NetworkCredential>(`/networks/${network_id}/credentials`, {
+            ttl_seconds,
+            reusable,
+            credential_id,
+        });
+    }
+
+    public async revoke_credential(network_id: string, credential_id: string): Promise<undefined> {
+        await this.client.delete(`/networks/${network_id}/credentials/${encodeURIComponent(credential_id)}`);
+    }
+
+    public async get_gateway_info(): Promise<GatewayInfo> {
+        return await this.client.get<any, GatewayInfo>('/networks/gateway-info');
     }
 
     public captcha_url() {
@@ -238,20 +574,9 @@ class WebRemoteClient implements Api.RemoteClient {
             : undefined;
     }
     async patch_vpn_portal_clients(inst_id: string, patches: Array<Record<string, any>>): Promise<undefined> {
-        await this.client.post(
-            `/machines/${this.machine_id}/proxy-rpc`,
-            {
-                service_name: 'api.config.ConfigRpcService',
-                method_name: 'patch_config',
-                payload: {
-                    instance: {
-                        id: Utils.StrToUuid(inst_id),
-                    },
-                    patch: {
-                        vpn_portal_clients: patches,
-                    },
-                },
-            },
+        await this.client.patch(
+            `/machines/${this.machine_id}/networks/${inst_id}/vpn-portal-clients`,
+            { patches },
         );
     }
     async add_vpn_portal_client(inst_id: string, client: { name: string, virtual_ip: string, groups: string[] }): Promise<undefined> {

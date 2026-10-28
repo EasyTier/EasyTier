@@ -799,7 +799,7 @@ impl PortalModule {
 /// a portal with zero clients keeps listening and accepts nothing, so
 /// clearing all clients never produces a configuration that fails a later
 /// instance recreation.
-fn validate_clients(
+pub fn validate_clients(
     config: &PortalRuntimeConfig,
     runtime_config: &CoreInstanceRuntimeConfig,
 ) -> anyhow::Result<()> {

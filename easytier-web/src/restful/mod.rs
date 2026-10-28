@@ -1,5 +1,6 @@
 mod auth;
 pub(crate) mod captcha;
+mod central_network;
 mod network;
 pub(crate) mod oidc;
 mod rpc;
@@ -29,6 +30,7 @@ use tower_sessions_sqlx_store::SqliteStore;
 use users::{AuthSession, Backend};
 
 use crate::FeatureFlags;
+use crate::central_network::service::CentralNetworkService;
 use crate::client_manager::ClientManager;
 use crate::client_manager::storage::StorageToken;
 use crate::db::{Db, UserIdInDb};
@@ -43,8 +45,11 @@ struct Assets;
 pub struct RestfulServer {
     bind_addr: SocketAddr,
     client_mgr: Arc<ClientManager>,
+    central_service: Arc<CentralNetworkService>,
     feature_flags: Arc<FeatureFlags>,
     webhook_config: SharedWebhookConfig,
+    config_server_protocol: String,
+    config_server_port: u16,
     db: Db,
     oidc_config: oidc::OidcConfig,
     web_router: Option<Router>,
@@ -59,6 +64,21 @@ struct ListSessionJsonResp(Vec<StorageToken>);
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct GetSummaryJsonResp {
     device_count: u32,
+}
+
+#[derive(Clone)]
+struct ConsoleInfoConfig {
+    config_server_protocol: String,
+    config_server_port: u16,
+    webhook_auth: bool,
+}
+
+#[derive(serde::Serialize)]
+struct GetConsoleInfoJsonResp {
+    username: String,
+    config_server_protocol: String,
+    config_server_port: u16,
+    webhook_auth: bool,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -102,6 +122,19 @@ pub fn other_error<T: ToString>(error_message: T) -> Error {
     }
 }
 
+fn authed_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, HttpHandleError> {
+    auth_session
+        .user
+        .as_ref()
+        .map(|user| user.id())
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(other_error("No user id found")),
+            )
+        })
+}
+
 pub fn convert_db_error(e: DbErr) -> HttpHandleError {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -110,22 +143,29 @@ pub fn convert_db_error(e: DbErr) -> HttpHandleError {
 }
 
 impl RestfulServer {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         bind_addr: SocketAddr,
         client_mgr: Arc<ClientManager>,
+        central_service: Arc<CentralNetworkService>,
         db: Db,
         web_router: Option<Router>,
         feature_flags: Arc<FeatureFlags>,
         oidc_config: oidc::OidcConfig,
         webhook_config: SharedWebhookConfig,
+        config_server_protocol: String,
+        config_server_port: u16,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
         Ok(RestfulServer {
             bind_addr,
             client_mgr,
+            central_service,
             feature_flags,
             webhook_config,
+            config_server_protocol,
+            config_server_port,
             db,
             oidc_config,
             web_router,
@@ -146,15 +186,43 @@ impl RestfulServer {
     async fn handle_get_summary(
         auth_session: AuthSession,
         State(client_mgr): AppState,
+        Extension(config): Extension<ConsoleInfoConfig>,
+        Extension(service): Extension<Arc<CentralNetworkService>>,
     ) -> Result<Json<GetSummaryJsonResp>, HttpHandleError> {
         let Some(user) = auth_session.user else {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
-        let machines = client_mgr.list_machine_by_user_id(user.id()).await;
+        let device_count = if config.webhook_auth {
+            client_mgr.list_machine_by_user_id(user.id()).await.len()
+        } else {
+            service
+                .db
+                .list_devices(user.id())
+                .await
+                .map_err(convert_db_error)?
+                .len()
+        };
 
         Ok(GetSummaryJsonResp {
-            device_count: machines.len() as u32,
+            device_count: device_count as u32,
+        }
+        .into())
+    }
+
+    async fn handle_get_console_info(
+        auth_session: AuthSession,
+        Extension(config): Extension<ConsoleInfoConfig>,
+    ) -> Result<Json<GetConsoleInfoJsonResp>, HttpHandleError> {
+        let Some(user) = auth_session.user else {
+            return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
+        };
+
+        Ok(GetConsoleInfoJsonResp {
+            username: user.db_user.username,
+            config_server_protocol: config.config_server_protocol,
+            config_server_port: config.config_server_port,
+            webhook_auth: config.webhook_auth,
         }
         .into())
     }
@@ -252,7 +320,7 @@ impl RestfulServer {
                     get(Self::handle_list_all_sessions_internal),
                 )
                 .route(
-                    "/api/internal/users/:user-id/sessions/:machine-id",
+                    "/api/internal/users/{user-id}/sessions/{machine-id}",
                     delete(Self::handle_disconnect_session_internal),
                 )
                 .merge(NetworkApi::build_route_internal())
@@ -267,9 +335,16 @@ impl RestfulServer {
             None
         };
 
+        let central_routes = if self.webhook_config.has_external_endpoint() {
+            Router::new()
+        } else {
+            central_network::CentralNetworkApi::build_route()
+        };
         let mut app = Router::new()
             .route("/api/v1/summary", get(Self::handle_get_summary))
+            .route("/api/v1/console-info", get(Self::handle_get_console_info))
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
+            .merge(central_routes)
             .merge(NetworkApi::build_route())
             .merge(rpc::router())
             .route_layer(login_required!(Backend))
@@ -281,7 +356,13 @@ impl RestfulServer {
                 post(Self::handle_generate_config),
             )
             .route("/api/v1/parse-config", post(Self::handle_parse_config))
+            .layer(Extension(self.central_service.clone()))
             .layer(Extension(self.oidc_config.clone()))
+            .layer(Extension(ConsoleInfoConfig {
+                config_server_protocol: self.config_server_protocol.clone(),
+                config_server_port: self.config_server_port,
+                webhook_auth: self.webhook_config.has_external_endpoint(),
+            }))
             .layer(MessagesManagerLayer)
             .layer(auth_layer)
             .layer(tower_http::cors::CorsLayer::very_permissive())

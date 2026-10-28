@@ -1,3 +1,4 @@
+pub mod buf;
 #[cfg(feature = "management")]
 pub mod panic;
 pub mod string;
@@ -7,6 +8,21 @@ use std::sync::{Arc, Weak};
 
 #[cfg(feature = "management")]
 pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
+
+/// Select the process-wide TLS backend before starting application services.
+pub fn init_crypto_provider() {
+    #[cfg(any(
+        feature = "endpoint-discovery",
+        feature = "quic",
+        feature = "websocket"
+    ))]
+    {
+        // Cargo features are additive: another dependency can enable aws-lc
+        // alongside ring, making rustls's automatic selection panic (#2607).
+        // Keep an existing provider chosen by an embedding application.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
 
 pub fn check_tcp_available(port: u16) -> bool {
     let s = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);

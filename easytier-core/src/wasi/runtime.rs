@@ -3,24 +3,20 @@
 use crate::{
     config::toml::TomlConfig,
     connectivity::connector_host::HostConnectorEnvironmentSnapshot,
-    gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4Host},
+    gateway::dhcp::{DhcpAddresses, DhcpApplyOutcome, DhcpHost},
     instance::{CorePacketPlane, InstanceRuntimeHost},
 };
 
 struct WasiInstanceRuntimeHost;
 
 #[async_trait::async_trait]
-impl DhcpIpv4Host for WasiInstanceRuntimeHost {
+impl DhcpHost for WasiInstanceRuntimeHost {
     fn take_interface_closed(&self) -> bool {
         false
     }
 
-    async fn apply_dhcp_ipv4(
-        &self,
-        _previous: Option<cidr::Ipv4Inet>,
-        next: Option<cidr::Ipv4Inet>,
-    ) -> DhcpIpv4ApplyOutcome {
-        DhcpIpv4ApplyOutcome::applied(next)
+    async fn apply_dhcp(&self, next: DhcpAddresses) -> DhcpApplyOutcome {
+        DhcpApplyOutcome::applied(next)
     }
 }
 
@@ -29,7 +25,7 @@ impl InstanceRuntimeHost for WasiInstanceRuntimeHost {
     async fn prepare(
         &self,
         _packet_plane: std::sync::Arc<CorePacketPlane>,
-    ) -> anyhow::Result<Option<std::sync::Arc<dyn DhcpIpv4Host>>> {
+    ) -> anyhow::Result<Option<std::sync::Arc<dyn DhcpHost>>> {
         Ok(Some(std::sync::Arc::new(WasiInstanceRuntimeHost)))
     }
 
@@ -155,6 +151,12 @@ pub(super) fn new_wasi_core_runtime(
         adapters.config.proxy_enabled = false;
         adapters.config.ignore_unsupported_config = true;
         adapters.config.endpoint_protocols = host_tunnel_schemes.to_vec();
+    }
+    // A WASI guest has no OS TUN, so the TCP subnet proxy can only forward through the
+    // user-space stack. Advertise it whenever it is compiled in; never clear the flag, since
+    // the host-tunnel mode above may rely on it independently of this feature.
+    if cfg!(feature = "proxy-smoltcp-stack") {
+        adapters.config.set_smoltcp_stack(true);
     }
     #[cfg(feature = "wasm-host-tunnel")]
     #[cfg(not(feature = "wasm-host-tunnel-outbound"))]
@@ -685,7 +687,9 @@ mod abi {
 
     #[unsafe(no_mangle)]
     /// WASI command entrypoint used only to initialize the host runtime.
-    pub extern "C" fn _start() {}
+    pub extern "C" fn _start() {
+        crate::wasi::logger::init();
+    }
 
     #[unsafe(no_mangle)]
     /// Allocates a guest-owned ABI buffer and returns its linear-memory offset.

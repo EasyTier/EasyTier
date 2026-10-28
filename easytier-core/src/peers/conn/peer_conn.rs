@@ -1,5 +1,5 @@
 use arc_swap::ArcSwapOption;
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use futures::{StreamExt, TryFutureExt};
 use std::{
     any::Any,
@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
@@ -293,14 +293,12 @@ pub struct PeerConn {
     info: Option<HandshakeRequest>,
     is_client: Option<bool>,
 
-    // remote or local
-    is_hole_punched: bool,
-
     close_event_notifier: Arc<PeerConnCloseNotify>,
 
     ctrl_resp_sender: broadcast::Sender<ZCPacket>,
 
     latency_stats: Arc<WindowLatency>,
+    pub(super) fast_ping: Arc<AtomicBool>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
     liveness: PeerConnLiveness,
@@ -333,7 +331,7 @@ impl PeerConn {
             tunnel,
             None,
             peer_session_store,
-            PeerConnectionOrigin::Network,
+            PeerConnectionOrigin::Manual,
         )
     }
 
@@ -396,13 +394,12 @@ impl PeerConn {
             info: None,
             is_client: None,
 
-            is_hole_punched: true,
-
             close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id)),
 
             ctrl_resp_sender: ctrl_sender,
 
             latency_stats: Arc::new(WindowLatency::new(15)),
+            fast_ping: Arc::new(AtomicBool::new(false)),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
             liveness,
@@ -443,12 +440,23 @@ impl PeerConn {
         self.origin == PeerConnectionOrigin::Attached
     }
 
-    pub fn set_is_hole_punched(&mut self, is_hole_punched: bool) {
-        self.is_hole_punched = is_hole_punched;
+    pub fn is_hole_punched(&self) -> bool {
+        matches!(
+            self.origin,
+            PeerConnectionOrigin::TcpHolePunch | PeerConnectionOrigin::UdpHolePunch
+        )
     }
 
-    pub fn is_hole_punched(&self) -> bool {
-        self.is_hole_punched
+    fn max_ping_interval(&self) -> Duration {
+        match self.origin {
+            // TCP hole-punched connections need frequent traffic to stay alive.
+            PeerConnectionOrigin::TcpHolePunch => Duration::from_secs(1),
+            PeerConnectionOrigin::Manual
+            | PeerConnectionOrigin::Direct
+            | PeerConnectionOrigin::Listener
+            | PeerConnectionOrigin::UdpHolePunch
+            | PeerConnectionOrigin::Attached => Duration::from_secs(32),
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -1317,7 +1325,12 @@ impl PeerConn {
 
                     let mut zc_packet = ret.unwrap();
                     let buf_len = zc_packet.buf_len() as u64;
-                    let limited_payload_len = data_packet_payload_len(&zc_packet);
+                    if let Some(payload_len) = data_packet_payload_len(&zc_packet)
+                        && let Some(limiter) = recv_limiter.as_ref()
+                        && !limiter.try_consume(payload_len)
+                    {
+                        continue;
+                    }
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
                         tracing::error!(
                             "unexpected packet: {:?}, cannot decode peer manager hdr",
@@ -1344,12 +1357,6 @@ impl PeerConn {
                         .is_err()
                     {
                         break;
-                    }
-
-                    if let Some(payload_len) = limited_payload_len
-                        && let Some(limiter) = recv_limiter.as_ref()
-                    {
-                        limiter.consume(payload_len).await;
                     }
                 }
 
@@ -1378,23 +1385,33 @@ impl PeerConn {
             self.context.clone(),
             self.get_conn_info().network_name,
             self.liveness.clone(),
+            self.max_ping_interval(),
         );
+        pingpong.fast_ping = self.fast_ping.clone();
 
         let close_event_notifier = self.close_event_notifier.clone();
+        let conn_id = self.conn_id;
 
-        self.tasks.spawn(async move {
-            pingpong.pingpong().await;
+        self.tasks.spawn(
+            async move {
+                pingpong.pingpong().await;
 
-            tracing::warn!(?pingpong, "pingpong task exit");
+                tracing::warn!(?pingpong, "pingpong task exit");
 
-            close_event_notifier.notify_close();
+                close_event_notifier.notify_close();
 
-            Ok(())
-        });
+                Ok(())
+            }
+            .instrument(tracing::info_span!("peer_conn_pingpong", ?conn_id)),
+        );
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        Ok(self.sink.send(msg).await?)
+        if let Err(error) = self.sink.send(msg).await {
+            self.close_event_notifier.notify_close();
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     pub fn get_peer_id(&self) -> PeerId {
@@ -1451,6 +1468,11 @@ impl PeerConn {
 
     pub fn get_close_notifier(&self) -> Arc<PeerConnCloseNotify> {
         self.close_event_notifier.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn record_latency_for_test(&self, latency_us: u32) {
+        self.latency_stats.record_latency(latency_us);
     }
 
     pub fn get_stats(&self) -> PeerConnStats {
@@ -1525,5 +1547,42 @@ impl Drop for PeerConn {
     fn drop(&mut self) {
         // if someone drop a conn manually, the notifier is not called.
         self.close_event_notifier.notify_close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{peers::test_support::NoopPeerContext, tunnel::ring::create_ring_tunnel_pair};
+
+    #[tokio::test]
+    async fn connection_origin_determines_hole_punch_and_ping_policy() {
+        for (origin, is_hole_punched, max_interval) in [
+            (PeerConnectionOrigin::Manual, false, 32),
+            (PeerConnectionOrigin::Direct, false, 32),
+            (PeerConnectionOrigin::Listener, false, 32),
+            (PeerConnectionOrigin::TcpHolePunch, true, 1),
+            (PeerConnectionOrigin::UdpHolePunch, true, 32),
+            (PeerConnectionOrigin::Attached, false, 32),
+        ] {
+            // Admission determines the policy even when the transport is a ring.
+            let (tunnel, _remote_tunnel) = create_ring_tunnel_pair();
+            let conn = PeerConn::new_with_peer_id_hint_and_origin(
+                1,
+                Arc::new(NoopPeerContext::default()),
+                tunnel,
+                None,
+                Arc::new(PeerSessionStore::new()),
+                origin,
+            );
+
+            assert_eq!(conn.is_hole_punched(), is_hole_punched, "{origin:?}");
+            assert_eq!(
+                conn.max_ping_interval(),
+                Duration::from_secs(max_interval),
+                "{origin:?}",
+            );
+            assert_eq!(conn.is_attached(), origin == PeerConnectionOrigin::Attached);
+        }
     }
 }

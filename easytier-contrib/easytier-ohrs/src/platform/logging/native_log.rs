@@ -2,8 +2,7 @@ use super::log_manager;
 use napi_derive_ohos::napi;
 use std::collections::HashMap;
 use std::panic;
-use tracing::{Event, Subscriber};
-use tracing_core::Level;
+use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
 
@@ -13,6 +12,7 @@ fn panic_hook(info: &panic::PanicHookInfo) {
     log_manager::record_core_log(5, "RustPanic", &format!("{}", info));
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn init_panic_hook() {
     INITIALIZED.call_once(|| {
@@ -20,12 +20,14 @@ pub fn init_panic_hook() {
     });
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn hilog_global_options(domain: u32, tag: String) {
     let _ = domain;
     let _ = tag;
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn init_tracing_subscriber() {
     TRACING_INITIALIZED.call_once(|| {
@@ -58,8 +60,10 @@ fn tracing_callback(event: &Event, fields: HashMap<String, String>) {
     log_manager::record_core_log(level, &format!("Rust:{}", loc), &values);
 }
 
+type Callback = Box<dyn Fn(&Event, HashMap<String, String>) + Send + Sync>;
+
 struct CallbackLayer {
-    callback: Box<dyn Fn(&Event, HashMap<String, String>) + Send + Sync>,
+    callback: Callback,
 }
 
 impl<S: Subscriber> Layer<S> for CallbackLayer {

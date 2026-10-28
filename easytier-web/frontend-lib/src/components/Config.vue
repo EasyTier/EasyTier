@@ -1,26 +1,35 @@
 <script setup lang="ts">
 import { v4 as uuidv4 } from 'uuid'
-import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, MultiSelect, Panel, Password, SelectButton, ToggleButton } from 'primevue'
+import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputSwitch, InputText, MultiSelect, Panel, Password, SelectButton, ToggleButton } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
+  defaultFlagValue,
+  formFlags,
   NetworkConfig,
   normalizeNetworkConfig,
+  PEER_PROTOCOLS as protos,
   removeRow,
-  type VpnPortalClientConfig,
-  type VpnPortalConfig,
 } from '../types/network'
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
+import { createVpnPortalConfig } from '../modules/vpnPortal'
+import type { VpnPortalClientConfig } from '../types/network'
 
 const props = defineProps<{
   actionLabel?: string
   configInvalid?: boolean
   hostname?: string
+  /// Hide the secure-mode switch and the temporary-credential entry; for
+  /// callers where secure mode is a network-level property managed
+  /// elsewhere.
+  hideSecureMode?: boolean
+  /// Central members save their clients through the configuration owner.
+  editVpnPortalClients?: boolean
 }>()
 
 defineEmits(['runNetwork'])
@@ -30,21 +39,51 @@ const curNetwork = defineModel('curNetwork', {
   default: DEFAULT_NETWORK_CONFIG,
 })
 
-const { t } = useI18n()
+// --- network identity: shared secret (default) or admin-issued credential ---
+const identityMode = ref<'secret' | 'credential'>('secret')
 
-const protos: { [proto: string]: number } = {
-  tcp: 11010,
-  udp: 11010,
-  wg: 11011,
-  ws: 11011,
-  wss: 11012,
-  quic: 11012,
-  faketcp: 11013,
-  http: 80,
-  https: 443,
-  txt: 0,
-  srv: 0,
+// A pasted credential switches the form to credential mode; replacing the
+// whole config object (loading another network) re-derives the mode from it.
+watch(
+  () => curNetwork.value.credential_secret,
+  (secret) => {
+    if (secret) {
+      identityMode.value = 'credential'
+    }
+  },
+  { immediate: true },
+)
+watch(
+  curNetwork,
+  (network) => {
+    identityMode.value = network.credential_secret ? 'credential' : 'secret'
+  },
+  { immediate: true },
+)
+
+const useCredentialMode = () => {
+  identityMode.value = 'credential'
 }
+
+const useSecretMode = () => {
+  // Switching back is an explicit choice: drop the credential so saving
+  // uses the network secret instead of silently joining as the credential.
+  curNetwork.value.credential_secret = undefined
+  identityMode.value = 'secret'
+}
+
+const credentialInvalid = computed(
+  () => identityMode.value === 'credential' && !(curNetwork.value.credential_secret ?? '').trim(),
+)
+
+const secureModeEnabled = computed({
+  get: () => curNetwork.value.secure_mode?.enabled === true,
+  set: (value: boolean) => {
+    curNetwork.value.secure_mode = value ? { enabled: true } : undefined
+  },
+})
+
+const { t } = useI18n()
 
 const listenerExcludedProtos = new Set(['http', 'https', 'txt', 'srv'])
 const listenerProtos: { [proto: string]: number } = Object.fromEntries(
@@ -87,33 +126,27 @@ interface BoolFlag {
 }
 
 const bool_flags: BoolFlag[] = [
-  { field: 'latency_first', help: 'latency_first_help' },
-  { field: 'use_smoltcp', help: 'use_smoltcp_help' },
-  { field: 'disable_ipv6', help: 'disable_ipv6_help' },
+  // Every boolean flag the schema declares, plus the one network option the
+  // form offers as a checkbox.
+  ...formFlags(),
   { field: 'ipv6_public_addr_auto', help: 'ipv6_public_addr_auto_help' },
-  { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
-  { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
-  { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
-  { field: 'disable_quic_input', help: 'disable_quic_input_help' },
-  { field: 'disable_p2p', help: 'disable_p2p_help' },
-  { field: 'p2p_only', help: 'p2p_only_help' },
-  { field: 'lazy_p2p', help: 'lazy_p2p_help' },
-  { field: 'bind_device', help: 'bind_device_help' },
-  { field: 'no_tun', help: 'no_tun_help' },
-  { field: 'enable_exit_node', help: 'enable_exit_node_help' },
-  { field: 'relay_all_peer_rpc', help: 'relay_all_peer_rpc_help' },
-  { field: 'need_p2p', help: 'need_p2p_help' },
-  { field: 'multi_thread', help: 'multi_thread_help' },
-  { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
-  { field: 'disable_encryption', help: 'disable_encryption_help' },
-  { field: 'disable_tcp_hole_punching', help: 'disable_tcp_hole_punching_help' },
-  { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
-  { field: 'enable_udp_broadcast_relay', help: 'enable_udp_broadcast_relay_help' },
-  { field: 'disable_upnp', help: 'disable_upnp_help' },
-  { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
-  { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
-  { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
+
+/**
+ * Whether a flag's checkbox is on: what the configuration states, or the value
+ * the network runs with when it states nothing. A flag this config leaves unset
+ * is not off, it is the default, and several default to on.
+ */
+function flagChecked(field: keyof NetworkConfig): boolean {
+  const value = curNetwork.value[field]
+
+  return typeof value === 'boolean' ? value : defaultFlagValue(field)
+}
+
+/** A checkbox states a flag; leaving it alone leaves the config silent. */
+function setFlag(field: keyof NetworkConfig, value: boolean) {
+  Object.assign(curNetwork.value, { [field]: value })
+}
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
 
@@ -168,6 +201,10 @@ function syncNormalizedNetwork(network: NetworkConfig | undefined): void {
   }
 
   Object.assign(network, normalizeNetworkConfig(network))
+  if (network.vpn_portal_config?.enabled !== false && network.vpn_portal_config
+    && !network.vpn_portal_config.wireguard_private_key) {
+    network.vpn_portal_config.wireguard_private_key = createVpnPortalConfig().wireguard_private_key
+  }
 }
 
 watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: false })
@@ -205,26 +242,18 @@ const instanceRecvBpsLimitInput = computed<string>({
   },
 })
 
-function defaultVpnPortalConfig(): VpnPortalConfig {
-  return {
-    wireguard_listen: '0.0.0.0:22022',
-    clients: [],
-  }
-}
-
 const vpnPortalEnabled = computed({
-  get: () => curNetwork.value.vpn_portal_config !== undefined,
+  get: () => curNetwork.value.vpn_portal_config !== undefined
+    && curNetwork.value.vpn_portal_config.enabled !== false,
   set: (enabled: boolean) => {
-    curNetwork.value.vpn_portal_config = enabled ? defaultVpnPortalConfig() : undefined
-  },
-})
-
-const vpnPortalConfig = computed(() => curNetwork.value.vpn_portal_config ?? defaultVpnPortalConfig())
-
-const vpnPortalPrivateKey = computed({
-  get: () => vpnPortalConfig.value.wireguard_private_key ?? '',
-  set: (value: string | null | undefined) => {
-    vpnPortalConfig.value.wireguard_private_key = value && value.length > 0 ? value : undefined
+    if (enabled && !curNetwork.value.vpn_portal_config) {
+      curNetwork.value.vpn_portal_config = createVpnPortalConfig()
+    } else if (curNetwork.value.vpn_portal_config) {
+      if (enabled && !curNetwork.value.vpn_portal_config.wireguard_private_key) {
+        curNetwork.value.vpn_portal_config.wireguard_private_key = createVpnPortalConfig().wireguard_private_key
+      }
+      curNetwork.value.vpn_portal_config.enabled = enabled
+    }
   },
 })
 
@@ -244,11 +273,13 @@ function vpnPortalClientViewKey(client: VpnPortalClientConfig): string {
 }
 
 function addVpnPortalClient() {
-  vpnPortalConfig.value.clients.push({ name: '', virtual_ip: '', groups: [] })
+  curNetwork.value.vpn_portal_config?.clients.push({
+    name: `device-${uuidv4().slice(0, 8)}`, virtual_ip: '', groups: [],
+  })
 }
 
 function removeVpnPortalClient(index: number) {
-  vpnPortalConfig.value.clients.splice(index, 1)
+  curNetwork.value.vpn_portal_config?.clients.splice(index, 1)
 }
 </script>
 
@@ -286,11 +317,36 @@ function removeVpnPortalClient(index: number) {
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="network_name">{{ t('network_name') }}</label>
                   <InputText id="network_name" v-model="curNetwork.network_name" aria-describedby="network_name-help" />
+                  <div v-if="!hideSecureMode && identityMode === 'secret'" class="flex items-center gap-2">
+                    <InputSwitch inputId="secure_mode" v-model="secureModeEnabled" />
+                    <label for="secure_mode" class="cursor-pointer">{{ t('secure_mode') }}</label>
+                    <span class="pi pi-question-circle text-sm" v-tooltip.top="t('secure_mode_hint')"></span>
+                  </div>
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div v-if="identityMode === 'secret'" class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="network_secret">{{ t('network_secret') }}</label>
                   <Password id="network_secret" v-model="curNetwork.network_secret"
                     aria-describedby="network_secret-help" toggleMask :feedback="false" fluid />
+                  <template v-if="!hideSecureMode">
+                    <button type="button" class="self-start text-sm underline cursor-pointer bg-transparent border-none p-0"
+                      @click="useCredentialMode">
+                      {{ t('use_credential') }} <i class="pi pi-angle-right"></i>
+                    </button>
+                  </template>
+                </div>
+                <div v-else class="flex flex-col gap-2 basis-5/12 grow">
+                  <label for="credential_secret">{{ t('credential_secret') }}</label>
+                  <Password id="credential_secret" v-model="curNetwork.credential_secret"
+                    aria-describedby="credential_secret-help" toggleMask :feedback="false" fluid
+                    :class="{ 'p-invalid': credentialInvalid }" />
+                  <small id="credential_secret-help" class="text-xs">{{ t('credential_secret_hint') }}</small>
+                  <template v-if="!hideSecureMode">
+                    <div class="text-xs">{{ t('credential_mode_hint') }}</div>
+                    <button type="button" class="self-start text-sm underline cursor-pointer bg-transparent border-none p-0"
+                      @click="useSecretMode">
+                      <i class="pi pi-angle-left"></i> {{ t('use_network_secret') }}
+                    </button>
+                  </template>
                 </div>
               </div>
 
@@ -321,7 +377,8 @@ function removeVpnPortalClient(index: number) {
                   <div class="flex flex-row flex-wrap">
 
                     <div class="basis-[20rem] flex items-center" v-for="flag in bool_flags">
-                      <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" />
+                      <Checkbox :model-value="flagChecked(flag.field)" :input-id="flag.field" :binary="true"
+                        @update:model-value="setFlag(flag.field, $event)" />
                       <label :for="flag.field" class="ml-2"> {{ t(flag.field) }} </label>
                       <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
                     </div>
@@ -336,7 +393,8 @@ function removeVpnPortalClient(index: number) {
                     <label for="tld_dns_zone">{{ t('tld_dns_zone') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('tld_dns_zone_help')"></span>
                   </div>
-                  <InputText id="tld_dns_zone" v-model="curNetwork.tld_dns_zone"
+                  <InputText id="tld_dns_zone" :model-value="curNetwork.tld_dns_zone"
+                    @update:model-value="curNetwork.tld_dns_zone = $event?.trim() || undefined"
                     aria-describedby="tld_dns_zone-help" :placeholder="t('tld_dns_zone_placeholder')" />
                 </div>
               </div>
@@ -358,61 +416,49 @@ function removeVpnPortalClient(index: number) {
                 </div>
               </div>
 
-              <div class="flex flex-row gap-x-9 flex-wrap ">
-                <div class="flex flex-col gap-2 grow">
-                  <label>VPN Portal</label>
-                  <ToggleButton v-model="vpnPortalEnabled" on-icon="pi pi-check" off-icon="pi pi-times"
-                    :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
-                  <div v-if="vpnPortalEnabled" class="flex flex-col gap-3 w-full">
-                    <div class="flex flex-row gap-x-9 gap-y-3 flex-wrap w-full">
-                      <div class="flex flex-col gap-2 basis-5/12 grow">
-                        <label for="vpn_portal_wireguard_listen">{{ t('vpn_portal_wireguard_listen') }}</label>
-                        <InputText id="vpn_portal_wireguard_listen" v-model="vpnPortalConfig.wireguard_listen"
-                          :placeholder="t('vpn_portal_wireguard_listen_placeholder')" />
-                      </div>
-                      <div class="flex flex-col gap-2 basis-5/12 grow">
-                        <label for="vpn_portal_wireguard_private_key">{{ t('vpn_portal_wireguard_private_key') }}</label>
-                        <Password id="vpn_portal_wireguard_private_key"
-                          v-model="vpnPortalPrivateKey"
-                          :placeholder="t('vpn_portal_wireguard_private_key_placeholder')"
-                          toggleMask :feedback="false" fluid />
-                      </div>
-                    </div>
-
-                    <div class="flex items-center justify-between gap-3">
-                      <label>{{ t('vpn_portal_clients') }}</label>
-                      <Button icon="pi pi-plus" :label="t('vpn_portal_add_client')" severity="secondary" size="small"
-                        :disabled="vpnPortalConfig.clients.length >= 64"
-                        @click="addVpnPortalClient" />
-                    </div>
-
-                    <div v-if="vpnPortalConfig.clients.length === 0"
-                      class="text-sm text-surface-500 dark:text-surface-400">
-                      {{ t('vpn_portal_no_clients') }}
-                    </div>
-                    <div v-for="(client, index) in vpnPortalConfig.clients" :key="vpnPortalClientViewKey(client)"
-                      class="flex flex-row gap-3 flex-wrap items-end rounded border border-surface-200 dark:border-surface-700 p-3">
-                      <div class="flex flex-col gap-2 grow basis-3/12">
-                        <label :for="`vpn_portal_client_name_${index}`">{{ t('vpn_portal_client_name') }}</label>
-                        <InputText :id="`vpn_portal_client_name_${index}`" v-model="client.name"
-                          :placeholder="t('vpn_portal_client_name_placeholder')" />
-                      </div>
-                      <div class="flex flex-col gap-2 grow basis-3/12">
-                        <label :for="`vpn_portal_client_virtual_ip_${index}`">{{ t('vpn_portal_client_virtual_ip') }}</label>
-                        <InputText :id="`vpn_portal_client_virtual_ip_${index}`" v-model="client.virtual_ip"
-                          :placeholder="t('vpn_portal_client_virtual_ip_placeholder')" />
-                      </div>
-                      <div class="flex flex-col gap-2 grow basis-4/12">
-                        <label :for="`vpn_portal_client_groups_${index}`">{{ t('vpn_portal_client_groups') }}</label>
-                        <MultiSelect :input-id="`vpn_portal_client_groups_${index}`" v-model="client.groups"
-                          :options="vpnPortalGroupOptions" appendTo="self" filter fluid
-                          :placeholder="t('vpn_portal_client_groups_placeholder')" />
-                      </div>
-                      <Button icon="pi pi-trash" severity="danger" text rounded
-                        :aria-label="t('vpn_portal_remove_client')" @click="removeVpnPortalClient(index)" />
-                    </div>
-                  </div>
+              <div class="flex flex-col gap-3">
+                <div class="flex items-center gap-3">
+                  <Checkbox v-model="vpnPortalEnabled" input-id="vpn_portal_enabled" :binary="true" />
+                  <label for="vpn_portal_enabled">{{ t('vpn_portal_enable') }}</label>
                 </div>
+                <p class="text-sm text-surface-500 dark:text-surface-400">{{ t(editVpnPortalClients ? 'vpn_portal_config_clients_help' : 'vpn_portal_setup_help') }}</p>
+                <details v-if="vpnPortalEnabled && curNetwork.vpn_portal_config">
+                  <summary class="cursor-pointer text-sm">{{ t('vpn_portal_advanced') }}</summary>
+                  <div class="flex flex-col gap-2 mt-3">
+                    <label for="vpn_portal_wireguard_listen">{{ t('vpn_portal_wireguard_listen') }}</label>
+                    <InputText id="vpn_portal_wireguard_listen" v-model="curNetwork.vpn_portal_config.wireguard_listen"
+                      :placeholder="t('vpn_portal_wireguard_listen_placeholder')" />
+                  </div>
+                </details>
+                <template v-if="editVpnPortalClients && vpnPortalEnabled && curNetwork.vpn_portal_config">
+                  <div class="flex items-center justify-between gap-3">
+                    <label>{{ t('vpn_portal_clients') }}</label>
+                    <Button icon="pi pi-plus" :label="t('vpn_portal_add_client')" severity="secondary" size="small"
+                      :disabled="curNetwork.vpn_portal_config.clients.length >= 64" @click="addVpnPortalClient" />
+                  </div>
+                  <div v-if="curNetwork.vpn_portal_config.clients.length === 0"
+                    class="text-sm text-surface-500 dark:text-surface-400">{{ t('vpn_portal_no_clients') }}</div>
+                  <div v-for="(client, index) in curNetwork.vpn_portal_config.clients" :key="vpnPortalClientViewKey(client)"
+                    class="flex flex-row gap-3 flex-wrap items-end rounded border border-surface-200 dark:border-surface-700 p-3">
+                    <div class="flex flex-col gap-2 grow basis-3/12">
+                      <label :for="`vpn_portal_client_name_${index}`">{{ t('vpn_portal_client_name') }}</label>
+                      <InputText :id="`vpn_portal_client_name_${index}`" v-model="client.name" />
+                    </div>
+                    <div class="flex flex-col gap-2 grow basis-3/12">
+                      <label :for="`vpn_portal_client_virtual_ip_${index}`">{{ t('vpn_portal_client_virtual_ip') }}</label>
+                      <InputText :id="`vpn_portal_client_virtual_ip_${index}`" v-model="client.virtual_ip"
+                        :placeholder="t('vpn_portal_client_virtual_ip_placeholder')" />
+                    </div>
+                    <div v-if="vpnPortalGroupOptions.length" class="flex flex-col gap-2 grow basis-4/12">
+                      <label :for="`vpn_portal_client_groups_${index}`">{{ t('vpn_portal_client_groups') }}</label>
+                      <MultiSelect :input-id="`vpn_portal_client_groups_${index}`" v-model="client.groups"
+                        :options="vpnPortalGroupOptions" appendTo="self" filter fluid
+                        :placeholder="t('vpn_portal_client_groups_placeholder')" />
+                    </div>
+                    <Button icon="pi pi-trash" severity="danger" text rounded
+                      :aria-label="t('vpn_portal_remove_client')" @click="removeVpnPortalClient(index)" />
+                  </div>
+                </template>
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
@@ -637,7 +683,7 @@ function removeVpnPortalClient(index: number) {
           </Panel>
 
           <div class="flex pt-6 justify-center">
-            <Button :label="actionLabel || t('run_network')" icon="pi pi-arrow-right" icon-pos="right" :disabled="configInvalid"
+            <Button :label="actionLabel || t('run_network')" icon="pi pi-arrow-right" icon-pos="right" :disabled="configInvalid || credentialInvalid"
               @click="$emit('runNetwork', curNetwork)" />
           </div>
         </div>

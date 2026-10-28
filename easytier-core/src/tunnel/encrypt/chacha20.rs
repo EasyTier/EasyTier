@@ -1,5 +1,5 @@
-use chacha20poly1305::{AeadCore, AeadInPlace, ChaCha20Poly1305, Key, KeyInit};
-use rand::rngs::OsRng;
+use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, Key, KeyInit};
+use rand::{RngCore, rngs::OsRng};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::packet::{StandardAeadTail, ZCPacket};
@@ -76,7 +76,11 @@ impl Encryptor for ChaCha20Cipher {
                     .map_err(|_| Error::EncryptionFailed)
             })
             .transpose()?
-            .unwrap_or_else(|| ChaCha20Poly1305::generate_nonce(&mut OsRng));
+            .unwrap_or_else(|| {
+                let mut nonce = [0u8; StandardAeadTail::NONCE_SIZE];
+                OsRng.fill_bytes(&mut nonce);
+                nonce.into()
+            });
 
         let tag = self
             .cipher

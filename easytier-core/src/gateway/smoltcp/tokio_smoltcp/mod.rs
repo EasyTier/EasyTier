@@ -82,6 +82,9 @@ impl std::fmt::Debug for Net {
 }
 
 impl Net {
+    const EPHEMERAL_PORT_START: u16 = 10000;
+    const EPHEMERAL_PORT_END: u16 = 60001;
+
     /// Creates a new `Net` instance. It panics if the medium is not supported.
     pub fn new<D: device::AsyncDevice + 'static>(device: D, config: NetConfig) -> Net {
         Self::new2(device, config)
@@ -119,18 +122,44 @@ impl Net {
         Net {
             reactor: Arc::new(reactor),
             ip_addr: config.ip_addr,
-            from_port: AtomicU16::new(10001),
+            from_port: AtomicU16::new(Self::EPHEMERAL_PORT_START + 1),
             stopper,
             _fut: AbortOnDropHandle::new(tokio::spawn(fut)),
         }
     }
+    fn next_port(port: u16) -> u16 {
+        if port >= Self::EPHEMERAL_PORT_END {
+            Self::EPHEMERAL_PORT_START
+        } else {
+            port + 1
+        }
+    }
+
     pub fn get_port(&self) -> u16 {
         self.from_port
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                Some(if x > 60000 { 10000 } else { x + 1 })
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |port| {
+                Some(Self::next_port(port))
             })
             .unwrap()
     }
+    /// Visit each ephemeral port once, independently of concurrent allocations.
+    pub(crate) fn ephemeral_ports(&self) -> impl Iterator<Item = u16> {
+        let start = self.get_port();
+        std::iter::once(start).chain(
+            (start + 1..=Self::EPHEMERAL_PORT_END)
+                .chain(Self::EPHEMERAL_PORT_START..start)
+                .inspect(|&port| {
+                    // Follow the scan, but never overwrite another allocator's progress.
+                    let _ = self.from_port.compare_exchange(
+                        port,
+                        Self::next_port(port),
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                }),
+        )
+    }
+
     /// Creates a new TcpListener, which will be bound to the specified address.
     pub async fn tcp_bind(&self, addr: SocketAddr) -> io::Result<TcpListener> {
         let addr = self.set_address(addr);
@@ -186,5 +215,38 @@ fn socket_addr_to_endpoint(addr: SocketAddr) -> smoltcp::wire::IpEndpoint {
 impl Drop for Net {
     fn drop(&mut self) {
         self.stopper.notify_waiters()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::{phy::Medium, wire::HardwareAddress};
+
+    #[allow(clippy::unused_async)]
+    #[tokio::test]
+    async fn port_allocation_returns_previous_value_and_wraps() {
+        let mut capabilities = device::DeviceCapabilities::default();
+        capabilities.medium = Medium::Ip;
+        capabilities.max_transmission_unit = 1280;
+        let (device, _ingress, _egress) = channel_device::ChannelDevice::new(capabilities);
+        let net = Net::new(
+            device,
+            NetConfig::new(
+                Config::new(HardwareAddress::Ip),
+                "10.126.126.1/24".parse().unwrap(),
+                Vec::new(),
+                None,
+            ),
+        );
+
+        assert_eq!(net.get_port(), 10001);
+        assert_eq!(net.get_port(), 10002);
+
+        net.from_port.store(60000, Ordering::SeqCst);
+        assert_eq!(net.get_port(), 60000);
+        assert_eq!(net.get_port(), 60001);
+        assert_eq!(net.get_port(), 10000);
+        assert_eq!(net.get_port(), 10001);
     }
 }

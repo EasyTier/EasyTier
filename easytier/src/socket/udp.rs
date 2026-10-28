@@ -157,16 +157,6 @@ impl RuntimeUdpSocketFactory {
 
         BindDev::Disabled
     }
-
-    fn reuse_addr_for(&self, options: &UdpBindOptions) -> bool {
-        options.reuse_addr
-            || (matches!(
-                options.purpose,
-                UdpSocketPurpose::PortBoundListener
-                    | UdpSocketPurpose::ProxyNat
-                    | UdpSocketPurpose::PortForward
-            ) && !cfg!(target_os = "windows"))
-    }
 }
 
 /// Creates a host-owned UDP socket, including any required protection, before
@@ -181,7 +171,9 @@ pub(crate) async fn create_udp_socket(options: &UdpBindOptions) -> anyhow::Resul
         .dev(factory.bind_device_for(options))
         .net_ns(NetNS::from_socket_context(&options.context))
         .only_v6(options.only_v6)
-        .reuse_addr(factory.reuse_addr_for(options))
+        // Independent UDP receivers must not share a bound endpoint, including
+        // kernel-assigned ports. Only an explicit request may enable reuse.
+        .reuse_addr(options.reuse_addr)
         .reuse_port(options.reuse_port)
         .maybe_socket_mark(options.context.socket_mark)
         .need_protect(options.need_protect)
@@ -215,6 +207,78 @@ mod tests {
     use crate::host_runtime::native_host_runtime;
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn runtime_udp_bind_rejects_occupied_port() {
+        for local_addr in ["0.0.0.0:0", "[::]:0"] {
+            let local_addr = local_addr.parse().unwrap();
+            for bind in [
+                UdpBindOptions::port_bound_listener(local_addr),
+                UdpBindOptions::proxy_nat().with_local_addr(Some(local_addr)),
+                UdpBindOptions::port_forward(local_addr),
+            ] {
+                let bind = bind.with_only_v6(true);
+                let listener = create_udp_socket(&bind).await.unwrap();
+                let occupied = bind.with_local_addr(Some(listener.local_addr().unwrap()));
+
+                for reuse_addr in [false, true] {
+                    let error = create_udp_socket(&occupied.clone().with_reuse_addr(reuse_addr))
+                        .await
+                        .expect_err("another socket must not share a bound receive endpoint");
+                    assert!(matches!(
+                        error.downcast_ref::<easytier_core::tunnel::TunnelError>(),
+                        Some(easytier_core::tunnel::TunnelError::IOError(error))
+                            if error.kind() == std::io::ErrorKind::AddrInUse
+                    ));
+                }
+
+                drop(listener);
+                create_udp_socket(&occupied).await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_udp_listeners_keep_ephemeral_ports_and_packets_separate() {
+        for (bind_addr, loopback) in [
+            ("0.0.0.0:0", "127.0.0.1".parse::<IpAddr>().unwrap()),
+            ("[::]:0", "::1".parse::<IpAddr>().unwrap()),
+        ] {
+            let bind_addr = bind_addr.parse().unwrap();
+            let binds = [
+                UdpBindOptions::port_bound_listener(bind_addr),
+                UdpBindOptions::proxy_nat().with_local_addr(Some(bind_addr)),
+                UdpBindOptions::port_forward(bind_addr),
+            ];
+            let mut listeners = Vec::new();
+            let mut ports = std::collections::HashSet::new();
+            for index in 0..128 {
+                let bind = binds[index % binds.len()].clone().with_only_v6(true);
+                let listener = create_udp_socket(&bind).await.unwrap();
+                assert!(ports.insert(listener.local_addr().unwrap().port()));
+                listeners.push(listener);
+            }
+
+            let sender = UdpSocket::bind(SocketAddr::new(loopback, 0)).await.unwrap();
+            for (index, listener) in listeners.iter().enumerate() {
+                let destination = SocketAddr::new(loopback, listener.local_addr().unwrap().port());
+                sender.send_to(&[index as u8], destination).await.unwrap();
+            }
+            for (index, listener) in listeners.iter().enumerate() {
+                let mut packet = [0; 16];
+                let (len, source) = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    listener.recv_from(&mut packet),
+                )
+                .await
+                .expect("listener did not receive its packet")
+                .unwrap();
+                assert_eq!(&packet[..len], &[index as u8]);
+                assert_eq!(source, sender.local_addr().unwrap());
+            }
+        }
+    }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[tokio::test]
@@ -360,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn factory_interprets_bind_defaults_by_purpose() {
+    fn factory_interprets_bind_device_by_purpose() {
         let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
         let factory = RuntimeUdpSocketFactory::new();
 
@@ -384,20 +448,6 @@ mod tests {
             factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
             BindDev::Disabled
         ));
-        assert_eq!(
-            factory.reuse_addr_for(&UdpBindOptions::port_bound_listener(listener_addr)),
-            !cfg!(target_os = "windows")
-        );
-        assert!(!factory.reuse_addr_for(&UdpBindOptions::hole_punch_control()));
-        assert_eq!(
-            factory.reuse_addr_for(&UdpBindOptions::proxy_nat()),
-            !cfg!(target_os = "windows")
-        );
-        assert_eq!(
-            factory.reuse_addr_for(&UdpBindOptions::port_forward(listener_addr)),
-            !cfg!(target_os = "windows")
-        );
-        assert!(!factory.reuse_addr_for(&UdpBindOptions::port_lease(listener_addr)));
     }
 
     #[test]

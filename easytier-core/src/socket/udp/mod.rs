@@ -20,9 +20,10 @@ pub use packet::{
     parse_udp_session_datagram,
 };
 pub use session::{
-    UdpSession, UdpSessionConnectError, UdpSessionConnectRequest, UdpSessionConnector,
-    UdpSessionKind, UdpSessionLayerControl, UdpSessionListenRequest, UdpSessionListener,
-    UdpSessionProtocol, UdpSessionRecvMeta, UdpSessionSocket,
+    UdpHolePunchObserver, UdpHolePunchObserverRegistry, UdpSession, UdpSessionConnectError,
+    UdpSessionConnectRequest, UdpSessionConnector, UdpSessionKind, UdpSessionLayerControl,
+    UdpSessionListenRequest, UdpSessionListener, UdpSessionProtocol, UdpSessionRecvMeta,
+    UdpSessionSocket,
 };
 pub(crate) use session::{
     UdpSessionCleanup, UdpSessionCodec, UdpSessionDatagram, UdpSessionOutbound,

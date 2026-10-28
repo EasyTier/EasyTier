@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"strconv"
@@ -33,6 +34,10 @@ const (
 type Options struct {
 	Platform            platform.Services
 	PacketQueueCapacity int
+	// LogWriter receives module-wide guest logs. Nil discards output.
+	// Writes run synchronously while the guest is executing; the writer must
+	// not call back into this Host. The Host does not close the writer.
+	LogWriter io.Writer
 }
 
 type EmbeddedCoreInfo struct {
@@ -77,6 +82,7 @@ func New(ctx context.Context, options Options) (*Host, error) {
 			Services:            mergeServices(options.Platform),
 			PacketQueueCapacity: options.PacketQueueCapacity,
 			Management:          manager.handle,
+			LogWriter:           options.LogWriter,
 		},
 	)
 	if err != nil {

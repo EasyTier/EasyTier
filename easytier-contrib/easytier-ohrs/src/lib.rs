@@ -215,7 +215,7 @@ fn maybe_stop_local_socket_server() {
 }
 
 fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
-    if INSTANCE_MANAGER.instance_ids().iter().next().is_some() {
+    if !INSTANCE_MANAGER.instance_ids().is_empty() {
         ohrs_log_error!("[Rust] there is a running instance!");
         return false;
     }

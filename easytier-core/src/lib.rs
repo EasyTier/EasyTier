@@ -1,3 +1,6 @@
+#[cfg(all(feature = "system-certificates", target_os = "android"))]
+compile_error!("the system-certificates feature is not supported on Android");
+
 pub mod config;
 pub mod connectivity;
 pub mod events;

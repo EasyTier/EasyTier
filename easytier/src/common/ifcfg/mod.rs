@@ -40,6 +40,16 @@ pub trait IfConfiguerTrait: Send + Sync {
     ) -> Result<(), Error> {
         Ok(())
     }
+    async fn add_ipv4_route_with_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        _source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        self.add_ipv4_route(name, address, cidr_prefix, cost).await
+    }
     async fn remove_ipv4_route(
         &self,
         _name: &str,
@@ -47,6 +57,16 @@ pub trait IfConfiguerTrait: Send + Sync {
         _cidr_prefix: u8,
     ) -> Result<(), Error> {
         Ok(())
+    }
+    async fn remove_ipv4_route_with_cost_and_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        _cost: Option<i32>,
+        _source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        self.remove_ipv4_route(name, address, cidr_prefix).await
     }
     async fn add_ipv4_ip(
         &self,
@@ -142,7 +162,12 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        cmd_out = Command::new("sh").arg("-c").arg(cmd).output().await?;
+        cmd_out = Command::new("sh")
+            .env("LC_ALL", "C")
+            .arg("-c")
+            .arg(cmd)
+            .output()
+            .await?;
         stdout = String::from_utf8_lossy(cmd_out.stdout.as_slice()).to_string();
         stderr = String::from_utf8_lossy(cmd_out.stderr.as_slice()).to_string();
     };
@@ -157,6 +182,34 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd",
+    test
+))]
+fn ignore_removed_shell_cmd_not_found(result: Result<(), Error>) -> Result<(), Error> {
+    match result {
+        Err(Error::ShellCommandError(output))
+            if !output.trim().is_empty()
+                && output
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .all(|line| {
+                        (line.starts_with("ifconfig: ")
+                            && line.ends_with(": Can't assign requested address"))
+                            || (line.starts_with("delete ") && line.ends_with(": not in table"))
+                            || line == "route: route has not been found"
+                            || line == "route: writing to routing socket: not in table"
+                            || line == "route: writing to routing socket: No such process"
+                    }) =>
+        {
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+#[derive(Default)]
 pub struct DummyIfConfiger {}
 #[async_trait]
 impl IfConfiguerTrait for DummyIfConfiger {}
@@ -220,4 +273,55 @@ pub(crate) fn list_ipv6_ndp_proxy(
     name: &str,
 ) -> Result<std::collections::BTreeSet<Ipv6Addr>, Error> {
     netlink::NetlinkIfConfiger::list_ipv6_ndp_proxy(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, ignore_removed_shell_cmd_not_found};
+
+    #[test]
+    fn removed_shell_cmd_ignores_missing_addresses_and_routes() {
+        for output in [
+            "ifconfig: ioctl (SIOCDIFADDR): Can't assign requested address\n",
+            "ifconfig: ioctl (SIOCDIFADDR_IN6): Can't assign requested address\n",
+            "delete net 10.0.0.0: gateway tun0: not in table\n",
+            "delete net 10.0.0.0: gateway tun0 fib 0: not in table\nroute: route has not been found\n",
+            "delete net 10.0.0.0: gateway tun0 fib 0: not in table\nroute: writing to routing socket: No such process\n",
+            "delete net 10.0.0.0: gateway tun0: not in table\nroute: writing to routing socket: not in table\n",
+        ] {
+            assert!(
+                ignore_removed_shell_cmd_not_found(Err(Error::ShellCommandError(
+                    output.to_owned()
+                )))
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn removed_shell_cmd_preserves_other_errors() {
+        for output in [
+            "ifconfig: ioctl (SIOCDIFADDR): Operation not permitted\n",
+            "route: writing to routing socket: Permission denied\n",
+            "route: route has not been found: Permission denied\n",
+            "route: route has not been found: No such process\n",
+            "delete net 10.0.0.0: gateway tun0: not in table\nroute: Permission denied\n",
+            "delete net 10.0.0.0: gateway tun0: not in table\nroute: writing to routing socket: No such process\nroute: Permission denied\n",
+            "unexpected command: not in table\n",
+            "",
+        ] {
+            assert!(matches!(
+                ignore_removed_shell_cmd_not_found(Err(Error::ShellCommandError(output.to_owned()))),
+                Err(Error::ShellCommandError(actual)) if actual == output
+            ));
+        }
+
+        assert!(matches!(
+            ignore_removed_shell_cmd_not_found(Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            )
+            .into())),
+            Err(Error::IOError(_))
+        ));
+    }
 }

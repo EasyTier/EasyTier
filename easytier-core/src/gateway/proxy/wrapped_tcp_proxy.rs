@@ -128,11 +128,11 @@ pub struct WrappedTcpProxyNicContext {
 pub async fn try_process_wrapped_tcp_packet_from_nic<ConnectionLookup, AllowCheck, AllowCheckFut>(
     zc_packet: &mut ZCPacket,
     ctx: WrappedTcpProxyNicContext,
-    is_tcp_proxy_connection: ConnectionLookup,
+    is_tcp_proxy_flow: ConnectionLookup,
     check_dst_allowed: AllowCheck,
 ) -> bool
 where
-    ConnectionLookup: Fn(SocketAddr) -> bool,
+    ConnectionLookup: Fn(SocketAddr, SocketAddr) -> bool,
     AllowCheck: FnOnce(Ipv4Addr) -> AllowCheckFut,
     AllowCheckFut: Future<Output = bool>,
 {
@@ -156,9 +156,14 @@ where
     let src_ip = ip_packet.src_addr();
     let dst_ip = ip_packet.dst_addr();
     let src_port = tcp_packet.src_port();
+    let dst_port = tcp_packet.dst_port();
     let is_syn = tcp_packet.syn() && !tcp_packet.ack();
 
     if is_syn {
+        // Own virtual IP traffic must stay local; it can never reach a peer.
+        if ctx.local_ipv4 == Some(dst_ip) {
+            return false;
+        }
         if !check_dst_allowed(dst_ip).await {
             tracing::warn!(
                 ?ctx.transport,
@@ -167,7 +172,10 @@ where
             );
             return false;
         }
-    } else if !is_tcp_proxy_connection(SocketAddr::V4(SocketAddrV4::new(src_ip, src_port))) {
+    } else if !is_tcp_proxy_flow(
+        SocketAddr::V4(SocketAddrV4::new(src_ip, src_port)),
+        SocketAddr::V4(SocketAddrV4::new(dst_ip, dst_port)),
+    ) {
         return false;
     }
 
@@ -362,7 +370,7 @@ mod tests {
             try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Kcp),
-                |_| false,
+                |_, _| false,
                 |_| async { true },
             )
             .await
@@ -383,7 +391,7 @@ mod tests {
             !try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Kcp),
-                |_| false,
+                |_, _| false,
                 |_| async { false },
             )
             .await
@@ -403,7 +411,9 @@ mod tests {
             try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Quic),
-                |addr| addr == SocketAddr::V4(src),
+                |src_addr, dst_addr| {
+                    src_addr == SocketAddr::V4(src) && dst_addr == SocketAddr::V4(dst)
+                },
                 |_| async { false },
             )
             .await
@@ -424,7 +434,7 @@ mod tests {
             !try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Quic),
-                |_| false,
+                |_, _| false,
                 |_| async { true },
             )
             .await
@@ -441,10 +451,39 @@ mod tests {
             !try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Kcp),
-                |_| false,
+                |_, _| false,
                 |_| async { true },
             )
             .await
         );
+    }
+
+    #[tokio::test]
+    async fn own_virtual_ip_syn_is_not_marked() {
+        let own_ip = "10.144.144.204".parse().unwrap();
+        let src = SocketAddrV4::new(own_ip, 50000);
+        let dst = SocketAddrV4::new(own_ip, 80);
+
+        for transport in [
+            WrappedTcpProxyTransport::Kcp,
+            WrappedTcpProxyTransport::Quic,
+        ] {
+            let mut packet = build_tcp_packet(src, dst, true, false);
+
+            assert!(
+                !try_process_wrapped_tcp_packet_from_nic(
+                    &mut packet,
+                    context(transport),
+                    |_, _| false,
+                    |_| async { true },
+                )
+                .await
+            );
+
+            assert_eq!(
+                packet.peer_manager_header().unwrap().packet_type,
+                PacketType::Data as u8
+            );
+        }
     }
 }

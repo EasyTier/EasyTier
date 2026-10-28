@@ -5,7 +5,7 @@ use super::super::utils::font;
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 
-use rusttype::Font;
+use ab_glyph::FontArc;
 use std::fmt::Debug;
 use std::io::Write;
 use std::sync::Arc;
@@ -142,7 +142,7 @@ impl Captcha {
         }
     }
 
-    pub fn get_font(&'_ mut self) -> Arc<Font<'_>> {
+    pub fn get_font(&'_ mut self) -> Arc<FontArc> {
         if let Some(font) = font::get_font(&self.font_name) {
             font
         } else {

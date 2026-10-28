@@ -3,8 +3,10 @@
 #[macro_use]
 extern crate rust_i18n;
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::{net::IpAddr, time::Duration};
+
+use central_network::gateway;
 
 use clap::Parser;
 use easytier::tunnel::websocket::WsTunnelListener;
@@ -14,7 +16,6 @@ use easytier::{
         constants::EASYTIER_VERSION,
         error::Error,
         log,
-        network::{local_ipv4, local_ipv6},
     },
     proto::rpc::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
@@ -24,7 +25,10 @@ use easytier_core::{socket::SocketListener, tunnel::Tunnel};
 use easytier::tunnel::IpScheme;
 use mimalloc::MiMalloc;
 
+mod central_network;
 mod client_manager;
+#[cfg(test)]
+mod config_server_listener_tests;
 mod db;
 mod migrator;
 mod restful;
@@ -116,10 +120,24 @@ struct Cli {
     #[arg(
         long,
         env = "ET_HEARTBEAT_MIN_RESPONSE_MS",
-        default_value = "0",
+        default_value = "3500",
         help = t!("cli.heartbeat_min_response_ms").to_string(),
     )]
     heartbeat_min_response_ms: u64,
+
+    #[arg(
+        long,
+        env = "ET_HEARTBEAT_TIMEOUT_MS",
+        default_value = "15000",
+        help = t!("cli.heartbeat_timeout_ms").to_string(),
+    )]
+    heartbeat_timeout_ms: u64,
+
+    #[arg(long, env = "ET_GATEWAY_PEER_URL")]
+    gateway_peer_url: Option<url::Url>,
+
+    #[arg(long, env = "ET_GATEWAY_RELAY_DATA", default_value = "false")]
+    gateway_relay_data: bool,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -230,55 +248,38 @@ impl LoggingConfigLoader for &Cli {
     }
 }
 
-pub fn get_listener_by_url(
-    scheme: IpScheme,
-    l: &url::Url,
-) -> Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>> {
-    Some(match scheme {
-        IpScheme::Tcp => {
-            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
-            Box::new(runtime_rpc_listener(addr))
-        }
-        IpScheme::Udp => {
-            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
-            Box::new(runtime_udp_tunnel_listener(l.clone(), addr))
-        }
-        IpScheme::Ws => Box::new(WsTunnelListener::new(l.clone())),
-        _ => return None,
-    })
-}
+type ConfigServerListener = Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>;
 
-async fn get_dual_stack_listener(
+fn get_config_server_listeners(
     protocol: &str,
     port: u16,
-) -> Result<
-    (
-        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
-        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
-    ),
-    Error,
-> {
+) -> Result<Vec<ConfigServerListener>, Error> {
     let scheme = protocol
         .parse()
         .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
-    let v6_listener =
-        if local_ipv6().await.is_ok() && matches!(scheme, IpScheme::Tcp | IpScheme::Udp) {
-            get_listener_by_url(
-                scheme,
-                &format!("{protocol}://[::]:{port}").parse().unwrap(),
-            )
-        } else {
-            None
-        };
-    let v4_listener = if local_ipv4().await.is_ok() {
-        get_listener_by_url(
-            scheme,
-            &format!("{protocol}://0.0.0.0:{port}").parse().unwrap(),
-        )
-    } else {
-        None
-    };
-    Ok((v6_listener, v4_listener))
+    // Wildcard binds do not require a default route or a public IP address.
+    let ipv6 = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port);
+    let ipv4 = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
+    match scheme {
+        IpScheme::Tcp => Ok(vec![
+            Box::new(runtime_rpc_listener(ipv6)),
+            Box::new(runtime_rpc_listener(ipv4)),
+        ]),
+        IpScheme::Udp => Ok(vec![
+            Box::new(runtime_udp_tunnel_listener(
+                format!("udp://{ipv6}").parse().unwrap(),
+                ipv6,
+            )),
+            Box::new(runtime_udp_tunnel_listener(
+                format!("udp://{ipv4}").parse().unwrap(),
+                ipv4,
+            )),
+        ]),
+        IpScheme::Ws => Ok(vec![Box::new(WsTunnelListener::new(
+            format!("ws://{ipv4}").parse().unwrap(),
+        ))]),
+        _ => Err(Error::InvalidUrl(protocol.to_string())),
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -286,9 +287,24 @@ async fn main() {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
     setup_panic_handler();
+    easytier::utils::init_crypto_provider();
 
     let cli = Cli::parse();
-    log::init(&cli, false).unwrap();
+    log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();
+    tracing::info!(
+        version = EASYTIER_VERSION,
+        web_instance_id = ?cli.webhook.web_instance_id,
+        api_address = %cli.api_server_addr,
+        api_port = cli.api_server_port,
+        config_protocol = %cli.config_server_protocol,
+        config_port = cli.config_server_port,
+        heartbeat_min_response_ms = cli.heartbeat_min_response_ms,
+        heartbeat_timeout_ms = cli.heartbeat_timeout_ms,
+        webhook_enabled = cli.webhook.webhook_url.as_deref().is_some_and(|url| !url.trim().is_empty()),
+        rust_log_override = std::env::var_os("RUST_LOG").is_some(),
+        console_log_override = cli.console_log_level.is_some(),
+        "easytier-web starting"
+    );
 
     // Validate OIDC configuration: check split-deploy specific requirements
     // Basic OIDC parameter validation is handled in OidcConfig::from_params
@@ -319,35 +335,95 @@ async fn main() {
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
     let feature_flags = Arc::new(cli.feature_flags);
-    let webhook_config = Arc::new(webhook::WebhookConfig::new(
+    let mut webhook_config = webhook::WebhookConfig::new(
         cli.webhook.webhook_url,
         cli.webhook.webhook_secret,
         cli.webhook.internal_auth_token,
         cli.webhook.web_instance_id,
         cli.webhook.web_instance_api_base_url,
-    ));
+    );
+    let central_mode = !webhook_config.has_external_endpoint();
+    if central_mode {
+        webhook_config =
+            webhook_config.with_handler(Arc::new(central_network::device_auth::DeviceAuth::new(
+                db.clone(),
+                feature_flags.allow_auto_create_user,
+            )));
+    } else if cli.gateway_peer_url.is_some() {
+        eprintln!("Gateway requires central network mode; remove --webhook-url");
+        std::process::exit(2);
+    }
+    let webhook_config = Arc::new(webhook_config);
+    let heartbeat_policy = client_manager::HeartbeatPolicy::from_millis(
+        cli.heartbeat_min_response_ms,
+        cli.heartbeat_timeout_ms,
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Invalid heartbeat configuration: {error}");
+        std::process::exit(2);
+    });
+
+    let network_instances = cli.gateway_peer_url.as_ref().map(|peer_url| {
+        let config = gateway::GatewayConfig {
+            peer_url: peer_url.to_string(),
+            relay_data: cli.gateway_relay_data,
+        };
+        config
+            .validate(&cli.config_server_protocol)
+            .unwrap_or_else(|error| {
+                eprintln!("Invalid Gateway configuration: {error}");
+                std::process::exit(2);
+            });
+        Arc::new(gateway::NetworkInstanceManager::new(config))
+    });
+
     let mut mgr = client_manager::ClientManager::new(
         db.clone(),
         cli.geoip_db,
-        Duration::from_millis(cli.heartbeat_min_response_ms),
+        heartbeat_policy,
         feature_flags.clone(),
         webhook_config.clone(),
     );
-    let (v6_listener, v4_listener) =
-        get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
+    for listener in
+        get_config_server_listeners(&cli.config_server_protocol, cli.config_server_port).unwrap()
+    {
+        let local_url = listener.local_url();
+        let result = if let Some(instances) = network_instances.as_ref() {
+            mgr.add_listener(gateway::listener::GatewayListener::new(
+                listener,
+                instances.clone(),
+            ))
             .await
-            .unwrap();
-    if v4_listener.is_none() && v6_listener.is_none() {
-        panic!("Listen to both IPv4 and IPv6 failed");
+        } else {
+            mgr.add_listener(listener).await
+        };
+        match result {
+            Ok(local_url) => {
+                tracing::info!(%local_url, "Config server listener bound");
+            }
+            Err(error) => {
+                tracing::warn!(%local_url, error = %format_args!("{error:#}"), "Failed to bind config server listener");
+            }
+        }
     }
-    if let Some(listener) = v6_listener {
-        mgr.add_listener(listener).await.unwrap();
-    }
-    if let Some(listener) = v4_listener {
-        mgr.add_listener(listener).await.unwrap();
+    if !mgr.is_running() {
+        panic!(
+            "Failed to bind any config server listener for {} on port {}",
+            cli.config_server_protocol, cli.config_server_port
+        );
     }
 
     let mgr = Arc::new(mgr);
+    let central_service = Arc::new(
+        central_network::service::CentralNetworkService::with_gateway(
+            db.clone(),
+            mgr.clone(),
+            network_instances,
+        ),
+    );
+    if central_mode {
+        central_service.start_reconciler();
+    }
 
     #[cfg(feature = "embed")]
     let (web_router_restful, web_router_static) = if cli.no_web {
@@ -382,11 +458,14 @@ async fn main() {
     let _restful_server_tasks = restful::RestfulServer::new(
         std::net::SocketAddr::new(cli.api_server_addr, cli.api_server_port),
         mgr.clone(),
+        central_service,
         db,
         web_router_restful,
         feature_flags,
         oidc_config,
         webhook_config,
+        cli.config_server_protocol.clone(),
+        cli.config_server_port,
     )
     .await
     .unwrap()

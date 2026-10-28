@@ -7,6 +7,7 @@ pub(crate) mod config_storage;
 pub mod dns_server;
 pub mod factory;
 pub mod host;
+mod runtime_executor;
 pub(crate) mod runtime_host;
 #[cfg(test)]
 pub(crate) mod test_instance;
@@ -17,6 +18,9 @@ pub(crate) mod listeners;
 
 #[cfg(feature = "public-ipv6-provider")]
 pub(crate) mod public_ipv6_provider;
+
+#[cfg(feature = "tun")]
+pub mod shared_virtual_nic;
 
 #[cfg(feature = "tun")]
 pub mod virtual_nic;

@@ -60,6 +60,7 @@ where
         dev_name,
         my_node_info: Some(MyNodeInfo {
             virtual_ipv4: node.ipv4_addr.map(Into::into),
+            virtual_ipv6: node.ipv6_addr.map(Into::into),
             hostname: node.hostname,
             version: node.version,
             ips: Some(node.ip_list),

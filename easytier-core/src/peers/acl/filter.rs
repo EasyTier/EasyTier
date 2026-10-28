@@ -12,91 +12,41 @@ use quanta::Instant;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    packet::{PacketType, ZCPacket},
+    packet::{
+        PacketType, ZCPacket,
+        ip::{
+            IP_PROTO_ICMP, IP_PROTO_ICMPV6, IP_PROTO_TCP, IP_PROTO_UDP, IP_PROTO_UNSPECIFIED,
+            ParsedIpPacket, parse_ip_packet, parse_transport_ports,
+        },
+    },
     peers::acl::processor::{AclProcessor, AclResult, AclStatKey, AclStatType, PacketInfo},
 };
 
-const IP_PROTO_ICMP: u8 = 1;
-const IP_PROTO_TCP: u8 = 6;
-const IP_PROTO_UDP: u8 = 17;
-const IP_PROTO_ICMPV6: u8 = 58;
+const ICMP_ECHO_REPLY: u8 = 0;
+const ICMP_ECHO_REQUEST: u8 = 8;
+const ICMPV6_ECHO_REQUEST: u8 = 128;
+const ICMPV6_ECHO_REPLY: u8 = 129;
 
-#[derive(Clone, Copy)]
-struct ParsedIpPacket<'a> {
-    src_ip: IpAddr,
-    dst_ip: IpAddr,
-    protocol: u8,
-    transport_payload: &'a [u8],
-}
-
-fn parse_ip_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
-    let version = payload.first()? >> 4;
-    match version {
-        4 => parse_ipv4_packet(payload),
-        6 => parse_ipv6_packet(payload),
-        _ => None,
+impl ParsedIpPacket<'_> {
+    fn can_use_allow_record(&self, is_in: bool) -> bool {
+        let expected_type = match (self.protocol, is_in) {
+            (IP_PROTO_ICMP, false) => ICMP_ECHO_REQUEST,
+            (IP_PROTO_ICMP, true) => ICMP_ECHO_REPLY,
+            (IP_PROTO_ICMPV6, false) => ICMPV6_ECHO_REQUEST,
+            (IP_PROTO_ICMPV6, true) => ICMPV6_ECHO_REPLY,
+            (IP_PROTO_UNSPECIFIED, _) => return false,
+            _ => return true,
+        };
+        if self.is_non_initial_fragment {
+            // Tails have no ICMP header. They may use an existing response record,
+            // but must not create one. A reverse request still needs an allowed
+            // first fragment before the destination can reassemble it.
+            return is_in;
+        }
+        self.transport_payload.len() >= 8
+            && self.transport_payload[0] == expected_type
+            && self.transport_payload[1] == 0
     }
-}
-
-fn parse_ipv4_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
-    if payload.len() < 20 {
-        return None;
-    }
-    let header_len = usize::from(payload[0] & 0x0f) * 4;
-    let options_len = header_len.saturating_sub(20);
-    let payload_offset = 20 + options_len;
-    let payload_start = payload_offset.min(payload.len());
-    let total_length = usize::from(u16::from_be_bytes([payload[2], payload[3]]));
-    let payload_len = total_length.saturating_sub(header_len);
-    let payload_end = payload_start.saturating_add(payload_len).min(payload.len());
-
-    Some(ParsedIpPacket {
-        src_ip: IpAddr::V4(Ipv4Addr::new(
-            payload[12],
-            payload[13],
-            payload[14],
-            payload[15],
-        )),
-        dst_ip: IpAddr::V4(Ipv4Addr::new(
-            payload[16],
-            payload[17],
-            payload[18],
-            payload[19],
-        )),
-        protocol: payload[9],
-        transport_payload: &payload[payload_start..payload_end],
-    })
-}
-
-fn parse_ipv6_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
-    if payload.len() < 40 {
-        return None;
-    }
-    let payload_len = usize::from(u16::from_be_bytes([payload[4], payload[5]]));
-    let payload_end = 40usize.saturating_add(payload_len).min(payload.len());
-
-    Some(ParsedIpPacket {
-        src_ip: IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&payload[8..24]).ok()?)),
-        dst_ip: IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&payload[24..40]).ok()?)),
-        protocol: payload[6],
-        transport_payload: &payload[40..payload_end],
-    })
-}
-
-fn parse_transport_ports(protocol: u8, payload: &[u8]) -> Option<(Option<u16>, Option<u16>)> {
-    let min_len = match protocol {
-        IP_PROTO_TCP => 20,
-        IP_PROTO_UDP => 8,
-        _ => return Some((None, None)),
-    };
-    if payload.len() < min_len {
-        return None;
-    }
-
-    Some((
-        Some(u16::from_be_bytes([payload[0], payload[1]])),
-        Some(u16::from_be_bytes([payload[2], payload[3]])),
-    ))
 }
 
 fn acl_protocol(protocol: u8) -> Protocol {
@@ -238,8 +188,9 @@ impl AclFilter {
     fn extract_packet_info(
         &self,
         packet: &ZCPacket,
+        is_in: bool,
         route: &(dyn crate::peers::route::Route + Send + Sync + 'static),
-    ) -> Option<PacketInfo> {
+    ) -> Option<(PacketInfo, bool)> {
         let payload = packet.payload();
 
         let parsed = parse_ip_packet(payload)?;
@@ -256,16 +207,19 @@ impl AclFilter {
             .map(|peer_id| route.get_peer_groups(peer_id))
             .unwrap_or_else(|| Arc::new(Vec::new()));
 
-        Some(PacketInfo {
-            src_ip: parsed.src_ip,
-            dst_ip: parsed.dst_ip,
-            src_port,
-            dst_port,
-            protocol: acl_protocol,
-            packet_size: payload.len(),
-            src_groups,
-            dst_groups,
-        })
+        Some((
+            PacketInfo {
+                src_ip: parsed.src_ip,
+                dst_ip: parsed.dst_ip,
+                src_port,
+                dst_port,
+                protocol: acl_protocol,
+                packet_size: payload.len(),
+                src_groups,
+                dst_groups,
+            },
+            parsed.can_use_allow_record(is_in),
+        ))
     }
 
     /// Process ACL result and log if needed
@@ -369,18 +323,19 @@ impl AclFilter {
         }
 
         // Extract packet information
-        let packet_info = match self.extract_packet_info(packet, route) {
-            Some(info) => info,
-            None => {
-                tracing::warn!(
-                    "Failed to extract packet info from {:?} packet, header: {:?}",
-                    if is_in { "inbound" } else { "outbound" },
-                    packet.peer_manager_header()
-                );
-                // allow all unknown packets
-                return true;
-            }
-        };
+        let (packet_info, can_use_allow_record) =
+            match self.extract_packet_info(packet, is_in, route) {
+                Some(info) => info,
+                None => {
+                    tracing::warn!(
+                        "Failed to extract packet info from {:?} packet, header: {:?}",
+                        if is_in { "inbound" } else { "outbound" },
+                        packet.peer_manager_header()
+                    );
+                    // allow all unknown packets
+                    return true;
+                }
+            };
 
         let chain_type = Self::classify_chain_type(is_in, &packet_info, my_ipv4, is_local_ipv6);
 
@@ -395,7 +350,7 @@ impl AclFilter {
         // Check if packet should be allowed
         match acl_result.action {
             Action::Allow | Action::Noop => {
-                if matches!(chain_type, ChainType::Outbound) {
+                if matches!(chain_type, ChainType::Outbound) && can_use_allow_record {
                     self.outbound_allow_records.insert(
                         OutboundAllowRecord::new_from_outbound_packet(&packet_info),
                         Instant::now(),
@@ -404,7 +359,7 @@ impl AclFilter {
                 true
             }
             Action::Drop => {
-                if is_in {
+                if is_in && can_use_allow_record {
                     let record = OutboundAllowRecord::new_from_inbound_packet(&packet_info);
                     let entry = self.outbound_allow_records.entry(record);
                     if let dashmap::Entry::Occupied(mut entry) = entry {
@@ -443,13 +398,21 @@ mod tests {
 
     use quanta::Instant;
 
-    use easytier_proto::acl::{Acl, ChainType, Protocol};
+    use easytier_proto::acl::{Acl, AclV1, Action, Chain, ChainType, Protocol, Rule};
 
-    use crate::peers::acl::processor::PacketInfo;
+    use crate::{
+        packet::ip::{
+            IPV6_AUTHENTICATION, IPV6_DESTINATION_OPTIONS, IPV6_FRAGMENT, IPV6_HOP_BY_HOP,
+            IPV6_ROUTING,
+        },
+        peers::acl::processor::PacketInfo,
+    };
 
     use super::{
-        AclFilter, IP_PROTO_ICMP, IP_PROTO_TCP, IP_PROTO_UDP, OutboundAllowRecord, acl_protocol,
-        parse_ip_packet, parse_transport_ports,
+        AclFilter, ICMP_ECHO_REPLY, ICMP_ECHO_REQUEST, ICMPV6_ECHO_REPLY, ICMPV6_ECHO_REQUEST,
+        IP_PROTO_ICMP, IP_PROTO_ICMPV6, IP_PROTO_TCP, IP_PROTO_UDP, IP_PROTO_UNSPECIFIED,
+        OutboundAllowRecord, PacketType, ZCPacket, acl_protocol, parse_ip_packet,
+        parse_transport_ports,
     };
 
     impl AclFilter {
@@ -610,6 +573,257 @@ mod tests {
             AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == leased_ipv6);
 
         assert_eq!(chain, ChainType::Forward);
+    }
+
+    // Include both an extension header and a Fragment Header in IPv6 packets.
+    // Offset zero uses an atomic fragment; IPv4 uses an unfragmented packet.
+    fn icmp_packet(ipv6: bool, message_type: u8, fragment_offset: u16) -> Vec<u8> {
+        let mut packet = if ipv6 {
+            let mut packet = vec![0u8; 64];
+            packet[0] = 0x60;
+            packet[4..6].copy_from_slice(&24u16.to_be_bytes());
+            packet[6] = IPV6_HOP_BY_HOP;
+            packet[40] = IPV6_FRAGMENT;
+            packet[48] = IP_PROTO_ICMPV6;
+            packet[50..52].copy_from_slice(&(fragment_offset << 3).to_be_bytes());
+            packet
+        } else {
+            let mut packet = vec![0u8; 28];
+            packet[0] = 0x45;
+            packet[2..4].copy_from_slice(&28u16.to_be_bytes());
+            packet[6..8].copy_from_slice(&fragment_offset.to_be_bytes());
+            packet[9] = IP_PROTO_ICMP;
+            packet
+        };
+        let icmp_offset = packet.len() - 8;
+        packet[icmp_offset] = message_type;
+        packet
+    }
+
+    #[test]
+    fn icmp_allow_records_only_accept_requests_outbound_and_replies_inbound() {
+        for (ipv6, request, reply) in [
+            (false, ICMP_ECHO_REQUEST, ICMP_ECHO_REPLY),
+            (true, ICMPV6_ECHO_REQUEST, ICMPV6_ECHO_REPLY),
+        ] {
+            for (message_type, is_in) in [(request, false), (reply, true)] {
+                let mut packet = icmp_packet(ipv6, message_type, 0);
+                let parsed = parse_ip_packet(&packet).unwrap();
+                assert!(parsed.can_use_allow_record(is_in));
+                assert!(!parsed.can_use_allow_record(!is_in));
+
+                // The same checks apply to first fragments with more data pending.
+                if ipv6 {
+                    packet[51] |= 1;
+                } else {
+                    packet[6] |= 0x20;
+                }
+                let parsed = parse_ip_packet(&packet).unwrap();
+                assert!(!parsed.is_non_initial_fragment);
+                assert!(parsed.can_use_allow_record(is_in));
+                assert!(!parsed.can_use_allow_record(!is_in));
+
+                let code_offset = packet.len() - 7;
+                packet[code_offset] = 1;
+                assert!(
+                    !parse_ip_packet(&packet)
+                        .unwrap()
+                        .can_use_allow_record(is_in)
+                );
+                packet[code_offset] = 0;
+                packet.pop();
+                assert!(
+                    !parse_ip_packet(&packet)
+                        .unwrap()
+                        .can_use_allow_record(is_in)
+                );
+            }
+            let packet = icmp_packet(ipv6, 3, 0);
+            let parsed = parse_ip_packet(&packet).unwrap();
+            assert!(!parsed.can_use_allow_record(false));
+            assert!(!parsed.can_use_allow_record(true));
+
+            // Tail bytes can look like a request, but are not an ICMP header.
+            let packet = icmp_packet(ipv6, request, 1);
+            let parsed = parse_ip_packet(&packet).unwrap();
+            assert!(parsed.is_non_initial_fragment);
+            assert!(parsed.can_use_allow_record(true));
+            assert!(!parsed.can_use_allow_record(false));
+        }
+    }
+
+    #[test]
+    fn ipv6_fragment_tails_do_not_infer_icmp_from_payload() {
+        let mut packet = icmp_packet(true, ICMPV6_ECHO_REPLY, 1);
+        packet[48] = IPV6_DESTINATION_OPTIONS;
+        packet[56] = IP_PROTO_ICMPV6;
+        let parsed = parse_ip_packet(&packet).unwrap();
+        assert_eq!(parsed.protocol, IP_PROTO_UNSPECIFIED);
+        assert!(!parsed.can_use_allow_record(true));
+
+        packet[48] = IP_PROTO_UDP;
+        let parsed = parse_ip_packet(&packet).unwrap();
+        assert_eq!(acl_protocol(parsed.protocol), Protocol::Unspecified);
+        assert!(!parsed.can_use_allow_record(true));
+    }
+
+    #[test]
+    fn parse_ipv6_keeps_addresses_when_fragment_header_exceeds_declared_payload() {
+        let mut packet = icmp_packet(true, ICMPV6_ECHO_REPLY, 0);
+        packet[4..6].copy_from_slice(&12u16.to_be_bytes());
+        let parsed = parse_ip_packet(&packet).unwrap();
+        assert_eq!(parsed.protocol, IP_PROTO_UNSPECIFIED);
+        assert!(!parsed.can_use_allow_record(true));
+    }
+
+    struct TestRoute;
+
+    #[async_trait::async_trait]
+    impl crate::peers::route::Route for TestRoute {
+        async fn open(&self, _: crate::peers::route::RouteInterfaceBox) -> Result<u8, ()> {
+            unreachable!()
+        }
+        async fn close(&self) {
+            unreachable!()
+        }
+        async fn get_next_hop(&self, _: u32) -> Option<u32> {
+            unreachable!()
+        }
+        async fn list_routes(&self) -> Vec<crate::proto::core_peer::peer::Route> {
+            unreachable!()
+        }
+        async fn list_proxy_cidrs(&self) -> std::collections::BTreeSet<cidr::Ipv4Cidr> {
+            unreachable!()
+        }
+        async fn list_proxy_cidrs_v6(&self) -> std::collections::BTreeSet<cidr::Ipv6Cidr> {
+            unreachable!()
+        }
+        async fn get_peer_info(&self, _: u32) -> Option<crate::proto::peer_rpc::RoutePeerInfo> {
+            unreachable!()
+        }
+        async fn get_peer_info_last_update_time(&self) -> Instant {
+            unreachable!()
+        }
+        fn get_peer_groups(&self, _: u32) -> Arc<Vec<String>> {
+            Arc::new(vec![])
+        }
+    }
+
+    fn assert_ipv6_unknown_payload_follows_acl(next_header: u8, payload: &[u8]) {
+        let src: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let dst: Ipv6Addr = "2001:db8::2".parse().unwrap();
+        let mut bytes = vec![0u8; 40];
+        bytes[0] = 0x60;
+        bytes[4..6].copy_from_slice(&(payload.len() as u16).to_be_bytes());
+        bytes[6] = next_header;
+        bytes[8..24].copy_from_slice(&src.octets());
+        bytes[24..40].copy_from_slice(&dst.octets());
+        bytes.extend_from_slice(payload);
+        let mut packet = ZCPacket::new_with_payload(&bytes);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        let filter = AclFilter::new();
+        let (info, can_use_allow_record) = filter
+            .extract_packet_info(&packet, true, &TestRoute)
+            .unwrap();
+        assert_eq!(info.src_ip, IpAddr::V6(src));
+        assert_eq!(info.dst_ip, IpAddr::V6(dst));
+        assert_eq!(info.protocol, Protocol::Unspecified);
+        assert_eq!((info.src_port, info.dst_port), (None, None));
+        assert!(!can_use_allow_record);
+
+        // Unknown payloads still obey the chain policy, and cannot match a
+        // transport port rule using bytes that only happen to look like ports.
+        for action in [Action::Drop, Action::Allow] {
+            filter.reload_rules(Some(&Acl {
+                acl_v1: Some(AclV1 {
+                    chains: vec![Chain {
+                        name: "inbound".into(),
+                        chain_type: ChainType::Inbound as i32,
+                        enabled: true,
+                        default_action: action as i32,
+                        rules: [Protocol::Tcp, Protocol::Udp]
+                            .into_iter()
+                            .map(|protocol| Rule {
+                                name: format!("allow_{protocol:?}_8081"),
+                                enabled: true,
+                                action: Action::Allow as i32,
+                                protocol: protocol as i32,
+                                ports: vec!["8081".into()],
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+            }));
+            assert_eq!(
+                filter.process_packet_with_acl(&packet, true, None, |ip| ip == dst, &TestRoute),
+                action == Action::Allow,
+            );
+            assert!(filter.process_packet_with_acl(&packet, false, None, |_| false, &TestRoute));
+            assert!(filter.outbound_allow_records.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn ipv6_malformed_extension_headers_follow_acl() {
+        for protocol in [
+            IPV6_HOP_BY_HOP,
+            IPV6_ROUTING,
+            IPV6_DESTINATION_OPTIONS,
+            IPV6_AUTHENTICATION,
+            IPV6_FRAGMENT,
+        ] {
+            for len in [0, 1, 4, 7] {
+                assert_ipv6_unknown_payload_follows_acl(protocol, &vec![0; len]);
+            }
+        }
+        // The length field extends beyond the available option/AH header.
+        for protocol in [IPV6_HOP_BY_HOP, IPV6_AUTHENTICATION] {
+            assert_ipv6_unknown_payload_follows_acl(protocol, &[IP_PROTO_UDP, 2, 0, 0, 0, 0, 0, 0]);
+        }
+        // A second Fragment Header must not reach the global parse-failure path.
+        assert_ipv6_unknown_payload_follows_acl(
+            IPV6_FRAGMENT,
+            &[
+                IPV6_FRAGMENT,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                IP_PROTO_ICMPV6,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                2,
+            ],
+        );
+        // A valid extension header followed by a truncated transport header.
+        for protocol in [IP_PROTO_TCP, IP_PROTO_UDP] {
+            assert_ipv6_unknown_payload_follows_acl(
+                IPV6_HOP_BY_HOP,
+                &[protocol, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34, 0x1f, 0x91],
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ipv6_transport_fragment_tails_follow_acl() {
+        for protocol in [IP_PROTO_TCP, IP_PROTO_UDP] {
+            for len in [4, 8, 24] {
+                let mut payload = vec![protocol, 0, 0, 8, 0, 0, 0, 1];
+                payload.extend_from_slice(&[0x12, 0x34, 0x1f, 0x91]);
+                payload.resize(8 + len, 0);
+                assert_ipv6_unknown_payload_follows_acl(IPV6_FRAGMENT, &payload);
+            }
+        }
     }
 
     #[tokio::test]

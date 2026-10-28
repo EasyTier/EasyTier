@@ -5,10 +5,11 @@ use easytier_proto::api::config::{
     self, AclPatch, ConfigPatchAction, ExitNodePatch, InstanceConfigPatch, Patchable,
     PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch, VpnPortalClientPatch,
 };
+use easytier_proto::common::FlagsPatch;
+use optionize::Optionized as _;
 
 use crate::{
     config::{
-        api_input::managed_credential_from_proto,
         peers::AclRuleConfig,
         runtime::CoreInstanceRuntimeConfig,
         toml::{ConfigLoader as _, TomlConfig},
@@ -50,9 +51,25 @@ where
     // Preserve the existing ordered partial-commit contract: earlier valid
     // sub-patches remain applied if a later sub-patch fails.
     let patch_result: anyhow::Result<(bool, bool)> = async {
-        let result = patch_port_forwards(&candidate, patch.port_forwards);
-        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
-        result?;
+        if !patch.port_forwards.is_empty() {
+            patch_port_forwards(&candidate, patch.port_forwards)?;
+            // Port forwards have fallible host resources. Reserve them before the
+            // durable write, then commit resources and readback together. A failed
+            // bind or persistence operation must leave the previous rule usable.
+            let normalized = validate_candidate(instance, &candidate)?;
+            let runtime = runtime_config_from_normalized(&normalized);
+            #[cfg(feature = "proxy-smoltcp-stack")]
+            let prepared = instance.prepare_port_forwards(&runtime).await?;
+            persist_candidate_if_changed(instance, &config, &candidate, persistence).await?;
+            instance
+                .commit_runtime_config_under_operation(
+                    runtime,
+                    #[cfg(feature = "proxy-smoltcp-stack")]
+                    prepared,
+                    || config.replace_from_snapshot(&candidate),
+                )
+                .await?;
+        }
 
         let result = patch_acl(&candidate, patch.acl);
         validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
@@ -62,7 +79,7 @@ where
         validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
-        let result = patch_routes(&candidate, patch.routes);
+        let result = patch_routes(&candidate, patch.routes, patch.enable_manual_routes);
         validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
@@ -90,19 +107,16 @@ where
         {
             candidate.set_ipv4(Some(ipv4.into()));
         }
-        if let Some(ipv6) = patch.ipv6 {
+        if let Some(ipv6) = patch.ipv6
+            && !candidate.get_dhcpv6()
+        {
             candidate.set_ipv6(Some(ipv6.into()));
         }
-        if let Some(disable_relay_data) = patch.disable_relay_data {
-            let mut flags = candidate.get_flags();
-            flags.disable_relay_data = disable_relay_data;
-            candidate.set_flags(flags);
-        }
-        if let Some(prefer_peer_relay) = patch.prefer_peer_relay {
-            let mut flags = candidate.get_flags();
-            flags.prefer_peer_relay = prefer_peer_relay;
-            candidate.set_flags(flags);
-        }
+        candidate.patch_flags(FlagsPatch {
+            disable_relay_data: patch.disable_relay_data,
+            prefer_peer_relay: patch.prefer_peer_relay,
+            ..Default::default()
+        });
         if let Some(enabled) = patch.ipv6_public_addr_provider {
             candidate.set_ipv6_public_addr_provider(enabled);
             provider_config_changed = true;
@@ -188,8 +202,8 @@ where
             let entries = managed
                 .entries
                 .iter()
-                .map(managed_credential_from_proto)
-                .collect::<Vec<_>>();
+                .map(|credential| credential.clone().upgrade())
+                .collect::<Result<Vec<_>, _>>()?;
             let replacement = credential_manager
                 .validate_managed_credentials(&entries)
                 .map_err(anyhow::Error::msg)?;
@@ -308,7 +322,9 @@ where
     Ok(runtime_config_from_normalized(&normalized))
 }
 
-fn runtime_config_from_normalized(config: &CoreInstanceConfig) -> CoreInstanceRuntimeConfig {
+pub(super) fn runtime_config_from_normalized(
+    config: &CoreInstanceConfig,
+) -> CoreInstanceRuntimeConfig {
     CoreInstanceRuntimeConfig {
         services: config.connectivity.runtime.clone(),
         peer: Arc::new(config.peer.snapshot.clone()),
@@ -455,15 +471,25 @@ fn patch_proxy_networks(
     Ok(())
 }
 
-fn patch_routes(config: &TomlConfig, patches: Vec<RoutePatch>) -> anyhow::Result<()> {
-    if patches.is_empty() {
+fn patch_routes(
+    config: &TomlConfig,
+    patches: Vec<RoutePatch>,
+    enable_manual_routes: Option<bool>,
+) -> anyhow::Result<()> {
+    if patches.is_empty() && enable_manual_routes.is_none() {
         return Ok(());
     }
     let mut current = config.get_routes().unwrap_or_default();
     let patches = patches.into_iter().map(Into::into).collect::<Vec<_>>();
     trace_patchables(&patches);
     config::patch_vec(&mut current, patches);
-    config.set_routes((!current.is_empty()).then_some(current));
+    // Mode and list form one configuration update. An explicit mode supports
+    // empty manual routes; callers omitting it retain the released semantics.
+    config.set_routes(
+        enable_manual_routes
+            .unwrap_or(!current.is_empty())
+            .then_some(current),
+    );
     Ok(())
 }
 
@@ -497,7 +523,7 @@ fn patch_mapped_listeners(config: &TomlConfig, patches: Vec<UrlPatch>) -> anyhow
 /// Applies VPN portal client patches to the candidate TOML model. The live
 /// portal is updated by the caller after the candidate commits, so deep
 /// validation runs against the final configuration state.
-fn apply_vpn_portal_client_patches(
+pub(super) fn apply_vpn_portal_client_patches(
     config: &TomlConfig,
     patches: Vec<VpnPortalClientPatch>,
 ) -> anyhow::Result<()> {
@@ -507,6 +533,10 @@ fn apply_vpn_portal_client_patches(
     let mut portal = config
         .get_vpn_portal_config()
         .ok_or_else(|| anyhow::anyhow!("VPN portal is not configured; cannot patch its clients"))?;
+    anyhow::ensure!(
+        portal.enabled != Some(false),
+        "VPN portal is disabled; cannot patch its clients"
+    );
     for patch in patches {
         match ConfigPatchAction::try_from(patch.action) {
             Ok(ConfigPatchAction::Add) => {
@@ -600,6 +630,7 @@ mod tests {
     fn portal_config() -> TomlConfig {
         let config = TomlConfig::default();
         config.set_vpn_portal_config(VpnPortalConfig {
+            enabled: None,
             wireguard_listen: "0.0.0.0:51820".parse().unwrap(),
             wireguard_private_key: None,
             clients: vec![VpnPortalClientConfig {
@@ -662,6 +693,17 @@ mod tests {
         )
         .unwrap();
         assert!(configured_names(&config).is_empty());
+    }
+
+    #[test]
+    fn vpn_portal_client_patches_preserve_disabled_configuration() {
+        let config = portal_config();
+        let mut portal = config.get_vpn_portal_config().unwrap();
+        portal.enabled = Some(false);
+        config.set_vpn_portal_config(portal.clone());
+        let error = apply_vpn_portal_client_patches(&config, vec![remove("alice")]).unwrap_err();
+        assert!(error.to_string().contains("disabled"));
+        assert_eq!(config.get_vpn_portal_config(), Some(portal));
     }
 
     #[test]

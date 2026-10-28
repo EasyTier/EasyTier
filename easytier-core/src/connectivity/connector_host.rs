@@ -723,6 +723,7 @@ mod tests {
         ));
         let handler = DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
             host,
+            Arc::new(crate::connectivity::NoLocalListeners),
             SocketContext::default().with_socket_mark(Some(7)),
             Some(Arc::new(FixedStunProvider)),
         );
@@ -743,6 +744,14 @@ mod tests {
         assert_eq!(
             response.public_ipv4,
             Some("198.51.100.7".parse::<std::net::Ipv4Addr>().unwrap().into())
+        );
+        assert_eq!(
+            response
+                .listeners
+                .into_iter()
+                .map(Url::from)
+                .collect::<Vec<_>>(),
+            vec!["tcp://192.0.2.1:11010".parse::<Url>().unwrap()]
         );
     }
 

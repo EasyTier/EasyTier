@@ -4,10 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use smoltcp::wire::{IPV4_HEADER_LEN, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
 
-use crate::{
-    gateway::proxy::ip_reassembler::IpReassembler,
-    packet::{PacketType, ZCPacket},
-};
+use crate::packet::{PacketType, ZCPacket};
 
 use super::flow::{FlowKey, FlowKind, FlowTable};
 
@@ -22,7 +19,7 @@ enum ClassifiedPeerPacket {
         entry: FlowKey,
     },
     FragmentedUdp {
-        source: Ipv4Addr,
+        destination: Ipv4Addr,
     },
     Unsupported,
 }
@@ -38,8 +35,7 @@ pub(crate) enum PeerPacketRoute {
         tcp_flags: Option<u8>,
     },
     FragmentedUdp {
-        source: Ipv4Addr,
-        mirror: bool,
+        destination: Ipv4Addr,
     },
 }
 fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedPeerPacket {
@@ -72,9 +68,9 @@ fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedPeerPacket {
             }
         }
         IpProtocol::Udp => {
-            if IpReassembler::is_packet_fragmented(&ipv4) {
+            if ipv4.frag_offset() != 0 || ipv4.more_frags() {
                 return ClassifiedPeerPacket::FragmentedUdp {
-                    source: ipv4.src_addr(),
+                    destination: ipv4.dst_addr(),
                 };
             }
             let Ok(udp) = UdpPacket::new_checked(ipv4.payload()) else {
@@ -90,6 +86,34 @@ fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedPeerPacket {
         }
         _ => ClassifiedPeerPacket::Unsupported,
     }
+}
+
+pub(super) fn is_udp_fragment(packet: &ZCPacket) -> bool {
+    is_data_plane_packet(packet)
+        && Ipv4Packet::new_checked(packet.payload()).is_ok_and(|ip| {
+            ip.version() == 4
+                && usize::from(ip.header_len()) >= IPV4_HEADER_LEN
+                && ip.next_header() == IpProtocol::Udp
+                && (ip.frag_offset() != 0 || ip.more_frags())
+        })
+}
+
+fn is_data_plane_packet(packet: &ZCPacket) -> bool {
+    let Some(header) = packet.peer_manager_header() else {
+        return false;
+    };
+    let is_modified_source = matches!(
+        header.packet_type,
+        x if x == PacketType::DataWithKcpSrcModified as u8
+        || x == PacketType::DataWithQuicSrcModified as u8
+    );
+    if header.packet_type != PacketType::Data as u8 && !is_modified_source {
+        return false;
+    }
+    if is_modified_source && header.from_peer_id != header.to_peer_id {
+        return false;
+    }
+    true
 }
 
 pub(super) fn tcp_flags<T: AsRef<[u8]>>(tcp: &TcpPacket<T>) -> u8 {
@@ -108,18 +132,7 @@ impl<V> FlowTable<V> {
         packet: &ZCPacket,
         allow_tcp_listen_fallback: bool,
     ) -> PeerPacketRoute {
-        let Some(header) = packet.peer_manager_header() else {
-            return PeerPacketRoute::Pass;
-        };
-        let is_modified_source = matches!(
-            header.packet_type,
-            x if x == PacketType::DataWithKcpSrcModified as u8
-                || x == PacketType::DataWithQuicSrcModified as u8
-        );
-        if header.packet_type != PacketType::Data as u8 && !is_modified_source {
-            return PeerPacketRoute::Pass;
-        }
-        if is_modified_source && header.from_peer_id != header.to_peer_id {
+        if !is_data_plane_packet(packet) {
             return PeerPacketRoute::Pass;
         }
 
@@ -144,12 +157,9 @@ impl<V> FlowTable<V> {
                 };
                 (entry, Some(flags))
             }
-            ClassifiedPeerPacket::Udp { entry } => (entry, None),
-            ClassifiedPeerPacket::FragmentedUdp { source } => {
-                return PeerPacketRoute::FragmentedUdp {
-                    source,
-                    mirror: self.contains_destination_ip(source.into()),
-                };
+            ClassifiedPeerPacket::Udp { entry } => (FlowKey::udp_bind(entry.src), None),
+            ClassifiedPeerPacket::FragmentedUdp { destination } => {
+                return PeerPacketRoute::FragmentedUdp { destination };
             }
             ClassifiedPeerPacket::Unsupported => return PeerPacketRoute::Pass,
         };
@@ -234,7 +244,7 @@ mod tests {
         assert_eq!(
             classify_peer_ipv4_payload(&fragmented),
             ClassifiedPeerPacket::FragmentedUdp {
-                source: Ipv4Addr::new(10, 1, 1, 2),
+                destination: Ipv4Addr::new(10, 2, 2, 3),
             }
         );
     }
@@ -314,34 +324,51 @@ mod tests {
         );
     }
     #[test]
-    fn flow_table_routes_fragmented_udp_by_source_ip() {
+    fn flow_table_routes_udp_by_bound_port() {
         let mut packet = ipv4_packet(IpProtocol::Udp, 8);
-        Ipv4Packet::new_unchecked(&mut packet).set_frag_offset(8);
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+        let mut udp = UdpPacket::new_unchecked(ipv4.payload_mut());
+        udp.set_src_port(1234);
+        udp.set_dst_port(4321);
+        udp.set_len(8);
         let table = FlowTable::default();
-
+        let entry = FlowKey::udp_bind("10.2.2.3:4321".parse().unwrap());
         assert_eq!(
             table.route_peer_ipv4_payload(&packet, false),
-            PeerPacketRoute::FragmentedUdp {
-                source: Ipv4Addr::new(10, 1, 1, 2),
-                mirror: false,
+            PeerPacketRoute::Unmatched {
+                entry: entry.clone(),
+                tcp_flags: None
             }
         );
-
-        table.insert(
-            FlowKey {
-                src: "10.2.2.3:4321".parse().unwrap(),
-                dst: "10.1.1.2:1234".parse().unwrap(),
-                kind: FlowKind::Udp,
-            },
-            (),
-        );
+        table.insert(entry.clone(), ());
         assert_eq!(
             table.route_peer_ipv4_payload(&packet, false),
-            PeerPacketRoute::FragmentedUdp {
-                source: Ipv4Addr::new(10, 1, 1, 2),
-                mirror: true,
+            PeerPacketRoute::Deliver {
+                entry,
+                tcp_flags: None
             }
         );
+        for more_frags in [false, true] {
+            let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+            ipv4.set_frag_offset(8);
+            ipv4.set_more_frags(more_frags);
+            assert_eq!(
+                table.route_peer_ipv4_payload(&packet, false),
+                PeerPacketRoute::FragmentedUdp {
+                    destination: Ipv4Addr::new(10, 2, 2, 3),
+                }
+            );
+        }
+        for len in 0..smoltcp::wire::UDP_HEADER_LEN {
+            let mut short = ipv4_packet(IpProtocol::Udp, len);
+            Ipv4Packet::new_unchecked(&mut short).set_more_frags(true);
+            assert_eq!(
+                table.route_peer_ipv4_payload(&short, false),
+                PeerPacketRoute::FragmentedUdp {
+                    destination: Ipv4Addr::new(10, 2, 2, 3)
+                }
+            );
+        }
     }
     #[test]
     fn flow_table_routes_loopback_modified_source_packets() {

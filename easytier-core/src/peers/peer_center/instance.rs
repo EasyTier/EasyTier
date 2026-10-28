@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use futures::Future;
 use std::sync::RwLock;
 use tokio::sync::Mutex;

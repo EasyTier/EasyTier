@@ -305,10 +305,10 @@ fn route_to_view(route: api::instance::Route) -> RouteView {
         ipv6_cidr: stringify_ipv6_inet(route.ipv6_addr),
         proxy_cidrs: route.proxy_cidrs,
         next_hop_peer_id: optional_u32_to_i64(route.next_hop_peer_id_latency_first)
-            .or_else(|| Some(route.next_hop_peer_id as i64)),
+            .or(Some(route.next_hop_peer_id as i64)),
         cost: Some(route.cost),
         path_latency: optional_i32_to_i64(route.path_latency_latency_first)
-            .or_else(|| Some(route.path_latency as i64)),
+            .or(Some(route.path_latency as i64)),
         udp_nat_type: stun.as_ref().map(|info| info.udp_nat_type),
         tcp_nat_type: stun.as_ref().map(|info| info.tcp_nat_type),
         inst_id: (!route.inst_id.is_empty()).then_some(route.inst_id),
@@ -368,6 +368,7 @@ fn peer_to_view(peer: api::instance::PeerInfo) -> PeerInfo {
 }
 
 fn my_node_info_to_view(info: api::manage::MyNodeInfo) -> MyNodeInfo {
+    #[allow(deprecated)]
     MyNodeInfo {
         virtual_ipv4: info
             .virtual_ipv4

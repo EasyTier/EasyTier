@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { latencyMs, lossRate } from '../src/modules/statusDisplay'
+import { latencyMs, lossRate, udpNatTypeName } from '../src/modules/statusDisplay'
 import { ipv4ToString, ipv6ToString } from '../src/modules/utils'
 
 function peerRoutePair(conns: any[]) {
@@ -49,7 +49,7 @@ describe('status display helpers', () => {
     expect(ipv6ToString({ part4: 1 } as any)).toBe('::1')
   })
 
-  it('skips missing latency and loss values', () => {
+  it('skips missing latency and invalid loss values', () => {
     expect(latencyMs(peerRoutePair([
       { conn_id: 'missing', stats: {} },
       { conn_id: 'valid', stats: { latency_us: '2500' } },
@@ -61,14 +61,23 @@ describe('status display helpers', () => {
     ]))).toBe('')
 
     expect(lossRate(peerRoutePair([
-      { conn_id: 'missing' },
       { conn_id: 'valid', loss_rate: '0.25' },
       { conn_id: 'invalid', loss_rate: 'unknown' },
     ]))).toBe('25%')
     expect(lossRate(peerRoutePair([
-      { conn_id: 'missing' },
       { conn_id: 'invalid', loss_rate: 'unknown' },
     ]))).toBe('')
+  })
+
+  it('renders omitted protobuf loss as zero only for an existing connection', () => {
+    expect(lossRate(peerRoutePair([{ conn_id: 'zero' }]))).toBe('0%')
+    expect(lossRate(peerRoutePair([{ conn_id: 'zero', loss_rate: 0 }]))).toBe('0%')
+    expect(lossRate(peerRoutePair([
+      { conn_id: 'zero' },
+      { conn_id: 'lossy', loss_rate: 0.7 },
+    ]))).toBe('0%')
+    expect(lossRate(peerRoutePair([]))).toBe('')
+    expect(lossRate({ route: {} } as any)).toBe('')
   })
 
   it('prefers the default connection when its metric is valid', () => {
@@ -80,5 +89,37 @@ describe('status display helpers', () => {
 
     expect(latencyMs(peerRoutePairWithDefaultConn(conns, defaultConnId))).toBe('9ms')
     expect(lossRate(peerRoutePairWithDefaultConn(conns, defaultConnId))).toBe('50%')
+  })
+
+  it('keeps an omitted zero loss on the default connection', () => {
+    const defaultConnId = '00000001-0002-0003-0004-000000000005'
+    expect(lossRate(peerRoutePairWithDefaultConn([
+      { conn_id: 'fallback', loss_rate: 0.25 },
+      { conn_id: defaultConnId },
+    ], defaultConnId))).toBe('0%')
+  })
+
+  it.each([
+    [0, 'Unknown', 'Unknown'],
+    [1, 'OpenInternet', 'Open Internet'],
+    [2, 'NoPAT', 'No PAT'],
+    [3, 'FullCone', 'Full Cone'],
+    [4, 'Restricted', 'Restricted'],
+    [5, 'PortRestricted', 'Port Restricted'],
+    [6, 'Symmetric', 'Symmetric'],
+    [7, 'SymUdpFirewall', 'Symmetric UDP Firewall'],
+    [8, 'SymmetricEasyInc', 'Symmetric Easy Inc'],
+    [9, 'SymmetricEasyDec', 'Symmetric Easy Dec'],
+  ])('renders numeric and protobuf enum NAT type %s', (value, name, label) => {
+    expect(udpNatTypeName({ udp_nat_type: value })).toBe(label)
+    expect(udpNatTypeName({ udp_nat_type: name })).toBe(label)
+    expect(udpNatTypeName({ udp_nat_type: String(value) })).toBe(label)
+  })
+
+  it('distinguishes missing STUN data from default or unrecognized NAT types', () => {
+    expect(udpNatTypeName(undefined)).toBe('')
+    expect(udpNatTypeName({})).toBe('Unknown')
+    expect(udpNatTypeName({ udp_nat_type: 100 })).toBe('Unknown')
+    expect(udpNatTypeName({ udp_nat_type: 'FutureNatType' })).toBe('Unknown')
   })
 })

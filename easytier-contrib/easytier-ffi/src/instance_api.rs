@@ -21,7 +21,7 @@ pub(crate) unsafe fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_int {
     let inst_id = match resolve_instance_id_by_name(&inst_name) {
         Ok(Some(instance_id)) => instance_id,
         Ok(None) => {
-            set_error_msg("instance not found");
+            set_error_msg(&format!("instance not found: {inst_name}"));
             return -1;
         }
         Err(error) => {
@@ -32,7 +32,10 @@ pub(crate) unsafe fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_int {
 
     match ffi_context().manager.attach_tun_fd(inst_id, fd) {
         Ok(_) => 0,
-        Err(_) => -1,
+        Err(e) => {
+            set_error_msg(&format!("failed to set tun fd: {}", e));
+            -1
+        }
     }
 }
 

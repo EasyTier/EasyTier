@@ -582,7 +582,7 @@ P2P hole punch 的流程:
 这个流程不受影响，因为:
 - 打洞信息交换通过管理节点中继（RPC），不经过临时节点
 - P2P tunnel 建立后的握手是直连，不通过临时节点的 listener
-- `is_directly_connected=false` 的连接（hole punch 结果）可以被临时节点接受
+- 来源为 `TcpHolePunch` 或 `UdpHolePunch` 的连接可以被临时节点接受
 
 **设计思路**: 将凭据映射为 ACL Group，复用现有的 group-based ACL 规则系统。
 

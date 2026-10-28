@@ -25,7 +25,7 @@ const eventValue = computed(() => {
 <template>
   <Fieldset :legend="t(`event.${eventKey}`)">
     <template v-if="eventKey !== 'Unknown'">
-      <div v-if="event.DhcpIpv4Changed">
+      <div v-if="event.DhcpIpv4Changed || event.DhcpIpv6Changed">
         {{ `${eventValue[0]} -> ${eventValue[1]}` }}
       </div>
       <pre v-else>{{ eventValue }}</pre>

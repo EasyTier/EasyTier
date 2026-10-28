@@ -37,7 +37,7 @@ use crate::{
         CompressorAlgo, PacketType, ZCPacket,
         compressor::{Compressor as _, DefaultCompressor},
     },
-    proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
+    proto::common::{Flags, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     tunnel::{
         Tunnel,
@@ -50,7 +50,7 @@ use crate::{
 
 use super::{
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver, PeerConnectionOrigin,
-    PeerPacketFilter, PeerPacketIngress,
+    PeerPacketFilter, PeerPacketFilterResult, PeerPacketIngress,
     acl::AclFilter,
     conn::{
         peer_conn::{PeerConn, PeerConnId},
@@ -98,6 +98,7 @@ pub struct PeerSnapshot {
 pub struct NodeSnapshot {
     pub peer_id: PeerId,
     pub ipv4_addr: Option<cidr::Ipv4Inet>,
+    pub ipv6_addr: Option<cidr::Ipv6Inet>,
     pub proxy_networks: Vec<ProxyNetworkConfig>,
     pub hostname: String,
     pub stun_info: StunInfo,
@@ -213,14 +214,14 @@ pub struct PortablePeerManagerConfig {
     ///
     /// This is explicit because those contexts participate in the same
     /// handshake as the parent but do not inherit all parent policy flags.
-    pub foreign_context_default_flags: FlagsInConfig,
+    pub foreign_context_default_flags: Flags,
 }
 
 impl PortablePeerManagerConfig {
     pub fn new(mut runtime: PeerRuntimeConfig) -> Self {
         let policy = &runtime.core.peer_policy;
         let traffic = &runtime.core.traffic;
-        let flags = FlagsInConfig {
+        let flags = Flags {
             enable_encryption: policy.encryption_required,
             encryption_algorithm: crate::config::EncryptionAlgorithm::default().to_string(),
             disable_p2p: !policy.p2p_enabled,
@@ -282,6 +283,9 @@ fn retain_runtime_owned_peer_state(
     next_peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
     if current.services.dhcp_ipv4 && next.services.dhcp_ipv4 {
         next_peer.runtime.core.routes.ipv4 = current.peer.runtime.core.routes.ipv4.clone();
+    }
+    if current.services.dhcp_ipv6 && next.services.dhcp_ipv6 {
+        next_peer.runtime.core.routes.ipv6 = current.peer.runtime.core.routes.ipv6.clone();
     }
 }
 
@@ -453,7 +457,7 @@ struct NicPacketProcessor {
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for NicPacketProcessor {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
         let hdr = packet.peer_manager_header().unwrap();
         if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
             if hdr.is_encrypted() || hdr.is_compressed() {
@@ -464,7 +468,7 @@ impl PeerPacketFilter for NicPacketProcessor {
                     compressed = hdr.is_compressed(),
                     "dropping packet before nic because it is not fully decoded"
                 );
-                return None;
+                return PeerPacketFilterResult::Consumed;
             }
             tracing::trace!(?packet, "send packet to nic channel");
             if let Err(error) = self
@@ -476,9 +480,9 @@ impl PeerPacketFilter for NicPacketProcessor {
                     "dropping packet because nic channel cannot accept it"
                 );
             }
-            None
+            PeerPacketFilterResult::Consumed
         } else {
-            Some(packet)
+            PeerPacketFilterResult::Pass(packet)
         }
     }
 }
@@ -489,16 +493,16 @@ struct PeerRpcPacketProcessor {
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for PeerRpcPacketProcessor {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
         let hdr = packet.peer_manager_header().unwrap();
         if hdr.packet_type == PacketType::TaRpc as u8
             || hdr.packet_type == PacketType::RpcReq as u8
             || hdr.packet_type == PacketType::RpcResp as u8
         {
             self.peer_rpc_tspt_sender.send(packet).unwrap();
-            None
+            PeerPacketFilterResult::Consumed
         } else {
-            Some(packet)
+            PeerPacketFilterResult::Pass(packet)
         }
     }
 }
@@ -956,7 +960,7 @@ impl PeerManagerCore {
         is_secure_mode_enabled: bool,
         data_compress_algo: CompressorAlgo,
         exit_nodes: Vec<IpAddr>,
-        foreign_context_default_flags: FlagsInConfig,
+        foreign_context_default_flags: Flags,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> Self {
         let stats_manager = core_context.stats_manager();
@@ -1265,6 +1269,7 @@ impl PeerManagerCore {
         NodeSnapshot {
             peer_id: self.my_peer_id,
             ipv4_addr: self.context.ipv4(),
+            ipv6_addr: self.context.ipv6(),
             proxy_networks: self.context.proxy_networks(),
             hostname: self.context.hostname(),
             stun_info: self.context.stun_info(),
@@ -1306,6 +1311,18 @@ impl PeerManagerCore {
         self.get_route().list_foreign_network_info().await
     }
 
+    /// Whether the foreign network peer map can route back to `peer_id`.
+    #[doc(hidden)]
+    pub async fn foreign_network_has_gateway(
+        &self,
+        network_name: &str,
+        peer_id: PeerId,
+    ) -> Option<bool> {
+        self.foreign_network_manager
+            .has_gateway_for_peer(network_name, peer_id)
+            .await
+    }
+
     pub async fn list_foreign_network_infos(
         &self,
         include_trusted_keys: bool,
@@ -1323,6 +1340,22 @@ impl PeerManagerCore {
         self.acl_filter.get_stats()
     }
 
+    /// Bytes charged by the foreign network forward limiter, if configured.
+    #[doc(hidden)]
+    pub fn foreign_forward_metered_bytes(&self, network_name: &str) -> Option<u64> {
+        self.context
+            .foreign_forward_limiter(network_name)
+            .map(|limiter| limiter.metered_bytes())
+    }
+
+    /// Bytes charged by the instance-wide receive limiter, if configured.
+    #[doc(hidden)]
+    pub fn instance_recv_metered_bytes(&self) -> Option<u64> {
+        self.context
+            .recv_limiter("", false)
+            .map(|limiter| limiter.metered_bytes())
+    }
+
     pub fn acl_filter(&self) -> Arc<AclFilter> {
         self.acl_filter.clone()
     }
@@ -1331,6 +1364,16 @@ impl PeerManagerCore {
         &self,
         config: CoreInstanceRuntimeConfig,
     ) -> anyhow::Result<Arc<CoreInstanceRuntimeConfig>> {
+        self.update_runtime_config_with(config, || ())
+            .await
+            .map(|(published, ())| published)
+    }
+
+    pub(crate) async fn update_runtime_config_with<T>(
+        &self,
+        config: CoreInstanceRuntimeConfig,
+        before_publish: impl FnOnce() -> T,
+    ) -> anyhow::Result<(Arc<CoreInstanceRuntimeConfig>, T)> {
         let _update = self.runtime_config_update.lock().await;
         let current = self.runtime_config.snapshot();
         let refresh_acl_groups = current.peer.peer_group_memberships
@@ -1340,6 +1383,9 @@ impl PeerManagerCore {
         let next_acl = reload_acl.then(|| config.services.acl.clone());
         let next_built_acl = next_acl.as_ref().map(AclRuleConfig::build).transpose()?;
 
+        // Commit prepared host resources only after all fallible validation,
+        // with no cancellation point before publishing their configuration.
+        let committed = before_publish();
         self.set_avoid_relay_data_preference(config.peer.avoid_relay_data_preference);
         let published = self
             .runtime_config
@@ -1352,7 +1398,7 @@ impl PeerManagerCore {
         if refresh_acl_groups {
             self.route.refresh_acl_groups().await;
         }
-        Ok(published)
+        Ok((published, committed))
     }
 
     /// Keeps this manager's ACL rules and group assignments aligned with a
@@ -1565,21 +1611,19 @@ impl PeerManagerCore {
     pub async fn add_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        self.peer_connection_admission
-            .add_client_tunnel(tunnel, is_directly_connected)
+        self.add_client_tunnel_with_peer_id_hint(tunnel, PeerConnectionOrigin::Manual, None)
             .await
     }
 
-    pub async fn add_client_tunnel_with_peer_id_hint(
+    pub(crate) async fn add_client_tunnel_with_peer_id_hint(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
+        origin: PeerConnectionOrigin,
         peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error> {
         self.peer_connection_admission
-            .add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, peer_id_hint)
+            .add_client_tunnel_with_peer_id_hint(tunnel, origin, peer_id_hint)
             .await
     }
 
@@ -1587,18 +1631,23 @@ impl PeerManagerCore {
         &self,
         tunnel: Box<dyn Tunnel>,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        self.peer_connection_admission
-            .add_client_tunnel_with_origin(tunnel, true, None, PeerConnectionOrigin::Attached)
+        self.add_client_tunnel_with_peer_id_hint(tunnel, PeerConnectionOrigin::Attached, None)
             .await
     }
 
-    pub async fn add_tunnel_as_server(
+    pub async fn add_tunnel_as_server(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+        self.add_tunnel_as_server_with_origin(tunnel, PeerConnectionOrigin::Listener)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn add_tunnel_as_server_with_origin(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(), Error> {
+        origin: PeerConnectionOrigin,
+    ) -> Result<(PeerId, PeerConnId), Error> {
         self.peer_connection_admission
-            .add_tunnel_as_server(tunnel, is_directly_connected)
+            .add_tunnel_as_server_with_origin(tunnel, origin)
             .await
     }
 
@@ -1606,8 +1655,7 @@ impl PeerManagerCore {
         &self,
         tunnel: Box<dyn Tunnel>,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        self.peer_connection_admission
-            .add_tunnel_as_server_with_origin(tunnel, true, PeerConnectionOrigin::Attached)
+        self.add_tunnel_as_server_with_origin(tunnel, PeerConnectionOrigin::Attached)
             .await
     }
 
@@ -1747,6 +1795,13 @@ impl PeerManagerCore {
 
     pub async fn update_exit_nodes(&self, exit_nodes: Vec<IpAddr>) {
         *self.exit_nodes.write().await = exit_nodes;
+    }
+
+    /// Shares the network's current exit nodes, including later updates, while
+    /// keeping this peer's route lookup and packet identity independent.
+    pub(super) fn inherit_exit_nodes(&mut self, network: &Self) {
+        self.exit_nodes = network.exit_nodes.clone();
+        self.outbound_packet_router.exit_nodes = self.exit_nodes.clone();
     }
 
     fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) {
@@ -1958,36 +2013,11 @@ impl PeerConnectionAdmission {
         }
     }
 
-    pub async fn add_client_tunnel(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(PeerId, PeerConnId), Error> {
-        self.add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, None)
-            .await
-    }
-
     pub async fn add_client_tunnel_with_peer_id_hint(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-        peer_id_hint: Option<PeerId>,
-    ) -> Result<(PeerId, PeerConnId), Error> {
-        self.add_client_tunnel_with_origin(
-            tunnel,
-            is_directly_connected,
-            peer_id_hint,
-            PeerConnectionOrigin::Network,
-        )
-        .await
-    }
-
-    async fn add_client_tunnel_with_origin(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-        peer_id_hint: Option<PeerId>,
         origin: PeerConnectionOrigin,
+        peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error> {
         let mut peer = PeerConn::new_with_peer_id_hint_and_origin(
             self.my_peer_id,
@@ -1997,7 +2027,6 @@ impl PeerConnectionAdmission {
             self.peer_session_store.clone(),
             origin,
         );
-        peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
@@ -2036,24 +2065,9 @@ impl PeerConnectionAdmission {
     }
 
     #[tracing::instrument(ret, skip(self, tunnel))]
-    pub async fn add_tunnel_as_server(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(), Error> {
-        self.add_tunnel_as_server_with_origin(
-            tunnel,
-            is_directly_connected,
-            PeerConnectionOrigin::Network,
-        )
-        .await
-        .map(|_| ())
-    }
-
     async fn add_tunnel_as_server_with_origin(
         &self,
         tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
         origin: PeerConnectionOrigin,
     ) -> Result<(PeerId, PeerConnId), Error> {
         tracing::info!("add tunnel as server start");
@@ -2137,8 +2151,6 @@ impl PeerConnectionAdmission {
                 "private mode is turned on, foreign network secret mismatch".to_string(),
             ));
         }
-
-        conn.set_is_hole_punched(!is_directly_connected);
 
         let add_peer_ret = if is_local_network {
             let local_secure_mode = self
@@ -2647,6 +2659,10 @@ impl PeerOutboundPacketRouter {
         self.mark_recent_traffic_with_policy(dst_peer_id, packet_policy);
         self.check_p2p_only_before_send(dst_peer_id, packet_policy)?;
 
+        if msg.peer_manager_header().unwrap().packet_type == PacketType::Data as u8 {
+            msg.flow_key = crate::packet::flow::parse_flow_key(&msg);
+        }
+
         self.counters
             .compress_tx_bytes_before
             .add(msg.buf_len() as u64);
@@ -2793,7 +2809,7 @@ impl PeerOutboundPacketRouter {
     pub async fn send_msg_by_ip(
         &self,
         mut msg: ZCPacket,
-        ip_addr: IpAddr,
+        mut ip_addr: IpAddr,
         not_send_to_self: bool,
     ) -> Result<(), Error> {
         tracing::trace!(
@@ -2803,9 +2819,25 @@ impl PeerOutboundPacketRouter {
         );
 
         msg.fill_peer_manager_hdr(self.my_peer_id, 0, PacketType::Data as u8);
+        let filters_registered = !self.nic_packet_process_pipeline.load().is_empty();
         if !self.run_nic_packet_process_pipeline(&mut msg).await {
             return Ok(());
         }
+
+        if filters_registered
+            && let Ok(meta) = crate::instance::packet_io::parse_ip_packet(msg.payload())
+            && meta.destination != ip_addr
+        {
+            tracing::trace!(
+                original_dst = %ip_addr,
+                new_dst = %meta.destination,
+                "destination rewritten by nic packet filter"
+            );
+            ip_addr = meta.destination;
+        }
+
+        msg.flow_key = crate::packet::flow::parse_flow_key(&msg);
+
         let packet_policy = self.context.packet_policy();
         let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
         if cur_to_peer_id != 0 {
@@ -3216,25 +3248,33 @@ impl PeerPacketRouter {
                 return;
             }
 
-            let mut processed = false;
-            let mut zc_packet = Some(ret);
-            tracing::trace!(?zc_packet, "try_process_packet_from_peer");
+            tracing::trace!(?ret, "try_process_packet_from_peer");
             let pipelines = self.peer_packet_process_pipeline.load_full();
-            for pipeline in pipelines.iter().rev() {
-                if let Some(filter) = pipeline.filter_if_active() {
-                    zc_packet = filter
-                        .try_process_packet_from_peer(zc_packet.unwrap())
-                        .await;
+            process_peer_packet(&pipelines, ret).await;
+        }
+    }
+}
+
+async fn process_peer_packet(pipelines: &[PeerPipelineEntry], packet: ZCPacket) {
+    let mut first = Some((packet, pipelines.len()));
+    // The ordinary single-packet path does not allocate this queue.
+    let mut pending = Vec::new();
+    'packets: while let Some((mut packet, next)) = first.take().or_else(|| pending.pop()) {
+        for (index, pipeline) in pipelines[..next].iter().enumerate().rev() {
+            let Some(filter) = pipeline.filter_if_active() else {
+                continue;
+            };
+            match filter.try_process_packet_from_peer(packet).await {
+                PeerPacketFilterResult::Consumed => continue 'packets,
+                PeerPacketFilterResult::Pass(next) => packet = next,
+                PeerPacketFilterResult::PassBatch(packets) => {
+                    // Resume each packet after the filter that produced it.
+                    pending.extend(packets.into_iter().rev().map(|packet| (packet, index)));
+                    continue 'packets;
                 }
-                if zc_packet.is_none() {
-                    processed = true;
-                    break;
-                }
-            }
-            if !processed {
-                tracing::error!(?zc_packet, "unhandled packet");
             }
         }
+        tracing::error!(?packet, "unhandled packet");
     }
 }
 
@@ -3579,6 +3619,58 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn packet_batches_resume_at_next_filter_in_order() {
+        struct Filter {
+            stage: u8,
+            seen: Arc<std::sync::Mutex<Vec<(u8, u8)>>>,
+        }
+        #[async_trait::async_trait]
+        impl PeerPacketFilter for Filter {
+            async fn try_process_packet_from_peer(
+                &self,
+                packet: ZCPacket,
+            ) -> PeerPacketFilterResult {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((self.stage, packet.payload()[0]));
+                match self.stage {
+                    0 => PeerPacketFilterResult::Consumed,
+                    1 | 2 => {
+                        let mut extra = packet.clone();
+                        extra.mut_payload()[0] += if self.stage == 1 { 10 } else { 1 };
+                        PeerPacketFilterResult::PassBatch(vec![packet, extra])
+                    }
+                    _ => PeerPacketFilterResult::Pass(packet),
+                }
+            }
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pipelines = (0..4)
+            .map(|stage| {
+                permanent_peer_pipeline_entry(Box::new(Filter {
+                    stage,
+                    seen: seen.clone(),
+                }))
+            })
+            .collect::<Vec<_>>();
+        process_peer_packet(&pipelines, ZCPacket::new_with_payload(&[0])).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (3, 0),
+                (2, 0),
+                (1, 0),
+                (0, 0),
+                (0, 10),
+                (1, 1),
+                (0, 1),
+                (0, 11),
+            ]
+        );
+    }
+
     struct RuntimeConfigStunInfoSource(CoreRuntimeConfigStore);
 
     impl PeerStunInfoSource for RuntimeConfigStunInfoSource {
@@ -3648,7 +3740,7 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "a full host queue blocked the peer router");
-        assert!(result.unwrap().is_none());
+        assert!(matches!(result.unwrap(), PeerPacketFilterResult::Consumed));
         assert_eq!(nic_receiver.try_recv().unwrap().payload(), b"queued");
     }
 
@@ -3838,6 +3930,247 @@ mod tests {
 
         assert!(peers.is_empty());
         assert!(!is_self);
+    }
+
+    #[cfg(feature = "aes-gcm")]
+    #[tokio::test]
+    async fn proxy_ip_responses_get_flow_keys_without_classifying_fragments_or_wrapped_data() {
+        struct CaptureProxyPackets(mpsc::UnboundedSender<ZCPacket>);
+
+        #[async_trait::async_trait]
+        impl PeerPacketFilter for CaptureProxyPackets {
+            async fn try_process_packet_from_peer(
+                &self,
+                packet: ZCPacket,
+            ) -> PeerPacketFilterResult {
+                let packet_type = packet.peer_manager_header().unwrap().packet_type;
+                if [
+                    PacketType::Data,
+                    PacketType::KcpSrc,
+                    PacketType::KcpDst,
+                    PacketType::QuicSrc,
+                    PacketType::QuicDst,
+                ]
+                .iter()
+                .any(|kind| *kind as u8 == packet_type)
+                {
+                    self.0.send(packet).unwrap();
+                    PeerPacketFilterResult::Consumed
+                } else {
+                    PeerPacketFilterResult::Pass(packet)
+                }
+            }
+        }
+
+        let mut config = PortablePeerManagerConfig::new(portable_runtime_config("proxy-flow-key"));
+        config.snapshot.flags.enable_encryption = true;
+        config.snapshot.flags.encryption_algorithm = "aes-gcm".to_owned();
+        let core = build_portable_config_for_test(config).unwrap();
+        core.run().await.unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        core.add_packet_process_pipeline(Box::new(CaptureProxyPackets(tx)))
+            .await;
+
+        let expected = crate::packet::FlowKey {
+            src: ([10, 0, 0, 1], 1234).into(),
+            dst: ([10, 0, 0, 2], 5000).into(),
+            protocol: 17,
+        };
+        for (packet_type, fragment_flags, key) in [
+            (PacketType::Data, 0u16, Some(expected)),
+            (PacketType::Data, 0x2000, None),
+            (PacketType::Data, 1, None),
+            (PacketType::KcpSrc, 0, None),
+            (PacketType::KcpDst, 0, None),
+            (PacketType::QuicSrc, 0, None),
+            (PacketType::QuicDst, 0, None),
+        ] {
+            // Wrapped payloads deliberately resemble IP to check the packet-type guard.
+            let mut bytes = vec![0u8; 28];
+            bytes[0] = 0x45;
+            bytes[2..4].copy_from_slice(&28u16.to_be_bytes());
+            bytes[6..8].copy_from_slice(&fragment_flags.to_be_bytes());
+            bytes[8] = 64;
+            bytes[9] = 17;
+            bytes[12..16].copy_from_slice(&[10, 0, 0, 1]);
+            bytes[20..22].copy_from_slice(&1234u16.to_be_bytes());
+            bytes[22..24].copy_from_slice(&5000u16.to_be_bytes());
+            bytes[24..26].copy_from_slice(&8u16.to_be_bytes());
+            set_packet_destination(&mut bytes, expected.dst.ip());
+            let mut packet = ZCPacket::new_with_payload(&bytes);
+            packet.fill_peer_manager_hdr(core.my_peer_id(), core.my_peer_id(), packet_type as u8);
+            packet.mut_peer_manager_header().unwrap().set_no_proxy(true);
+            assert!(packet.flow_key.is_none());
+            core.send_msg_for_proxy(packet, core.my_peer_id())
+                .await
+                .unwrap();
+            let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(received.flow_key, key, "{packet_type:?}/{fragment_flags}");
+            assert_eq!(received.payload(), bytes);
+        }
+        core.clear_resources().await;
+    }
+
+    fn set_packet_destination(packet: &mut [u8], destination: IpAddr) {
+        match destination {
+            IpAddr::V4(destination) => {
+                assert_eq!(packet[0] >> 4, 4);
+                packet[16..20].copy_from_slice(&destination.octets());
+                packet[10..12].fill(0);
+                let mut checksum: u32 = packet[..20]
+                    .chunks_exact(2)
+                    .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
+                    .sum();
+                while checksum >> 16 != 0 {
+                    checksum = (checksum & 0xffff) + (checksum >> 16);
+                }
+                packet[10..12].copy_from_slice(&(!(checksum as u16)).to_be_bytes());
+            }
+            IpAddr::V6(destination) => {
+                assert_eq!(packet[0] >> 4, 6);
+                packet[24..40].copy_from_slice(&destination.octets());
+            }
+        }
+    }
+
+    struct DestinationRewriteNicFilter(IpAddr);
+
+    #[async_trait::async_trait]
+    impl super::super::NicPacketFilter for DestinationRewriteNicFilter {
+        async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
+            // Leave to_peer_id unset: the router must use the rewritten IP header.
+            assert_eq!(packet.peer_manager_header().unwrap().to_peer_id.get(), 0);
+            set_packet_destination(packet.mut_payload(), self.0);
+            true
+        }
+    }
+
+    async fn check_nic_filter_destination_routing(addresses: [IpAddr; 4]) {
+        let [source, original, rewritten, unrouted] = addresses;
+        let mut peers = Vec::new();
+        let mut receivers = Vec::new();
+        for address in [source, original, rewritten] {
+            let mut runtime = portable_runtime_config("nic-filter-routing");
+            if address.is_ipv4() {
+                runtime.core.routes.ipv4 = Some(IpPrefix::new(address, 24).unwrap());
+            } else {
+                runtime.core.routes.ipv6 = Some(IpPrefix::new(address, 64).unwrap());
+            }
+            let (sender, receiver) = host_packet_channel();
+            let peer = PeerManagerCore::new_portable_for_test(
+                PortablePeerManagerConfig::new(runtime),
+                sender,
+            )
+            .unwrap();
+            peer.run().await.unwrap();
+            peers.push(peer);
+            receivers.push(receiver);
+        }
+        let sender = &peers[0];
+        for peer in &peers[1..] {
+            let (client, server) = crate::tunnel::ring::create_ring_tunnel_pair();
+            let (client_result, server_result) = tokio::join!(
+                sender.add_client_tunnel(client),
+                peer.add_tunnel_as_server(server),
+            );
+            client_result.unwrap();
+            server_result.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if sender.get_msg_dst_peer(&original).await == (vec![peers[1].my_peer_id()], false)
+                    && sender.get_msg_dst_peer(&rewritten).await
+                        == (vec![peers[2].my_peer_id()], false)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("both destination routes must be ready before sending");
+        assert_eq!(
+            sender.get_msg_dst_peer(&unrouted).await,
+            (Vec::new(), false)
+        );
+        sender
+            .add_nic_packet_process_pipeline(Box::new(DestinationRewriteNicFilter(rewritten)))
+            .await;
+
+        // Exercise both misdelivery to an existing peer and silent loss for an
+        // address with no route. Send once per case, without retrying data packets.
+        for destination in [original, unrouted] {
+            let mut payload = match source {
+                IpAddr::V4(source) => {
+                    let mut payload = vec![0u8; 20];
+                    payload[0] = 0x45;
+                    payload[2..4].copy_from_slice(&20u16.to_be_bytes());
+                    payload[8] = 64;
+                    payload[9] = 253; // Experimental protocol; no transport header.
+                    payload[12..16].copy_from_slice(&source.octets());
+                    payload
+                }
+                IpAddr::V6(source) => {
+                    let mut payload = vec![0u8; 40];
+                    payload[0] = 0x60;
+                    payload[6] = 59; // No next header.
+                    payload[7] = 64;
+                    payload[8..24].copy_from_slice(&source.octets());
+                    payload
+                }
+            };
+            set_packet_destination(&mut payload, destination);
+            sender
+                .send_msg_by_ip(ZCPacket::new_with_payload(&payload), destination, false)
+                .await
+                .unwrap();
+
+            let packet = tokio::time::timeout(Duration::from_secs(5), receivers[2].recv())
+                .await
+                .expect("rewritten destination peer did not receive the packet")
+                .unwrap()
+                .into_core_packet();
+            set_packet_destination(&mut payload, rewritten);
+            assert_eq!(packet.payload(), payload);
+            let header = packet.peer_manager_header().unwrap();
+            assert_eq!(header.from_peer_id.get(), sender.my_peer_id());
+            assert_eq!(header.to_peer_id.get(), peers[2].my_peer_id());
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), receivers[1].recv())
+                    .await
+                    .is_err(),
+                "packet reached the old destination"
+            );
+        }
+
+        for peer in &peers {
+            peer.clear_resources().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn nic_filter_rewritten_ipv4_destination_controls_routing() {
+        check_nic_filter_destination_routing([
+            "10.82.0.1".parse().unwrap(),
+            "10.82.0.2".parse().unwrap(),
+            "10.82.0.3".parse().unwrap(),
+            "10.82.0.99".parse().unwrap(),
+        ])
+        .await;
+    }
+
+    #[tokio::test]
+    async fn nic_filter_rewritten_ipv6_destination_controls_routing() {
+        check_nic_filter_destination_routing([
+            "fd00::1".parse().unwrap(),
+            "fd00::2".parse().unwrap(),
+            "fd00::3".parse().unwrap(),
+            "fd00::99".parse().unwrap(),
+        ])
+        .await;
     }
 
     #[tokio::test]
@@ -4424,19 +4757,27 @@ mod tests {
     #[test]
     fn forged_attached_source_header_does_not_bypass_relay_disable() {
         let packet = data_packet(77, 3);
-        let network_ingress = PeerPacketIngress::Peer {
-            peer_id: 2,
-            conn_id: PeerConnId::new_v4(),
-            origin: PeerConnectionOrigin::Network,
-        };
+        for origin in [
+            PeerConnectionOrigin::Manual,
+            PeerConnectionOrigin::Direct,
+            PeerConnectionOrigin::Listener,
+            PeerConnectionOrigin::TcpHolePunch,
+            PeerConnectionOrigin::UdpHolePunch,
+        ] {
+            let network_ingress = PeerPacketIngress::Peer {
+                peer_id: 2,
+                conn_id: PeerConnId::new_v4(),
+                origin,
+            };
 
-        assert!(should_drop_relay_data(
-            true,
-            &packet,
-            1,
-            network_ingress,
-            false,
-        ));
+            assert!(should_drop_relay_data(
+                true,
+                &packet,
+                1,
+                network_ingress,
+                false,
+            ));
+        }
     }
 
     #[test]
@@ -4450,7 +4791,7 @@ mod tests {
         let network_ingress = PeerPacketIngress::Peer {
             peer_id: 2,
             conn_id: PeerConnId::new_v4(),
-            origin: PeerConnectionOrigin::Network,
+            origin: PeerConnectionOrigin::Listener,
         };
 
         assert!(!should_drop_relay_data(

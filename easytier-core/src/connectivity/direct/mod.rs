@@ -1,14 +1,12 @@
 use std::{
     collections::HashSet,
-    hash::Hash,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, Weak},
-    time::{Duration, Instant as StdInstant},
+    time::Duration,
 };
 
 use anyhow::Context;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use quanta::Instant;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -20,17 +18,19 @@ use crate::{
     connectivity::hole_punch::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
-        LocalListenerUrls, NoLocalListeners,
+        LocalListenerUrls,
         protocol::{
             ClientProtocolUpgrader, ProtocolTransport, protocol_transport, protocol_uses_udp,
         },
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
+    foundation::expiring_set::ExpiringSet,
     foundation::task::{PeerTaskLauncher, PeerTaskManager},
     host::dns::DnsResolver,
     peers::{
-        conn::peer_conn::PeerConnId, foreign_network::ForeignNetworkRpcRegistrar,
-        peer_manager::PeerManagerCore, peer_rpc::PeerRpcManager,
+        PeerConnectionOrigin, conn::peer_conn::PeerConnId,
+        foreign_network::ForeignNetworkRpcRegistrar, peer_manager::PeerManagerCore,
+        peer_rpc::PeerRpcManager,
     },
     process_runtime::ProtectedTcpPortRegistry,
     proto::{
@@ -154,50 +154,6 @@ impl DirectConnectorOptions {
             DirectTransport::Udp(_) => self.udp_bind.context.clone(),
         };
         context.with_ip_version(ip_version)
-    }
-}
-
-#[derive(Debug)]
-struct ExpiringSet<K>
-where
-    K: Eq + Hash,
-{
-    entries: DashMap<K, StdInstant>,
-}
-
-impl<K> Default for ExpiringSet<K>
-where
-    K: Eq + Hash,
-{
-    fn default() -> Self {
-        Self {
-            entries: DashMap::new(),
-        }
-    }
-}
-
-impl<K> ExpiringSet<K>
-where
-    K: Eq + Hash + Clone,
-{
-    fn insert(&self, key: K, ttl: Duration) {
-        self.entries.insert(key, StdInstant::now() + ttl);
-    }
-
-    fn contains(&self, key: &K) -> bool {
-        let active = self
-            .entries
-            .get(key)
-            .is_some_and(|expires_at| *expires_at > StdInstant::now());
-        if !active {
-            self.entries.remove(key);
-        }
-        active
-    }
-
-    fn cleanup(&self) {
-        let now = StdInstant::now();
-        self.entries.retain(|_, expires_at| *expires_at > now);
     }
 }
 
@@ -915,7 +871,11 @@ where
         dst_peer_id: PeerId,
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
         self.peer_manager
-            .add_client_tunnel_with_peer_id_hint(tunnel, true, Some(dst_peer_id))
+            .add_client_tunnel_with_peer_id_hint(
+                tunnel,
+                PeerConnectionOrigin::Direct,
+                Some(dst_peer_id),
+            )
             .await
             .map_err(Into::into)
     }
@@ -955,10 +915,10 @@ where
 {
     pub fn new_for_foreign_network_with_stun(
         host: Arc<H>,
+        running_listeners: Arc<dyn LocalListenerUrls>,
         socket_context: SocketContext,
         stun: Option<Arc<dyn StunInfoProvider>>,
     ) -> Self {
-        let running_listeners = Arc::new(NoLocalListeners);
         Self {
             host,
             peer_manager: None,
@@ -1037,14 +997,23 @@ where
 {
     host: Arc<H>,
     stun: Arc<dyn StunInfoProvider>,
+    running_listeners: Arc<dyn LocalListenerUrls>,
 }
 
 impl<H> ForeignDirectConnectorRpcRegistrar<H>
 where
     H: DirectConnectorHost,
 {
-    pub fn new(host: Arc<H>, stun: Arc<dyn StunInfoProvider>) -> Self {
-        Self { host, stun }
+    pub fn new(
+        host: Arc<H>,
+        stun: Arc<dyn StunInfoProvider>,
+        running_listeners: Arc<dyn LocalListenerUrls>,
+    ) -> Self {
+        Self {
+            host,
+            stun,
+            running_listeners,
+        }
     }
 }
 
@@ -1062,6 +1031,7 @@ where
             GeneratedDirectConnectorRpcServer::new(
                 DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
                     self.host.clone(),
+                    self.running_listeners.clone(),
                     socket_context,
                     Some(self.stun.clone()),
                 ),
@@ -1241,6 +1211,7 @@ fn is_public_ipv4(ip: Ipv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectivity::NoLocalListeners;
 
     impl<H> DirectConnectorRpcHandler<H>
     where

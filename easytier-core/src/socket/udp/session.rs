@@ -1,7 +1,7 @@
 use std::{
     io,
     net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, Weak},
 };
 
 use async_trait::async_trait;
@@ -15,6 +15,7 @@ use tokio::{
 };
 
 use crate::{
+    foundation::time::{Duration, Instant},
     packet::{UdpPacketType, ZCPacket, ZCPacketType},
     socket::ring::{RingSocket, RingSocketReceiver, RingSocketSendError, RingSocketSender},
 };
@@ -201,6 +202,135 @@ pub(super) type ClassifiedUdpSessionRegistry =
 pub(super) type ClassifiedUdpSessionAccepts =
     DashMap<UdpSessionProtocol, Arc<ClassifiedUdpSessionAccept>>;
 pub(super) type PendingUdpSessionConnects = DashMap<u32, PendingUdpSessionConnect>;
+pub(super) type UdpHolePunchObserverMap = DashMap<u32, UdpHolePunchObserverEntry>;
+
+#[derive(Debug)]
+pub(super) struct UdpHolePunchObserverEntry {
+    pub(super) source: Arc<watch::Sender<Option<SocketAddr>>>,
+    // Only unclaimed listener-selection registrations expire here. Once an RPC
+    // takes the observer, its guard owns cleanup through completion/cancellation.
+    expires_at: Option<Instant>,
+}
+
+/// Registers observers on an existing UDP session layer without another receive task.
+#[derive(Debug, Clone)]
+pub struct UdpHolePunchObserverRegistry {
+    pub(super) observers: Arc<UdpHolePunchObserverMap>,
+    pub(super) shutdown: watch::Receiver<bool>,
+}
+
+impl UdpHolePunchObserverRegistry {
+    fn ensure_running(&self) -> io::Result<()> {
+        if *self.shutdown.borrow() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "UDP listener closed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Keep the first source even if the UDP packet arrives before the sending RPC.
+    pub fn prepare(&self, transaction_id: u32, timeout: Duration) -> io::Result<()> {
+        self.ensure_running()?;
+        match self.observers.entry(transaction_id) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                let (sender, _) = watch::channel(None);
+                entry.insert(UdpHolePunchObserverEntry {
+                    source: Arc::new(sender),
+                    expires_at: Some(Instant::now() + timeout),
+                });
+                Ok(())
+            }
+            dashmap::mapref::entry::Entry::Occupied(_) => Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "UDP hole-punch transaction already observed",
+            )),
+        }
+    }
+
+    pub fn expire_prepared(&self) {
+        let now = Instant::now();
+        self.observers
+            .retain(|_, entry| entry.expires_at.is_none_or(|deadline| deadline > now));
+    }
+
+    pub fn observe(&self, transaction_id: u32) -> io::Result<UdpHolePunchObserver> {
+        self.ensure_running()?;
+        let sender = match self.observers.entry(transaction_id) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                let Some(deadline) = entry.get_mut().expires_at.take() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "UDP hole-punch transaction already observed",
+                    ));
+                };
+                if deadline <= Instant::now() {
+                    entry.remove();
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "UDP hole-punch registration expired",
+                    ));
+                }
+                entry.get().source.clone()
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                // Older clients select a listener without preparing a transaction.
+                let (sender, _) = watch::channel(None);
+                let sender = Arc::new(sender);
+                entry.insert(UdpHolePunchObserverEntry {
+                    source: sender.clone(),
+                    expires_at: None,
+                });
+                sender
+            }
+        };
+        Ok(UdpHolePunchObserver {
+            transaction_id,
+            observers: self.observers.clone(),
+            sender: Arc::downgrade(&sender),
+            source: sender.subscribe(),
+        })
+    }
+}
+
+/// Observes the first valid source for one active hole-punch transaction.
+/// Dropping the observer unregisters it from the socket's receive loop.
+#[derive(Debug)]
+pub struct UdpHolePunchObserver {
+    pub(super) transaction_id: u32,
+    pub(super) observers: Arc<UdpHolePunchObserverMap>,
+    pub(super) sender: Weak<watch::Sender<Option<SocketAddr>>>,
+    pub(super) source: watch::Receiver<Option<SocketAddr>>,
+}
+
+impl UdpHolePunchObserver {
+    pub fn source_addr(&self) -> Option<SocketAddr> {
+        *self.source.borrow()
+    }
+
+    pub async fn wait_for_source_addr(&mut self) -> io::Result<SocketAddr> {
+        loop {
+            if let Some(addr) = self.source_addr() {
+                return Ok(addr);
+            }
+            self.source.changed().await.map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "UDP hole-punch observer closed",
+                )
+            })?;
+        }
+    }
+}
+
+impl Drop for UdpHolePunchObserver {
+    fn drop(&mut self) {
+        self.observers.remove_if(&self.transaction_id, |_, entry| {
+            self.sender.ptr_eq(&Arc::downgrade(&entry.source))
+        });
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct ClassifiedUdpSessionKey {
@@ -411,7 +541,7 @@ pub(crate) struct UdpSessionCleanup {
     session_close: Option<UdpSessionClose>,
     shutdown: Option<watch::Sender<bool>>,
     tasks: Vec<JoinHandle<()>>,
-    pub(super) layer_guard: Option<Box<dyn Send + Sync>>,
+    layer_guard: Arc<StdMutex<Option<Box<dyn Send + Sync>>>>,
 }
 
 impl std::fmt::Debug for UdpSessionCleanup {
@@ -420,7 +550,10 @@ impl std::fmt::Debug for UdpSessionCleanup {
             .field("has_session_close", &self.session_close.is_some())
             .field("has_shutdown", &self.shutdown.is_some())
             .field("tasks", &self.tasks.len())
-            .field("has_layer_guard", &self.layer_guard.is_some())
+            .field(
+                "has_layer_guard",
+                &self.layer_guard.lock().unwrap().is_some(),
+            )
             .finish()
     }
 }
@@ -464,10 +597,12 @@ impl UdpSession {
             rings.session_send_rx,
             close.clone(),
         ));
+        let layer_guard = Arc::new(StdMutex::new(None));
         let shutdown_task = tokio::spawn(close_udp_session_on_shutdown(
             shutdown,
             close.clone(),
             send_task.abort_handle(),
+            layer_guard.clone(),
         ));
 
         Self {
@@ -482,7 +617,7 @@ impl UdpSession {
                 session_close: Some(close),
                 shutdown: None,
                 tasks: vec![send_task, shutdown_task],
-                layer_guard: None,
+                layer_guard,
             },
         }
     }
@@ -491,7 +626,12 @@ impl UdpSession {
     where
         T: Send + Sync + 'static,
     {
-        self._cleanup.layer_guard = Some(Box::new(layer_guard));
+        let mut guard = self._cleanup.layer_guard.lock().unwrap();
+        // Accept may finish after shutdown. Synchronize with cleanup so a
+        // closed session cannot retain a failed listener's socket.
+        if !*self.closed.borrow() {
+            *guard = Some(Box::new(layer_guard));
+        }
     }
 
     pub(crate) fn into_tunnel_parts(self) -> UdpSessionTunnelParts {
@@ -769,12 +909,26 @@ async fn close_udp_session_on_shutdown(
     mut shutdown: watch::Receiver<bool>,
     close: UdpSessionClose,
     send_task: tokio::task::AbortHandle,
+    layer_guard: Arc<StdMutex<Option<Box<dyn Send + Sync>>>>,
 ) {
-    if !*shutdown.borrow() {
-        let _ = shutdown.changed().await;
+    let mut closed = close.close.subscribe();
+    if !*closed.borrow() {
+        if *shutdown.borrow() {
+            close.close();
+        } else {
+            tokio::select! {
+                biased;
+                _ = closed.changed() => {},
+                _ = shutdown.changed() => {
+                    if !*closed.borrow() {
+                        close.close();
+                    }
+                },
+            }
+        }
     }
-    close.close();
     send_task.abort();
+    layer_guard.lock().unwrap().take();
 }
 
 pub(super) fn dispatch_payload_to_session(
@@ -803,6 +957,31 @@ pub(super) fn dispatch_payload_to_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn closed_session_cleanup_preserves_replacement_with_same_key() {
+        let sessions = Arc::new(DashMap::new());
+        let key = UdpSessionKey::new("127.0.0.1:12001".parse().unwrap(), 1);
+        let old = create_udp_session_rings();
+        sessions.insert(key, udp_session_registry_entry(&old));
+        let close = UdpSessionClose::easy_tier(key, old.close_tx.clone(), sessions.clone());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let send_task = tokio::spawn(std::future::pending::<()>());
+        let mut cleanup = Box::pin(close_udp_session_on_shutdown(
+            shutdown_rx,
+            close.clone(),
+            send_task.abort_handle(),
+            Arc::new(StdMutex::new(None)),
+        ));
+        assert!(futures::poll!(&mut cleanup).is_pending());
+        close.close();
+        let replacement = create_udp_session_rings();
+        sessions.insert(key, udp_session_registry_entry(&replacement));
+        shutdown_tx.send(true).unwrap();
+        cleanup.await;
+        assert!(sessions.contains_key(&key));
+        assert!(!*replacement.close_rx.borrow());
+    }
 
     impl UdpSessionClose {
         fn signal_only(close: watch::Sender<bool>) -> Self {

@@ -67,6 +67,13 @@ pub const GUEST_EXPORTS: &[&str] = &[
     // WASI command initialization. This only binds the runtime; core lifecycle
     // still starts through the instance exports below.
     "_start",
+    // Module-wide logging; no instance handle is required. Levels 0..=5 are
+    // off, error, warn, info, debug, trace (matching api.logger.LogLevel).
+    // set_level(u32) -> i32 returns 0, or -3 without changing the level for
+    // invalid input. level() -> u32 defaults to info. _start is idempotent
+    // and does not reset the level. Output uses the WASI stdout sink.
+    "easytier_logger_set_level",
+    "easytier_logger_level",
     // Guest-memory buffers.
     "easytier_buffer_alloc",
     "easytier_buffer_free",

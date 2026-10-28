@@ -9,7 +9,7 @@ use std::{
 };
 use windows::Win32::NetworkManagement::IpHelper::INTERNAL_IF_OPER_STATUS;
 use windows::Win32::{
-    Foundation::NO_ERROR,
+    Foundation::{ERROR_NOT_FOUND, NO_ERROR},
     NetworkManagement::IpHelper::{GetIfEntry, MIB_IFROW, SetIfEntry},
     System::Diagnostics::Debug::{
         FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
@@ -22,7 +22,15 @@ use winreg::{
 };
 
 use super::{Error, IfConfiguerTrait};
+#[derive(Default)]
 pub struct WindowsIfConfiger {}
+
+fn ignore_removed_not_found(result: Result<(), u32>) -> Result<(), u32> {
+    match result {
+        Err(error) if error == ERROR_NOT_FOUND.0 => Ok(()),
+        other => other,
+    }
+}
 
 fn format_win_error(error: u32) -> String {
     // use FormatMessageW to get the error message
@@ -74,7 +82,7 @@ impl WindowsIfConfiger {
             anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
         })?;
         if let Some(addr) = addr {
-            luid.delete_ipv4_address(&addr).map_err(|e| {
+            ignore_removed_not_found(luid.delete_ipv4_address(&addr)).map_err(|e| {
                 anyhow::anyhow!("Failed to delete IPv4 address: {}", format_win_error(e))
             })?;
         } else {
@@ -167,7 +175,7 @@ impl WindowsIfConfiger {
             anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
         })?;
         if let Some(addr) = addr {
-            luid.delete_ipv6_address(&addr).map_err(|e| {
+            ignore_removed_not_found(luid.delete_ipv6_address(&addr)).map_err(|e| {
                 anyhow::anyhow!("Failed to delete IPv6 address: {}", format_win_error(e))
             })?;
         } else {
@@ -216,10 +224,10 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
             anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
         })?;
-        luid.delete_route_ipv4(
+        ignore_removed_not_found(luid.delete_route_ipv4(
             &Ipv4Inet::new(address, cidr_prefix).unwrap(),
             &Ipv4Addr::UNSPECIFIED,
-        )
+        ))
         .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", format_win_error(e)))?;
         Ok(())
     }
@@ -306,10 +314,10 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
         })?;
 
-        luid.delete_route_ipv6(
+        ignore_removed_not_found(luid.delete_route_ipv6(
             &Ipv6Inet::new(address, cidr_prefix).unwrap(),
             &Ipv6Addr::UNSPECIFIED,
-        )
+        ))
         .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", format_win_error(e)))?;
         Ok(())
     }
@@ -324,80 +332,6 @@ impl RegistryManager {
         r"SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\";
     pub const NETBT_INTERFACE_PREFIX: &str =
         r"SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_";
-
-    pub fn reg_delete_obsoleted_items(dev_name: &str) -> io::Result<()> {
-        use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS};
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let profiles_key = hklm.open_subkey_with_flags(
-            "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
-            KEY_ALL_ACCESS,
-        )?;
-        let unmanaged_key = hklm.open_subkey_with_flags(
-            "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Signatures\\Unmanaged",
-            KEY_ALL_ACCESS,
-        )?;
-        // collect subkeys to delete
-        let mut keys_to_delete = Vec::new();
-        let mut keys_to_delete_unmanaged = Vec::new();
-        for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
-            let subkey = profiles_key.open_subkey(&subkey_name)?;
-            // check if ProfileName contains "et"
-            match subkey.get_value::<String, _>("ProfileName") {
-                Ok(profile_name) => {
-                    if profile_name.contains("et_")
-                        || (!dev_name.is_empty() && dev_name == profile_name)
-                    {
-                        keys_to_delete.push(subkey_name);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to read ProfileName for subkey {}: {}",
-                        subkey_name,
-                        e
-                    );
-                }
-            }
-        }
-        for subkey_name in unmanaged_key.enum_keys().filter_map(Result::ok) {
-            let subkey = unmanaged_key.open_subkey(&subkey_name)?;
-            // check if ProfileName contains "et"
-            match subkey.get_value::<String, _>("Description") {
-                Ok(profile_name) => {
-                    if profile_name.contains("et_")
-                        || (!dev_name.is_empty() && dev_name == profile_name)
-                    {
-                        keys_to_delete_unmanaged.push(subkey_name);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to read ProfileName for subkey {}: {}",
-                        subkey_name,
-                        e
-                    );
-                }
-            }
-        }
-        // delete collected subkeys
-        if !keys_to_delete.is_empty() {
-            for subkey_name in keys_to_delete {
-                match profiles_key.delete_subkey_all(&subkey_name) {
-                    Ok(_) => tracing::trace!("Successfully deleted subkey: {}", subkey_name),
-                    Err(e) => tracing::error!("Failed to delete subkey {}: {}", subkey_name, e),
-                }
-            }
-        }
-        if !keys_to_delete_unmanaged.is_empty() {
-            for subkey_name in keys_to_delete_unmanaged {
-                match unmanaged_key.delete_subkey_all(&subkey_name) {
-                    Ok(_) => tracing::trace!("Successfully deleted subkey: {}", subkey_name),
-                    Err(e) => tracing::error!("Failed to delete subkey {}: {}", subkey_name, e),
-                }
-            }
-        }
-        Ok(())
-    }
 
     pub fn reg_change_catrgory_in_profile(dev_name: &str) -> io::Result<()> {
         use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS};
@@ -528,5 +462,26 @@ impl RegistryManager {
             "NetbiosOptions",
             2,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ERROR_NOT_FOUND, ignore_removed_not_found};
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER,
+    };
+
+    #[test]
+    fn removed_windows_ifcfg_ignores_only_not_found() {
+        assert_eq!(ignore_removed_not_found(Ok(())), Ok(()));
+        assert_eq!(ignore_removed_not_found(Err(ERROR_NOT_FOUND.0)), Ok(()));
+        for error in [
+            ERROR_ACCESS_DENIED.0,
+            ERROR_INVALID_PARAMETER.0,
+            ERROR_FILE_NOT_FOUND.0,
+        ] {
+            assert_eq!(ignore_removed_not_found(Err(error)), Err(error));
+        }
     }
 }

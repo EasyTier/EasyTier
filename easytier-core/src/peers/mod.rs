@@ -27,9 +27,14 @@ use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
 use self::conn::peer_conn::PeerConnId;
 use crate::config::PeerId;
 
+/// The local entry point that created a peer connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PeerConnectionOrigin {
-    Network,
+    Manual,
+    Direct,
+    Listener,
+    TcpHolePunch,
+    UdpHolePunch,
     Attached,
 }
 
@@ -154,11 +159,28 @@ pub async fn recv_packet_from_chan(
         .map(|envelope| envelope.packet)
 }
 
+/// Returned packets continue at the next peer-packet filter.
+#[derive(Debug)]
+pub enum PeerPacketFilterResult {
+    Consumed,
+    Pass(ZCPacket),
+    PassBatch(Vec<ZCPacket>),
+}
+
+impl From<Option<ZCPacket>> for PeerPacketFilterResult {
+    fn from(packet: Option<ZCPacket>) -> Self {
+        match packet {
+            Some(packet) => Self::Pass(packet),
+            None => Self::Consumed,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
 pub trait PeerPacketFilter {
-    async fn try_process_packet_from_peer(&self, zc_packet: ZCPacket) -> Option<ZCPacket> {
-        Some(zc_packet)
+    async fn try_process_packet_from_peer(&self, zc_packet: ZCPacket) -> PeerPacketFilterResult {
+        PeerPacketFilterResult::Pass(zc_packet)
     }
 }
 

@@ -3,9 +3,9 @@ use easytier_core::instance::CorePacketPlane;
 #[cfg(feature = "magic-dns")]
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 
-use crate::common::global_ctx::ArcGlobalCtx;
 #[cfg(feature = "magic-dns")]
 use crate::instance::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
+use crate::{common::global_ctx::ArcGlobalCtx, instance::virtual_nic::NicBackend};
 
 #[derive(Default)]
 pub(super) struct MagicDnsRuntime {
@@ -26,6 +26,7 @@ impl MagicDnsRuntime {
         packet_plane: std::sync::Arc<CorePacketPlane>,
         tun_dev: Option<String>,
         tun_ip: Ipv4Inet,
+        shared_route_backend: Option<NicBackend>,
     ) -> Self {
         let active = global_ctx.get_flags().accept_dns.then(|| {
             let mut runner = DnsRunner::new(
@@ -34,7 +35,8 @@ impl MagicDnsRuntime {
                 tun_dev,
                 tun_ip,
                 MAGIC_DNS_FAKE_IP.parse().unwrap(),
-            );
+            )
+            .with_shared_route_backend(shared_route_backend);
             let cancel = CancellationToken::new();
             let task_cancel = cancel.clone();
             let task = tokio::spawn(async move {
@@ -54,6 +56,7 @@ impl MagicDnsRuntime {
         _packet_plane: std::sync::Arc<CorePacketPlane>,
         _tun_dev: Option<String>,
         _tun_ip: Ipv4Inet,
+        _shared_route_backend: Option<NicBackend>,
     ) -> Self {
         Self::default()
     }

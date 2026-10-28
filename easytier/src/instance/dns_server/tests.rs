@@ -74,7 +74,11 @@ pub async fn prepare_env_with_tld_dns_zone(
         core_instance.packet_plane(),
         host_packet_rx,
         Arc::new(Notify::new()),
-    );
+        Arc::new(tokio::sync::Mutex::new(
+            crate::instance::shared_virtual_nic::SharedVirtualNicRegistry::new(),
+        )),
+    )
+    .await;
     virtual_nic.run(Some(tun_ip), None).await.unwrap();
 
     (ctx, core_instance, virtual_nic)

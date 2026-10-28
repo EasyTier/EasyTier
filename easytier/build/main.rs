@@ -9,14 +9,20 @@ impl WindowsBuild {
     pub fn check_for_win() {
         // add third_party dir to link search path
         let target = std::env::var("TARGET").unwrap_or_default();
-
-        if target.contains("x86_64") {
-            println!("cargo:rustc-link-search=native=easytier/third_party/x86_64/");
+        let variant = if target.contains("x86_64") {
+            "x86_64"
         } else if target.contains("i686") {
-            println!("cargo:rustc-link-search=native=easytier/third_party/i686/");
+            "i686"
         } else if target.contains("aarch64") {
-            println!("cargo:rustc-link-search=native=easytier/third_party/arm64/");
-        }
+            "arm64"
+        } else {
+            return;
+        };
+
+        let mut path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        path.push("third_party");
+        path.push(variant);
+        println!("cargo:rustc-link-search=native={}", path.to_str().unwrap());
     }
 }
 

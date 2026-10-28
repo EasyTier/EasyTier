@@ -20,7 +20,7 @@ mod file;
 #[cfg(feature = "management")]
 mod management;
 #[cfg(feature = "management")]
-pub use management::init;
+pub use management::{init, init_with_default_console_targets};
 mod tracing_backend;
 
 use file::FileSink;
@@ -107,6 +107,13 @@ struct TargetFilter {
 
 impl TargetFilter {
     fn console(level: Option<LevelFilter>) -> anyhow::Result<Self> {
+        Self::console_with_default_targets(level, &[LOG_TARGET])
+    }
+
+    fn console_with_default_targets(
+        level: Option<LevelFilter>,
+        default_targets: &[&str],
+    ) -> anyhow::Result<Self> {
         if level == Some(LevelFilter::Off) {
             return Ok(Self::off());
         }
@@ -115,7 +122,10 @@ impl TargetFilter {
             Some(level) => Self::with_default(level),
             None => Self {
                 default: LevelFilter::Off,
-                targets: vec![(LOG_TARGET.into(), LevelFilter::Info)],
+                targets: default_targets
+                    .iter()
+                    .map(|target| ((*target).into(), LevelFilter::Info))
+                    .collect(),
             },
         };
         Self::from_environment(fallback)
@@ -449,6 +459,20 @@ mod tests {
 
         assert!(filter.enabled("CORE::peer", Level::Info));
         assert!(!filter.enabled("CORE", Level::Debug));
+        assert!(!filter.enabled("other", Level::Error));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn additional_default_console_targets_are_scoped() {
+        let _env = EnvVarGuard::set(None);
+        let filter =
+            TargetFilter::console_with_default_targets(None, &[LOG_TARGET, "easytier_web"])
+                .unwrap();
+
+        assert!(filter.enabled("CORE::peer", Level::Info));
+        assert!(filter.enabled("easytier_web::client_manager", Level::Info));
+        assert!(!filter.enabled("easytier_web", Level::Debug));
         assert!(!filter.enabled("other", Level::Error));
     }
 

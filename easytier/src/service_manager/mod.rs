@@ -50,6 +50,15 @@ pub struct Service {
 
 impl Service {
     pub fn new(name: String) -> Result<Self, anyhow::Error> {
+        // OHOS reports target_os = "linux", but has neither systemd nor OpenRC.
+        if cfg!(target_env = "ohos") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "System service management is not supported on HarmonyOS; run easytier-core in the foreground",
+            )
+            .into());
+        }
+
         #[cfg(target_os = "windows")]
         let service_manager = Box::new(self::win_service_manager::WinServiceManager::new()?);
         #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
@@ -124,7 +133,7 @@ impl Service {
         let status = self.status()?;
 
         if status == service_manager::ServiceStatus::NotInstalled {
-            return Err(anyhow::anyhow!("Service is not installed"))?;
+            return Err(anyhow::anyhow!("Service is not installed"));
         }
 
         if status == service_manager::ServiceStatus::Running {
@@ -338,11 +347,12 @@ impl Service {
 
 #[cfg(target_os = "windows")]
 mod win_service_manager {
-    use std::{ffi::OsStr, ffi::OsString, io, path::PathBuf};
+    use std::{ffi::OsStr, ffi::OsString, io, path::PathBuf, time::Duration};
     use windows_service::{
         service::{
-            ServiceAccess, ServiceDependency, ServiceErrorControl, ServiceInfo, ServiceStartType,
-            ServiceType,
+            Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceDependency,
+            ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
+            ServiceStartType, ServiceType,
         },
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
@@ -442,6 +452,8 @@ mod win_service_manager {
                 set_service_work_directory(&ctx.label.to_qualified_name(), work_dir)?;
             }
 
+            configure_failure_actions(&service, ctx.disable_restart_on_failure)?;
+
             Ok(())
         }
 
@@ -533,6 +545,8 @@ mod win_service_manager {
                 set_service_work_directory(&ctx.label.to_qualified_name(), work_dir)?;
             }
 
+            configure_failure_actions(&service, ctx.disable_restart_on_failure)?;
+
             Ok(())
         }
     }
@@ -542,6 +556,51 @@ mod win_service_manager {
             RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(WIN_SERVICE_WORK_DIR_REG_KEY)?;
         reg_key
             .set_value::<OsString, _>(service_name, &work_directory.as_os_str().to_os_string())?;
+        Ok(())
+    }
+
+    fn configure_failure_actions(
+        service: &Service,
+        disable_restart_on_failure: bool,
+    ) -> io::Result<()> {
+        // the SCM repeats the last action once the failure count exceeds the
+        // actions array, so Restart actions retry indefinitely.
+        let actions = if disable_restart_on_failure {
+            // empty actions clear previously configured ones
+            Vec::new()
+        } else {
+            vec![
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(1),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(5),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(10),
+                },
+            ]
+        };
+
+        service
+            .update_failure_actions(ServiceFailureActions {
+                reset_period: ServiceFailureResetPeriod::Never,
+                reboot_msg: None,
+                command: None,
+                actions: Some(actions),
+            })
+            .map_err(io::Error::other)?;
+
+        // by default the SCM only performs failure actions on crashes; our
+        // service reports SERVICE_STOPPED with a non-zero exit code on
+        // failure, which requires this flag to be treated as a failure.
+        service
+            .set_failure_actions_on_non_crash_failures(!disable_restart_on_failure)
+            .map_err(io::Error::other)?;
+
         Ok(())
     }
 }

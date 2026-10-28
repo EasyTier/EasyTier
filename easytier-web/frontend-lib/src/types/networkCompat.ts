@@ -45,6 +45,10 @@ function applyLegacyAclDefaults(config: NetworkConfig): NetworkConfig {
 function dropUnsupportedJsonValues(value: unknown): unknown {
   if (value === undefined) return undefined
   if (typeof value === 'number' && !Number.isFinite(value)) return undefined
+  // Form state may hold protobuf-ts bigint values (int64/uint64 fields such
+  // as managed credential expiry); proto3 JSON represents them as strings,
+  // and fromJson rejects raw bigints.
+  if (typeof value === 'bigint') return value.toString()
 
   if (Array.isArray(value)) {
     return value.map(dropUnsupportedJsonValues).filter((v) => v !== undefined)

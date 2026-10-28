@@ -151,10 +151,7 @@ pub fn save_config_record(
         }
     };
 
-    let fields = match validation::config_to_top_level_map(&config) {
-        Some(fields) => fields,
-        None => return None,
-    };
+    let fields = validation::config_to_top_level_map(&config)?;
 
     let conn = open_db()?;
     let tx = conn.unchecked_transaction().ok()?;
@@ -173,10 +170,10 @@ pub fn save_config_record(
 
     tx.commit().ok()?;
 
-    if let Some(legacy_path) = legacy_config_file_path(&config_id) {
-        if legacy_path.exists() {
-            let _ = std::fs::remove_file(legacy_path);
-        }
+    if let Some(legacy_path) = legacy_config_file_path(&config_id)
+        && legacy_path.exists()
+    {
+        let _ = std::fs::remove_file(legacy_path);
     }
 
     Some(StoredConfigRecord {
@@ -289,10 +286,10 @@ pub fn delete_config_record(config_id: &str) -> bool {
     if validation::validate_config_id(config_id).is_err() {
         return false;
     }
-    if let Some(path) = legacy_config_file_path(config_id) {
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        }
+    if let Some(path) = legacy_config_file_path(config_id)
+        && path.exists()
+    {
+        let _ = std::fs::remove_file(path);
     }
 
     let conn = match open_db() {

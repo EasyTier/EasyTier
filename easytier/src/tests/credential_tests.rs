@@ -13,6 +13,12 @@ use easytier_core::{
     process_runtime::CoreProcessRuntime,
 };
 
+#[cfg(feature = "wireguard")]
+use crate::{
+    common::config::{VpnPortalClientConfig, VpnPortalConfig},
+    tests::three_node::{run_wireguard_client, wireguard_ifname},
+    vpn_portal::wireguard::test_wireguard_keys,
+};
 use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader},
@@ -23,10 +29,14 @@ use crate::{
     tests::three_node::{generate_secure_mode_config, generate_secure_mode_config_with_key},
     tunnel::common::tests::wait_for_condition,
 };
+#[cfg(feature = "wireguard")]
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+#[cfg(feature = "wireguard")]
+use defguard_wireguard_rs::key::Key;
+#[cfg(feature = "wireguard")]
+use easytier_core::gateway::vpn_portal::PortalClientState;
 
-use super::{
-    InstanceTestExt as _, add_ns_to_bridge, create_netns, del_netns, drop_insts, ping_test,
-};
+use super::{InstanceTestExt as _, drop_insts, network::TestNetwork, ping_test};
 
 use rstest::rstest;
 
@@ -96,13 +106,8 @@ async fn set_prefer_peer_relay(inst: &Instance, prefer_peer_relay: bool) {
     );
 }
 
-fn forwarded_data_packets(inst: &Instance) -> u64 {
-    let labels = LabelSet::new().with_label_type(LabelType::NetworkName(
-        inst.get_global_ctx()
-            .get_network_identity()
-            .network_name
-            .clone(),
-    ));
+fn forwarded_data_packets_for_network(inst: &Instance, network_name: &str) -> u64 {
+    let labels = LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_owned()));
     inst.get_core_instance()
         .metric_snapshots()
         .into_iter()
@@ -110,6 +115,13 @@ fn forwarded_data_packets(inst: &Instance) -> u64 {
             metric.name == MetricName::TrafficPacketsForwarded && metric.labels == labels
         })
         .map_or(0, |metric| metric.value)
+}
+
+fn forwarded_data_packets(inst: &Instance) -> u64 {
+    forwarded_data_packets_for_network(
+        inst,
+        &inst.get_global_ctx().get_network_identity().network_name,
+    )
 }
 
 async fn assert_ping_forwarded_by(
@@ -204,62 +216,35 @@ async fn disconnect_connector(inst: &Instance, url: &url::Url, peer_id: u32) {
 ///   br_a (10.1.1.0/24): ns_adm (10.1.1.1), ns_c1 (10.1.1.2), ns_c2 (10.1.1.3), ns_c3 (10.1.1.4), ns_c4 (10.1.1.5)
 ///   br_b (10.1.2.0/24): ns_adm2 (10.1.2.1) - for multi-admin tests
 /// Note: Using short names (max 15 chars for veth interfaces)
-pub fn prepare_credential_network() {
-    // Clean up any existing namespaces
-    for ns in ["ns_adm", "ns_c1", "ns_c2", "ns_c3", "ns_c4", "ns_adm2"] {
-        del_netns(ns);
-    }
-
+fn prepare_credential_network() -> TestNetwork {
+    let mut network = TestNetwork::new();
     // Create bridge br_a for admin and credentials
-    let _ = std::process::Command::new("ip")
-        .args(["link", "del", "br_a"])
-        .output();
-    let _ = std::process::Command::new("brctl")
-        .args(["delbr", "br_a"])
-        .output();
-    let _ = std::process::Command::new("brctl")
-        .args(["addbr", "br_a"])
-        .output()
-        .expect("Failed to create br_a");
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", "br_a", "up"])
-        .output();
+    network.create_bridge("br_a");
 
     // Create namespaces and add to bridge
-    create_netns("ns_adm", "10.1.1.1/24", "fd11::1/64");
-    add_ns_to_bridge("br_a", "ns_adm");
+    network.create_namespace("ns_adm", "10.1.1.1/24", "fd11::1/64");
+    network.add_to_bridge("br_a", "ns_adm");
 
-    create_netns("ns_c1", "10.1.1.2/24", "fd11::2/64");
-    add_ns_to_bridge("br_a", "ns_c1");
+    network.create_namespace("ns_c1", "10.1.1.2/24", "fd11::2/64");
+    network.add_to_bridge("br_a", "ns_c1");
 
-    create_netns("ns_c2", "10.1.1.3/24", "fd11::3/64");
-    add_ns_to_bridge("br_a", "ns_c2");
+    network.create_namespace("ns_c2", "10.1.1.3/24", "fd11::3/64");
+    network.add_to_bridge("br_a", "ns_c2");
 
     // Create ns_c3 for relay tests (needs 4 nodes)
-    create_netns("ns_c3", "10.1.1.4/24", "fd11::4/64");
-    add_ns_to_bridge("br_a", "ns_c3");
+    network.create_namespace("ns_c3", "10.1.1.4/24", "fd11::4/64");
+    network.add_to_bridge("br_a", "ns_c3");
 
     // Create ns_c4 for multi-admin credential tests (needs 5 nodes)
-    create_netns("ns_c4", "10.1.1.5/24", "fd11::5/64");
-    add_ns_to_bridge("br_a", "ns_c4");
+    network.create_namespace("ns_c4", "10.1.1.5/24", "fd11::5/64");
+    network.add_to_bridge("br_a", "ns_c4");
 
     // Create bridge br_b for second admin (multi-admin tests)
-    let _ = std::process::Command::new("ip")
-        .args(["link", "del", "br_b"])
-        .output();
-    let _ = std::process::Command::new("brctl")
-        .args(["delbr", "br_b"])
-        .output();
-    let _ = std::process::Command::new("brctl")
-        .args(["addbr", "br_b"])
-        .output()
-        .expect("Failed to create br_b");
-    let _ = std::process::Command::new("ip")
-        .args(["link", "set", "br_b", "up"])
-        .output();
+    network.create_bridge("br_b");
 
-    create_netns("ns_adm2", "10.1.2.1/24", "fd12::1/64");
-    add_ns_to_bridge("br_b", "ns_adm2");
+    network.create_namespace("ns_adm2", "10.1.2.1/24", "fd12::1/64");
+    network.add_to_bridge("br_b", "ns_adm2");
+    network
 }
 
 fn credential_private_key_from_secret(credential_secret: &str) -> x25519_dalek::StaticSecret {
@@ -397,11 +382,11 @@ fn create_shared_config(
     config
 }
 
-fn create_public_server_config() -> TomlConfigLoader {
+fn create_public_server_config(network: &TestNetwork) -> TomlConfigLoader {
     let config = TomlConfigLoader::default();
     config.set_inst_name(PUBLIC_SERVER_NETWORK_NAME.to_string());
     config.set_hostname(Some("public-server".to_string()));
-    config.set_netns(Some("ns_adm".to_string()));
+    config.set_netns(Some(network.namespace("ns_adm").to_string()));
     config.set_listeners(vec!["udp://0.0.0.0:11010".parse().unwrap()]);
     config.set_network_identity(NetworkIdentity::new(
         PUBLIC_SERVER_NETWORK_NAME.to_string(),
@@ -419,11 +404,11 @@ fn create_public_server_config() -> TomlConfigLoader {
     config
 }
 
-fn create_need_p2p_admin_config(listener_scheme: &str) -> TomlConfigLoader {
+fn create_need_p2p_admin_config(network: &TestNetwork, listener_scheme: &str) -> TomlConfigLoader {
     let config = TomlConfigLoader::default();
     config.set_inst_name(NEED_P2P_ADMIN_NETWORK_NAME.to_string());
     config.set_hostname(Some("need-p2p-admin".to_string()));
-    config.set_netns(Some("ns_c3".to_string()));
+    config.set_netns(Some(network.namespace("ns_c3").to_string()));
     config.set_listeners(vec![
         format!("{listener_scheme}://0.0.0.0:0").parse().unwrap(),
     ]);
@@ -569,15 +554,17 @@ async fn wait_foreign_network_count(inst: &Instance, expected: usize, timeout: D
 async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
     #[case] admin_listener_scheme: &str,
 ) {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
-    let mut public_server_inst =
-        Instance::new_with_process_runtime(create_public_server_config(), process_runtime.clone());
+    let mut public_server_inst = Instance::new_with_process_runtime(
+        create_public_server_config(&network),
+        process_runtime.clone(),
+    );
     public_server_inst.run().await.unwrap();
 
     let mut admin_inst = Instance::new_with_process_runtime(
-        create_need_p2p_admin_config(admin_listener_scheme),
+        create_need_p2p_admin_config(&network, admin_listener_scheme),
         process_runtime.clone(),
     );
     admin_inst.run().await.unwrap();
@@ -623,7 +610,7 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
             &credential_a_secret,
             "credential-peer-a",
             "credential-a",
-            "ns_c1",
+            network.namespace("ns_c1"),
             "10.154.0.1",
             "fd00::1/64",
             11030,
@@ -637,7 +624,7 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
             &credential_b_secret,
             "credential-peer-b",
             "credential-b",
-            "ns_c2",
+            network.namespace("ns_c2"),
             "10.154.0.2",
             "fd00::2/64",
             11040,
@@ -714,6 +701,198 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
     .await;
 }
 
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+async fn credential_peer_reconnects_to_admin_with_portal_client_online() {
+    let network = prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
+
+    let public_server_config = create_public_server_config(&network);
+    let mut public_server_flags = public_server_config.get_flags();
+    public_server_flags.disable_relay_data = true;
+    public_server_config.set_flags(public_server_flags);
+    let mut public_server_inst =
+        Instance::new_with_process_runtime(public_server_config, process_runtime.clone());
+    public_server_inst.run().await.unwrap();
+
+    let admin_config = create_need_p2p_admin_config(&network, "udp");
+    admin_config.set_vpn_portal_config(VpnPortalConfig {
+        enabled: None,
+        wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
+        wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
+        clients: vec![VpnPortalClientConfig {
+            name: "portal-client".to_owned(),
+            virtual_ip: "10.154.0.10/24".parse().unwrap(),
+            groups: Vec::new(),
+        }],
+    });
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
+    admin_inst.run().await.unwrap();
+    admin_inst.add_connector_url("udp://10.1.1.1:11010".parse().unwrap());
+    wait_foreign_network_count(&public_server_inst, 1, Duration::from_secs(10)).await;
+
+    let (_credential_id, credential_secret) = generate_credential_with_options(
+        &admin_inst,
+        Vec::new(),
+        false,
+        Vec::new(),
+        Duration::from_secs(3600),
+        Some("portal-p2p-credential".to_owned()),
+        false,
+    )
+    .await;
+    admin_inst
+        .get_global_ctx()
+        .issue_event(GlobalCtxEvent::CredentialChanged);
+
+    let credential_config = create_public_server_credential_config(
+        &credential_secret,
+        "portal-credential-peer",
+        "portal-credential-peer",
+        network.namespace("ns_c1"),
+        "10.154.0.1",
+        "fd00::1/64",
+        11030,
+        11031,
+        &[],
+    );
+    let mut credential_inst =
+        Instance::new_with_process_runtime(credential_config, process_runtime);
+    credential_inst.run().await.unwrap();
+    credential_inst.add_connector_url("udp://10.1.1.1:11010".parse().unwrap());
+
+    let admin_peer_id = admin_inst.peer_id();
+    let credential_peer_id = credential_inst.peer_id();
+    wait_direct_peer(
+        &credential_inst,
+        admin_peer_id,
+        Duration::from_secs(30),
+        "credential -> admin before portal client",
+    )
+    .await;
+    wait_direct_peer(
+        &admin_inst,
+        credential_peer_id,
+        Duration::from_secs(10),
+        "admin -> credential before portal client",
+    )
+    .await;
+    wait_route_cost(
+        &credential_inst,
+        admin_peer_id,
+        1,
+        Duration::from_secs(10),
+        "credential route to admin before portal client",
+    )
+    .await;
+
+    let portal_config = admin_inst
+        .get_global_ctx()
+        .config
+        .get_vpn_portal_config()
+        .unwrap();
+    let (server_public, client_private) =
+        test_wireguard_keys(&portal_config, "portal-client").unwrap();
+    {
+        let net_ns = crate::common::netns::NetNS::new(Some(network.namespace("ns_c4").to_owned()));
+        let _guard = net_ns.guard();
+        run_wireguard_client(
+            &wireguard_ifname("wg0"),
+            "10.1.1.4:22121".parse().unwrap(),
+            Key::try_from(server_public.as_slice()).unwrap(),
+            Key::try_from(client_private.as_slice()).unwrap(),
+            vec!["10.154.0.0/24".to_owned()],
+            "10.154.0.10".to_owned(),
+        )
+        .unwrap();
+    }
+
+    let public_server_forwarded_before =
+        forwarded_data_packets_for_network(&public_server_inst, NEED_P2P_ADMIN_NETWORK_NAME);
+    wait_for_condition(
+        || async {
+            ping_test(network.namespace("ns_c4"), "10.154.0.1", None).await;
+            admin_inst
+                .get_core_instance()
+                .vpn_portal_info()
+                .await
+                .clients
+                .iter()
+                .any(|client| client.state == PortalClientState::Online)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let old_conn_ids = credential_inst
+        .get_core_instance()
+        .peer_snapshots()
+        .await
+        .into_iter()
+        .find(|peer| peer.peer_id == admin_peer_id)
+        .map(|peer| peer.directly_connected_conns)
+        .unwrap_or_default();
+    assert!(
+        !old_conn_ids.is_empty(),
+        "credential peer must have a direct admin connection to replace"
+    );
+    for conn_id in &old_conn_ids {
+        credential_inst
+            .get_core_instance()
+            .close_peer_conn(admin_peer_id, conn_id)
+            .await
+            .unwrap();
+    }
+
+    wait_for_condition(
+        || async {
+            let has_new_connection = credential_inst
+                .get_core_instance()
+                .peer_snapshots()
+                .await
+                .into_iter()
+                .find(|peer| peer.peer_id == admin_peer_id)
+                .is_some_and(|peer| {
+                    peer.directly_connected_conns
+                        .iter()
+                        .any(|conn_id| !old_conn_ids.contains(conn_id))
+                });
+            let has_direct_route = credential_inst
+                .get_core_instance()
+                .route_snapshots()
+                .await
+                .iter()
+                .any(|route| {
+                    route.peer_id == admin_peer_id
+                        && route.next_hop_peer_id == admin_peer_id
+                        && route.cost == 1
+                });
+            has_new_connection && has_direct_route
+        },
+        Duration::from_secs(30),
+    )
+    .await;
+
+    wait_ping_reachability(
+        network.namespace("ns_c1"),
+        "10.154.0.10",
+        true,
+        Duration::from_secs(10),
+    )
+    .await;
+    for _ in 0..3 {
+        assert!(ping_test(network.namespace("ns_c1"), "10.154.0.10", None).await);
+    }
+    assert_eq!(
+        forwarded_data_packets_for_network(&public_server_inst, NEED_P2P_ADMIN_NETWORK_NAME),
+        public_server_forwarded_before,
+        "public server forwarded data despite disable_relay_data"
+    );
+
+    drop_insts(vec![public_server_inst, admin_inst, credential_inst]).await;
+}
+
 async fn create_generated_credential_config(
     admin_inst: &Instance,
     inst_name: &str,
@@ -775,6 +954,7 @@ async fn wait_route_presence_on_admins(
 }
 
 async fn assert_shared_visibility_stable(
+    network: &TestNetwork,
     admin_a_inst: &Instance,
     admin_c_inst: &Instance,
     peer_id: u32,
@@ -805,8 +985,10 @@ async fn assert_shared_visibility_stable(
             );
         }
 
-        let ping_from_admin_a = ping_test("ns_adm", peer_ip, None).await;
-        let ping_from_admin_c = ping_test("ns_c3", peer_ip, None).await;
+        let (ping_from_admin_a, ping_from_admin_c) = tokio::join!(
+            ping_test(network.namespace("ns_adm"), peer_ip, None),
+            ping_test(network.namespace("ns_c3"), peer_ip, None),
+        );
         if should_exist {
             assert!(ping_from_admin_a, "admin_a should reach {}", label);
             assert!(ping_from_admin_c, "admin_c should reach {}", label);
@@ -819,66 +1001,24 @@ async fn assert_shared_visibility_stable(
     }
 }
 
-async fn wait_stable_single_visible_peer_on_admins(
+async fn wait_credential_routes_on_admins(
     admin_a_inst: &Instance,
     admin_c_inst: &Instance,
-    peer_a_id: u32,
-    peer_b_id: u32,
-    timeout: Duration,
-) -> u32 {
-    let start = std::time::Instant::now();
-    let mut stable_winner = None;
-    let mut stable_samples = 0;
-
-    loop {
-        let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
-        let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
-
-        let admin_a_has_a = admin_a_routes.iter().any(|r| r.peer_id == peer_a_id);
-        let admin_a_has_b = admin_a_routes.iter().any(|r| r.peer_id == peer_b_id);
-        let admin_c_has_a = admin_c_routes.iter().any(|r| r.peer_id == peer_a_id);
-        let admin_c_has_b = admin_c_routes.iter().any(|r| r.peer_id == peer_b_id);
-
-        let current_winner = if admin_a_has_a && admin_c_has_a && !admin_a_has_b && !admin_c_has_b {
-            Some(peer_a_id)
-        } else if admin_a_has_b && admin_c_has_b && !admin_a_has_a && !admin_c_has_a {
-            Some(peer_b_id)
-        } else {
-            None
-        };
-
-        println!(
-            "single-visible routes: a={:?} c={:?} winner={:?}",
-            admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
-            admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
-            current_winner
-        );
-
-        match current_winner {
-            Some(winner) if stable_winner == Some(winner) => stable_samples += 1,
-            Some(winner) => {
-                stable_winner = Some(winner);
-                stable_samples = 1;
-            }
-            None => {
-                stable_winner = None;
-                stable_samples = 0;
-            }
-        }
-
-        if stable_samples >= 3 {
-            return stable_winner.unwrap();
-        }
-
-        assert!(
-            start.elapsed() < timeout,
-            "timed out waiting for a stable single visible peer on both admins: a={:?} c={:?}",
-            admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
-            admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
-        );
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
+    present_peer_id: u32,
+    absent_peer_id: u32,
+) {
+    wait_for_condition(
+        || async {
+            let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+            let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
+            [&admin_a_routes, &admin_c_routes].iter().all(|routes| {
+                routes.iter().any(|r| r.peer_id == present_peer_id)
+                    && !routes.iter().any(|r| r.peer_id == absent_peer_id)
+            })
+        },
+        Duration::from_secs(10),
+    )
+    .await;
 }
 
 /// Test 1: Basic credential node connectivity with and without an admin key pin
@@ -890,11 +1030,16 @@ async fn wait_stable_single_visible_peer_on_admins(
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_basic_connectivity(#[case] pin_admin: bool) {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
-    let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_config = create_admin_config(
+        "admin",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let admin_public_key = admin_config
         .get_secure_mode()
         .and_then(|config| config.local_public_key)
@@ -906,7 +1051,7 @@ async fn credential_basic_connectivity(#[case] pin_admin: bool) {
     let cred_config = create_credential_config(
         &admin_inst,
         "cred",
-        Some("ns_c1"),
+        Some(network.namespace("ns_c1")),
         "10.144.144.2",
         "fd00::2/64",
     )
@@ -972,13 +1117,13 @@ async fn credential_basic_connectivity(#[case] pin_admin: bool) {
 
     // Verify connectivity
     wait_for_condition(
-        || async { ping_test("ns_adm", "10.144.144.2", None).await },
+        || async { ping_test(network.namespace("ns_adm"), "10.144.144.2", None).await },
         Duration::from_secs(10),
     )
     .await;
 
     wait_for_condition(
-        || async { ping_test("ns_c1", "10.144.144.1", None).await },
+        || async { ping_test(network.namespace("ns_c1"), "10.144.144.1", None).await },
         Duration::from_secs(10),
     )
     .await;
@@ -990,10 +1135,15 @@ async fn credential_basic_connectivity(#[case] pin_admin: bool) {
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_rejects_incorrect_admin_pin() {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
-    let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_config = create_admin_config(
+        "admin",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let admin_public_key = admin_config
         .get_secure_mode()
         .and_then(|config| config.local_public_key)
@@ -1004,7 +1154,7 @@ async fn credential_rejects_incorrect_admin_pin() {
     let cred_config = create_credential_config(
         &admin_inst,
         "cred",
-        Some("ns_c1"),
+        Some(network.namespace("ns_c1")),
         "10.144.144.2",
         "fd00::2/64",
     )
@@ -1057,11 +1207,16 @@ async fn credential_rejects_incorrect_admin_pin() {
 #[tokio::test]
 #[serial_test::serial]
 async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
-    let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_config = create_admin_config(
+        "admin",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
@@ -1107,7 +1262,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
         let config = TomlConfigLoader::default();
         config.set_inst_name("cred_a".to_string());
-        config.set_netns(Some("ns_c1".to_string()));
+        config.set_netns(Some(network.namespace("ns_c1").to_string()));
         config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
         config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
         config.set_network_identity(NetworkIdentity::new_credential(
@@ -1136,7 +1291,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
         let config = TomlConfigLoader::default();
         config.set_inst_name("cred_b".to_string());
-        config.set_netns(Some("ns_c2".to_string()));
+        config.set_netns(Some(network.namespace("ns_c2").to_string()));
         config.set_ipv4(Some("10.144.144.3".parse().unwrap()));
         config.set_ipv6(Some("fd00::3/64".parse().unwrap()));
         config.set_network_identity(NetworkIdentity::new_credential(
@@ -1165,7 +1320,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
         let config = TomlConfigLoader::default();
         config.set_inst_name("cred_c".to_string());
-        config.set_netns(Some("ns_c3".to_string()));
+        config.set_netns(Some(network.namespace("ns_c3").to_string()));
         config.set_ipv4(Some("10.144.144.4".parse().unwrap()));
         config.set_ipv6(Some("fd00::4/64".parse().unwrap()));
         // C has listener so A and B can connect to it
@@ -1322,7 +1477,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
         (&admin_inst, &cred_c_inst)
     };
     assert_ping_forwarded_by(
-        "ns_c1",
+        network.namespace("ns_c1"),
         "10.144.144.3",
         expected_forwarder,
         &[forbidden_forwarder],
@@ -1349,17 +1504,25 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
 #[tokio::test]
 #[serial_test::serial]
 async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
-    let admin_a_config =
-        create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_a_config = create_admin_config(
+        "admin_a",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let mut admin_a_inst =
         Instance::new_with_process_runtime(admin_a_config, process_runtime.clone());
     admin_a_inst.run().await.unwrap();
 
-    let admin_b_config =
-        create_admin_config("admin_b", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
+    let admin_b_config = create_admin_config(
+        "admin_b",
+        Some(network.namespace("ns_c3")),
+        "10.144.144.4",
+        "fd00::4/64",
+    );
     let mut admin_b_inst =
         Instance::new_with_process_runtime(admin_b_config, process_runtime.clone());
     admin_b_inst.run().await.unwrap();
@@ -1412,7 +1575,7 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         network_name.clone(),
         &relay_secret,
         "relay",
-        Some("ns_c1"),
+        Some(network.namespace("ns_c1")),
         "10.144.144.2",
         "fd00::2/64",
     );
@@ -1423,7 +1586,7 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         network_name.clone(),
         &target_secret,
         "target",
-        Some("ns_c2"),
+        Some(network.namespace("ns_c2")),
         "10.144.144.3",
         "fd00::3/64",
     );
@@ -1433,7 +1596,7 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         network_name,
         &source_secret,
         "source",
-        Some("ns_c4"),
+        Some(network.namespace("ns_c4")),
         "10.144.144.5",
         "fd00::5/64",
     );
@@ -1513,7 +1676,13 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         "source uses an admin direct target edge",
     )
     .await;
-    wait_ping_reachability("ns_c4", "10.144.144.3", true, Duration::from_secs(10)).await;
+    wait_ping_reachability(
+        network.namespace("ns_c4"),
+        "10.144.144.3",
+        true,
+        Duration::from_secs(10),
+    )
+    .await;
 
     for admin in [&admin_a_inst, &admin_b_inst] {
         set_prefer_peer_relay(admin, true).await;
@@ -1569,7 +1738,7 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
     )
     .await;
     assert_ping_forwarded_by(
-        "ns_c4",
+        network.namespace("ns_c4"),
         "10.144.144.3",
         &relay_inst,
         &[&admin_a_inst, &admin_b_inst],
@@ -1611,7 +1780,13 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         "dual-admin return path remains on relay after one admin stops",
     )
     .await;
-    assert_ping_forwarded_by("ns_c4", "10.144.144.3", &relay_inst, &[&surviving_admin]).await;
+    assert_ping_forwarded_by(
+        network.namespace("ns_c4"),
+        "10.144.144.3",
+        &relay_inst,
+        &[&surviving_admin],
+    )
+    .await;
     wait_route_cost(
         &surviving_admin,
         target_peer_id,
@@ -1653,7 +1828,13 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         "relay edge removal restores the surviving admin return path",
     )
     .await;
-    assert_ping_forwarded_by("ns_c4", "10.144.144.3", &surviving_admin, &[&relay_inst]).await;
+    assert_ping_forwarded_by(
+        network.namespace("ns_c4"),
+        "10.144.144.3",
+        &surviving_admin,
+        &[&relay_inst],
+    )
+    .await;
 
     target_inst.add_connector_url(relay_listener_url.clone());
     wait_direct_peer(
@@ -1686,7 +1867,13 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         "relay edge restoration restores the Peer Relay return path",
     )
     .await;
-    assert_ping_forwarded_by("ns_c4", "10.144.144.3", &relay_inst, &[&surviving_admin]).await;
+    assert_ping_forwarded_by(
+        network.namespace("ns_c4"),
+        "10.144.144.3",
+        &relay_inst,
+        &[&surviving_admin],
+    )
+    .await;
 
     drop_insts(vec![surviving_admin, relay_inst, target_inst, source_inst]).await;
 }
@@ -1697,11 +1884,16 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_two_credentials_communicate_tcp() {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
-    let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_config = create_admin_config(
+        "admin",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
@@ -1709,7 +1901,7 @@ async fn credential_two_credentials_communicate_tcp() {
     let cred1_config = create_credential_config(
         &admin_inst,
         "cred1",
-        Some("ns_c1"),
+        Some(network.namespace("ns_c1")),
         "10.144.144.2",
         "fd00::2/64",
     )
@@ -1721,7 +1913,7 @@ async fn credential_two_credentials_communicate_tcp() {
     let cred2_config = create_credential_config(
         &admin_inst,
         "cred2",
-        Some("ns_c2"),
+        Some(network.namespace("ns_c2")),
         "10.144.144.3",
         "fd00::3/64",
     )
@@ -1749,13 +1941,13 @@ async fn credential_two_credentials_communicate_tcp() {
 
     // Verify admin can ping both credentials
     wait_for_condition(
-        || async { ping_test("ns_adm", "10.144.144.2", None).await },
+        || async { ping_test(network.namespace("ns_adm"), "10.144.144.2", None).await },
         Duration::from_secs(10),
     )
     .await;
 
     wait_for_condition(
-        || async { ping_test("ns_adm", "10.144.144.3", None).await },
+        || async { ping_test(network.namespace("ns_adm"), "10.144.144.3", None).await },
         Duration::from_secs(10),
     )
     .await;
@@ -1769,11 +1961,16 @@ async fn credential_two_credentials_communicate_tcp() {
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_revocation_propagates() {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
     // Create admin on ns_adm (10.1.1.1)
-    let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_config = create_admin_config(
+        "admin",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
@@ -1799,7 +1996,7 @@ async fn credential_revocation_propagates() {
 
         let config = TomlConfigLoader::default();
         config.set_inst_name("cred".to_string());
-        config.set_netns(Some("ns_c1".to_string()));
+        config.set_netns(Some(network.namespace("ns_c1").to_string()));
         config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
         config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
         config.set_listeners(vec![]);
@@ -1838,7 +2035,7 @@ async fn credential_revocation_propagates() {
 
     // Verify connectivity before revocation
     wait_for_condition(
-        || async { ping_test("ns_adm", "10.144.144.2", None).await },
+        || async { ping_test(network.namespace("ns_adm"), "10.144.144.2", None).await },
         Duration::from_secs(10),
     )
     .await;
@@ -1872,13 +2069,13 @@ async fn credential_revocation_propagates() {
     .await;
 
     wait_for_condition(
-        || async { !ping_test("ns_adm", "10.144.144.2", None).await },
+        || async { !ping_test(network.namespace("ns_adm"), "10.144.144.2", None).await },
         Duration::from_secs(10),
     )
     .await;
 
     wait_for_condition(
-        || async { !ping_test("ns_c1", "10.144.144.1", None).await },
+        || async { !ping_test(network.namespace("ns_c1"), "10.144.144.1", None).await },
         Duration::from_secs(10),
     )
     .await;
@@ -1890,10 +2087,15 @@ async fn credential_revocation_propagates() {
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_non_reusable_allows_only_one_peer() {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
-    let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_config = create_admin_config(
+        "admin",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
@@ -1917,7 +2119,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
         network_name.clone(),
         &cred_secret,
         "cred1_single",
-        Some("ns_c1"),
+        Some(network.namespace("ns_c1")),
         "10.144.144.2",
         "fd00::2/64",
     );
@@ -1925,7 +2127,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
         network_name,
         &cred_secret,
         "cred2_single",
-        Some("ns_c2"),
+        Some(network.namespace("ns_c2")),
         "10.144.144.3",
         "fd00::3/64",
     );
@@ -1953,7 +2155,13 @@ async fn credential_non_reusable_allows_only_one_peer() {
         Duration::from_secs(10),
     )
     .await;
-    wait_ping_reachability("ns_adm", "10.144.144.2", true, Duration::from_secs(10)).await;
+    wait_ping_reachability(
+        network.namespace("ns_adm"),
+        "10.144.144.2",
+        true,
+        Duration::from_secs(10),
+    )
+    .await;
 
     let mut cred2_inst = Some(Instance::new_with_process_runtime(
         cred2_config,
@@ -2005,7 +2213,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
             admin_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
         );
         assert!(
-            ping_test("ns_adm", winner_ip, None).await,
+            ping_test(network.namespace("ns_adm"), winner_ip, None).await,
             "admin should still reach the winning credential peer"
         );
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -2019,7 +2227,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
             admin_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
         );
         assert!(
-            !ping_test("ns_adm", loser_ip, None).await,
+            !ping_test(network.namespace("ns_adm"), loser_ip, None).await,
             "admin should not reach the losing credential peer"
         );
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -2036,7 +2244,13 @@ async fn credential_non_reusable_allows_only_one_peer() {
         Duration::from_secs(20),
     )
     .await;
-    wait_ping_reachability("ns_adm", loser_ip, true, Duration::from_secs(20)).await;
+    wait_ping_reachability(
+        network.namespace("ns_adm"),
+        loser_ip,
+        true,
+        Duration::from_secs(20),
+    )
+    .await;
 
     drop_insts(vec![admin_inst, loser_inst.take().unwrap()]).await;
 }
@@ -2047,11 +2261,16 @@ async fn credential_non_reusable_allows_only_one_peer() {
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_unknown_rejected() {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
-    let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_config = create_admin_config(
+        "admin",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
@@ -2060,7 +2279,7 @@ async fn credential_unknown_rejected() {
     let cred_config = {
         let config = TomlConfigLoader::default();
         config.set_inst_name("cred".to_string());
-        config.set_netns(Some("ns_c1".to_string()));
+        config.set_netns(Some(network.namespace("ns_c1").to_string()));
         config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
         config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
         config.set_listeners(vec![]);
@@ -2094,7 +2313,7 @@ async fn credential_unknown_rejected() {
     );
 
     // Verify no connectivity
-    let ping_result = ping_test("ns_adm", "10.144.144.2", None).await;
+    let ping_result = ping_test(network.namespace("ns_adm"), "10.144.144.2", None).await;
     assert!(
         !ping_result,
         "Should NOT be able to ping unknown credential node"
@@ -2110,23 +2329,35 @@ async fn credential_unknown_rejected() {
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revoke: bool) {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
-    let admin_a_config =
-        create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_a_config = create_admin_config(
+        "admin_a",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let mut admin_a_inst =
         Instance::new_with_process_runtime(admin_a_config, process_runtime.clone());
     admin_a_inst.run().await.unwrap();
 
-    let shared_b_config =
-        create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
+    let shared_b_config = create_shared_config(
+        "shared_b",
+        Some(network.namespace("ns_c1")),
+        "10.144.144.2",
+        "fd00::2/64",
+    );
     let mut shared_b_inst =
         Instance::new_with_process_runtime(shared_b_config, process_runtime.clone());
     shared_b_inst.run().await.unwrap();
 
-    let admin_c_config =
-        create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
+    let admin_c_config = create_admin_config(
+        "admin_c",
+        Some(network.namespace("ns_c3")),
+        "10.144.144.4",
+        "fd00::4/64",
+    );
     let mut admin_c_inst =
         Instance::new_with_process_runtime(admin_c_config, process_runtime.clone());
     admin_c_inst.run().await.unwrap();
@@ -2150,7 +2381,7 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
         let (config, cred_id) = create_generated_credential_config(
             &admin_a_inst,
             "cred_d",
-            Some("ns_c2"),
+            Some(network.namespace("ns_c2")),
             "10.144.144.5",
             "fd00::5/64",
         )
@@ -2165,7 +2396,7 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
                     .network_name
                     .clone(),
                 "unknown_d",
-                Some("ns_c2"),
+                Some(network.namespace("ns_c2")),
                 "10.144.144.5",
                 "fd00::5/64",
             ),
@@ -2191,8 +2422,20 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
             Duration::from_secs(30),
         )
         .await;
-        wait_ping_reachability("ns_adm", "10.144.144.5", true, Duration::from_secs(20)).await;
-        wait_ping_reachability("ns_c3", "10.144.144.5", true, Duration::from_secs(20)).await;
+        wait_ping_reachability(
+            network.namespace("ns_adm"),
+            "10.144.144.5",
+            true,
+            Duration::from_secs(20),
+        )
+        .await;
+        wait_ping_reachability(
+            network.namespace("ns_c3"),
+            "10.144.144.5",
+            true,
+            Duration::from_secs(20),
+        )
+        .await;
 
         assert!(
             admin_a_inst
@@ -2213,12 +2456,25 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
             Duration::from_secs(30),
         )
         .await;
-        wait_ping_reachability("ns_adm", "10.144.144.5", false, Duration::from_secs(5)).await;
-        wait_ping_reachability("ns_c3", "10.144.144.5", false, Duration::from_secs(5)).await;
+        wait_ping_reachability(
+            network.namespace("ns_adm"),
+            "10.144.144.5",
+            false,
+            Duration::from_secs(5),
+        )
+        .await;
+        wait_ping_reachability(
+            network.namespace("ns_c3"),
+            "10.144.144.5",
+            false,
+            Duration::from_secs(5),
+        )
+        .await;
 
         unknown_inst.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
 
         assert_shared_visibility_stable(
+            &network,
             &admin_a_inst,
             &admin_c_inst,
             unknown_peer_id,
@@ -2229,6 +2485,7 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
         .await;
     } else {
         assert_shared_visibility_stable(
+            &network,
             &admin_a_inst,
             &admin_c_inst,
             unknown_peer_id,
@@ -2256,26 +2513,43 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
 async fn credential_admin_shared_admin_credential_connectivity(
     #[values(true, false)] connect_to_admin: bool,
 ) {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
+    // Keep traffic on the shared/admin relay path; direct P2P would bypass it.
+
     // 10.1.1.1
-    let admin_a_config =
-        create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_a_config = create_admin_config(
+        "admin_a",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
+    disable_p2p(&admin_a_config);
     let mut admin_a_inst =
         Instance::new_with_process_runtime(admin_a_config, process_runtime.clone());
     admin_a_inst.run().await.unwrap();
 
     // 10.1.1.2
-    let shared_b_config =
-        create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
+    let shared_b_config = create_shared_config(
+        "shared_b",
+        Some(network.namespace("ns_c1")),
+        "10.144.144.2",
+        "fd00::2/64",
+    );
+    disable_p2p(&shared_b_config);
     let mut shared_b_inst =
         Instance::new_with_process_runtime(shared_b_config, process_runtime.clone());
     shared_b_inst.run().await.unwrap();
 
     // 10.1.1.4
-    let admin_c_config =
-        create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
+    let admin_c_config = create_admin_config(
+        "admin_c",
+        Some(network.namespace("ns_c3")),
+        "10.144.144.4",
+        "fd00::4/64",
+    );
+    disable_p2p(&admin_c_config);
     let mut admin_c_inst =
         Instance::new_with_process_runtime(admin_c_config, process_runtime.clone());
     admin_c_inst.run().await.unwrap();
@@ -2308,7 +2582,7 @@ async fn credential_admin_shared_admin_credential_connectivity(
     let cred_d_config = create_credential_config(
         &admin_a_inst,
         "cred_d",
-        Some("ns_c2"),
+        Some(network.namespace("ns_c2")),
         "10.144.144.5",
         "fd00::5/64",
     )
@@ -2317,6 +2591,7 @@ async fn credential_admin_shared_admin_credential_connectivity(
         .get_global_ctx()
         .issue_event(GlobalCtxEvent::CredentialChanged);
 
+    disable_p2p(&cred_d_config);
     let mut cred_d_inst =
         Instance::new_with_process_runtime(cred_d_config, process_runtime.clone());
     cred_d_inst.run().await.unwrap();
@@ -2346,19 +2621,19 @@ async fn credential_admin_shared_admin_credential_connectivity(
     .await;
 
     wait_for_condition(
-        || async { ping_test("ns_c3", "10.144.144.5", None).await },
+        || async { ping_test(network.namespace("ns_c3"), "10.144.144.5", None).await },
         Duration::from_secs(15),
     )
     .await;
 
     wait_for_condition(
-        || async { ping_test("ns_adm", "10.144.144.5", None).await },
+        || async { ping_test(network.namespace("ns_adm"), "10.144.144.5", None).await },
         Duration::from_secs(15),
     )
     .await;
 
     wait_for_condition(
-        || async { ping_test("ns_c2", "10.144.144.4", None).await },
+        || async { ping_test(network.namespace("ns_c2"), "10.144.144.4", None).await },
         Duration::from_secs(15),
     )
     .await;
@@ -2369,23 +2644,35 @@ async fn credential_admin_shared_admin_credential_connectivity(
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
-    prepare_credential_network();
+    let network = prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
-    let admin_a_config =
-        create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_a_config = create_admin_config(
+        "admin_a",
+        Some(network.namespace("ns_adm")),
+        "10.144.144.1",
+        "fd00::1/64",
+    );
     let mut admin_a_inst =
         Instance::new_with_process_runtime(admin_a_config, process_runtime.clone());
     admin_a_inst.run().await.unwrap();
 
-    let shared_b_config =
-        create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
+    let shared_b_config = create_shared_config(
+        "shared_b",
+        Some(network.namespace("ns_c1")),
+        "10.144.144.2",
+        "fd00::2/64",
+    );
     let mut shared_b_inst =
         Instance::new_with_process_runtime(shared_b_config, process_runtime.clone());
     shared_b_inst.run().await.unwrap();
 
-    let admin_c_config =
-        create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
+    let admin_c_config = create_admin_config(
+        "admin_c",
+        Some(network.namespace("ns_c3")),
+        "10.144.144.4",
+        "fd00::4/64",
+    );
     let mut admin_c_inst =
         Instance::new_with_process_runtime(admin_c_config, process_runtime.clone());
     admin_c_inst.run().await.unwrap();
@@ -2399,9 +2686,9 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
             let a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
             let c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
             a_routes.iter().any(|r| r.peer_id == admin_c_peer_id)
-                || c_routes.iter().any(|r| r.peer_id == admin_a_inst.peer_id())
+                && c_routes.iter().any(|r| r.peer_id == admin_a_inst.peer_id())
         },
-        Duration::from_secs(10),
+        Duration::from_secs(20),
     )
     .await;
 
@@ -2428,7 +2715,7 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
         network_name.clone(),
         &cred_secret,
         "cred_left",
-        Some("ns_c2"),
+        Some(network.namespace("ns_c2")),
         "10.144.144.5",
         "fd00::5/64",
     );
@@ -2436,7 +2723,7 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
         network_name,
         &cred_secret,
         "cred_right",
-        Some("ns_c4"),
+        Some(network.namespace("ns_c4")),
         "10.144.144.6",
         "fd00::6/64",
     );
@@ -2463,15 +2750,28 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
 
     let cred_left_peer_id = cred_left_inst.as_ref().unwrap().peer_id();
     let cred_right_peer_id = cred_right_inst.as_ref().unwrap().peer_id();
-    let winner_peer_id = wait_stable_single_visible_peer_on_admins(
-        &admin_a_inst,
-        &admin_c_inst,
-        cred_left_peer_id,
-        cred_right_peer_id,
-        Duration::from_secs(60),
+    // Both candidates must be connected before checking election; an absent
+    // route alone could otherwise mean the losing peer has not joined yet.
+    wait_for_condition(
+        || async {
+            admin_a_inst
+                .get_core_instance()
+                .connected_peers()
+                .await
+                .contains(&cred_left_peer_id)
+                && admin_c_inst
+                    .get_core_instance()
+                    .connected_peers()
+                    .await
+                    .contains(&cred_right_peer_id)
+        },
+        Duration::from_secs(10),
     )
     .await;
 
+    // Owner election selects the lowest peer ID. Observing any one peer for
+    // several samples can mistake a partially synced topology for convergence.
+    let winner_peer_id = cred_left_peer_id.min(cred_right_peer_id);
     let (winner_peer_id, winner_ip, loser_peer_id, loser_ip) =
         if winner_peer_id == cred_left_peer_id {
             (
@@ -2489,29 +2789,34 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
             )
         };
 
-    wait_ping_reachability("ns_adm", winner_ip, true, Duration::from_secs(20)).await;
-    wait_ping_reachability("ns_c3", winner_ip, true, Duration::from_secs(20)).await;
-    wait_ping_reachability("ns_adm", loser_ip, false, Duration::from_secs(5)).await;
-    wait_ping_reachability("ns_c3", loser_ip, false, Duration::from_secs(5)).await;
-
-    assert_shared_visibility_stable(
-        &admin_a_inst,
-        &admin_c_inst,
-        winner_peer_id,
-        winner_ip,
-        true,
-        "winning credential",
-    )
-    .await;
-    assert_shared_visibility_stable(
-        &admin_a_inst,
-        &admin_c_inst,
-        loser_peer_id,
-        loser_ip,
-        false,
-        "losing credential",
-    )
-    .await;
+    wait_credential_routes_on_admins(&admin_a_inst, &admin_c_inst, winner_peer_id, loser_peer_id)
+        .await;
+    tokio::join!(
+        wait_ping_reachability(
+            network.namespace("ns_adm"),
+            winner_ip,
+            true,
+            Duration::from_secs(10),
+        ),
+        wait_ping_reachability(
+            network.namespace("ns_c3"),
+            winner_ip,
+            true,
+            Duration::from_secs(10),
+        ),
+    );
+    let (admin_a_reaches_loser, admin_c_reaches_loser) = tokio::join!(
+        ping_test(network.namespace("ns_adm"), loser_ip, None),
+        ping_test(network.namespace("ns_c3"), loser_ip, None),
+    );
+    assert!(
+        !admin_a_reaches_loser,
+        "admin_a must not reach the losing peer"
+    );
+    assert!(
+        !admin_c_reaches_loser,
+        "admin_c must not reach the losing peer"
+    );
 
     if winner_peer_id == cred_left_peer_id {
         drop_insts(vec![cred_left_inst.take().unwrap()]).await;
@@ -2519,42 +2824,34 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
         drop_insts(vec![cred_right_inst.take().unwrap()]).await;
     }
 
-    wait_for_condition(
-        || async {
-            let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
-            let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
-            admin_a_routes.iter().any(|r| r.peer_id == loser_peer_id)
-                && admin_c_routes.iter().any(|r| r.peer_id == loser_peer_id)
-                && !admin_a_routes.iter().any(|r| r.peer_id == winner_peer_id)
-                && !admin_c_routes.iter().any(|r| r.peer_id == winner_peer_id)
-        },
-        Duration::from_secs(60),
-    )
-    .await;
-
-    wait_ping_reachability("ns_adm", loser_ip, true, Duration::from_secs(20)).await;
-    wait_ping_reachability("ns_c3", loser_ip, true, Duration::from_secs(20)).await;
-    wait_ping_reachability("ns_adm", winner_ip, false, Duration::from_secs(5)).await;
-    wait_ping_reachability("ns_c3", winner_ip, false, Duration::from_secs(5)).await;
-
-    assert_shared_visibility_stable(
-        &admin_a_inst,
-        &admin_c_inst,
-        loser_peer_id,
-        loser_ip,
-        true,
-        "failover credential",
-    )
-    .await;
-    assert_shared_visibility_stable(
-        &admin_a_inst,
-        &admin_c_inst,
-        winner_peer_id,
-        winner_ip,
-        false,
-        "removed winning credential",
-    )
-    .await;
+    wait_credential_routes_on_admins(&admin_a_inst, &admin_c_inst, loser_peer_id, winner_peer_id)
+        .await;
+    tokio::join!(
+        wait_ping_reachability(
+            network.namespace("ns_adm"),
+            loser_ip,
+            true,
+            Duration::from_secs(10),
+        ),
+        wait_ping_reachability(
+            network.namespace("ns_c3"),
+            loser_ip,
+            true,
+            Duration::from_secs(10),
+        ),
+    );
+    let (admin_a_reaches_winner, admin_c_reaches_winner) = tokio::join!(
+        ping_test(network.namespace("ns_adm"), winner_ip, None),
+        ping_test(network.namespace("ns_c3"), winner_ip, None),
+    );
+    assert!(
+        !admin_a_reaches_winner,
+        "admin_a must not reach the removed peer"
+    );
+    assert!(
+        !admin_c_reaches_winner,
+        "admin_c must not reach the removed peer"
+    );
 
     if winner_peer_id == cred_left_peer_id {
         drop_insts(vec![

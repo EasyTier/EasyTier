@@ -56,6 +56,7 @@ fn select_listener_request_to_rpc(request: SelectPunchListener) -> SelectPunchLi
     SelectPunchListenerRequest {
         force_new: request.force_new,
         prefer_port_mapping: request.prefer_port_mapping,
+        transaction_id: request.transaction_id,
     }
 }
 
@@ -63,6 +64,7 @@ fn select_listener_request_from_rpc(input: SelectPunchListenerRequest) -> Select
     SelectPunchListener {
         force_new: input.force_new,
         prefer_port_mapping: input.prefer_port_mapping,
+        transaction_id: input.transaction_id,
     }
 }
 
@@ -70,6 +72,7 @@ fn select_listener_response_from_rpc(
     response: SelectPunchListenerResponse,
 ) -> Result<CoreSelectPunchListenerResponse, UdpHolePunchSignalError> {
     Ok(CoreSelectPunchListenerResponse {
+        transaction_id: response.transaction_id,
         listener_mapped_addr: SocketAddr::from(
             response
                 .listener_mapped_addr
@@ -83,6 +86,7 @@ fn select_listener_response_to_rpc(
 ) -> SelectPunchListenerResponse {
     SelectPunchListenerResponse {
         listener_mapped_addr: Some(response.listener_mapped_addr.into()),
+        transaction_id: response.transaction_id,
     }
 }
 
@@ -553,7 +557,61 @@ where
 mod tests {
     use std::{future, net::Ipv4Addr, time::Duration};
 
+    use prost::Message;
+
     use super::*;
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacySelectPunchListenerRequest {
+        #[prost(bool, tag = "1")]
+        force_new: bool,
+        #[prost(bool, tag = "2")]
+        prefer_port_mapping: bool,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacySelectPunchListenerResponse {
+        #[prost(message, optional, tag = "1")]
+        listener_mapped_addr: Option<crate::proto::common::SocketAddr>,
+    }
+
+    #[test]
+    fn listener_registration_fields_are_compatible_with_legacy_wire_messages() {
+        let request = select_listener_request_to_rpc(SelectPunchListener {
+            force_new: true,
+            prefer_port_mapping: false,
+            transaction_id: Some(0),
+        });
+        assert_eq!(
+            SelectPunchListenerRequest::decode(request.encode_to_vec().as_slice())
+                .unwrap()
+                .transaction_id,
+            Some(0)
+        );
+        let legacy_request =
+            LegacySelectPunchListenerRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        assert!(legacy_request.force_new);
+        let request =
+            SelectPunchListenerRequest::decode(legacy_request.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(
+            select_listener_request_from_rpc(request).transaction_id,
+            None
+        );
+
+        let mapped_addr = "198.51.100.1:31001".parse().unwrap();
+        let response = select_listener_response_to_rpc(CoreSelectPunchListenerResponse {
+            listener_mapped_addr: mapped_addr,
+            transaction_id: Some(0),
+        });
+        let legacy_response =
+            LegacySelectPunchListenerResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        let response =
+            SelectPunchListenerResponse::decode(legacy_response.encode_to_vec().as_slice())
+                .unwrap();
+        let response = select_listener_response_from_rpc(response).unwrap();
+        assert_eq!(response.listener_mapped_addr, mapped_addr);
+        assert_eq!(response.transaction_id, None);
+    }
 
     #[test]
     fn outbound_rpc_controllers_preserve_timeouts() {
@@ -568,14 +626,17 @@ mod tests {
         let domain_request = SelectPunchListener {
             force_new: true,
             prefer_port_mapping: false,
+            transaction_id: Some(0),
         };
         let rpc_request = select_listener_request_to_rpc(domain_request.clone());
         assert!(rpc_request.force_new);
         assert!(!rpc_request.prefer_port_mapping);
+        assert_eq!(rpc_request.transaction_id, Some(0));
         assert_eq!(
             select_listener_request_from_rpc(SelectPunchListenerRequest {
                 force_new: true,
                 prefer_port_mapping: false,
+                transaction_id: Some(0),
             }),
             domain_request
         );
@@ -583,6 +644,7 @@ mod tests {
         let mapped_addr: SocketAddr = "198.51.100.1:31001".parse().unwrap();
         let core_response = CoreSelectPunchListenerResponse {
             listener_mapped_addr: mapped_addr,
+            transaction_id: Some(0),
         };
         let rpc_response = select_listener_response_to_rpc(core_response.clone());
         assert_eq!(

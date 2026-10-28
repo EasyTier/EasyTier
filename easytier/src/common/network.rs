@@ -1,4 +1,10 @@
-use std::{collections::HashMap, net::IpAddr};
+#[cfg(not(mobile))]
+use std::collections::HashMap;
+use std::net::IpAddr;
+#[cfg(any(target_os = "windows", test))]
+use std::sync::{Arc, RwLock};
+#[cfg(any(target_os = "windows", test))]
+use std::time::{Duration, Instant};
 
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
@@ -8,6 +14,7 @@ use crate::proto::peer_rpc::GetIpListResponse;
 
 use super::netns::NetNS;
 
+#[cfg(not(mobile))]
 #[derive(Clone, Copy, Debug, Default)]
 struct InterfaceState {
     is_point_to_point: bool,
@@ -46,6 +53,7 @@ fn collect_interface_states() -> HashMap<String, InterfaceState> {
     states
 }
 
+#[cfg(not(mobile))]
 #[cfg(not(any(
     all(target_os = "linux", not(target_env = "ohos")),
     all(target_os = "macos", not(feature = "macos-ne")),
@@ -99,11 +107,13 @@ pub(crate) fn ip_mask_to_prefix(mask: IpAddr) -> Result<u8, ()> {
     }
 }
 
+#[cfg(not(mobile))]
 struct InterfaceFilter {
     iface: NetworkInterface,
     state: InterfaceState,
 }
 
+#[cfg(not(mobile))]
 fn interface_state(
     iface: &NetworkInterface,
     states: &HashMap<String, InterfaceState>,
@@ -115,18 +125,6 @@ fn interface_state(
         is_lower_up: true,
         ..Default::default()
     })
-}
-
-#[cfg(any(
-    target_os = "android",
-    target_os = "ios",
-    all(target_os = "macos", feature = "macos-ne"),
-    target_env = "ohos"
-))]
-impl InterfaceFilter {
-    async fn filter_iface(&self) -> bool {
-        true
-    }
 }
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
@@ -309,6 +307,48 @@ pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<Netwo
     }
 }
 
+/// The Windows bind path resolves an interface name and then its index
+/// through full `NetworkInterface::show()` enumerations for every bind
+/// candidate. With 10+ adapters (VMware / Hyper-V / APIPA leftovers are
+/// common), one connect round turns into O(candidates) synchronous
+/// enumerations on the async worker. Interfaces rarely change within a
+/// connect round, so snapshots are reused for a short TTL.
+/// Only use this cache for socket binding; interface configuration needs
+/// fresh enumeration to observe adapter creation and replacement immediately.
+#[cfg(target_os = "windows")]
+pub(crate) fn get_interfaces_cached() -> Option<Arc<Vec<NetworkInterface>>> {
+    static SNAPSHOT: InterfaceSnapshot = RwLock::new(None);
+    get_or_refresh_interfaces(&SNAPSHOT, || NetworkInterface::show().ok())
+}
+
+#[cfg(any(target_os = "windows", test))]
+type InterfaceSnapshot = RwLock<Option<(Instant, Arc<Vec<NetworkInterface>>)>>;
+
+#[cfg(any(target_os = "windows", test))]
+fn get_or_refresh_interfaces(
+    snapshot: &InterfaceSnapshot,
+    enumerate: impl FnOnce() -> Option<Vec<NetworkInterface>>,
+) -> Option<Arc<Vec<NetworkInterface>>> {
+    const SNAPSHOT_TTL: Duration = Duration::from_secs(1);
+    if let Some((at, ifaces)) = snapshot.read().ok().and_then(|guard| guard.clone())
+        && at.elapsed() < SNAPSHOT_TTL
+    {
+        return Some(ifaces);
+    }
+
+    // Recheck after acquiring the write lock: another caller may have refreshed
+    // while we waited. Keep the lock during enumeration to coalesce refreshes.
+    let mut snapshot = snapshot.write().ok()?;
+    if let Some((at, ifaces)) = snapshot.as_ref()
+        && at.elapsed() < SNAPSHOT_TTL
+    {
+        return Some(ifaces.clone());
+    }
+    let ifaces = Arc::new(enumerate()?);
+    *snapshot = Some((Instant::now(), ifaces.clone()));
+    Some(ifaces)
+}
+
 #[cfg(feature = "faketcp")]
 fn convert_pnet_interface(iface: pnet_datalink::NetworkInterface) -> NetworkInterface {
     let internal = iface.is_loopback();
@@ -363,22 +403,31 @@ async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInt
             return Vec::new();
         }
     };
-    let states = collect_interface_states();
-    let mut ret = vec![];
-    for iface in ifaces {
-        let f = InterfaceFilter {
-            iface: iface.clone(),
-            state: interface_state(&iface, &states),
-        };
-
-        if filter && !f.filter_iface().await {
-            continue;
-        }
-
-        ret.push(iface);
+    #[cfg(mobile)]
+    {
+        let _ = filter;
+        ifaces
     }
 
-    ret
+    #[cfg(not(mobile))]
+    {
+        let states = collect_interface_states();
+        let mut ret = vec![];
+        for iface in ifaces {
+            let f = InterfaceFilter {
+                iface: iface.clone(),
+                state: interface_state(&iface, &states),
+            };
+
+            if filter && !f.filter_iface().await {
+                continue;
+            }
+
+            ret.push(iface);
+        }
+
+        ret
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -493,5 +542,62 @@ mod tests {
         .await;
 
         assert_eq!(before, after);
+    }
+}
+
+#[cfg(test)]
+mod interface_snapshot_tests {
+    use super::*;
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn concurrent_refreshes_share_cold_and_expired_snapshots() {
+        for initial in [
+            None,
+            Some((Instant::now() - Duration::from_secs(2), Arc::new(vec![]))),
+        ] {
+            let snapshot = InterfaceSnapshot::new(initial);
+            let calls = AtomicUsize::new(0);
+            let barrier = Barrier::new(8);
+            let results = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..8)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            get_or_refresh_interfaces(&snapshot, || {
+                                calls.fetch_add(1, Ordering::SeqCst);
+                                std::thread::sleep(Duration::from_millis(20));
+                                Some(vec![])
+                            })
+                            .unwrap()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            for result in &results {
+                assert!(Arc::ptr_eq(&results[0], result));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_refresh_is_retried_without_serving_expired_snapshot() {
+        let snapshot = InterfaceSnapshot::new(Some((
+            Instant::now() - Duration::from_secs(2),
+            Arc::new(vec![]),
+        )));
+        assert!(get_or_refresh_interfaces(&snapshot, || None).is_none());
+        let refreshed = get_or_refresh_interfaces(&snapshot, || Some(vec![])).unwrap();
+        let cached =
+            get_or_refresh_interfaces(&snapshot, || panic!("cache should be fresh")).unwrap();
+        assert!(Arc::ptr_eq(&refreshed, &cached));
     }
 }

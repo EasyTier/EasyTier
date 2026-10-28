@@ -27,6 +27,7 @@ on:
         required: true
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -36,6 +37,17 @@ jobs:
       -
         name: Checkout
         uses: actions/checkout@v5
+
+      - name: Validate complete builds
+        uses: actions/github-script@v8
+        env:
+          CORE_RUN_ID: ${{ inputs.core_run_id }}
+          GUI_RUN_ID: ${{ inputs.gui_run_id }}
+          MOBILE_RUN_ID: ${{ inputs.mobile_run_id }}
+        with:
+          script: |
+            const validate = require('./.github/scripts/validate-release-builds.js');
+            await validate({ github, context, core });
 
       - name: Download Core Artifact
         uses: dawidd6/action-download-artifact@v11

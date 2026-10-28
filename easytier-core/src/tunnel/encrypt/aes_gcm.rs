@@ -1,5 +1,5 @@
-use aes_gcm::{AeadCore, AeadInPlace, Aes128Gcm, Aes256Gcm, Key, KeyInit};
-use rand::rngs::OsRng;
+use aes_gcm::{AeadInPlace, Aes128Gcm, Aes256Gcm, Key, KeyInit};
+use rand::{RngCore, rngs::OsRng};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::packet::{StandardAeadTail, ZCPacket};
@@ -107,14 +107,22 @@ impl Encryptor for AesGcmCipher {
 
         let (tag, nonce) = match &self.cipher {
             AesGcmEnum::AES128GCM(aes_gcm) => {
-                let nonce = nonce.unwrap_or_else(|| Aes128Gcm::generate_nonce(&mut OsRng));
+                let nonce = nonce.unwrap_or_else(|| {
+                    let mut nonce = [0u8; StandardAeadTail::NONCE_SIZE];
+                    OsRng.fill_bytes(&mut nonce);
+                    nonce.into()
+                });
                 (
                     aes_gcm.encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload()),
                     nonce,
                 )
             }
             AesGcmEnum::AES256GCM(aes_gcm) => {
-                let nonce = nonce.unwrap_or_else(|| Aes256Gcm::generate_nonce(&mut OsRng));
+                let nonce = nonce.unwrap_or_else(|| {
+                    let mut nonce = [0u8; StandardAeadTail::NONCE_SIZE];
+                    OsRng.fill_bytes(&mut nonce);
+                    nonce.into()
+                });
                 (
                     aes_gcm.encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload()),
                     nonce,

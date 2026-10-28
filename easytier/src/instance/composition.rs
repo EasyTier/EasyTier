@@ -31,7 +31,12 @@ use crate::{
     instance::runtime_host::NativeInstanceRuntimeHost,
 };
 
-use super::host::{NativeInstanceHost, native_instance_host};
+#[cfg(feature = "tun")]
+use super::shared_virtual_nic::ArcSharedVirtualNicRegistry;
+use super::{
+    host::{NativeInstanceHost, native_instance_host},
+    runtime_executor::NativeInstanceExecutor,
+};
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
@@ -42,10 +47,12 @@ use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngine;
 
 pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
-pub(crate) fn compose_native_core_instance(
+pub(super) fn compose_native_core_instance(
     toml_config: TomlConfig,
     process_runtime: Arc<CoreProcessRuntime>,
+    #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     compact_runtime: bool,
+    executor: Option<Arc<NativeInstanceExecutor>>,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
     let host_config = if compact_runtime {
         compact_runtime_core_host_config()
@@ -58,7 +65,12 @@ pub(crate) fn compose_native_core_instance(
         &normalized,
         &host_config,
     ));
-    let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+    let runtime_host = NativeInstanceRuntimeHost::new_with_executor(
+        global_ctx.clone(),
+        #[cfg(feature = "tun")]
+        shared_virtual_nic_registry,
+        executor,
+    );
     let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
         global_ctx.clone(),
         process_runtime,
@@ -255,7 +267,11 @@ fn configure_runtime_core_host_adapters(
     if host_config.vpn_portal_enabled {
         use crate::common::config::ConfigLoader as _;
 
-        if let Some(config) = global_ctx.config.get_vpn_portal_config() {
+        if let Some(config) = global_ctx
+            .config
+            .get_vpn_portal_config()
+            .filter(|config| config.enabled != Some(false))
+        {
             adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
                 global_ctx.clone(),
                 config,

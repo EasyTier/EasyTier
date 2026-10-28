@@ -1,23 +1,13 @@
 //! UDP socket resources exposed by the data plane.
 
-use std::{
-    any::Any,
-    collections::{HashMap, hash_map::Entry},
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
+use std::{net::SocketAddr, sync::Arc};
 
-use super::{
-    DataPlaneIoGuard, DataPlaneLease, DataPlaneUdpIo, FlowData, FlowKey, FlowLease, FlowSet,
-    UDP_ENTRY,
-};
+use super::{DataPlaneIoGuard, DataPlaneLease, DataPlaneUdpIo, FlowData, FlowLease};
 
 pub struct DataPlaneUdpSocket {
     pub(super) socket: Arc<DataPlaneUdpIo>,
-    pub(super) flows: FlowSet,
-    pub(super) routes: Mutex<HashMap<SocketAddr, FlowLease<FlowData>>>,
+    pub(super) _bind_flow: FlowLease<FlowData>,
     pub(super) local_addr: SocketAddr,
-    pub(super) _reservation: Arc<dyn Any + Send + Sync>,
     pub(super) _data_plane_lease: DataPlaneLease,
     pub(super) generation: DataPlaneIoGuard,
 }
@@ -31,21 +21,6 @@ impl DataPlaneUdpSocket {
         self.generation
             .ensure_open()
             .map_err(|error| error.into_io_error())?;
-        let key = FlowKey {
-            src: self.local_addr,
-            dst: addr,
-            kind: UDP_ENTRY,
-        };
-        if let Entry::Vacant(route) = self.routes.lock().unwrap().entry(addr) {
-            let lease = FlowLease::try_register(self.flows.clone(), key, FlowData::Udp)
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::AddrInUse,
-                        "data-plane UDP flow already exists",
-                    )
-                })?;
-            route.insert(lease);
-        }
         tokio::select! {
             biased;
             _ = self.generation.closed() => Err(self.generation.closed_io_error()),

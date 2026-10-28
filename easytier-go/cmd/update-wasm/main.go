@@ -19,6 +19,7 @@ const (
 )
 
 var managementProtoFiles = []string{
+	"annotations.proto",
 	"common.proto",
 	"error.proto",
 	"acl.proto",

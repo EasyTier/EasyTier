@@ -9,8 +9,8 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinSet;
 
 use crate::packet::ZCPacket;
-use crate::peers::PeerPacketFilter;
 use crate::peers::peer_manager::{PeerManagerCore, PipelineRegistrationGuard};
+use crate::peers::{PeerPacketFilter, PeerPacketFilterResult};
 
 use super::cidr_table::ProxyCidrTable;
 use super::traits::{UdpProxyResponseSink, UdpProxyRuntime};
@@ -208,10 +208,10 @@ struct UdpProxyServiceFilter<R: UdpProxyRuntime + 'static> {
 
 #[async_trait::async_trait]
 impl<R: UdpProxyRuntime + 'static> PeerPacketFilter for UdpProxyServiceFilter<R> {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> PeerPacketFilterResult {
         let Some(service) = self.service.upgrade() else {
-            return Some(packet);
+            return PeerPacketFilterResult::Pass(packet);
         };
-        service.handle_peer_packet(packet).await
+        service.handle_peer_packet(packet).await.into()
     }
 }
