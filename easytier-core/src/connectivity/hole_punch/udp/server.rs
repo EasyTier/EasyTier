@@ -163,19 +163,25 @@ where
         }
 
         let base_port_num = request.base_port_num;
+        anyhow::ensure!(
+            (1..=u16::MAX as u32).contains(&base_port_num),
+            "send_punch_packet_easy_sym invalid base port"
+        );
         let max_port_num = request.max_port_num.max(1);
         let port_start = if request.is_incremental {
             base_port_num.saturating_add(1)
         } else {
-            base_port_num.saturating_sub(max_port_num)
+            base_port_num.saturating_sub(max_port_num).max(1)
         };
         let port_end = if request.is_incremental {
-            base_port_num.saturating_add(max_port_num)
+            base_port_num
+                .saturating_add(max_port_num)
+                .min(u16::MAX as u32)
         } else {
             base_port_num.saturating_sub(1)
         };
 
-        if port_end <= port_start {
+        if port_end < port_start {
             anyhow::bail!("send_punch_packet_easy_sym invalid port range");
         }
 
@@ -195,7 +201,7 @@ where
                 request.transaction_id,
                 &request.public_ips,
                 0,
-                ports.len(),
+                ports.len().saturating_mul(request.public_ips.len()),
             )
             .await
             .with_context(|| "failed to send symmetric hole punch packet")?;
@@ -950,7 +956,6 @@ where
 
                 if let Some(s) = udp_array.try_fetch_punched_socket(transaction_id) {
                     tracing::info!(?s, ?transaction_id, "got punched socket in both easy sym");
-                    assert!(Arc::strong_count(&s.socket) == 1);
                     let Some(port) = s.socket.local_addr().ok().map(|addr| addr.port()) else {
                         tracing::warn!("failed to get local addr from punched socket");
                         continue;
@@ -1644,6 +1649,56 @@ mod tests {
 
         let sent = socket.sent.lock().await;
         assert_eq!(sent.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn predictable_sender_covers_each_public_ip_and_valid_boundary_port() {
+        for (base_port_num, max_port_num, is_incremental, expected_ports) in [
+            (10000, 4, true, vec![10001, 10002, 10003, 10004]),
+            (10000, 4, false, vec![9996, 9997, 9998, 9999]),
+            (65534, 50, true, vec![65535]),
+            (2, 50, false, vec![1]),
+            (65535, 50, true, vec![]),
+            (1, 50, false, vec![]),
+        ] {
+            let public_ips = vec![
+                Ipv4Addr::new(198, 51, 100, 1),
+                Ipv4Addr::new(198, 51, 100, 2),
+            ];
+            let listener = listener(10007, Vec::new());
+            let socket = listener.socket.clone();
+            let listener_mapped_addr = listener.mapped_addr;
+            let server = UdpHolePunchServer::new(
+                Arc::new(MockRuntime::new(vec![listener])),
+                mock_stun(),
+                Arc::new(MockSink::default()),
+                UdpSymPunchLock::default(),
+            );
+            server.common.select_listener(false, false).await.unwrap();
+            let result = server
+                .send_punch_packet_easy_sym_inner(SendPunchPacketEasySym {
+                    listener_mapped_addr,
+                    public_ips: public_ips.clone(),
+                    transaction_id: 9,
+                    base_port_num,
+                    max_port_num,
+                    is_incremental,
+                })
+                .await;
+            assert_eq!(result.is_ok(), !expected_ports.is_empty());
+            let sent = socket.sent.lock().await;
+            assert_eq!(sent.len(), expected_ports.len() * public_ips.len() * 3 * 2);
+            for ip in &public_ips {
+                for port in &expected_ports {
+                    assert_eq!(
+                        sent.iter()
+                            .filter(|(_, addr)| *addr == SocketAddr::from((*ip, *port)))
+                            .count(),
+                        6
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
