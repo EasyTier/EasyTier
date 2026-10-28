@@ -94,7 +94,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          cmdline-tools-version: 12.0
+          cmdline-tools-version: '11076708'
           packages: 'build-tools;34.0.0 ndk;26.0.10792818 platform-tools platforms;android-34 '
 
       - name: Setup Android Environment
