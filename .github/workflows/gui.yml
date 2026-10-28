@@ -87,7 +87,7 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Check GUI
-        run: cargo check --locked --all-targets --package easytier-gui --features custom-protocol
+        run: cargo check-gui
 
   build-gui:
     strategy:

@@ -78,7 +78,7 @@ jobs:
       ARCH: ${{ matrix.ARCH }}
       OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
     needs: pre_job
-    if: needs.pre_job.outputs.should_skip != 'true'    
+    if: needs.pre_job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -123,7 +123,7 @@ jobs:
 
       - name: Check Android ARM64
         if: needs.pre_job.outputs.full_build != 'true'
-        run: cargo check --locked --lib --target "$TARGET" --package easytier-gui --features custom-protocol
+        run: cargo check-android --target "$TARGET"
 
       - name: Build
         if: needs.pre_job.outputs.full_build == 'true'

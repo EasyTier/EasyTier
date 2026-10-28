@@ -114,7 +114,7 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Check Core and Web
-        run: cargo check --locked --all-targets --target ${{ matrix.TARGET }} --features ${{ matrix.FEATURES }}
+        run: cargo check-core --target ${{ matrix.TARGET }} --features ${{ matrix.FEATURES }}
 
   build_web:
     runs-on: ubuntu-latest
@@ -277,17 +277,17 @@ jobs:
             FEATURES="jemalloc"
           fi
           
-          cargo $BUILD --release --target $TARGET --package=easytier-web --features=embed
+          cargo "$BUILD" --release --target "$TARGET" --package=easytier-web --features=embed
           mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./target/$TARGET/release/easytier-web-embed"$SUFFIX"
           
-          cargo $BUILD --release --target $TARGET --features=$FEATURES
+          cargo "$BUILD" --release --target "$TARGET" --features="$FEATURES"
 
       - name: Build (MIPS)
         if: ${{ contains(matrix.TARGET, 'mips') }}
         env:
           RUSTC_BOOTSTRAP: 1
         run: |
-          cargo build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
+          cargo build -r --target "$TARGET" -Z build-std=std,panic_abort --package=easytier --features=jemalloc
 
       - name: Compress
         run: |

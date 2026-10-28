@@ -31,7 +31,7 @@ pub trait MagicDnsRouteSource: Send + Sync {
 }
 
 fn magic_dns_route_advertisement(
-    route: crate::proto::core_peer::peer::Route,
+    route: crate::proto::core::peer::Route,
 ) -> MagicDnsRouteAdvertisement {
     MagicDnsRouteAdvertisement {
         hostname: route.hostname,
@@ -41,7 +41,7 @@ fn magic_dns_route_advertisement(
 
 fn magic_dns_route_snapshot(
     revision: Instant,
-    routes: Vec<crate::proto::core_peer::peer::Route>,
+    routes: Vec<crate::proto::core::peer::Route>,
     local_identity: (String, Option<crate::proto::common::Ipv4Inet>, String),
 ) -> MagicDnsRouteSnapshot {
     let mut routes = routes
@@ -199,7 +199,7 @@ mod tests {
             network_length: 33,
         };
 
-        let advertisement = magic_dns_route_advertisement(crate::proto::core_peer::peer::Route {
+        let advertisement = magic_dns_route_advertisement(crate::proto::core::peer::Route {
             hostname: "remote".to_owned(),
             ipv4_addr: Some(ipv4_addr),
             ..Default::default()

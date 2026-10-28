@@ -1,7 +1,37 @@
+#[allow(clippy::all)]
+mod generated {
+    pub use crate::*;
+
+    pub mod api {
+        pub mod config {
+            include!(concat!(env!("OUT_DIR"), "/api.config.rs"));
+            #[cfg(feature = "json-rpc")]
+            include!(concat!(env!("OUT_DIR"), "/api.config.serde.rs"));
+        }
+
+        pub mod instance {
+            include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
+            #[cfg(feature = "json-rpc")]
+            include!(concat!(env!("OUT_DIR"), "/api.instance.serde.rs"));
+        }
+
+        pub mod logger {
+            include!(concat!(env!("OUT_DIR"), "/api.logger.rs"));
+            #[cfg(feature = "json-rpc")]
+            include!(concat!(env!("OUT_DIR"), "/api.logger.serde.rs"));
+        }
+
+        pub mod manage {
+            include!(concat!(env!("OUT_DIR"), "/api.manage.rs"));
+            #[cfg(feature = "json-rpc")]
+            include!(concat!(env!("OUT_DIR"), "/api.manage.serde.rs"));
+        }
+    }
+}
+use generated::api;
+
 pub mod config {
-    include!(concat!(env!("OUT_DIR"), "/api.config.rs"));
-    #[cfg(feature = "json-rpc")]
-    include!(concat!(env!("OUT_DIR"), "/api.config.serde.rs"));
+    pub use super::api::config::*;
 
     pub struct Patchable<T> {
         pub action: Option<ConfigPatchAction>,
@@ -72,12 +102,10 @@ pub mod config {
 pub mod instance {
     use std::fmt::{Display, Formatter};
 
-    include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
-    #[cfg(feature = "json-rpc")]
-    include!(concat!(env!("OUT_DIR"), "/api.instance.serde.rs"));
+    pub use super::api::instance::*;
 
-    impl From<crate::core_peer::peer::PeerConnStats> for PeerConnStats {
-        fn from(value: crate::core_peer::peer::PeerConnStats) -> Self {
+    impl From<crate::core::peer::PeerConnStats> for PeerConnStats {
+        fn from(value: crate::core::peer::PeerConnStats) -> Self {
             Self {
                 rx_bytes: value.rx_bytes,
                 tx_bytes: value.tx_bytes,
@@ -88,8 +116,8 @@ pub mod instance {
         }
     }
 
-    impl From<crate::core_peer::peer::PeerConnInfo> for PeerConnInfo {
-        fn from(value: crate::core_peer::peer::PeerConnInfo) -> Self {
+    impl From<crate::core::peer::PeerConnInfo> for PeerConnInfo {
+        fn from(value: crate::core::peer::PeerConnInfo) -> Self {
             Self {
                 conn_id: value.conn_id,
                 my_peer_id: value.my_peer_id,
@@ -109,8 +137,8 @@ pub mod instance {
         }
     }
 
-    impl From<crate::core_peer::peer::PeerInfo> for PeerInfo {
-        fn from(value: crate::core_peer::peer::PeerInfo) -> Self {
+    impl From<crate::core::peer::PeerInfo> for PeerInfo {
+        fn from(value: crate::core::peer::PeerInfo) -> Self {
             Self {
                 peer_id: value.peer_id,
                 conns: value.conns.into_iter().map(Into::into).collect(),
@@ -120,8 +148,8 @@ pub mod instance {
         }
     }
 
-    impl From<crate::core_peer::peer::Route> for Route {
-        fn from(value: crate::core_peer::peer::Route) -> Self {
+    impl From<crate::core::peer::Route> for Route {
+        fn from(value: crate::core::peer::Route) -> Self {
             Self {
                 peer_id: value.peer_id,
                 ipv4_addr: value.ipv4_addr,
@@ -144,8 +172,8 @@ pub mod instance {
         }
     }
 
-    impl From<crate::core_peer::peer::PublicIpv6LeaseInfo> for PublicIpv6LeaseInfo {
-        fn from(value: crate::core_peer::peer::PublicIpv6LeaseInfo) -> Self {
+    impl From<crate::core::peer::PublicIpv6LeaseInfo> for PublicIpv6LeaseInfo {
+        fn from(value: crate::core::peer::PublicIpv6LeaseInfo) -> Self {
             Self {
                 peer_id: value.peer_id,
                 inst_id: value.inst_id,
@@ -156,8 +184,8 @@ pub mod instance {
         }
     }
 
-    impl From<crate::core_peer::peer::ListPublicIpv6InfoResponse> for ListPublicIpv6InfoResponse {
-        fn from(value: crate::core_peer::peer::ListPublicIpv6InfoResponse) -> Self {
+    impl From<crate::core::peer::ListPublicIpv6InfoResponse> for ListPublicIpv6InfoResponse {
+        fn from(value: crate::core::peer::ListPublicIpv6InfoResponse) -> Self {
             Self {
                 provider_prefix: value.provider_prefix,
                 provider_leases: value.provider_leases.into_iter().map(Into::into).collect(),
@@ -324,16 +352,10 @@ pub mod instance {
     }
 }
 
-pub mod logger {
-    include!(concat!(env!("OUT_DIR"), "/api.logger.rs"));
-    #[cfg(feature = "json-rpc")]
-    include!(concat!(env!("OUT_DIR"), "/api.logger.serde.rs"));
-}
+pub use api::logger;
 
 pub mod manage {
-    include!(concat!(env!("OUT_DIR"), "/api.manage.rs"));
-    #[cfg(feature = "json-rpc")]
-    include!(concat!(env!("OUT_DIR"), "/api.manage.serde.rs"));
+    pub use super::api::manage::*;
 
     impl std::fmt::Debug for ManagedCredentialConfig {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

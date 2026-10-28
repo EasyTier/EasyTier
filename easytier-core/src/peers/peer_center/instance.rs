@@ -18,7 +18,7 @@ use crate::{
         route::{RouteCostCalculator, RouteCostCalculatorInterface},
     },
     proto::{
-        core_peer::peer::Route as CoreRoute,
+        core::peer::Route as CoreRoute,
         peer_rpc::{
             GetGlobalPeerMapRequest, GetGlobalPeerMapResponse, GlobalPeerMap, PeerCenterRpc,
             PeerCenterRpcClientFactory, PeerCenterRpcServer, PeerInfoForGlobalMap,

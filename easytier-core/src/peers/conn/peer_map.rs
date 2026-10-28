@@ -19,7 +19,7 @@ use crate::{
         util::shrink_dashmap,
     },
     proto::{
-        core_peer::peer::{PeerConnInfo, Route as CoreRoute},
+        core::peer::{PeerConnInfo, Route as CoreRoute},
         peer_rpc::{
             DirectConnectedPeerInfo, PeerIdentityType, PeerInfoForGlobalMap, RoutePeerInfo,
         },
