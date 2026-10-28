@@ -41,12 +41,16 @@ pub fn native_instance_manager() -> NativeInstanceManager {
 }
 
 #[cfg(feature = "management")]
-pub fn native_cli_instance_manager() -> NativeInstanceManager {
+pub fn native_cli_instance_manager(
+    shared_runtime: bool,
+    thread_count: u32,
+) -> anyhow::Result<NativeInstanceManager> {
     let process_runtime = CoreProcessRuntime::new();
-    InstanceManager::new(
-        NativeInstanceFactory::new(process_runtime).with_cli_event_logging(),
-        None,
-    )
+    let mut factory = NativeInstanceFactory::new(process_runtime).with_cli_event_logging();
+    if shared_runtime {
+        factory.shared_executor = Some(Arc::new(NativeInstanceExecutor::new(true, thread_count)?));
+    }
+    Ok(InstanceManager::new(factory, None))
 }
 
 pub fn create_native_instance(config: TomlConfig) -> anyhow::Result<Arc<NativeCoreInstance>> {
@@ -111,6 +115,7 @@ pub struct NativeInstanceFactory {
     #[cfg(feature = "tun")]
     shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     runtime_handle: Option<tokio::runtime::Handle>,
+    shared_executor: Option<Arc<NativeInstanceExecutor>>,
     compact_runtime: bool,
     #[cfg(feature = "logging")]
     log_cli_events: bool,
@@ -123,6 +128,7 @@ impl NativeInstanceFactory {
             #[cfg(feature = "tun")]
             shared_virtual_nic_registry: Arc::new(Mutex::new(SharedVirtualNicRegistry::new())),
             runtime_handle: None,
+            shared_executor: None,
             compact_runtime: false,
             #[cfg(feature = "logging")]
             log_cli_events: false,
@@ -160,16 +166,18 @@ impl InstanceFactory for NativeInstanceFactory {
     ) -> Result<Arc<Self::Instance>, Self::Error> {
         let executor = if self.compact_runtime {
             None
+        } else if let Some(executor) = &self.shared_executor {
+            Some(executor.clone())
         } else {
             let flags = config.get_flags();
-            Some(NativeInstanceExecutor::new(
+            Some(Arc::new(NativeInstanceExecutor::new(
                 flags.multi_thread,
-                flags.multi_thread_count,
-            )?)
+                flags.multi_thread_count.max(2),
+            )?))
         };
         let runtime_handle = executor
             .as_ref()
-            .map(NativeInstanceExecutor::handle)
+            .map(|executor| executor.handle())
             .or_else(|| self.runtime_handle.clone());
         let _runtime = runtime_handle.as_ref().map(tokio::runtime::Handle::enter);
         let instance = compose_native_core_instance(
@@ -231,7 +239,9 @@ mod tests {
         let manager = native_instance_manager_with_runtime(caller.clone());
         let mut runtimes = Vec::new();
         let mut ids = Vec::new();
-        for (multi_thread, count, workers) in [(false, 8, 1), (true, 4, 4)] {
+        for (multi_thread, count, workers) in
+            [(false, 8, 1), (true, 4, 4), (true, 0, 2), (true, 1, 2)]
+        {
             let config = isolated_config(multi_thread, count);
             let id = manager
                 .run_network_instance(config, ConfigFileControl::STATIC_CONFIG)
@@ -305,6 +315,89 @@ mod tests {
                 tokio::time::timeout(Duration::from_secs(5), task)
                     .await
                     .expect("deleting the last instance owner must shut down its executor")
+                    .unwrap_err()
+                    .is_cancelled()
+            );
+        }
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn shared_runtime_survives_instance_deletion_and_stops_with_last_owner() {
+        for workers in [1, 4] {
+            let manager = native_cli_instance_manager(true, workers).unwrap();
+            let first = manager.create(isolated_config(false, 8), ()).unwrap();
+            let second = manager.create(isolated_config(true, 2), ()).unwrap();
+            let runtime = first.runtime_handle().unwrap();
+            assert_ne!(runtime.id(), tokio::runtime::Handle::current().id());
+            assert_eq!(runtime.id(), second.runtime_handle().unwrap().id());
+            assert_eq!(runtime.runtime_flavor(), RuntimeFlavor::MultiThread);
+            assert_eq!(runtime.metrics().num_workers(), workers as usize);
+
+            first.start().await.unwrap();
+            second.start().await.unwrap();
+            second
+                .add_connector(format!("ring://{}", first.instance_id()).parse().unwrap())
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !first.connected_peers().await.contains(&second.peer_id())
+                    || !second.connected_peers().await.contains(&first.peer_id())
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("instances must connect on the shared runtime");
+
+            manager
+                .delete_network_instances([first.instance_id()])
+                .await
+                .unwrap();
+            assert_eq!(first.state(), CoreInstanceState::Stopped);
+            drop(first);
+            assert_eq!(second.state(), CoreInstanceState::Running);
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                runtime.spawn(async {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            let added = manager.create(isolated_config(false, 16), ()).unwrap();
+            assert_eq!(runtime.id(), added.runtime_handle().unwrap().id());
+            added.start().await.unwrap();
+            added
+                .add_connector(format!("ring://{}", second.instance_id()).parse().unwrap())
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !second.connected_peers().await.contains(&added.peer_id())
+                    || !added.connected_peers().await.contains(&second.peer_id())
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("deleting one instance must leave the others functional");
+            manager
+                .delete_network_instances([added.instance_id(), second.instance_id()])
+                .await
+                .unwrap();
+            drop(added);
+            assert_eq!(second.state(), CoreInstanceState::Stopped);
+
+            // A surviving instance owner keeps the executor alive after its manager.
+            let task = runtime.spawn(pending::<()>());
+            drop(manager);
+            runtime.spawn(async {}).await.unwrap();
+            assert!(!task.is_finished());
+            drop(second);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), task)
+                    .await
+                    .expect("the last owner must shut down the shared executor")
                     .unwrap_err()
                     .is_cancelled()
             );

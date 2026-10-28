@@ -10,7 +10,10 @@ cd "$repository_root"
 readonly target_dir="${CARGO_TARGET_DIR:-target}"
 readonly raw_artifact="${target_dir}/wasm32-wasip1/release/easytier_core.wasm"
 readonly artifact="${target_dir}/wasm32-wasip1/release/easytier_core_go_host.wasm"
-readonly core_features="management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload"
+# The WASI host performs AEAD for the guest, and the guest has no TLS stack of its own, so the
+# default feature set (endpoint-discovery -> rustls -> ring) must stay off: ring compiles C
+# shims into wasm32-wasip1 that become env.ring_core_* imports, which the Go host cannot provide.
+readonly core_features="management,proxy-smoltcp-stack,wasi-crypto-offload,aes-gcm,tcp-hole-punch"
 
 sha256_file() {
     if command -v sha256sum >/dev/null; then
@@ -120,6 +123,7 @@ if [[ "$version" != *"version ${binaryen_version} "* ]]; then
 fi
 
 cargo build --release --target wasm32-wasip1 -p easytier-core \
+    --no-default-features \
     --features "$core_features"
 
 optimized="${artifact}.wasm-opt.$$"

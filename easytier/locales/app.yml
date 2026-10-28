@@ -127,11 +127,14 @@ core_clap:
     en: "encryption algorithm to use, supported: '', 'xor', 'chacha20', 'aes-gcm', 'aes-gcm-256', 'openssl-aes128-gcm', 'openssl-aes256-gcm', 'openssl-chacha20'. Empty string means default (aes-gcm)"
     zh-CN: "要使用的加密算法，支持：''（默认aes-gcm）、'xor'、'chacha20'、'aes-gcm'、'aes-gcm-256'、'openssl-aes128-gcm'、'openssl-aes256-gcm'、'openssl-chacha20'"
   multi_thread:
-    en: "use multi-thread runtime, default is single-thread"
-    zh-CN: "使用多线程运行时，默认为单线程"
+    en: "use a multi-thread runtime for each instance, default is true; ignored with --shared-runtime"
+    zh-CN: "为每个实例使用多线程运行时，默认开启；启用 --shared-runtime 时忽略此项"
   multi_thread_count:
-    en: "the number of threads to use, default is 2, only effective when multi-thread is enabled, must be greater than 2"
-    zh-CN: "使用的线程数，默认为2，仅在多线程模式下有效。取值必须大于2"
+    en: "runtime worker count: default/minimum 2 per instance; with --shared-runtime, defaults to available CPUs with a minimum of 1"
+    zh-CN: "运行时工作线程数：独占多线程模式默认及最小值为 2；启用 --shared-runtime 时默认为可用 CPU 数，最小值为 1"
+  shared_runtime:
+    en: "share one multi-thread runtime across all instances; --multi-thread-count sets its worker count independently of instance configuration files"
+    zh-CN: "所有实例共用一个多线程运行时；通过 --multi-thread-count 设置工作线程数，不受实例配置文件影响"
   disable_ipv6:
     en: "do not use ipv6"
     zh-CN: "不使用IPv6"

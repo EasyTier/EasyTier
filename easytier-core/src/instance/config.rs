@@ -92,6 +92,16 @@ impl Default for CoreInstanceHostConfig {
 }
 
 impl CoreInstanceHostConfig {
+    /// Record whether this host can serve the TCP subnet proxy from a user-space TCP stack.
+    ///
+    /// Hosts without an OS TUN device (WASI guests, sandboxes) can only forward proxied TCP
+    /// through such a stack, so they must advertise it for the proxy runtime to pick that path.
+    /// `requires_smoltcp` is sticky: once the host needs the stack it keeps needing it.
+    pub fn set_smoltcp_stack(&mut self, available: bool) {
+        self.smoltcp_available = available;
+        self.requires_smoltcp |= available;
+    }
+
     pub(crate) fn accepts_runtime_url(&self, url: &url::Url) -> bool {
         !self.ignore_unsupported_config
             || self
@@ -763,5 +773,26 @@ data_compress_algo = "Zstd"
                 CompressionAlgoPb::None as i32
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod host_capability_tests {
+    use super::CoreInstanceHostConfig;
+
+    #[test]
+    fn set_smoltcp_stack_marks_the_host_as_capable_and_dependent() {
+        let mut config = CoreInstanceHostConfig::default();
+        config.set_smoltcp_stack(true);
+        assert!(config.smoltcp_available);
+        assert!(config.requires_smoltcp);
+    }
+
+    #[test]
+    fn set_smoltcp_stack_does_not_claim_a_missing_stack() {
+        let mut config = CoreInstanceHostConfig::default();
+        config.set_smoltcp_stack(false);
+        assert!(!config.smoltcp_available);
+        assert!(!config.requires_smoltcp);
     }
 }

@@ -133,6 +133,8 @@ pub struct TestHost {
         Option<tokio::sync::mpsc::UnboundedSender<(SocketAddr, tokio::io::DuplexStream)>>,
     pub tcp_listeners: Option<Arc<Mutex<TestTcpListeners>>>,
     pub reject_tcp_bind: Mutex<Option<SocketAddr>>,
+    pub tcp_bind_gate: Option<Arc<tokio::sync::Semaphore>>,
+    pub tcp_bind_runtime: Mutex<Option<tokio::runtime::Id>>,
     pub reject_socks5_listener: bool,
 }
 
@@ -179,6 +181,10 @@ impl VirtualTcpListenerFactory for TestHost {
 
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
         self.tcp_binds.fetch_add(1, Ordering::Relaxed);
+        *self.tcp_bind_runtime.lock().unwrap() = Some(tokio::runtime::Handle::current().id());
+        if let Some(gate) = &self.tcp_bind_gate {
+            gate.acquire().await.unwrap().forget();
+        }
         if self.reject_socks5_listener && options.purpose == TcpListenPurpose::Socks5 {
             anyhow::bail!("test host rejected SOCKS5 listener");
         }

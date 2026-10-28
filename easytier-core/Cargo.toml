@@ -55,6 +55,7 @@ rand.workspace = true
 quanta.workspace = true
 ring = { version = "0.17", optional = true }
 rustls = { workspace = true, features = ["ring", "std", "tls12"], optional = true }
+rustls-platform-verifier = { version = "0.7", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
@@ -109,7 +110,10 @@ browser-config = ["config-write", "easytier-proto/api", "easytier-proto/json-rpc
 chacha20 = ["dep:chacha20poly1305"]
 openssl-crypto = ["dep:openssl"]
 ring-crypto = ["dep:ring"]
-wasi-crypto-offload = ["ring-crypto"]
+# The WASI host performs AEAD for the guest (easytier_host.crypto_aead_seal/open),
+# so the guest must not link a software backend: ring would emit env.ring_core_* imports
+# that the host module cannot provide.
+wasi-crypto-offload = []
 config-write = []
 endpoint-discovery = [
     "dep:http-body-util",
@@ -121,6 +125,8 @@ endpoint-discovery = [
     "dep:tokio-rustls",
     "dep:webpki-roots",
 ]
+# Opt in to platform trust for HTTPS discovery; excluded from default features.
+system-certificates = ["endpoint-discovery", "dep:rustls-platform-verifier"]
 dhcp-ipv4 = []
 dhcp-ipv6 = []
 public-ipv6-provider = []
@@ -140,6 +146,7 @@ management-rpc = ["easytier-proto/api"]
 proxy-cidr-monitor = []
 rich-config-errors = ["dep:ariadne"]
 tcp-hole-punch = []
+smoltcp = ["proxy-packet"]
 proxy-packet = [
     "wrapped-transport",
     "dep:smoltcp",

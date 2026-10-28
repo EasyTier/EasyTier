@@ -52,7 +52,7 @@ pub(super) fn compose_native_core_instance(
     process_runtime: Arc<CoreProcessRuntime>,
     #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     compact_runtime: bool,
-    executor: Option<NativeInstanceExecutor>,
+    executor: Option<Arc<NativeInstanceExecutor>>,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
     let host_config = if compact_runtime {
         compact_runtime_core_host_config()

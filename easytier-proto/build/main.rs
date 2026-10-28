@@ -6,6 +6,8 @@ use std::{env, path::PathBuf};
 
 #[cfg(target_os = "windows")]
 use std::io::Cursor;
+#[cfg(target_os = "windows")]
+use std::path::Path;
 
 #[cfg(target_os = "windows")]
 fn check_protoc_exist() -> Option<PathBuf> {
@@ -68,17 +70,52 @@ fn download_protoc() -> PathBuf {
     fname
 }
 
+/// Locate the well-known types include directory (containing
+/// `google/protobuf/descriptor.proto`) that ships with a protoc release
+/// next to the binary: `bin/protoc.exe` -> sibling `include/` directory.
+#[cfg(target_os = "windows")]
+fn bundled_protoc_include(protoc: &Path) -> Option<PathBuf> {
+    let include = protoc.parent()?.parent()?.join("include");
+    include
+        .join("google/protobuf/descriptor.proto")
+        .is_file()
+        .then_some(include)
+}
+
 #[cfg(target_os = "windows")]
 fn ensure_protoc_for_windows() {
-    let protoc_path = if let Some(path) = check_protoc_exist() {
-        println!("cargo:info=use os existing protoc: {:?}", path);
-        path
-    } else {
-        download_protoc()
-    };
+    // Preserve an explicit include directory even when protoc is found on PATH
+    // or downloaded. Only infer the bundled directory when it is not configured.
+    let protoc_include = env::var_os("PROTOC_INCLUDE").map(PathBuf::from);
+    if env::var_os("PROTOC").is_some() && protoc_include.is_some() {
+        return;
+    }
 
+    if let Some(path) = check_protoc_exist() {
+        if let Some(include) = protoc_include
+            .clone()
+            .or_else(|| bundled_protoc_include(&path))
+        {
+            println!("cargo:info=use os existing protoc: {:?}", path);
+            unsafe {
+                env::set_var("PROTOC", path);
+                env::set_var("PROTOC_INCLUDE", include);
+            }
+            return;
+        }
+        println!(
+            "cargo:info=protoc {:?} has no bundled include dir, falling back to download",
+            path
+        );
+    }
+
+    let protoc_path = download_protoc();
+    let include = protoc_include
+        .or_else(|| bundled_protoc_include(&protoc_path))
+        .expect("downloaded protoc zip should contain include dir");
     unsafe {
         env::set_var("PROTOC", protoc_path);
+        env::set_var("PROTOC_INCLUDE", include);
     }
 }
 

@@ -7,6 +7,8 @@ use hyper::{Request, header};
 use hyper_util::rt::TokioIo;
 use rand::{Rng as _, seq::SliceRandom};
 use rustls::pki_types::ServerName;
+#[cfg(feature = "system-certificates")]
+use rustls_platform_verifier::BuilderVerifierExt as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
 use tokio_util::task::AbortOnDropHandle;
@@ -184,9 +186,6 @@ where
 
     if request.url.scheme() == "https" {
         let server_name = tls_server_name(&request.url)?;
-        let root_store = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
         // A host application can enable another rustls backend through Cargo
         // feature unification. Select ring explicitly instead of requiring a
         // process-wide provider to have been initialized first (#2607).
@@ -194,9 +193,16 @@ where
             rustls::crypto::ring::default_provider(),
         ))
         .with_safe_default_protocol_versions()
-        .context("selecting HTTPS protocol versions failed")?
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+        .context("selecting HTTPS protocol versions failed")?;
+        #[cfg(feature = "system-certificates")]
+        let tls_config = tls_config
+            .with_platform_verifier()
+            .context("loading platform TLS verifier failed")?;
+        #[cfg(not(feature = "system-certificates"))]
+        let tls_config = tls_config.with_root_certificates(rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        });
+        let tls_config = tls_config.with_no_client_auth();
         let stream = TlsConnector::from(Arc::new(tls_config))
             .connect(server_name, socket)
             .await

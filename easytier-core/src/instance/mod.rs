@@ -10,7 +10,7 @@ mod management;
 mod management_extension;
 mod management_state;
 pub mod manager;
-mod packet_io;
+pub(crate) mod packet_io;
 mod packet_plane;
 #[cfg(feature = "proxy-packet")]
 mod packet_proxy_extension;
@@ -987,6 +987,12 @@ where
             .update_snapshot(proxy_cidr_snapshot(&published));
         if let Some(cleanup) = cleanup {
             let _ = cleanup.await;
+        }
+        #[cfg(feature = "proxy-packet")]
+        if self.state() == CoreInstanceState::Running && self.startup_plan.packet_proxy {
+            // A running instance may gain its first proxy network here. Start
+            // from the published configuration, just as during initial startup.
+            self.start_packet_proxy().await?;
         }
         Ok(())
     }
