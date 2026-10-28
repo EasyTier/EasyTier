@@ -43,6 +43,28 @@ impl CentralNetworkIntent {
             .flat_map(|credential| credential.grant.acl_groups.iter().cloned())
             .collect();
 
+        if let NetworkMode::Manual {
+            peer_urls,
+            member_peers,
+        } = &mut self.mode
+        {
+            let (removed_peers, kept_peers): (Vec<_>, Vec<_>) = member_peers
+                .drain(..)
+                .partition(|peer| removed_member_ids.contains(&peer.member_id));
+            *member_peers = kept_peers;
+            // Removing the last initial node must not leave the network
+            // without peers, so its derived URLs are kept as manual ones.
+            if peer_urls.is_empty() && member_peers.is_empty() {
+                for peer in removed_peers {
+                    if let Some(member) = removed_members.iter().find(|m| m.id == peer.member_id)
+                        && let Ok(urls) = super::compiler::member_peer_urls(member, &peer.host)
+                    {
+                        peer_urls.extend(urls);
+                    }
+                }
+            }
+        }
+
         self.members
             .retain(|member| !removed_member_ids.contains(&member.id));
         self.credentials
@@ -81,10 +103,28 @@ impl CentralNetworkIntent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NetworkMode {
-    PublicServer { url: String },
-    Manual { peer_urls: Vec<String> },
+    PublicServer {
+        url: String,
+    },
+    Manual {
+        peer_urls: Vec<String>,
+        /// Members that serve as initial nodes. Their peer URLs are derived
+        /// from their listeners and never delivered back to themselves.
+        #[serde(default)]
+        member_peers: Vec<MemberPeer>,
+    },
     Standalone,
-    Gateway { peer_url: String },
+    Gateway {
+        peer_url: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberPeer {
+    pub member_id: Uuid,
+    /// Address other members dial. It is stored rather than read from the
+    /// device's runtime report so an address change never republishes configs.
+    pub host: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -546,6 +546,14 @@ web:
     delete_confirm: Delete network {name}? Managed configs of all members will be withdrawn
     delete_hint: Deleting a network removes all members and withdraws their managed configs
     gateway_followed: The initial-node list keeps only the console gateway; member configs follow the gateway URL automatically
+    member_peers_hint: Pick network devices as initial nodes. The console derives their URLs from their listeners and never delivers them back to the device itself; a device without listeners listens on TCP/UDP 11010
+    member_peer_member: Initial-node device
+    member_peer_host: Public address
+    member_peer_host_placeholder: IP or domain other devices use to reach it
+    member_peer_remove: Remove this initial node
+    member_peer_detected: The device currently reports public IP {address}
+    member_peer_use_detected: Use it
+    add_member_peer: Add a member device as initial node
     advanced_config: Advanced Config
     has_override: This member has an advanced override
     identity_ignored: Network name and secret are owned by the network settings; those edits are ignored

@@ -6,7 +6,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { Config, NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
 import AclPolicyTab from './AclPolicyTab.vue';
-import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../modules/api';
+import ApiClient, { type CentralMemberPeer, type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../modules/api';
 import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
 
 const { t } = useI18n()
@@ -297,6 +297,9 @@ const settingsForm = ref({
 // Initial nodes in the same model as the GUI config form; an empty list
 // means Standalone.
 const initialNodes = ref<string[]>([]);
+// Members serving as initial nodes. The server derives their URLs from their
+// listeners and never delivers a member's own URLs back to it.
+const memberPeers = ref<CentralMemberPeer[]>([]);
 const settingsLoaded = ref(false);
 const savingSettings = ref(false);
 
@@ -304,8 +307,42 @@ const gatewayInfo = ref<{ enabled: boolean; peer_url?: string } | undefined>(und
 
 const protos = NetworkTypes.PEER_PROTOCOLS;
 
+const memberName = (member: CentralNetworkMember) =>
+    (member.hostname_override || member.alias || member.hostname) ?? member.device_id;
+
+const findMember = (memberId: string) =>
+    members.value?.find(member => member.member_id === memberId);
+
+const memberPeerOptions = (current?: string) =>
+    (members.value ?? [])
+        .filter(member => !member.temporary)
+        .filter(member => member.member_id === current
+            || !memberPeers.value.some(peer => peer.member_id === member.member_id))
+        .map(member => ({ label: memberName(member), value: member.member_id }));
+
+const addMemberPeer = () => {
+    const option = memberPeerOptions()[0];
+    if (!option) {
+        return;
+    }
+    memberPeers.value.push({ member_id: option.value, host: findMember(option.value)?.public_ipv4 ?? '' });
+};
+
+const changeMemberPeer = (peer: CentralMemberPeer, memberId: string) => {
+    peer.member_id = memberId;
+    peer.host = findMember(memberId)?.public_ipv4 ?? '';
+};
+
+// The stored address is never replaced automatically; a different detected
+// address is only offered.
+const detectedAddressHint = (peer: CentralMemberPeer) => {
+    const detected = findMember(peer.member_id)?.public_ipv4;
+    return detected && detected !== peer.host.trim() ? detected : undefined;
+};
+
 const gatewayFollowed = () =>
-    gatewayInfo.value?.enabled === true
+    memberPeers.value.length === 0
+    && gatewayInfo.value?.enabled === true
     && initialNodes.value.length === 1
     && initialNodes.value[0] === gatewayInfo.value?.peer_url;
 
@@ -341,6 +378,9 @@ const loadSettingsForm = () => {
             initialNodes.value = [];
             break;
     }
+    memberPeers.value = network.value.networking_method === 'Manual'
+        ? (network.value.member_peers ?? []).map(peer => ({ ...peer }))
+        : [];
     settingsLoaded.value = true;
 };
 
@@ -351,15 +391,18 @@ const saveSettings = async () => {
         // Keeping exactly the gateway URL as the only initial node preserves
         // the Gateway mode (the compiled peer list follows the gateway URL);
         // anything else compiles to Manual peers, or Standalone when empty.
-        const method = network.value?.networking_method === 'PublicServer' && initialNodes.value.length === 1 ? 'PublicServer'
+        const method = network.value?.networking_method === 'PublicServer' && initialNodes.value.length === 1 && memberPeers.value.length === 0 ? 'PublicServer'
             : gatewayFollowed() ? 'Gateway'
-            : initialNodes.value.length > 0 ? 'Manual' : 'Standalone';
+            : initialNodes.value.length > 0 || memberPeers.value.length > 0 ? 'Manual' : 'Standalone';
         const settings = {
             display_name: settingsForm.value.display_name,
             network_name: null,
             networking_method: method,
             public_server_url: method === 'PublicServer' ? initialNodes.value[0] : null,
             peer_urls: method === 'Manual' ? initialNodes.value : [],
+            member_peers: method === 'Manual'
+                ? memberPeers.value.map(peer => ({ member_id: peer.member_id, host: peer.host.trim() }))
+                : [],
             virtual_cidr: normalizeVirtualSubnet(settingsForm.value.virtual_cidr) || null,
             secure_mode: settingsForm.value.secure_mode,
         };
@@ -1170,6 +1213,32 @@ const switchTab = async (tab: string) => {
                 <div class="flex items-center">
                     <label for="settings-initial-nodes">{{ t('initial_nodes') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('initial_nodes_help')"></span>
+                </div>
+                <div id="settings-member-peers" class="flex flex-col gap-2">
+                    <div class="text-sm text-500">{{ t('web.network_detail.member_peers_hint') }}</div>
+                    <div v-for="(peer, index) in memberPeers" :key="index" class="member-peer-row flex flex-col gap-1">
+                        <div class="flex items-center gap-2">
+                            <Select :model-value="peer.member_id" :options="memberPeerOptions(peer.member_id)"
+                                optionLabel="label" optionValue="value" class="member-peer-member w-48 shrink-0"
+                                :aria-label="t('web.network_detail.member_peer_member')"
+                                @update:model-value="(value: string) => changeMemberPeer(peer, value)" />
+                            <InputText v-model="peer.host" class="member-peer-host flex-1 min-w-0 font-mono"
+                                :aria-label="t('web.network_detail.member_peer_host')"
+                                :placeholder="t('web.network_detail.member_peer_host_placeholder')" />
+                            <Button icon="pi pi-trash" text rounded severity="danger"
+                                :aria-label="t('web.network_detail.member_peer_remove')"
+                                @click="memberPeers.splice(index, 1)" />
+                        </div>
+                        <div v-if="detectedAddressHint(peer)" class="text-xs text-500">
+                            {{ t('web.network_detail.member_peer_detected', { address: detectedAddressHint(peer) }) }}
+                            <Button :label="t('web.network_detail.member_peer_use_detected')" link size="small" class="p-0 text-xs"
+                                @click="peer.host = detectedAddressHint(peer) ?? peer.host" />
+                        </div>
+                    </div>
+                    <div>
+                        <Button id="add-member-peer" :label="t('web.network_detail.add_member_peer')" icon="pi pi-plus"
+                            text size="small" :disabled="memberPeerOptions().length === 0" @click="addMemberPeer" />
+                    </div>
                 </div>
                 <div class="items-center flex flex-col p-fluid gap-y-2">
                     <UrlListInput id="settings-initial-nodes" v-model="initialNodes" :protos="protos"

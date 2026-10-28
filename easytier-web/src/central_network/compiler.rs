@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
 };
 
 use easytier::{
@@ -48,6 +48,8 @@ pub enum CompileError {
     InvalidUrl(String),
     #[error("manual networking requires at least one peer URL")]
     EmptyPeerUrls,
+    #[error("invalid initial node member {member_id}: {reason}")]
+    InvalidMemberPeer { member_id: Uuid, reason: String },
     #[error("duplicate device in network intent: {0}")]
     DuplicateDevice(String),
     #[error("invalid CIDR: {0}")]
@@ -94,6 +96,7 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
     let addresses = assign_addresses(intent.virtual_cidr.as_deref(), &members)?;
     let acl = compile_acl(intent.acl_policy.as_ref(), &members);
     let (networking_method, public_server_url, peer_urls) = compile_mode(&intent.mode)?;
+    let member_peer_urls = compile_member_peers(&intent.mode, &members)?;
     let managed_credentials: Vec<ManagedCredentialConfig> = credentials
         .iter()
         .map(|credential| compile_managed_credential(credential))
@@ -108,6 +111,16 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                 .map(|credential_id| credentials_by_id(&credentials)[credential_id]);
             let temporary = credential.is_some();
             let address = addresses.get(&member.id).copied().flatten();
+            // A member serving as an initial node must not dial itself.
+            let own_peer_urls = member_peer_urls.get(&member.id);
+            let mut member_urls: Vec<String> = peer_urls
+                .iter()
+                .chain(member_peer_urls.values().flatten())
+                .filter(|url| own_peer_urls.is_none_or(|own| !own.contains(*url)))
+                .cloned()
+                .collect();
+            member_urls.sort();
+            member_urls.dedup();
             let network_length = intent
                 .virtual_cidr
                 .as_deref()
@@ -126,7 +139,7 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                 network_secret: (!temporary).then(|| intent.network_secret.clone()),
                 networking_method: Some(networking_method as i32),
                 public_server_url: public_server_url.clone(),
-                peer_urls: peer_urls.clone(),
+                peer_urls: member_urls,
                 secure_mode: if temporary {
                     Some(SecureModeConfig {
                         enabled: true,
@@ -147,8 +160,11 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                 acl: acl.get(&member.id).cloned().flatten(),
                 ..Default::default()
             };
-            let network_config =
+            let mut network_config =
                 apply_member_override(base_config, member.config_override.as_ref());
+            if own_peer_urls.is_some() && network_config.listener_urls.is_empty() {
+                network_config.listener_urls = member_peer_listeners(member);
+            }
             validate_member_config(&network_config).map_err(|error| {
                 CompileError::InvalidMemberConfig {
                     member_id: member.id,
@@ -238,8 +254,11 @@ fn compile_mode(
                 Vec::new(),
             ))
         }
-        NetworkMode::Manual { peer_urls } => {
-            if peer_urls.is_empty() {
+        NetworkMode::Manual {
+            peer_urls,
+            member_peers,
+        } => {
+            if peer_urls.is_empty() && member_peers.is_empty() {
                 return Err(CompileError::EmptyPeerUrls);
             }
             for peer_url in peer_urls {
@@ -256,6 +275,81 @@ fn compile_mode(
             Ok((NetworkingMethod::Manual, None, vec![peer_url.clone()]))
         }
     }
+}
+
+const DEFAULT_MEMBER_PEER_LISTENERS: [&str; 2] = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"];
+
+/// Listeners of a member serving as an initial node. Serving as one implies
+/// accepting connections, so a member without listeners gets the defaults.
+fn member_peer_listeners(member: &NetworkMemberIntent) -> Vec<String> {
+    member
+        .config_override
+        .as_ref()
+        .map(|config| config.listener_urls.clone())
+        .filter(|listeners| !listeners.is_empty())
+        .unwrap_or_else(|| {
+            DEFAULT_MEMBER_PEER_LISTENERS
+                .iter()
+                .map(|url| (*url).to_owned())
+                .collect()
+        })
+}
+
+/// Peer URLs other members use to reach `member` at `host`, one per listener
+/// with a fixed port. Local-only and dynamically bound listeners are skipped.
+pub fn member_peer_urls(member: &NetworkMemberIntent, host: &str) -> Result<Vec<String>, String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("address must not be empty".to_owned());
+    }
+    let host = if host.parse::<Ipv6Addr>().is_ok() {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let mut urls = Vec::new();
+    for listener in member_peer_listeners(member) {
+        let mut url = url::Url::parse(&listener)
+            .map_err(|error| format!("invalid listener {listener}: {error}"))?;
+        if matches!(url.scheme(), "ring" | "unix")
+            || matches!(url.port_or_known_default(), None | Some(0))
+        {
+            continue;
+        }
+        url.set_host(Some(&host))
+            .map_err(|error| format!("invalid address {host}: {error}"))?;
+        validate_manual_url(&url).map_err(|error| format!("{error:#}"))?;
+        urls.push(url.to_string());
+    }
+    if urls.is_empty() {
+        return Err("member has no listener with a fixed port".to_owned());
+    }
+    Ok(urls)
+}
+
+fn compile_member_peers(
+    mode: &NetworkMode,
+    members: &[&NetworkMemberIntent],
+) -> Result<HashMap<Uuid, Vec<String>>, CompileError> {
+    let NetworkMode::Manual { member_peers, .. } = mode else {
+        return Ok(HashMap::new());
+    };
+    let mut urls = HashMap::new();
+    for peer in member_peers {
+        let invalid = |reason: String| CompileError::InvalidMemberPeer {
+            member_id: peer.member_id,
+            reason,
+        };
+        let member = members
+            .iter()
+            .find(|member| member.id == peer.member_id)
+            .ok_or_else(|| invalid("member does not exist".to_owned()))?;
+        let member_urls = member_peer_urls(member, &peer.host).map_err(invalid)?;
+        if urls.insert(peer.member_id, member_urls).is_some() {
+            return Err(invalid("member is listed more than once".to_owned()));
+        }
+    }
+    Ok(urls)
 }
 
 fn validate_url(value: &str) -> Result<(), CompileError> {
@@ -801,8 +895,8 @@ mod tests {
     use super::*;
     use crate::central_network::model::{
         AclAction, AclDestination, AclPolicy, AclProtocol, AclProtocolTarget, AclRule, AclSource,
-        CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
-        NetworkMode, member_group_name,
+        CentralNetworkIntent, CredentialGrant, MemberPeer, NetworkCredentialIntent,
+        NetworkMemberIntent, NetworkMode, member_group_name,
     };
 
     fn member(id: u128, device_id: &str, credential_id: Option<&str>) -> NetworkMemberIntent {
@@ -852,6 +946,7 @@ mod tests {
             network_secret: "network-secret".to_owned(),
             mode: NetworkMode::Manual {
                 peer_urls: vec!["tcp://gateway.example.com:11010".to_owned()],
+                member_peers: Vec::new(),
             },
             virtual_cidr: Some("10.42.0.0/29".to_owned()),
             secure_mode: true,
@@ -931,6 +1026,7 @@ mod tests {
                 for mode in [
                     NetworkMode::Manual {
                         peer_urls: vec![url.to_owned()],
+                        member_peers: Vec::new(),
                     },
                     NetworkMode::PublicServer {
                         url: url.to_owned(),
@@ -1294,5 +1390,202 @@ mod tests {
         assert_eq!(permanent.network_config.dhcpv6, None);
         assert_eq!(permanent.network_config.dhcp_ipv6_cidr, None);
         assert!(permanent.network_config.acl.is_some());
+    }
+
+    fn member_peer_intent(member_peers: Vec<MemberPeer>) -> CentralNetworkIntent {
+        let mut intent = intent();
+        intent.members = vec![
+            member(1, "hub-a", None),
+            member(2, "hub-b", None),
+            member(3, "leaf", None),
+        ];
+        intent.credentials = Vec::new();
+        intent.acl_policy = None;
+        intent.mode = NetworkMode::Manual {
+            peer_urls: vec!["tcp://relay.example.com:11010".to_owned()],
+            member_peers,
+        };
+        intent
+    }
+
+    fn member_peer(id: u128, host: &str) -> MemberPeer {
+        MemberPeer {
+            member_id: Uuid::from_u128(id),
+            host: host.to_owned(),
+        }
+    }
+
+    fn compiled_member<'a>(compiled: &'a CompiledNetwork, device_id: &str) -> &'a NetworkConfig {
+        &compiled
+            .members
+            .iter()
+            .find(|member| member.device_id == device_id)
+            .unwrap()
+            .network_config
+    }
+
+    #[test]
+    fn member_peers_are_never_delivered_back_to_themselves() {
+        let mut intent = member_peer_intent(vec![
+            member_peer(1, "203.0.113.1"),
+            member_peer(2, "hub-b.example.com"),
+        ]);
+        intent.members[1].config_override = Some(NetworkConfig {
+            listener_urls: vec![
+                "tcp://0.0.0.0:12000".to_owned(),
+                "udp://0.0.0.0:0".to_owned(),
+                "wss://0.0.0.0:443/et".to_owned(),
+            ],
+            ..Default::default()
+        });
+
+        let compiled = compile(&intent).unwrap();
+        let hub_a = compiled_member(&compiled, "hub-a");
+        let hub_b = compiled_member(&compiled, "hub-b");
+        let leaf = compiled_member(&compiled, "leaf");
+
+        let hub_a_urls = ["tcp://203.0.113.1:11010", "udp://203.0.113.1:11010"];
+        let hub_b_urls = [
+            "tcp://hub-b.example.com:12000",
+            "wss://hub-b.example.com/et",
+        ];
+        assert_eq!(
+            hub_a.peer_urls,
+            [
+                "tcp://hub-b.example.com:12000",
+                "tcp://relay.example.com:11010",
+                "wss://hub-b.example.com/et"
+            ]
+        );
+        assert_eq!(
+            hub_b.peer_urls,
+            [
+                "tcp://203.0.113.1:11010",
+                "tcp://relay.example.com:11010",
+                "udp://203.0.113.1:11010"
+            ]
+        );
+        for url in hub_a_urls.iter().chain(&hub_b_urls) {
+            assert!(leaf.peer_urls.contains(&(*url).to_owned()), "{url}");
+        }
+        // Serving as an initial node implies listening; explicit listeners win.
+        assert_eq!(hub_a.listener_urls, DEFAULT_MEMBER_PEER_LISTENERS);
+        assert_eq!(hub_b.listener_urls.len(), 3);
+        assert!(leaf.listener_urls.is_empty());
+    }
+
+    #[test]
+    fn member_peer_matching_a_manual_url_is_not_delivered_to_itself() {
+        let mut intent = member_peer_intent(vec![member_peer(1, "203.0.113.1")]);
+        intent.mode = NetworkMode::Manual {
+            peer_urls: vec!["tcp://203.0.113.1:11010".to_owned()],
+            member_peers: vec![member_peer(1, "203.0.113.1")],
+        };
+
+        let compiled = compile(&intent).unwrap();
+        assert!(compiled_member(&compiled, "hub-a").peer_urls.is_empty());
+        assert_eq!(
+            compiled_member(&compiled, "leaf").peer_urls,
+            ["tcp://203.0.113.1:11010", "udp://203.0.113.1:11010"]
+        );
+    }
+
+    #[test]
+    fn member_peer_addresses_accept_ipv6_literals() {
+        let intent = member_peer_intent(vec![member_peer(1, "2001:db8::1")]);
+        let compiled = compile(&intent).unwrap();
+        assert!(
+            compiled_member(&compiled, "leaf")
+                .peer_urls
+                .contains(&"tcp://[2001:db8::1]:11010".to_owned())
+        );
+    }
+
+    #[test]
+    fn member_peers_are_validated() {
+        let mut intent = member_peer_intent(vec![member_peer(9, "203.0.113.9")]);
+        assert!(matches!(
+            compile(&intent),
+            Err(CompileError::InvalidMemberPeer { member_id, .. }) if member_id == Uuid::from_u128(9)
+        ));
+
+        intent = member_peer_intent(vec![
+            member_peer(1, "203.0.113.1"),
+            member_peer(1, "a.example"),
+        ]);
+        assert!(matches!(
+            compile(&intent),
+            Err(CompileError::InvalidMemberPeer { .. })
+        ));
+
+        intent = member_peer_intent(vec![member_peer(1, " ")]);
+        assert!(matches!(
+            compile(&intent),
+            Err(CompileError::InvalidMemberPeer { .. })
+        ));
+
+        intent = member_peer_intent(vec![member_peer(1, "203.0.113.1")]);
+        intent.members[0].config_override = Some(NetworkConfig {
+            listener_urls: vec!["tcp://0.0.0.0:0".to_owned()],
+            ..Default::default()
+        });
+        assert!(matches!(
+            compile(&intent),
+            Err(CompileError::InvalidMemberPeer { .. })
+        ));
+    }
+
+    #[test]
+    fn member_peers_alone_satisfy_manual_networking() {
+        let mut intent = member_peer_intent(vec![member_peer(1, "203.0.113.1")]);
+        intent.mode = NetworkMode::Manual {
+            peer_urls: Vec::new(),
+            member_peers: vec![member_peer(1, "203.0.113.1")],
+        };
+        compile(&intent).unwrap();
+
+        intent.mode = NetworkMode::Manual {
+            peer_urls: Vec::new(),
+            member_peers: Vec::new(),
+        };
+        assert_eq!(compile(&intent), Err(CompileError::EmptyPeerUrls));
+    }
+
+    #[test]
+    fn removing_a_member_peer_keeps_the_network_valid() {
+        let mut intent = member_peer_intent(vec![
+            member_peer(1, "203.0.113.1"),
+            member_peer(2, "203.0.113.2"),
+        ]);
+        intent.mode = NetworkMode::Manual {
+            peer_urls: Vec::new(),
+            member_peers: vec![member_peer(1, "203.0.113.1"), member_peer(2, "203.0.113.2")],
+        };
+        let hub_a = Uuid::from_u128(1);
+        intent.members[0].device_id = hub_a.to_string();
+        intent.members[1].device_id = Uuid::from_u128(2).to_string();
+
+        assert!(intent.remove_device(hub_a));
+        assert_eq!(
+            intent.mode,
+            NetworkMode::Manual {
+                peer_urls: Vec::new(),
+                member_peers: vec![member_peer(2, "203.0.113.2")],
+            }
+        );
+
+        // The last initial node keeps serving through its derived URLs.
+        assert!(intent.remove_device(Uuid::from_u128(2)));
+        assert_eq!(
+            intent.mode,
+            NetworkMode::Manual {
+                peer_urls: vec![
+                    "tcp://203.0.113.2:11010".to_owned(),
+                    "udp://203.0.113.2:11010".to_owned()
+                ],
+                member_peers: Vec::new(),
+            }
+        );
+        compile(&intent).unwrap();
     }
 }
