@@ -66,7 +66,7 @@ message Flags {
   bool disable_sym_hole_punching = 30 [(easytier.flag) = { default: "false" }];
 
    // tld dns zone for magic dns
-  string tld_dns_zone = 31 [(easytier.flag) = { default: "et.net." }];
+  string tld_dns_zone = 31 [(easytier.flag) = { default: "et.net.", form: true }];
 
   bool p2p_only = 32 [(easytier.flag) = { default: "false" }];
 
