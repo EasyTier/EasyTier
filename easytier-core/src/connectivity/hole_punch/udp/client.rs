@@ -345,11 +345,6 @@ where
         last_port_idx: &mut usize,
         my_nat_info: UdpNatType,
     ) -> UdpHolePunchClientResult<Option<UdpPunchSocket>> {
-        if my_nat_info.is_easy_sym() && self.punch_predictably.load(Ordering::Relaxed) {
-            // Prediction scans allocations after a fresh STUN mapping. Candidates
-            // from an earlier attempt may still map to ports before that baseline.
-            self.clear_udp_array().await;
-        }
         let udp_array = self.prepare_udp_array().await?;
 
         let resp = self
@@ -1088,7 +1083,7 @@ mod tests {
         assert_eq!(stun.port_mapping_count.load(Ordering::Relaxed), 2);
         assert_eq!(
             runtime.bind_count.load(Ordering::Relaxed),
-            UDP_ARRAY_SIZE_FOR_HARD_SYM * 2
+            UDP_ARRAY_SIZE_FOR_HARD_SYM
         );
     }
 

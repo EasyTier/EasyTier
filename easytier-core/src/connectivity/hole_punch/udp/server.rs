@@ -201,7 +201,7 @@ where
                 request.transaction_id,
                 &request.public_ips,
                 0,
-                ports.len().saturating_mul(request.public_ips.len()),
+                ports.len(),
             )
             .await
             .with_context(|| "failed to send symmetric hole punch packet")?;
@@ -1652,7 +1652,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn predictable_sender_covers_each_public_ip_and_valid_boundary_port() {
+    async fn predictable_sender_uses_valid_boundary_ports() {
         for (base_port_num, max_port_num, is_incremental, expected_ports) in [
             (10000, 4, true, vec![10001, 10002, 10003, 10004]),
             (10000, 4, false, vec![9996, 9997, 9998, 9999]),
@@ -1661,10 +1661,7 @@ mod tests {
             (65535, 50, true, vec![]),
             (1, 50, false, vec![]),
         ] {
-            let public_ips = vec![
-                Ipv4Addr::new(198, 51, 100, 1),
-                Ipv4Addr::new(198, 51, 100, 2),
-            ];
+            let public_ips = vec![Ipv4Addr::new(198, 51, 100, 1)];
             let listener = listener(10007, Vec::new());
             let socket = listener.socket.clone();
             let listener_mapped_addr = listener.mapped_addr;
@@ -1698,6 +1695,41 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn predictable_sender_keeps_packet_budget_with_multiple_public_ips() {
+        let listener = listener(10007, Vec::new());
+        let socket = listener.socket.clone();
+        let listener_mapped_addr = listener.mapped_addr;
+        let server = UdpHolePunchServer::new(
+            Arc::new(MockRuntime::new(vec![listener])),
+            mock_stun(),
+            Arc::new(MockSink::default()),
+            UdpSymPunchLock::default(),
+        );
+        server.common.select_listener(false, false).await.unwrap();
+        let public_ips = vec![
+            Ipv4Addr::new(198, 51, 100, 1),
+            Ipv4Addr::new(198, 51, 100, 2),
+        ];
+        server
+            .send_punch_packet_easy_sym_inner(SendPunchPacketEasySym {
+                listener_mapped_addr,
+                public_ips: public_ips.clone(),
+                transaction_id: 9,
+                base_port_num: 10000,
+                max_port_num: 50,
+                is_incremental: true,
+            })
+            .await
+            .unwrap();
+
+        let sent = socket.sent.lock().await;
+        assert_eq!(sent.len(), 300);
+        for ip in public_ips {
+            assert!(sent.iter().any(|(_, addr)| addr.ip() == ip));
         }
     }
 
