@@ -207,6 +207,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mtu: null,
     instance_recv_bps_limit: null,
     mapped_listeners: [],
+    tld_dns_zone: 'et.net.',
     port_forwards: [],
     acl: emptyAcl(),
   }
