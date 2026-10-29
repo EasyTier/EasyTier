@@ -5713,6 +5713,22 @@ pub async fn dhcpv6_three_node_connectivity(#[case] dhcp_ipv4: bool, #[case] sta
             assert!(inst.get_global_ctx().get_ipv4().is_none());
         }
     }
+    // A route entry only means the peer is known to the router; the tunnel
+    // that carries the packets may still be under construction. Wait for the
+    // data path before opening connections, otherwise the pingpong spends its
+    // connect budget on packets dropped by a peer that is not reachable yet.
+    wait_for_condition(
+        || async {
+            ping6_test(
+                network.namespace("net_a"),
+                &addresses[2].address().to_string(),
+                None,
+            )
+            .await
+        },
+        Duration::from_secs(10),
+    )
+    .await;
     _tunnel_pingpong_netns_with_timeout(
         core_tcp_listener("tcp://[::]:23461".parse().unwrap()),
         core_tcp_dialer(
