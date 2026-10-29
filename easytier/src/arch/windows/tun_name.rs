@@ -65,11 +65,23 @@ fn interface_exists(name: &str) -> anyhow::Result<bool> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => return Err(err.into()),
         };
-        let existing_name: String = connection.get_value("Name")?;
+        let existing_name: String = match connection.get_value("Name") {
+            Ok(name) => name,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
+        };
         if !existing_name.eq_ignore_ascii_case(name) {
             continue;
         }
-        let instance_id: String = connection.get_value("PnpInstanceID")?;
+        let instance_id: String = match connection.get_value("PnpInstanceID") {
+            Ok(id) => id,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                // The name exists, but device presence cannot be verified.
+                // Keep it occupied rather than risk a name collision.
+                return Ok(true);
+            }
+            Err(err) => return Err(err.into()),
+        };
         let mut dev_inst = 0;
         let result = unsafe {
             CM_Locate_DevNodeW(
