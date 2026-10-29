@@ -27,8 +27,9 @@ message HeartbeatRequest {
   // Supports explicit manual mode patches and typed empty-manual readback.
   // Older peers silently ignore unknown patch fields; missing means false.
   bool support_manual_routes_patch = 12;
-  // Public address the node discovered for itself via STUN when the core
-  // started. Empty until discovery succeeds or on older peers.
+  // Bare IPv4/IPv6 address the node's STUN lookup observed, started with the
+  // core and refreshed periodically. Empty until a lookup succeeds, when STUN
+  // is disabled, or on older peers.
   string public_ip = 13;
 }
 

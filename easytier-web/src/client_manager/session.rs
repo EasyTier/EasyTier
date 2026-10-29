@@ -568,8 +568,14 @@ impl SessionRpcService {
 
     fn store_latest_heartbeat_req(
         data: &mut SessionData,
-        req: HeartbeatRequest,
+        mut req: HeartbeatRequest,
     ) -> HeartbeatRequest {
+        // The console displays this client-supplied value; keep only a valid IP.
+        req.public_ip = req
+            .public_ip
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.to_string())
+            .unwrap_or_default();
         data.req = Some(req);
         data.req
             .clone()

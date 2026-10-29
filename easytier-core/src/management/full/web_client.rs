@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -145,18 +146,18 @@ impl ConfigServerEndpoint {
     }
 }
 
-/// Public address a host discovered for itself (e.g. via STUN at startup).
-/// Hosts fill it in asynchronously; heartbeats report the latest value.
+/// Public IP a host discovered for itself (e.g. via STUN). Hosts refresh it
+/// in the background; each heartbeat reports the latest value.
 #[derive(Debug, Clone, Default)]
-pub struct ReportedPublicIp(Arc<std::sync::RwLock<Option<String>>>);
+pub struct ReportedPublicIp(Arc<std::sync::RwLock<Option<IpAddr>>>);
 
 impl ReportedPublicIp {
-    pub fn set(&self, ip: impl ToString) {
-        *self.0.write().unwrap() = Some(ip.to_string());
+    pub fn set(&self, ip: IpAddr) {
+        *self.0.write().unwrap() = Some(ip);
     }
 
-    pub fn get(&self) -> Option<String> {
-        self.0.read().unwrap().clone()
+    pub fn get(&self) -> Option<IpAddr> {
+        *self.0.read().unwrap()
     }
 }
 
@@ -452,7 +453,11 @@ fn build_heartbeat_request(
             .collect(),
         support_heartbeat_policy: true,
         support_manual_routes_patch: true,
-        public_ip: config.public_ip.get().unwrap_or_default(),
+        public_ip: config
+            .public_ip
+            .get()
+            .map(|ip| ip.to_string())
+            .unwrap_or_default(),
     }
 }
 
@@ -735,7 +740,7 @@ mod tests {
         let registered = uuid::Uuid::new_v4();
         let failed = uuid::Uuid::new_v4();
         let public_ip = ReportedPublicIp::default();
-        public_ip.set("203.0.113.7");
+        public_ip.set("203.0.113.7".parse().unwrap());
         let request = build_heartbeat_request(
             &WebClientConfig {
                 token: "token".to_owned(),

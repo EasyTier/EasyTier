@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use easytier_core::{
     config::toml::ConfigLoader as _,
     connectivity::{
-        manual::ManualTunnelConnector, protocol::raw::TunnelDialer, stun::StunInfoProvider as _,
+        manual::ManualTunnelConnector, protocol::raw::TunnelDialer, stun::StunServerConfig,
     },
     management::{ConfigServerEndpoint, ReportedPublicIp, WebClientConfig},
     socket::{IpVersion, SocketContext},
@@ -21,8 +21,14 @@ use crate::{
 };
 use crate::{
     common::{
-        MachineIdOptions, config::TomlConfigLoader, constants::EASYTIER_VERSION,
-        global_ctx::GlobalCtx, resolve_machine_id, stun::runtime_stun_info_collector,
+        MachineIdOptions,
+        config::TomlConfigLoader,
+        constants::EASYTIER_VERSION,
+        global_ctx::GlobalCtx,
+        resolve_machine_id,
+        stun::{
+            StunInfoCollector, default_stun_server_config, runtime_stun_info_collector_with_servers,
+        },
     },
     instance::{
         composition::runtime_one_shot_manual_connector,
@@ -34,11 +40,12 @@ use crate::{
 
 pub use easytier_core::management::InstanceMutationHooks as WebClientHooks;
 
-const PUBLIC_IP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const PUBLIC_IP_REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const PUBLIC_IP_MIN_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct WebClient {
     inner: easytier_core::management::WebClient<NativeInstanceFactory>,
-    _public_ip_task: AbortOnDropHandle<()>,
+    _public_ip_task: Option<AbortOnDropHandle<()>>,
 }
 
 impl WebClient {
@@ -56,9 +63,49 @@ impl WebClient {
         S: ToString,
         H: ToString,
     {
+        Self::new_with_stun_servers(
+            connector,
+            token,
+            machine_id,
+            hostname,
+            secure_mode,
+            default_stun_server_config(),
+            manager,
+            hooks,
+        )
+    }
+
+    /// Like [`WebClient::new`], but looks up the reported public IP with the
+    /// given STUN servers; all-empty lists disable the lookup.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_stun_servers<T, S, H>(
+        connector: T,
+        token: S,
+        machine_id: uuid::Uuid,
+        hostname: H,
+        secure_mode: bool,
+        stun_servers: StunServerConfig,
+        manager: Arc<NativeInstanceManager>,
+        hooks: Option<Arc<dyn WebClientHooks>>,
+    ) -> Self
+    where
+        T: TunnelDialer + 'static,
+        S: ToString,
+        H: ToString,
+    {
         let public_ip = ReportedPublicIp::default();
-        let public_ip_task =
-            AbortOnDropHandle::new(tokio::spawn(discover_public_ip(public_ip.clone())));
+        // Empty server lists are how users disable STUN; respect that here too.
+        let stun_disabled = stun_servers.udp_servers.is_empty()
+            && stun_servers.tcp_servers.is_empty()
+            && stun_servers.udp_v6_servers.is_empty();
+        let public_ip_task = (!stun_disabled).then(|| {
+            let collector =
+                runtime_stun_info_collector_with_servers(SocketContext::default(), stun_servers);
+            AbortOnDropHandle::new(tokio::spawn(discover_public_ip(
+                collector,
+                public_ip.clone(),
+            )))
+        });
         let config = WebClientConfig {
             token: token.to_string(),
             machine_id,
@@ -96,29 +143,36 @@ impl WebClient {
     }
 }
 
-/// Asks STUN servers for this node's public address once at startup and
-/// publishes it for config-server heartbeats, retrying until one answers.
-async fn discover_public_ip(public_ip: ReportedPublicIp) {
-    let collector = runtime_stun_info_collector(SocketContext::default());
+/// Asks STUN servers for this node's public IP as soon as the web client
+/// starts and refreshes it periodically, so heartbeats follow address changes.
+/// Failures back off exponentially and only the first of a streak is a warning.
+async fn discover_public_ip(collector: StunInfoCollector, public_ip: ReportedPublicIp) {
+    let mut retry_interval = PUBLIC_IP_MIN_RETRY_INTERVAL;
+    let mut failure_streak = 0u32;
     loop {
-        let mapped = match collector.get_udp_port_mapping(0).await {
-            Ok(addr) => Ok(addr),
-            Err(udp_error) => collector
-                .get_tcp_port_mapping(0)
-                .await
-                .map_err(|tcp_error| anyhow::anyhow!("udp: {udp_error:#}; tcp: {tcp_error:#}")),
-        };
-        match mapped {
-            Ok(addr) => {
-                tracing::info!(ip = %addr.ip(), "discovered public IP via STUN for config server");
-                public_ip.set(addr.ip());
-                return;
+        let delay = match collector.query_public_ip().await {
+            Ok(ip) => {
+                if public_ip.get() != Some(ip) {
+                    tracing::info!(%ip, "discovered public IP via STUN for config server");
+                    public_ip.set(ip);
+                }
+                retry_interval = PUBLIC_IP_MIN_RETRY_INTERVAL;
+                failure_streak = 0;
+                PUBLIC_IP_REFRESH_INTERVAL
             }
             Err(error) => {
-                tracing::warn!(%error, "failed to discover public IP via STUN; retrying");
-                tokio::time::sleep(PUBLIC_IP_RETRY_INTERVAL).await;
+                if failure_streak == 0 {
+                    tracing::warn!(%error, "failed to discover public IP via STUN; will retry");
+                } else {
+                    tracing::debug!(%error, failure_streak, "public IP STUN lookup still failing");
+                }
+                failure_streak = failure_streak.saturating_add(1);
+                let delay = retry_interval;
+                retry_interval = (retry_interval * 2).min(PUBLIC_IP_REFRESH_INTERVAL);
+                delay
             }
-        }
+        };
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -171,6 +225,29 @@ pub async fn run_web_client(
     manager: Arc<NativeInstanceManager>,
     hooks: Option<Arc<dyn WebClientHooks>>,
 ) -> Result<WebClient> {
+    run_web_client_with_stun_servers(
+        config_server_url,
+        machine_id_options,
+        hostname,
+        secure_mode,
+        default_stun_server_config(),
+        manager,
+        hooks,
+    )
+    .await
+}
+
+/// Like [`run_web_client`], but looks up the reported public IP with the given
+/// STUN servers; all-empty lists disable the lookup.
+pub async fn run_web_client_with_stun_servers(
+    config_server_url: &str,
+    machine_id_options: MachineIdOptions,
+    hostname: Option<String>,
+    secure_mode: bool,
+    stun_servers: StunServerConfig,
+    manager: Arc<NativeInstanceManager>,
+    hooks: Option<Arc<dyn WebClientHooks>>,
+) -> Result<WebClient> {
     let machine_id = resolve_machine_id(&machine_id_options)
         .with_context(|| "failed to resolve machine id for web client")?;
     let endpoint = parse_config_server_endpoint(config_server_url)?;
@@ -186,7 +263,7 @@ pub async fn run_web_client(
     let connector =
         runtime_one_shot_manual_connector(global_ctx, &config, manager.process_runtime())?;
 
-    Ok(WebClient::new(
+    Ok(WebClient::new_with_stun_servers(
         ConfigServerConnector {
             url: endpoint.connect_url().clone(),
             connector,
@@ -195,6 +272,7 @@ pub async fn run_web_client(
         machine_id,
         hostname,
         secure_mode,
+        stun_servers,
         manager,
         hooks,
     ))
