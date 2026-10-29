@@ -49,6 +49,7 @@ async fn request_heartbeat_validation(
         token: input.req.user_token.clone(),
         machine_id: input.machine_id.to_string(),
         public_ip: input.client_url.host_str().map(str::to_string),
+        reported_public_ip: (!input.req.public_ip.is_empty()).then(|| input.req.public_ip.clone()),
         hostname: input.req.hostname.clone(),
         version: input.req.easytier_version.clone(),
         os_type: input

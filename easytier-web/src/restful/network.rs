@@ -535,7 +535,7 @@ impl NetworkApi {
                     failed_network_instances: Vec::new(),
                     support_heartbeat_policy: false,
                     support_manual_routes_patch: false,
-                    public_ip: String::new(),
+                    public_ip: device.reported_public_ip.clone(),
                 }),
             };
             let location = client_mgr.reported_location(info.as_ref(), location);
