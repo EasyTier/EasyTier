@@ -87,6 +87,7 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.enable_udp_broadcast_relay = flags.enable_udp_broadcast_relay;
     result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
     result.enable_magic_dns = flags.accept_dns;
+    result.tld_dns_zone = flags.tld_dns_zone;
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
     result.data_compress_algo = flags.data_compress_algo;
     result.encryption_algorithm = flags.encryption_algorithm;
@@ -513,6 +514,7 @@ impl NetworkConfigExt for NetworkConfig {
                 }
             }),
             accept_dns: self.enable_magic_dns,
+            tld_dns_zone: self.tld_dns_zone.clone(),
             mtu: self
                 .mtu
                 .map(u32::try_from)
@@ -930,6 +932,21 @@ mod tests {
     }
 
     #[test]
+    fn magic_dns_zone_round_trips_missing_default_and_custom_values() {
+        for zone in [None, Some("et.net."), Some("nas.internal.")] {
+            let input = NetworkConfig {
+                tld_dns_zone: zone.map(str::to_owned),
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            let config = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            assert_eq!(config.get_flags().tld_dns_zone, zone.unwrap_or("et.net."));
+            let output = NetworkConfig::new_from_config(&config).unwrap();
+            assert_eq!(output.tld_dns_zone.as_deref(), zone);
+        }
+    }
+
+    #[test]
     fn vpn_portal_api_config_round_trips_through_toml_model() {
         let input = NetworkConfig {
             vpn_portal_config: Some(api_portal_config()),
@@ -1043,6 +1060,22 @@ mod tests {
         .unwrap();
 
         assert!(config.get_vpn_portal_config().is_none());
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn browser_merge_updates_and_clears_magic_dns_zone() {
+        let original = "[flags]\ntld_dns_zone = \"old.internal.\"\n";
+        for zone in [None, Some("et.net."), Some("nas.internal.")] {
+            let input = NetworkConfig {
+                tld_dns_zone: zone.map(str::to_owned),
+                ..standalone_config()
+            };
+            let merged = merge_network_config_toml(original, &input).unwrap();
+            let output = TomlConfigLoader::new_from_str(&merged).unwrap();
+            assert_eq!(output.get_flags().tld_dns_zone, zone.unwrap_or("et.net."));
+            assert_eq!(output.get_flags_patch().tld_dns_zone.as_deref(), zone);
+        }
     }
 
     #[cfg(feature = "browser-config")]

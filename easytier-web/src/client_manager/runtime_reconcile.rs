@@ -731,6 +731,26 @@ mod tests {
     }
 
     #[test]
+    fn magic_dns_zone_change_requires_recreate() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = current.clone();
+        desired.tld_dns_zone = Some("et.net.".to_owned());
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired.clone(), false)
+                .unwrap();
+        assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
+
+        desired.tld_dns_zone = Some("nas.internal.".to_owned());
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false).unwrap();
+        let RuntimeReconcileAction::Run { config, overwrite } = action else {
+            panic!("changing the DNS zone must recreate the instance");
+        };
+        assert!(overwrite);
+        assert_eq!(config.tld_dns_zone.as_deref(), Some("nas.internal."));
+    }
+
+    #[test]
     fn vpn_portal_client_changes_produce_hot_patches() {
         let current = config_with_vpn_portal(
             vec![
