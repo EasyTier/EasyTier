@@ -145,6 +145,21 @@ impl ConfigServerEndpoint {
     }
 }
 
+/// Public address a host discovered for itself (e.g. via STUN at startup).
+/// Hosts fill it in asynchronously; heartbeats report the latest value.
+#[derive(Debug, Clone, Default)]
+pub struct ReportedPublicIp(Arc<std::sync::RwLock<Option<String>>>);
+
+impl ReportedPublicIp {
+    pub fn set(&self, ip: impl ToString) {
+        *self.0.write().unwrap() = Some(ip.to_string());
+    }
+
+    pub fn get(&self) -> Option<String> {
+        self.0.read().unwrap().clone()
+    }
+}
+
 pub struct WebClientConfig {
     pub token: String,
     pub machine_id: uuid::Uuid,
@@ -152,6 +167,7 @@ pub struct WebClientConfig {
     pub device_os: DeviceOsInfo,
     pub easytier_version: String,
     pub secure_mode: bool,
+    pub public_ip: ReportedPublicIp,
 }
 
 #[async_trait]
@@ -436,6 +452,7 @@ fn build_heartbeat_request(
             .collect(),
         support_heartbeat_policy: true,
         support_manual_routes_patch: true,
+        public_ip: config.public_ip.get().unwrap_or_default(),
     }
 }
 
@@ -717,6 +734,8 @@ mod tests {
         let runtime_id = uuid::Uuid::new_v4();
         let registered = uuid::Uuid::new_v4();
         let failed = uuid::Uuid::new_v4();
+        let public_ip = ReportedPublicIp::default();
+        public_ip.set("203.0.113.7");
         let request = build_heartbeat_request(
             &WebClientConfig {
                 token: "token".to_owned(),
@@ -725,6 +744,7 @@ mod tests {
                 device_os: DeviceOsInfo::default(),
                 easytier_version: "test-version".to_owned(),
                 secure_mode: false,
+                public_ip,
             },
             runtime_id,
             vec![registered],
@@ -732,6 +752,7 @@ mod tests {
         );
 
         assert_eq!(request.inst_id.map(uuid::Uuid::from), Some(runtime_id));
+        assert_eq!(request.public_ip, "203.0.113.7");
         assert_eq!(
             request
                 .running_network_instances

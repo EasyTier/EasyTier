@@ -441,6 +441,18 @@ impl ClientManager {
         self.storage.db()
     }
 
+    /// Prefers the public IP the node reported via STUN over the transport
+    /// address seen by this server, falling back to the session location.
+    pub fn reported_location(
+        &self,
+        info: Option<&HeartbeatRequest>,
+        fallback: Option<Location>,
+    ) -> Option<Location> {
+        info.and_then(|info| info.public_ip.parse().ok())
+            .and_then(|ip| Self::lookup_ip_location(ip, &self.geoip_db))
+            .or(fallback)
+    }
+
     fn lookup_location(
         client_url: &url::Url,
         geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
@@ -452,7 +464,13 @@ impl ClientManager {
             tracing::debug!("Failed to parse host as IP address: {}", host);
             return None;
         };
+        Self::lookup_ip_location(ip, &geoip_db)
+    }
 
+    fn lookup_ip_location(
+        ip: std::net::IpAddr,
+        geoip_db: &Option<maxminddb::Reader<Vec<u8>>>,
+    ) -> Option<Location> {
         // Skip lookup for private/special IPs
         let is_private = match ip {
             std::net::IpAddr::V4(ipv4) => {

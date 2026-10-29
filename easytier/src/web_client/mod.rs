@@ -1,14 +1,17 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use easytier_core::{
     config::toml::ConfigLoader as _,
-    connectivity::{manual::ManualTunnelConnector, protocol::raw::TunnelDialer},
-    management::{ConfigServerEndpoint, WebClientConfig},
-    socket::IpVersion,
+    connectivity::{
+        manual::ManualTunnelConnector, protocol::raw::TunnelDialer, stun::StunInfoProvider as _,
+    },
+    management::{ConfigServerEndpoint, ReportedPublicIp, WebClientConfig},
+    socket::{IpVersion, SocketContext},
     tunnel::Tunnel,
 };
+use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 #[cfg(feature = "management")]
@@ -19,7 +22,7 @@ use crate::{
 use crate::{
     common::{
         MachineIdOptions, config::TomlConfigLoader, constants::EASYTIER_VERSION,
-        global_ctx::GlobalCtx, resolve_machine_id,
+        global_ctx::GlobalCtx, resolve_machine_id, stun::runtime_stun_info_collector,
     },
     instance::{
         composition::runtime_one_shot_manual_connector,
@@ -31,8 +34,11 @@ use crate::{
 
 pub use easytier_core::management::InstanceMutationHooks as WebClientHooks;
 
+const PUBLIC_IP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
 pub struct WebClient {
     inner: easytier_core::management::WebClient<NativeInstanceFactory>,
+    _public_ip_task: AbortOnDropHandle<()>,
 }
 
 impl WebClient {
@@ -50,6 +56,9 @@ impl WebClient {
         S: ToString,
         H: ToString,
     {
+        let public_ip = ReportedPublicIp::default();
+        let public_ip_task =
+            AbortOnDropHandle::new(tokio::spawn(discover_public_ip(public_ip.clone())));
         let config = WebClientConfig {
             token: token.to_string(),
             machine_id,
@@ -57,6 +66,7 @@ impl WebClient {
             device_os: web_client_device_os_info(),
             easytier_version: EASYTIER_VERSION.to_owned(),
             secure_mode,
+            public_ip,
         };
         #[cfg(feature = "management")]
         let inner = easytier_core::management::WebClient::new(
@@ -75,11 +85,40 @@ impl WebClient {
             hooks.unwrap_or_else(|| Arc::new(DefaultHooks)),
             Arc::new(easytier_core::management::UnsupportedConfigFileStorage),
         );
-        Self { inner }
+        Self {
+            inner,
+            _public_ip_task: public_ip_task,
+        }
     }
 
     pub fn is_connected(&self) -> bool {
         self.inner.is_connected()
+    }
+}
+
+/// Asks STUN servers for this node's public address once at startup and
+/// publishes it for config-server heartbeats, retrying until one answers.
+async fn discover_public_ip(public_ip: ReportedPublicIp) {
+    let collector = runtime_stun_info_collector(SocketContext::default());
+    loop {
+        let mapped = match collector.get_udp_port_mapping(0).await {
+            Ok(addr) => Ok(addr),
+            Err(udp_error) => collector
+                .get_tcp_port_mapping(0)
+                .await
+                .map_err(|tcp_error| anyhow::anyhow!("udp: {udp_error:#}; tcp: {tcp_error:#}")),
+        };
+        match mapped {
+            Ok(addr) => {
+                tracing::info!(ip = %addr.ip(), "discovered public IP via STUN for config server");
+                public_ip.set(addr.ip());
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to discover public IP via STUN; retrying");
+                tokio::time::sleep(PUBLIC_IP_RETRY_INTERVAL).await;
+            }
+        }
     }
 }
 
