@@ -42,8 +42,6 @@ pub enum CompileError {
     EmptyDisplayName,
     #[error("network name must not be empty")]
     EmptyNetworkName,
-    #[error("network secret must not be empty")]
-    EmptyNetworkSecret,
     #[error("invalid network URL: {0}")]
     InvalidUrl(String),
     #[error("manual networking requires at least one peer URL")]
@@ -218,9 +216,6 @@ fn validate_network(intent: &CentralNetworkIntent) -> Result<(), CompileError> {
     }
     if intent.network_name.trim().is_empty() {
         return Err(CompileError::EmptyNetworkName);
-    }
-    if intent.network_secret.is_empty() {
-        return Err(CompileError::EmptyNetworkSecret);
     }
     compile_mode(&intent.mode)?;
     Ok(())
@@ -1077,6 +1072,50 @@ mod tests {
             .unwrap();
         assert!(group.members.is_empty());
         assert!(group.declares.is_empty());
+    }
+
+    #[test]
+    fn passwordless_secure_members_preserve_identity_and_grants_after_toml_reload() {
+        use easytier::common::config::{ConfigLoader as _, TomlConfigLoader};
+
+        let mut candidate = intent();
+        candidate.network_secret.clear();
+        let compiled = compile(&candidate).unwrap();
+        for member in compiled.members {
+            let temporary = member.device_id == "device-b";
+            assert_eq!(
+                member.network_config.network_secret.as_deref(),
+                if temporary { None } else { Some("") }
+            );
+            let config = member.network_config.gen_config().unwrap();
+            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            let restored_identity = restored.get_network_identity();
+            assert_eq!(
+                restored_identity.network_secret,
+                config.get_network_identity().network_secret
+            );
+            assert_eq!(
+                restored_identity.network_secret_digest,
+                config.get_network_identity().network_secret_digest
+            );
+            assert_eq!(restored.get_secure_mode(), config.get_secure_mode());
+            assert_eq!(
+                restored.get_managed_credentials(),
+                config.get_managed_credentials()
+            );
+            let normalized = CoreInstanceConfig::from_toml(&restored).unwrap();
+            assert_eq!(
+                normalized.managed_credentials.len(),
+                if temporary { 0 } else { 2 }
+            );
+            let output = NetworkConfig::new_from_config(&restored).unwrap();
+            assert_eq!(output.network_secret, member.network_config.network_secret);
+            assert_eq!(
+                output.managed_credentials,
+                member.network_config.managed_credentials
+            );
+            assert_eq!(output.secure_mode, config.get_secure_mode());
+        }
     }
 
     #[test]

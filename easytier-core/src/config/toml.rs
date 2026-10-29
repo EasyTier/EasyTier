@@ -277,6 +277,35 @@ impl Default for NetworkIdentity {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum NetworkAuthentication {
+    SharedSecret,
+    Credential,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+struct NetworkIdentityConfig {
+    #[serde(flatten)]
+    identity: NetworkIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authentication: Option<NetworkAuthentication>,
+}
+
+impl From<NetworkIdentity> for NetworkIdentityConfig {
+    fn from(identity: NetworkIdentity) -> Self {
+        let authentication = if identity.network_secret.is_some() {
+            NetworkAuthentication::SharedSecret
+        } else {
+            NetworkAuthentication::Credential
+        };
+        Self {
+            identity,
+            authentication: Some(authentication),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PeerConfig {
     pub uri: url::Url,
@@ -418,7 +447,7 @@ struct Config {
     ipv6_public_addr_prefix: Option<String>,
     dhcp: Option<DhcpConfig>,
     dhcpv6: Option<DhcpConfig<cidr::Ipv6Cidr>>,
-    network_identity: Option<NetworkIdentity>,
+    network_identity: Option<NetworkIdentityConfig>,
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
     exit_nodes: Option<Vec<IpAddr>>,
@@ -517,6 +546,14 @@ impl TomlConfig {
     fn config_for_dump(&self) -> Config {
         let mut config = self.config.lock().unwrap().clone();
         Self::normalize_config_source(&mut config);
+        let secure_mode_enabled = config.secure_mode.as_ref().is_some_and(|mode| mode.enabled);
+        if let Some(identity) = config.network_identity.as_mut() {
+            identity.authentication = match identity.identity.network_secret.as_deref() {
+                Some("") if secure_mode_enabled => Some(NetworkAuthentication::SharedSecret),
+                None if !secure_mode_enabled => Some(NetworkAuthentication::Credential),
+                _ => None,
+            };
+        }
         config
     }
 
@@ -527,7 +564,7 @@ impl TomlConfig {
         if let Some(secret) = config
             .network_identity
             .as_mut()
-            .and_then(|identity| identity.network_secret.as_mut())
+            .and_then(|identity| identity.identity.network_secret.as_mut())
             && !secret.is_empty()
         {
             *secret = REDACTED.to_owned();
@@ -597,6 +634,10 @@ impl TomlConfig {
             .transpose()
             .context("failed to normalize [secure_mode] config")?;
         let has_network_identity = config.network_identity.is_some();
+        let authentication = config
+            .network_identity
+            .as_ref()
+            .and_then(|identity| identity.authentication);
 
         let config = TomlConfig {
             config: Arc::new(Mutex::new(config)),
@@ -604,16 +645,18 @@ impl TomlConfig {
 
         let old_ns = config.get_network_identity();
 
-        // Detect credential mode: secure_mode enabled + no network_secret in TOML
-        let is_credential = has_network_identity
-            && config
-                .get_secure_mode()
-                .map(|sm| sm.enabled)
-                .unwrap_or(false)
-            && old_ns
-                .network_secret
-                .as_deref()
-                .is_none_or(|s| s.is_empty());
+        let is_credential = match authentication {
+            Some(NetworkAuthentication::SharedSecret) => false,
+            Some(NetworkAuthentication::Credential) => true,
+            None => {
+                has_network_identity
+                    && config.get_secure_mode().is_some_and(|mode| mode.enabled)
+                    && old_ns
+                        .network_secret
+                        .as_deref()
+                        .is_none_or(|secret| secret.is_empty())
+            }
+        };
 
         if is_credential {
             config.set_network_identity(NetworkIdentity::new_credential(old_ns.network_name));
@@ -844,11 +887,12 @@ impl ConfigLoader for TomlConfig {
             .unwrap()
             .network_identity
             .clone()
+            .map(|identity| identity.identity)
             .unwrap_or_default()
     }
 
     fn set_network_identity(&self, identity: NetworkIdentity) {
-        self.config.lock().unwrap().network_identity = Some(identity);
+        self.config.lock().unwrap().network_identity = Some(identity.into());
     }
 
     fn get_listener_uris(&self) -> Vec<url::Url> {
