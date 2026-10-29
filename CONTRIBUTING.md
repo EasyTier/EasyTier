@@ -122,7 +122,15 @@ script/build-wasi-core.sh
 This builds the `easytier-core` Go-host profile for `wasm32-wasip1`, then
 optimizes it with the pinned official Binaryen release. Binaryen is downloaded
 once into `target/binaryen/` and verified by SHA-256; set `WASM_OPT` to use an
-existing matching binary.
+existing matching binary. The optimized artifact is checked for imports outside
+`easytier_host` and `wasi_snapshot_preview1` before replacing the output file;
+unsupported imports fail the build and are listed in the error output.
+
+To run the build-script regression tests without compiling the core:
+
+```bash
+WASM_OPT=/path/to/binaryen-131/bin/wasm-opt script/test-build-wasi-core.sh
+```
 
 ### Building GUI
 
