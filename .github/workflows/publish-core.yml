@@ -1,0 +1,77 @@
+name: Publish Core Release
+
+# Takes everything an "EasyTier Core" full build produced (all platforms) and
+# publishes it as per-platform zips on a rolling release, so the fork has a
+# downloadable full build without going through the upstream release pipeline.
+
+on:
+  workflow_run:
+    workflows: ["EasyTier Core"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "EasyTier Core run id to publish"
+        required: true
+        type: string
+      tag:
+        description: "Release tag to publish into"
+        required: false
+        default: "core-latest"
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    # A cancelled or failed full build still has usable per-platform artifacts
+    # (matrix fail-fast is off), so only skip when the run never started.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    env:
+      RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+      TAG: ${{ inputs.tag || 'core-latest' }}
+    steps:
+      - name: Download all artifacts of the run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: easytier-*
+          path: out
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Zip per platform
+        run: |
+          mkdir -p assets
+          cd out
+          ls -l
+          for d in */; do
+            name="${d%/}"
+            case "$name" in
+              signpath-unsigned-*|easytier-web-dashboard) continue ;;
+            esac
+            (cd "$name" && zip -9 -r "../../assets/$name.zip" .)
+          done
+          cd ..
+          ls -l assets
+
+      - name: Publish rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: EasyTier Core (full build, all platforms)
+          prerelease: true
+          body: |
+            Full `easytier-core` build from `${{ github.event.workflow_run.head_branch || 'manual' }}`
+            (commit `${{ github.event.workflow_run.head_sha || 'unknown' }}`), including the
+            `private_group` allow-list feature.
+
+            One zip per platform, mirroring the upstream layout.
+          files: assets/*.zip
+          fail_on_unmatched_files: true
