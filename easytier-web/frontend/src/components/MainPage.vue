@@ -25,6 +25,7 @@ import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
 import ApiClient, { type BlockedDevice, type CentralNetworkSummary } from '../modules/api';
 import { getApiBase } from '../modules/api-host';
+import { enrollCommand as buildEnrollCommand } from '../modules/enroll';
 
 const { t } = useI18n()
 const router = useRouter();
@@ -107,12 +108,7 @@ watch([() => enrollInfo.value?.webhook_auth, () => route.name], ([external, name
     }
 });
 
-const enrollCommand = computed(() => {
-    if (!enrollInfo.value) return '';
-    const host = new URL(getApiBase(), window.location.href).hostname;
-    const { config_server_protocol: proto, config_server_port: port, username } = enrollInfo.value;
-    return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;
-});
+const enrollCommand = computed(() => enrollInfo.value ? buildEnrollCommand(enrollInfo.value) : '');
 
 const toggleEnrollBell = async (event: Event) => {
     enrollBell.value.toggle(event);
