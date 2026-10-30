@@ -20,6 +20,8 @@ pub struct Model {
     pub device_os: String,
     #[sea_orm(column_type = "Text")]
     pub client_url: String,
+    #[sea_orm(column_type = "Text", default_value = "")]
+    pub reported_public_ip: String,
     pub first_seen_time: DateTimeWithTimeZone,
     pub last_seen_time: DateTimeWithTimeZone,
 }

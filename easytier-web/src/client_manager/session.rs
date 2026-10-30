@@ -568,8 +568,14 @@ impl SessionRpcService {
 
     fn store_latest_heartbeat_req(
         data: &mut SessionData,
-        req: HeartbeatRequest,
+        mut req: HeartbeatRequest,
     ) -> HeartbeatRequest {
+        // The console displays this client-supplied value; keep only a valid IP.
+        req.public_ip = req
+            .public_ip
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.to_string())
+            .unwrap_or_default();
         data.req = Some(req);
         data.req
             .clone()
@@ -762,13 +768,18 @@ impl SessionRpcService {
                 return Err(anyhow::anyhow!("webhook session is invalid").into());
             }
             let failure_notify = Self::update_heartbeat_failed_instance_ids_locked(&mut data, &req);
+            let previous_public_ip = data.req.as_ref().map(|req| req.public_ip.clone());
             let runtime_req = Self::store_latest_heartbeat_req(&mut data, req);
+            // Validate promptly when the reported IP changes so the device
+            // registry records it without waiting for the periodic check.
+            let public_ip_changed = !runtime_req.public_ip.is_empty()
+                && previous_public_ip.as_deref() != Some(runtime_req.public_ip.as_str());
             let heartbeat_count = data
                 .heartbeat_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
             let notify = failure_notify.or_else(|| {
-                should_notify_webhook_validation(heartbeat_count)
+                (should_notify_webhook_validation(heartbeat_count) || public_ip_changed)
                     .then(|| Self::mark_webhook_validation_dirty_locked(&mut data))
             });
             let authorized = data.auth_state.is_authorized();
@@ -2404,6 +2415,7 @@ mod tests {
             token: "token".to_string(),
             machine_id: "machine".to_string(),
             public_ip: Some("127.0.0.1".to_string()),
+            reported_public_ip: None,
             hostname: "host".to_string(),
             version: "1.0.0".to_string(),
             os_type: None,

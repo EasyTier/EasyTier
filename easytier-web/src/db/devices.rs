@@ -15,6 +15,8 @@ pub struct DeviceHeartbeatRecord {
     pub easytier_version: String,
     pub device_os: String,
     pub client_url: String,
+    /// STUN-reported public IP; `None` keeps the stored value.
+    pub reported_public_ip: Option<String>,
 }
 
 impl Db {
@@ -25,6 +27,16 @@ impl Db {
         use entity::devices as d;
 
         let now = chrono::Local::now().fixed_offset();
+        let mut update_columns = vec![
+            d::Column::Hostname,
+            d::Column::EasytierVersion,
+            d::Column::DeviceOs,
+            d::Column::ClientUrl,
+            d::Column::LastSeenTime,
+        ];
+        if record.reported_public_ip.is_some() {
+            update_columns.push(d::Column::ReportedPublicIp);
+        }
         d::Entity::insert(d::ActiveModel {
             user_id: Set(record.user_id),
             machine_id: Set(record.machine_id.to_string()),
@@ -32,19 +44,14 @@ impl Db {
             easytier_version: Set(record.easytier_version),
             device_os: Set(record.device_os),
             client_url: Set(record.client_url),
+            reported_public_ip: Set(record.reported_public_ip.unwrap_or_default()),
             first_seen_time: Set(now),
             last_seen_time: Set(now),
             ..Default::default()
         })
         .on_conflict(
             OnConflict::columns([d::Column::UserId, d::Column::MachineId])
-                .update_columns([
-                    d::Column::Hostname,
-                    d::Column::EasytierVersion,
-                    d::Column::DeviceOs,
-                    d::Column::ClientUrl,
-                    d::Column::LastSeenTime,
-                ])
+                .update_columns(update_columns)
                 .to_owned(),
         )
         .exec(self.orm_db())
@@ -303,6 +310,7 @@ mod tests {
             easytier_version: "a".to_string(),
             device_os: "{}".to_string(),
             client_url: "tcp://127.0.0.1:1001".to_string(),
+            reported_public_ip: None,
         })
         .await
         .unwrap();
@@ -313,6 +321,7 @@ mod tests {
             easytier_version: "b".to_string(),
             device_os: "{}".to_string(),
             client_url: "tcp://127.0.0.1:1002".to_string(),
+            reported_public_ip: None,
         })
         .await
         .unwrap();
@@ -350,6 +359,7 @@ mod tests {
             easytier_version: "1".to_string(),
             device_os: r#"{"os":"before"}"#.to_string(),
             client_url: "tcp://127.0.0.1:1001".to_string(),
+            reported_public_ip: Some("203.0.113.1".to_string()),
         })
         .await
         .unwrap();
@@ -368,6 +378,7 @@ mod tests {
             easytier_version: "2".to_string(),
             device_os: r#"{"os":"after"}"#.to_string(),
             client_url: "tcp://127.0.0.1:1002".to_string(),
+            reported_public_ip: Some("203.0.113.2".to_string()),
         })
         .await
         .unwrap();
@@ -380,6 +391,34 @@ mod tests {
         assert_eq!(after.easytier_version, "2");
         assert_eq!(after.device_os, r#"{"os":"after"}"#);
         assert_eq!(after.client_url, "tcp://127.0.0.1:1002");
+        assert_eq!(after.reported_public_ip, "203.0.113.2");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_upsert_keeps_reported_public_ip_when_absent() {
+        let db = Db::memory_db().await;
+        let user_id = db.auto_create_user("device-public-ip").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let record = |reported_public_ip: Option<&str>| DeviceHeartbeatRecord {
+            user_id,
+            machine_id,
+            hostname: "host".to_string(),
+            easytier_version: "1".to_string(),
+            device_os: "{}".to_string(),
+            client_url: "tcp://127.0.0.1:1001".to_string(),
+            reported_public_ip: reported_public_ip.map(str::to_string),
+        };
+
+        db.upsert_device_heartbeat(record(None)).await.unwrap();
+        let device = db.get_device((user_id, machine_id)).await.unwrap().unwrap();
+        assert_eq!(device.reported_public_ip, "");
+
+        db.upsert_device_heartbeat(record(Some("198.51.100.7")))
+            .await
+            .unwrap();
+        db.upsert_device_heartbeat(record(None)).await.unwrap();
+        let device = db.get_device((user_id, machine_id)).await.unwrap().unwrap();
+        assert_eq!(device.reported_public_ip, "198.51.100.7");
     }
 
     #[tokio::test]
@@ -448,6 +487,7 @@ mod tests {
                 easytier_version: "1".to_string(),
                 device_os: "{}".to_string(),
                 client_url: format!("tcp://127.0.0.1:{user_id}"),
+                reported_public_ip: None,
             })
             .await
             .unwrap();

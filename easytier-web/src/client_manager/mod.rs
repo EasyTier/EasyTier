@@ -441,6 +441,29 @@ impl ClientManager {
         self.storage.db()
     }
 
+    /// Prefers the public IP the node reported via STUN over the transport
+    /// address seen by this server, falling back to the session location.
+    /// A reported private or special address says nothing about location.
+    pub fn reported_location(
+        &self,
+        info: Option<&HeartbeatRequest>,
+        fallback: Option<Location>,
+    ) -> Option<Location> {
+        info.and_then(|info| info.public_ip.parse().ok())
+            .filter(|ip| !Self::is_special_ip(*ip))
+            .and_then(|ip| Self::lookup_ip_location(ip, &self.geoip_db))
+            .or(fallback)
+    }
+
+    fn is_special_ip(ip: std::net::IpAddr) -> bool {
+        match ip {
+            std::net::IpAddr::V4(ipv4) => {
+                ipv4.is_private() || ipv4.is_loopback() || ipv4.is_unspecified()
+            }
+            std::net::IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unspecified(),
+        }
+    }
+
     fn lookup_location(
         client_url: &url::Url,
         geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
@@ -452,16 +475,15 @@ impl ClientManager {
             tracing::debug!("Failed to parse host as IP address: {}", host);
             return None;
         };
+        Self::lookup_ip_location(ip, &geoip_db)
+    }
 
+    fn lookup_ip_location(
+        ip: std::net::IpAddr,
+        geoip_db: &Option<maxminddb::Reader<Vec<u8>>>,
+    ) -> Option<Location> {
         // Skip lookup for private/special IPs
-        let is_private = match ip {
-            std::net::IpAddr::V4(ipv4) => {
-                ipv4.is_private() || ipv4.is_loopback() || ipv4.is_unspecified()
-            }
-            std::net::IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unspecified(),
-        };
-
-        if is_private {
+        if Self::is_special_ip(ip) {
             tracing::debug!("Skipping GeoIP lookup for special IP: {}", ip);
             let location = Location {
                 country: "本地网络".to_string(),
