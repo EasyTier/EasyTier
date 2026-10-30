@@ -578,6 +578,12 @@ impl TomlConfig {
         }
     }
 
+    /// Override the private-group allow list (used by CLI options, which take
+    /// precedence over values from the config file).
+    pub fn set_private_groups(&self, groups: Vec<PrivateGroupConfig>) {
+        self.config.lock().unwrap().private_group = Some(groups);
+    }
+
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
         Self::new_from_str_with_source("inline config", config_str)
     }
