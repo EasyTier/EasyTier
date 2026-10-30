@@ -2145,7 +2145,43 @@ impl PeerConnectionAdmission {
         let foreign_network_allowed =
             conn.matches_local_network_secret() || trusted_foreign_credential;
 
-        if !is_local_network && self.context.flags().private_mode && !foreign_network_allowed {
+        // Private-mode allow list: a foreign network whose (network_name,
+        // network_secret) pair matches an entry of [[private_group]] is
+        // admitted. Digest comparison verifies the peer actually holds the
+        // secret; a name-only claim cannot produce the matching digest.
+        let private_group_allowed = self
+            .context
+            .flags()
+            .private_mode
+            .then(|| {
+                self.context.private_groups().into_iter().any(|group| {
+                    if group.network_name != peer_network_name {
+                        return false;
+                    }
+                    match group.secret_digest() {
+                        // Entry carries a secret: the peer must prove it holds
+                        // the same secret via its advertised digest.
+                        Some(expected) => peer_identity
+                            .secret_digest()
+                            .is_some_and(|digest| digest == expected),
+                        // Secret-less entry: admitted by name alone.
+                        None => true,
+                    }
+                })
+            })
+            .unwrap_or(false);
+        if private_group_allowed {
+            tracing::info!(
+                network_name = %peer_network_name,
+                "foreign network admitted by private_group allow list"
+            );
+        }
+
+        if !is_local_network
+            && self.context.flags().private_mode
+            && !foreign_network_allowed
+            && !private_group_allowed
+        {
             self.release_reserved_peer_id(&peer_network_name);
             return Err(Error::SecretKeyError(
                 "private mode is turned on, foreign network secret mismatch".to_string(),
