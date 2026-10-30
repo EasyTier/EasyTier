@@ -171,6 +171,23 @@ export interface BlockedDevice {
     last_attempt_time?: string | null;
 }
 
+export interface DeviceToken {
+    id: number;
+    name: string;
+    token: string;
+    machine_id?: string | null;
+    created_time: string;
+    last_used_time?: string | null;
+    revoked_at?: string | null;
+}
+
+export interface CreatedDeviceToken {
+    id: number;
+    name: string;
+    token: string;
+    created_time: string;
+}
+
 export interface ConsoleInfo {
     username: string;
     config_server_protocol: string;
@@ -325,6 +342,20 @@ export class ApiClient {
 
     public async update_machine_alias(machine_id: string, alias: string): Promise<undefined> {
         await this.client.put(`/machines/${machine_id}/alias`, { alias });
+    }
+
+    public async create_device_token(name: string): Promise<CreatedDeviceToken> {
+        const response = await this.client.post<any, CreatedDeviceToken>('/device-tokens', { name });
+        return response;
+    }
+
+    public async list_device_tokens(): Promise<DeviceToken[]> {
+        const response = await this.client.get<any, { tokens: DeviceToken[] }>('/device-tokens');
+        return response.tokens;
+    }
+
+    public async revoke_device_token(token_id: number): Promise<undefined> {
+        await this.client.delete(`/device-tokens/${token_id}`);
     }
 
     public async list_blocked_devices(): Promise<BlockedDevice[]> {

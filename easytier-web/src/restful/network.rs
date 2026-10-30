@@ -143,6 +143,38 @@ struct UpdateDeviceAliasJsonReq {
     alias: String,
 }
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct CreateDeviceTokenJsonReq {
+    name: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DeviceTokenItem {
+    id: i32,
+    name: String,
+    /// Returned in full: the console is single-admin and the token is stored
+    /// readably, so showing it again keeps the enrollment command recoverable.
+    token: String,
+    machine_id: Option<uuid::Uuid>,
+    created_time: chrono::DateTime<chrono::FixedOffset>,
+    last_used_time: Option<chrono::DateTime<chrono::FixedOffset>>,
+    revoked_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CreatedDeviceTokenJsonResp {
+    id: i32,
+    name: String,
+    /// Only surfaced in the create response; the list endpoint never returns it.
+    token: String,
+    created_time: chrono::DateTime<chrono::FixedOffset>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ListDeviceTokensJsonResp {
+    tokens: Vec<DeviceTokenItem>,
+}
+
 #[derive(Debug, serde::Serialize)]
 struct BlockedDeviceItem {
     id: String,
@@ -397,6 +429,73 @@ impl NetworkApi {
             return Err((
                 StatusCode::NOT_FOUND,
                 other_error(format!("device not found: {machine_id}")).into(),
+            ));
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    async fn handle_create_device_token(
+        auth_session: AuthSession,
+        Extension(network_service): Extension<Arc<CentralNetworkService>>,
+        Json(request): Json<CreateDeviceTokenJsonReq>,
+    ) -> Result<Json<CreatedDeviceTokenJsonResp>, HttpHandleError> {
+        let name = request.name.trim().to_owned();
+        if name.chars().count() > 64 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                other_error("token name must be at most 64 characters".to_owned()).into(),
+            ));
+        }
+        let record = network_service
+            .db
+            .create_device_token(Self::get_user_id(&auth_session)?, &name)
+            .await
+            .map_err(convert_db_error)?;
+        Ok(Json(CreatedDeviceTokenJsonResp {
+            id: record.id,
+            name: record.name,
+            token: record.token,
+            created_time: record.created_time,
+        }))
+    }
+
+    async fn handle_list_device_tokens(
+        auth_session: AuthSession,
+        Extension(network_service): Extension<Arc<CentralNetworkService>>,
+    ) -> Result<Json<ListDeviceTokensJsonResp>, HttpHandleError> {
+        let tokens = network_service
+            .db
+            .list_device_tokens(Self::get_user_id(&auth_session)?)
+            .await
+            .map_err(convert_db_error)?
+            .into_iter()
+            .map(|record| DeviceTokenItem {
+                id: record.id,
+                name: record.name,
+                token: record.token,
+                machine_id: record.machine_id,
+                created_time: record.created_time,
+                last_used_time: record.last_used_time,
+                revoked_at: record.revoked_at,
+            })
+            .collect();
+        Ok(Json(ListDeviceTokensJsonResp { tokens }))
+    }
+
+    async fn handle_revoke_device_token(
+        auth_session: AuthSession,
+        Extension(network_service): Extension<Arc<CentralNetworkService>>,
+        Path(token_id): Path<i32>,
+    ) -> Result<StatusCode, HttpHandleError> {
+        let revoked = network_service
+            .db
+            .revoke_device_token(Self::get_user_id(&auth_session)?, token_id)
+            .await
+            .map_err(convert_db_error)?;
+        if !revoked {
+            return Err((
+                StatusCode::NOT_FOUND,
+                other_error(format!("device token not found: {token_id}")).into(),
             ));
         }
         Ok(StatusCode::NO_CONTENT)
@@ -833,6 +932,14 @@ impl NetworkApi {
             .route(
                 "/api/v1/machines/{machine-id}/alias",
                 put(Self::handle_update_machine_alias),
+            )
+            .route(
+                "/api/v1/device-tokens",
+                get(Self::handle_list_device_tokens).post(Self::handle_create_device_token),
+            )
+            .route(
+                "/api/v1/device-tokens/{token-id}",
+                delete(Self::handle_revoke_device_token),
             )
             .route(
                 "/api/v1/blocked-devices",

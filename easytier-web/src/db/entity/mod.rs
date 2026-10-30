@@ -3,6 +3,7 @@
 pub mod prelude;
 
 pub mod blocked_devices;
+pub mod device_tokens;
 pub mod devices;
 pub mod groups;
 pub mod groups_permissions;
