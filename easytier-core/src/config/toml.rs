@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::{DhcpConfig, normalize_secure_mode_config};
+use super::{DhcpConfig, PrivateGroupConfig, normalize_secure_mode_config};
 pub use super::{EncryptionAlgorithm, gateway::PortForwardConfig};
 use anyhow::Context;
 #[cfg(feature = "rich-config-errors")]
@@ -86,6 +86,12 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_network_identity(&self) -> NetworkIdentity;
     fn set_network_identity(&self, identity: NetworkIdentity);
+
+    /// (network_name, network_secret) pairs allowed into this node while
+    /// private_mode is on. Empty by default, which keeps legacy behavior.
+    fn get_private_groups(&self) -> Vec<PrivateGroupConfig> {
+        Vec::new()
+    }
 
     fn get_listener_uris(&self) -> Vec<url::Url>;
 
@@ -425,6 +431,10 @@ struct Config {
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
+
+    /// Allow-list of (network_name, network_secret) pairs admitted when
+    /// private_mode is enabled. See `PrivateGroupConfig`.
+    private_group: Option<Vec<PrivateGroupConfig>>,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -849,6 +859,15 @@ impl ConfigLoader for TomlConfig {
 
     fn set_network_identity(&self, identity: NetworkIdentity) {
         self.config.lock().unwrap().network_identity = Some(identity);
+    }
+
+    fn get_private_groups(&self) -> Vec<PrivateGroupConfig> {
+        self.config
+            .lock()
+            .unwrap()
+            .private_group
+            .clone()
+            .unwrap_or_default()
     }
 
     fn get_listener_uris(&self) -> Vec<url::Url> {
