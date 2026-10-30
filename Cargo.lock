@@ -10648,7 +10648,7 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 [[package]]
 name = "tun-easytier"
 version = "1.1.1"
-source = "git+https://github.com/EasyTier/rust-tun?rev=ac0c674c900dbdcf0b3fe9f5f6134c11579d1f7c#ac0c674c900dbdcf0b3fe9f5f6134c11579d1f7c"
+source = "git+https://github.com/EasyTier/rust-tun?rev=a8ad3ebb4c29fa86ac8763f5c45a23d636b5e77b#a8ad3ebb4c29fa86ac8763f5c45a23d636b5e77b"
 dependencies = [
  "bytes",
  "cfg-if",
