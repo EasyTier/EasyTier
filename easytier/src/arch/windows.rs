@@ -24,7 +24,7 @@ use windows::{
 };
 
 mod tun_name;
-pub(crate) use tun_name::reserve_tun_name;
+pub(crate) use tun_name::{reserve_tun_name, tun_device_guid};
 
 pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
     let handle = SOCKET(socket.as_raw_socket() as usize);

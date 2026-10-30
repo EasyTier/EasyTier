@@ -52,15 +52,28 @@ fn reserve_name(name: &str) -> anyhow::Result<Option<OwnedHandle>> {
     Ok((!existed).then_some(handle))
 }
 
-fn interface_exists(name: &str) -> anyhow::Result<bool> {
+pub(crate) fn tun_device_guid(name: &str) -> uuid::Uuid {
+    let identity = format!("https://easytier.rs/wintun/{}", name.to_lowercase());
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes())
+}
+
+fn interface_name_conflicts(name: &str) -> anyhow::Result<bool> {
     // IP interface tables can retain removed adapters after process exit.
     // Check the device tree: disabled devices still occupy their names, but
     // nonpresent devices left by a terminated process do not.
     let network = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(
         r"SYSTEM\CurrentControlSet\Control\Network\{4D36E972-E325-11CE-BFC1-08002BE10318}",
     )?;
+    let expected_guid = format!("{{{}}}", tun_device_guid(name));
     for guid in network.enum_keys() {
-        let connection = match network.open_subkey(format!(r"{}\Connection", guid?)) {
+        let guid = guid?;
+        // The caller holds the name reservation, so another EasyTier instance
+        // cannot use this identity. Let rust-tun reopen or recreate it even if
+        // Windows retained an incomplete Connection key.
+        if guid.eq_ignore_ascii_case(&expected_guid) {
+            continue;
+        }
+        let connection = match network.open_subkey(format!(r"{}\Connection", guid)) {
             Ok(key) => key,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => return Err(err.into()),
@@ -111,7 +124,7 @@ pub(crate) fn reserve_tun_name(requested: &str) -> anyhow::Result<(String, Owned
         let Some(handle) = reserve_name(&name)? else {
             continue;
         };
-        if !interface_exists(&name)? {
+        if !interface_name_conflicts(&name)? {
             return Ok((name, handle));
         }
     }
