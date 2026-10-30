@@ -49,6 +49,11 @@ jobs:
       - name: Zip per platform
         run: |
           mkdir -p assets
+          # A check-only run (push to main) produces no artifacts; nothing to do.
+          if [ ! -d out ]; then
+            echo "no artifacts in this run, skipping"
+            exit 0
+          fi
           cd out
           ls -l
           for d in */; do
@@ -62,6 +67,7 @@ jobs:
           ls -l assets
 
       - name: Publish rolling release
+        if: ${{ hashFiles('assets/*.zip') != '' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
