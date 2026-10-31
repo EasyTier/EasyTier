@@ -1174,6 +1174,8 @@ mod tests {
 
     struct CyclingEndpointResolver;
 
+    struct PlainRedirectChainResolver;
+
     #[async_trait]
     impl ManualEndpointResolver for ChainedEndpointResolver {
         async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url> {
@@ -1181,6 +1183,18 @@ mod tests {
                 "http" => Ok("txt://discovery.example".parse().unwrap()),
                 "txt" => Ok("tcp://peer.example:12000".parse().unwrap()),
                 scheme => anyhow::bail!("unexpected endpoint scheme: {scheme}"),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ManualEndpointResolver for PlainRedirectChainResolver {
+        async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url> {
+            match url.as_str() {
+                "https://alias.example/" => Ok("https://discovery.example/".parse().unwrap()),
+                "https://discovery.example/" => Ok("txt://discovery.example".parse().unwrap()),
+                "txt://discovery.example" => Ok("tcp://peer.example:12000".parse().unwrap()),
+                url => anyhow::bail!("unexpected endpoint URL: {url}"),
             }
         }
     }
@@ -1256,6 +1270,22 @@ mod tests {
 
         assert_eq!(endpoint.url.as_str(), "tcp://peer.example:12000");
         assert_eq!(endpoint.tunnel_prefixes, ["http", "txt"]);
+    }
+
+    #[tokio::test]
+    async fn manual_endpoint_resolution_follows_plain_http_redirects() {
+        // Mirrors a CDN domain alias: https://alias.example answers with a 308
+        // whose Location is another plain https URL, e.g. during a domain
+        // migration. The resolution loop must follow it to the final peer URL.
+        let endpoint = resolve_manual_endpoint(
+            &PlainRedirectChainResolver,
+            "https://alias.example/".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(endpoint.url.as_str(), "tcp://peer.example:12000");
+        assert_eq!(endpoint.tunnel_prefixes, ["https", "https", "txt"]);
     }
 
     #[tokio::test]
