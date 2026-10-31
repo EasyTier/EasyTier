@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-use super::super::{ManualEndpointResolver, resolve_url_addrs};
+use super::super::{ManualEndpointResolver, resolve_url_addrs, validate_manual_url};
 use super::ManualEndpointDiscoveryConfig;
 
 const HTTP_DEFAULT_PORT: u16 = 80;
@@ -89,7 +89,7 @@ where
                     },
                 )
                 .await?;
-                resolve_http_endpoint(response)
+                resolve_http_endpoint(response, url)
                     .map(|endpoint| endpoint.url)
                     .map_err(|error| anyhow::anyhow!("Invalid Url: {error}"))
             }
@@ -281,6 +281,7 @@ where
 pub(crate) enum HttpEndpointSource {
     RedirectQuery,
     RedirectUrl,
+    RedirectFollow,
     ResponseBody,
 }
 
@@ -297,8 +298,12 @@ pub(crate) struct ResolvedHttpEndpoint {
     pub source: HttpEndpointSource,
 }
 
-fn resolve_http_redirect(location: &str) -> anyhow::Result<ResolvedHttpEndpoint> {
-    let url = Url::parse(location)
+fn resolve_http_redirect(location: &str, base: &Url) -> anyhow::Result<ResolvedHttpEndpoint> {
+    // Resolve the Location against the request URL first, so relative
+    // locations ("/next", "//host/next") resolve like in a browser while
+    // absolute connector locations parse unchanged.
+    let url = base
+        .join(location)
         .with_context(|| format!("parsing redirect URL failed. url: {location}"))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Ok(ResolvedHttpEndpoint {
@@ -321,6 +326,7 @@ fn resolve_http_redirect(location: &str) -> anyhow::Result<ResolvedHttpEndpoint>
     if let Some(url) = location
         .strip_prefix(&format!("{}://", url.scheme()))
         .and_then(|value| Url::parse(value).ok())
+        .filter(|candidate| validate_manual_url(candidate).is_ok())
     {
         return Ok(ResolvedHttpEndpoint {
             url,
@@ -328,7 +334,15 @@ fn resolve_http_redirect(location: &str) -> anyhow::Result<ResolvedHttpEndpoint>
         });
     }
 
-    anyhow::bail!("no valid connector URL found in redirect location {location:?}")
+    // A plain http(s) Location (e.g. a CDN domain alias returning a 308 to
+    // another site) carries no embedded connector URL. Return it as-is so the
+    // resolution loop in `resolve_manual_endpoint` can follow it; that loop
+    // already enforces cycle detection and a hop limit.
+    tracing::debug!(%url, "http redirect location has no connector URL, following it");
+    Ok(ResolvedHttpEndpoint {
+        url,
+        source: HttpEndpointSource::RedirectFollow,
+    })
 }
 
 fn resolve_http_body(body: &str) -> anyhow::Result<ResolvedHttpEndpoint> {
@@ -351,6 +365,7 @@ fn resolve_http_body(body: &str) -> anyhow::Result<ResolvedHttpEndpoint> {
 
 pub(crate) fn resolve_http_endpoint(
     response: HttpDiscoveryResponse,
+    base: &Url,
 ) -> anyhow::Result<ResolvedHttpEndpoint> {
     match response.status_code {
         300..=399 => resolve_http_redirect(
@@ -358,6 +373,7 @@ pub(crate) fn resolve_http_endpoint(
                 .location
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("HTTP redirect has no Location header"))?,
+            base,
         ),
         200..=299 => resolve_http_body(&response.body),
         status_code => anyhow::bail!(
@@ -470,6 +486,7 @@ pub(crate) async fn resolve_srv_endpoint(
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::VecDeque,
         io,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         pin::Pin,
@@ -480,6 +497,7 @@ mod tests {
     use async_trait::async_trait;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, ReadBuf};
 
+    use crate::connectivity::manual::resolve_manual_endpoint;
     use crate::socket::tcp::{TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory};
 
     use super::*;
@@ -555,6 +573,31 @@ mod tests {
 
     struct HttpTestDns {
         queries: Mutex<Vec<DnsQuery>>,
+    }
+
+    struct SequentialTestHost {
+        streams: Mutex<VecDeque<DuplexStream>>,
+        connects: Mutex<Vec<TcpConnectOptions>>,
+    }
+
+    #[async_trait]
+    impl VirtualTcpSocketFactory for SequentialTestHost {
+        type Socket = HttpTestSocket;
+
+        async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
+            self.connects.lock().unwrap().push(options.clone());
+            let stream = self
+                .streams
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("test socket already connected"))?;
+            Ok(HttpTestSocket {
+                stream,
+                local_addr: "192.0.2.2:40000".parse().unwrap(),
+                peer_addr: options.remote_addr,
+            })
+        }
     }
 
     #[async_trait]
@@ -684,38 +727,51 @@ mod tests {
 
     #[test]
     fn http_discovery_interprets_redirect_and_body_forms() {
-        let query = resolve_http_endpoint(HttpDiscoveryResponse {
-            status_code: 302,
-            location: Some("https://discovery.example/?url=tcp://127.0.0.1:11010".to_owned()),
-            body: String::new(),
-        })
+        let base: Url = "https://discovery.example/".parse().unwrap();
+        let query = resolve_http_endpoint(
+            HttpDiscoveryResponse {
+                status_code: 302,
+                location: Some("https://redirect.example/?url=tcp://127.0.0.1:11010".to_owned()),
+                body: String::new(),
+            },
+            &base,
+        )
         .unwrap();
         assert_eq!(query.url.as_str(), "tcp://127.0.0.1:11010");
         assert_eq!(query.source, HttpEndpointSource::RedirectQuery);
 
-        let nested = resolve_http_endpoint(HttpDiscoveryResponse {
-            status_code: 302,
-            location: Some("https://udp://127.0.0.1:11010".to_owned()),
-            body: String::new(),
-        })
+        let nested = resolve_http_endpoint(
+            HttpDiscoveryResponse {
+                status_code: 302,
+                location: Some("https://udp://127.0.0.1:11010".to_owned()),
+                body: String::new(),
+            },
+            &base,
+        )
         .unwrap();
         assert_eq!(nested.url.as_str(), "udp://127.0.0.1:11010");
         assert_eq!(nested.source, HttpEndpointSource::RedirectUrl);
 
-        let direct = resolve_http_endpoint(HttpDiscoveryResponse {
-            status_code: 307,
-            location: Some("quic://127.0.0.1:11012".to_owned()),
-            body: String::new(),
-        })
+        let direct = resolve_http_endpoint(
+            HttpDiscoveryResponse {
+                status_code: 307,
+                location: Some("quic://127.0.0.1:11012".to_owned()),
+                body: String::new(),
+            },
+            &base,
+        )
         .unwrap();
         assert_eq!(direct.url.as_str(), "quic://127.0.0.1:11012");
         assert_eq!(direct.source, HttpEndpointSource::RedirectUrl);
 
-        let body = resolve_http_endpoint(HttpDiscoveryResponse {
-            status_code: 200,
-            location: None,
-            body: "invalid\nwg://127.0.0.1:11011\n".to_owned(),
-        })
+        let body = resolve_http_endpoint(
+            HttpDiscoveryResponse {
+                status_code: 200,
+                location: None,
+                body: "invalid\nwg://127.0.0.1:11011\n".to_owned(),
+            },
+            &base,
+        )
         .unwrap();
         assert_eq!(body.url.as_str(), "wg://127.0.0.1:11011");
         assert_eq!(body.source, HttpEndpointSource::ResponseBody);
@@ -723,16 +779,86 @@ mod tests {
 
     #[test]
     fn http_discovery_reports_malformed_redirect_location() {
-        let error = resolve_http_endpoint(HttpDiscoveryResponse {
-            status_code: 302,
-            location: Some("not a URL".to_owned()),
-            body: String::new(),
-        })
+        // Note: a space-containing location such as "not a URL" is a legal
+        // relative reference and now resolves against the base URL like a
+        // browser would; only unparseable locations still fail here.
+        let error = resolve_http_endpoint(
+            HttpDiscoveryResponse {
+                status_code: 302,
+                location: Some("https://[".to_owned()),
+                body: String::new(),
+            },
+            &"https://discovery.example/".parse().unwrap(),
+        )
         .unwrap_err();
 
         let message = error.to_string();
         assert!(message.contains("parsing redirect URL failed"));
-        assert!(message.contains("not a URL"));
+        assert!(message.contains("https://["));
+    }
+
+    #[test]
+    fn http_discovery_follows_plain_http_redirect_location() {
+        let base: Url = "https://discovery.example/".parse().unwrap();
+        for status_code in [301u16, 302, 303, 307, 308] {
+            let endpoint = resolve_http_endpoint(
+                HttpDiscoveryResponse {
+                    status_code,
+                    location: Some("https://alias.example/next".to_owned()),
+                    body: String::new(),
+                },
+                &base,
+            )
+            .unwrap();
+
+            assert_eq!(endpoint.url.as_str(), "https://alias.example/next");
+            assert_eq!(endpoint.source, HttpEndpointSource::RedirectFollow);
+        }
+
+        // An explicit port must not be mistaken for the concatenated
+        // connector form: stripping "https://" from
+        // "alias.example:8443/next" parses the host as a URL scheme.
+        let endpoint = resolve_http_endpoint(
+            HttpDiscoveryResponse {
+                status_code: 308,
+                location: Some("https://alias.example:8443/next".to_owned()),
+                body: String::new(),
+            },
+            &base,
+        )
+        .unwrap();
+
+        assert_eq!(endpoint.url.as_str(), "https://alias.example:8443/next");
+        assert_eq!(endpoint.source, HttpEndpointSource::RedirectFollow);
+    }
+
+    #[test]
+    fn http_discovery_resolves_relative_redirect_locations() {
+        let base: Url = "https://discovery.example/old".parse().unwrap();
+
+        let path = resolve_http_endpoint(
+            HttpDiscoveryResponse {
+                status_code: 302,
+                location: Some("/next".to_owned()),
+                body: String::new(),
+            },
+            &base,
+        )
+        .unwrap();
+        assert_eq!(path.url.as_str(), "https://discovery.example/next");
+        assert_eq!(path.source, HttpEndpointSource::RedirectFollow);
+
+        let network_path = resolve_http_endpoint(
+            HttpDiscoveryResponse {
+                status_code: 302,
+                location: Some("//other.example/x".to_owned()),
+                body: String::new(),
+            },
+            &base,
+        )
+        .unwrap();
+        assert_eq!(network_path.url.as_str(), "https://other.example/x");
+        assert_eq!(network_path.source, HttpEndpointSource::RedirectFollow);
     }
 
     #[test]
@@ -905,6 +1031,97 @@ mod tests {
         assert_eq!(connects.len(), 1);
         assert_eq!(connects[0].remote_addr, "192.0.2.1:18081".parse().unwrap());
         assert_eq!(connects[0].bind.context.socket_mark, Some(23));
+    }
+
+    async fn serve_http_response(
+        mut stream: DuplexStream,
+        expected_host: &'static str,
+        response: &'static str,
+    ) {
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0; 1024];
+            let len = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(len, 0, "HTTP request ended before its headers");
+            request.extend_from_slice(&chunk[..len]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+        assert!(
+            request.contains(&format!("host: {expected_host}\r\n")),
+            "unexpected request host in {request:?}"
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolver_follows_plain_http_redirects_across_real_requests() {
+        // Hop 1: http://first.example answers 308 with a plain http Location.
+        // Hop 2: http://second.example answers 200 with connector URLs in the
+        // body. Both exchanges run over real HTTP through the resolution
+        // loop, like a CDN domain alias redirecting to the discovery service.
+        let (first_client, first_server) = tokio::io::duplex(8192);
+        let (second_client, second_server) = tokio::io::duplex(8192);
+        let host = Arc::new(SequentialTestHost {
+            streams: Mutex::new(VecDeque::from([first_client, second_client])),
+            connects: Mutex::new(Vec::new()),
+        });
+        let dns: Arc<dyn DnsResolver> = Arc::new(HttpTestDns {
+            queries: Mutex::new(Vec::new()),
+        });
+        let records = Arc::new(TestResolver {
+            txt: String::new(),
+            srv: Vec::new(),
+            queries: Mutex::new(Vec::new()),
+        });
+
+        let first = tokio::spawn(serve_http_response(
+            first_server,
+            "first.example",
+            "HTTP/1.1 308 Permanent Redirect\r\nLocation: http://second.example/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        ));
+        let second = tokio::spawn(serve_http_response(
+            second_server,
+            "second.example",
+            "HTTP/1.1 200 OK\r\nContent-Length: 21\r\nConnection: close\r\n\r\ntcp://127.0.0.1:25888",
+        ));
+
+        let resolver = CoreManualEndpointResolver::new(
+            host.clone(),
+            dns,
+            records,
+            ManualEndpointDiscoveryConfig {
+                user_agent: "easytier/test".to_owned(),
+                network_name: "redirect-network".to_owned(),
+                http_timeout: Duration::from_secs(5),
+                http_ip_version: IpVersion::Both,
+                http_tcp_bind: TcpBindOptions::default(),
+                dns_record_context: SocketContext::default(),
+                srv_protocols: Vec::new(),
+            },
+        );
+
+        let endpoint = resolve_manual_endpoint(&resolver, "http://first.example/".parse().unwrap())
+            .await
+            .unwrap();
+
+        crate::foundation::time::timeout(Duration::from_secs(1), first)
+            .await
+            .expect("first HTTP test server did not finish")
+            .unwrap();
+        crate::foundation::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("second HTTP test server did not finish")
+            .unwrap();
+
+        assert_eq!(endpoint.url.as_str(), "tcp://127.0.0.1:25888");
+        assert_eq!(endpoint.tunnel_prefixes, ["http", "http"]);
+        let connects = host.connects.lock().unwrap();
+        assert_eq!(connects.len(), 2);
+        assert_eq!(connects[1].remote_addr, "192.0.2.1:80".parse().unwrap());
     }
 
     #[tokio::test]
