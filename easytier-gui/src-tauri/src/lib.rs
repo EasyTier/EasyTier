@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod elevate;
+mod login_window;
 
 use anyhow::Context;
 #[cfg(target_os = "android")]
@@ -1447,6 +1448,9 @@ pub fn run_gui() -> std::process::ExitCode {
 
     let app = builder
         .setup(|app| {
+            // Let the connector show login pages in the app's own webview.
+            login_window::install(app.app_handle().clone());
+
             // for logging config
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
