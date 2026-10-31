@@ -108,7 +108,7 @@ func NewHost(ctx context.Context, options Options) (_ *Host, err error) {
 	if options.LogWriter != nil {
 		moduleConfig = moduleConfig.WithStdout(options.LogWriter)
 	}
-	module, err = runtime.InstantiateModule(ctx, compiled, moduleConfig)
+	module, err = runtime.InstantiateModule(withGuestMemoryAllocator(ctx), compiled, moduleConfig)
 	if err != nil {
 		return nil, fmt.Errorf("instantiate embedded EasyTier core: %w", err)
 	}
