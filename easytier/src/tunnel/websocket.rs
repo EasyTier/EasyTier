@@ -94,6 +94,98 @@ fn browser_url(url: &url::Url) -> String {
     url.to_string()
 }
 
+/// Rewrite a DSW path URL into the per-instance subdomain browsers use,
+/// `https://<instance>-proxy-<port>.<gateway host>/dsw-<instance>/proxy/<port>/`.
+fn dsw_browser_url(callback: &url::Url) -> Option<url::Url> {
+    let host = callback.host_str()?;
+    if !host.contains(".dsw-gateway") {
+        return None;
+    }
+
+    let segments: Vec<&str> = callback.path_segments()?.collect();
+    let instance = segments.first()?.strip_prefix("dsw-")?;
+    let proxy = segments.iter().position(|segment| *segment == "proxy")?;
+    let port: u16 = segments.get(proxy + 1)?.parse().ok()?;
+
+    let prefix = format!("{instance}-proxy-{port}");
+    // The websocket URL may already be the subdomain form; do not prefix twice.
+    let mapped_host = if host.starts_with(prefix.as_str()) && host[prefix.len()..].starts_with('.')
+    {
+        host.to_owned()
+    } else {
+        format!("{prefix}.{host}")
+    };
+
+    let mut mapped = callback.clone();
+    mapped.set_host(Some(&mapped_host)).ok()?;
+    let _ = mapped.set_scheme("https");
+    mapped.set_path("/");
+    mapped.set_fragment(None);
+
+    Some(mapped)
+}
+
+/// The browser entry of the gateway the login window returns to: the plain
+/// workspace address, without the proxy path or `appId` query.
+fn browser_gateway_root(url: &url::Url) -> String {
+    if let Some(mapped) = dsw_browser_url(url) {
+        return mapped.to_string();
+    }
+
+    let mut fallback = url.clone();
+    match fallback.scheme() {
+        "ws" => {
+            let _ = fallback.set_scheme("http");
+        }
+        "wss" => {
+            let _ = fallback.set_scheme("https");
+        }
+        _ => {}
+    }
+    fallback.to_string()
+}
+
+/// Rewrite `oauth_callback` inside a sign-in URL so that, after signing in, the
+/// browser lands on the gateway's subdomain form instead of the path form.
+fn rewrite_oauth_callback(login_url: &str) -> String {
+    let Ok(mut url) = url::Url::parse(login_url) else {
+        return login_url.to_owned();
+    };
+
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+
+    let mut rewritten: Option<String> = None;
+    for (key, value) in &pairs {
+        if key == "oauth_callback" {
+            if let Some(mapped) = url::Url::parse(value)
+                .ok()
+                .and_then(|url| dsw_browser_url(&url))
+            {
+                rewritten = Some(mapped.to_string());
+            }
+        }
+    }
+
+    let Some(callback) = rewritten else {
+        return login_url.to_owned();
+    };
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in &pairs {
+        if key == "oauth_callback" {
+            serializer.append_pair(key, &callback);
+        } else {
+            serializer.append_pair(key, value);
+        }
+    }
+    url.set_query(Some(&serializer.finish()));
+
+    url.to_string()
+}
+
 struct WebSocketPacketSink<S> {
     inner: S,
 }
@@ -409,12 +501,23 @@ fn is_login_url(url: &str) -> bool {
         .any(|marker| path.contains(marker))
 }
 
+/// This build only signs in to Alibaba Cloud DSW gateways, in both their forms
+/// (`dsw-gateway-cn-hangzhou.data.aliyun.com` and the per-instance
+/// `2321051-proxy-11011.dsw-gateway-cn-hangzhou.data.aliyun.com`). Anything else
+/// is reported as unsupported instead of parking the user in a login window.
+fn is_supported_gateway(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    host.contains(".dsw-gateway-") && host.ends_with(".data.aliyun.com")
+}
+
 /// Login handler supplied by a GUI frontend (easytier-gui registers one that
 /// shows the login page in its own webview and reads the cookies from there).
-/// Returning the cookies is enough: the connector keeps them in memory and
-/// verifies them against the gateway like any other session.
+/// It receives the redirect target that starts the sign-in flow and the
+/// gateway URL the upgrade was sent to, so the window can go back there and
+/// let the gateway set the session cookie the tunnel needs.
 pub type LoginHandler = std::sync::Arc<
     dyn Fn(
+            String,
             String,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Vec<(String, String)>, String>> + Send>,
@@ -430,32 +533,39 @@ pub fn set_login_handler(handler: LoginHandler) {
     let _ = LOGIN_HANDLER.set(handler);
 }
 
-/// After the login window is closed without signing in, wait this long before
-/// opening another one, so the reconnect loop does not reopen it every second.
+/// After a login window finishes (signed in or closed), wait this long before
+/// opening another one. Attempts that were already in flight when the cookies
+/// were stored still carry the old jar and get redirected again: without this
+/// cooldown they would immediately pop a second window after a successful sign
+/// in.
 const LOGIN_RETRY_COOLDOWN: Duration = Duration::from_secs(60);
 
-static LOGIN_WINDOW_CLOSED_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+static LOGIN_WINDOW_DONE_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
-fn mark_login_window_closed() {
-    if let Ok(mut closed_at) = LOGIN_WINDOW_CLOSED_AT.lock() {
-        *closed_at = Some(Instant::now());
+fn mark_login_window_done() {
+    if let Ok(mut done_at) = LOGIN_WINDOW_DONE_AT.lock() {
+        *done_at = Some(Instant::now());
     }
 }
 
-fn login_window_closed_recently() -> bool {
-    LOGIN_WINDOW_CLOSED_AT
+fn login_window_done_recently() -> bool {
+    LOGIN_WINDOW_DONE_AT
         .lock()
         .ok()
-        .and_then(|closed_at| *closed_at)
-        .is_some_and(|closed_at| closed_at.elapsed() < LOGIN_RETRY_COOLDOWN)
+        .and_then(|done_at| *done_at)
+        .is_some_and(|done_at| done_at.elapsed() < LOGIN_RETRY_COOLDOWN)
 }
 
 /// Run the login through a handler registered by a GUI frontend and keep the
 /// harvested cookies in memory for the next reconnect attempt.
-async fn gui_login(handler: &LoginHandler, login_url: &str) -> Result<(), TunnelError> {
-    tracing::info!("showing the login page in the gui: {login_url}");
+async fn gui_login(
+    handler: &LoginHandler,
+    login_url: &str,
+    gateway_url: &str,
+) -> Result<(), TunnelError> {
+    tracing::info!("showing the login page in the gui: {login_url} (gateway: {gateway_url})");
 
-    let cookies = handler(login_url.to_owned())
+    let cookies = handler(login_url.to_owned(), gateway_url.to_owned())
         .await
         .map_err(|e| websocket_error(format!("gui login failed: {e}")))?;
 
@@ -897,6 +1007,44 @@ where
                 // an absolute target.
                 let resolved = resolve_redirect(&current_url, &location)?;
 
+                // The gateway either redirects straight to an identity provider, or
+                // hands the browser to an SSO callback on another site (DSW now
+                // uses modelscope.cn). Both mean the same thing: a browser has to
+                // sign in, and the tunnel retries with the harvested cookies
+                // afterwards. Only same-host redirects are followed directly.
+                let same_host = match (resolved.host_str(), current_url.host_str()) {
+                    (Some(new), Some(old)) => new == old,
+                    _ => false,
+                };
+
+                // ModelScope DSW does not answer 4xx/5xx when the session it
+                // recognizes is invalid: it sends the upgrade to its own error
+                // page (`modelscope.cn/error?...&code=-30`). That page is not a
+                // WebSocket endpoint, and the browser flow that produced the
+                // cookies did not finish, so report it and drop the cookies
+                // instead of chasing the redirect.
+                if resolved
+                    .path_segments()
+                    .and_then(|mut segments| segments.next_back())
+                    .is_some_and(|last| last == "error" || last.starts_with("error."))
+                {
+                    let code = resolved
+                        .query_pairs()
+                        .find(|(key, _)| key == "code")
+                        .map(|(_, value)| value.to_string());
+                    if !cookie_jar.cookies.is_empty() {
+                        store_cookies(&CookieJar::default());
+                    }
+                    return Err(websocket_error(match code {
+                        Some(code) => format!(
+                            "the gateway rejected the stored cookies and redirected to \
+                             {resolved} (code={code}); they were cleared, the next attempt \
+                             reopens the login window"
+                        ),
+                        None => format!("the gateway redirected to an error page: {resolved}"),
+                    }));
+                }
+
                 // Not signed in yet: open the login window in the background, so
                 // the outer reconnect timeout cannot cancel it. The connector
                 // retries every second, so the next attempt reuses the cookies
@@ -905,7 +1053,7 @@ where
                 // The redirect itself proves the session is invalid, so stored
                 // cookies are not a reason to skip the window — only the guards
                 // below are.
-                if is_login_url(resolved.as_str()) {
+                if is_login_url(resolved.as_str()) || !same_host {
                     if !cookie_jar.cookies.is_empty() {
                         let mut names: Vec<_> = cookie_jar.cookies.keys().cloned().collect();
                         names.sort();
@@ -924,23 +1072,38 @@ where
                         ));
                     }
 
-                    if login_window_closed_recently() {
+                    let gateway_host = current_url.host_str().unwrap_or_default();
+                    if !is_supported_gateway(gateway_host) {
                         return Err(websocket_error(format!(
-                            "redirected to login at {resolved}, but the login window \
-                             was closed without signing in less than {}s ago",
+                            "login redirect from `{gateway_host}` is not supported: this build \
+                             only signs in to Alibaba Cloud DSW gateways \
+                             (`…dsw-gateway-….data.aliyun.com`)"
+                        )));
+                    }
+
+                    if login_window_done_recently() {
+                        return Err(websocket_error(format!(
+                            "redirected to login at {resolved}, but the last login window \
+                             finished less than {}s ago; retrying with the stored cookies",
                             LOGIN_RETRY_COOLDOWN.as_secs()
                         )));
                     }
 
                     let Some(handler) = LOGIN_HANDLER.get().cloned() else {
                         return Err(websocket_error(format!(
-                            "redirected to login at {resolved}, but no login handler is \
-                             registered in this process — start easytier-gui to sign in there"
+                            "redirected to login at {resolved}, but this process has no login \
+                             handler: the DSW sign-in window only exists in the easytier-gui \
+                             desktop app (same process). Start the tunnel from the GUI, or \
+                             copy the cookies some other way"
                         )));
                     };
 
                     LOGIN_IN_PROGRESS.store(true, Ordering::Relaxed);
-                    let login_url = browser_url(&resolved);
+                    let login_url = rewrite_oauth_callback(&browser_url(&resolved));
+                    // The gateway URL the upgrade was sent to: once the sign-in
+                    // provider hands the browser back, the window returns there so
+                    // the gateway can set the session cookie the tunnel needs.
+                    let gateway_url = browser_gateway_root(&current_url);
                     tracing::info!("opening the login window for {login_url}");
 
                     tokio::spawn(async move {
@@ -949,10 +1112,12 @@ where
                         // 400/500/502 and only redirect on a real WebSocket
                         // upgrade, so the login window opens the redirect target
                         // itself, which carries the callback the gateway expects.
-                        if let Err(e) = gui_login(&handler, &login_url).await {
+                        if let Err(e) = gui_login(&handler, &login_url, &gateway_url).await {
                             tracing::warn!("gui login failed: {e}");
-                            mark_login_window_closed();
                         }
+                        // Either way the window is done: attempts that were in
+                        // flight with the old cookies must not reopen it.
+                        mark_login_window_done();
                     });
 
                     return Err(websocket_error(format!(
@@ -961,15 +1126,21 @@ where
                     )));
                 }
 
-                current_url = resolved;
+                current_url = resolved.clone();
+
+                // Same-host redirect that is not a sign-in flow: reconnect there.
                 let new_is_wss = is_wss(&current_url)?;
-                // easytier's socket_addrs only accepts an explicit port or an easytier
-                // scheme; http/https have no easytier default port, so fill it in here.
-                let mut resolve_url = current_url.clone();
-                if resolve_url.port().is_none() {
-                    let _ = resolve_url.set_port(Some(if new_is_wss { 443 } else { 80 }));
-                }
-                let addr = SocketAddr::from_url(resolve_url, IpVersion::Both).await?;
+                let host = current_url
+                    .host_str()
+                    .ok_or_else(|| websocket_error(format!("redirect has no host: {resolved}")))?;
+                let port = current_url
+                    .port()
+                    .unwrap_or(if new_is_wss { 443 } else { 80 });
+                let addr = tokio::net::lookup_host((host, port))
+                    .await
+                    .map_err(|e| websocket_error(format!("cannot resolve {host}:{port}: {e}")))?
+                    .next()
+                    .ok_or_else(|| websocket_error(format!("no address for {host}:{port}")))?;
                 let socket = if addr.is_ipv4() {
                     TcpSocket::new_v4()?
                 } else {
