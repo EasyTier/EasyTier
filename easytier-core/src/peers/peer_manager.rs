@@ -2687,6 +2687,7 @@ impl PeerOutboundPacketRouter {
             Some(&self.traffic_metrics),
             msg,
             dst_peer_id,
+            packet_policy.p2p_only,
         )
         .await;
         if result.is_ok() {
@@ -2849,6 +2850,7 @@ impl PeerOutboundPacketRouter {
                 Some(&self.traffic_metrics),
                 msg,
                 cur_to_peer_id,
+                packet_policy.p2p_only,
             )
             .await;
         }
@@ -2927,6 +2929,7 @@ impl PeerOutboundPacketRouter {
                 Some(&self.traffic_metrics),
                 msg,
                 *peer_id,
+                packet_policy.p2p_only,
             )
             .await
             {
@@ -3190,6 +3193,7 @@ impl PeerPacketRouter {
                 tx_metrics,
                 ret,
                 to_peer_id,
+                false,
             )
             .await;
             if ret.is_err() {
@@ -3521,6 +3525,7 @@ pub(crate) async fn send_msg_internal(
     direct_tx_metrics: Option<&Arc<TrafficMetricRecorder>>,
     msg: ZCPacket,
     dst_peer_id: PeerId,
+    p2p_only: bool,
 ) -> Result<(), Error> {
     let policy = get_next_hop_policy(msg.peer_manager_header().unwrap().is_latency_first());
     let is_latency_first = msg.peer_manager_header().unwrap().is_latency_first();
@@ -3543,6 +3548,9 @@ pub(crate) async fn send_msg_internal(
         let msg = if let Some(peer) = peers.get_peer_by_id(dst_peer_id) {
             match peer.try_send_msg(msg).await? {
                 None => return Ok(()),
+                Some(_) if p2p_only => {
+                    return Err(Error::PeerNoConnectionError(dst_peer_id));
+                }
                 Some(msg) => msg,
             }
         } else {

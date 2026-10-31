@@ -606,25 +606,32 @@ mod tests {
                     protocol: 6,
                 }),
             ] {
-                let mut packet = ZCPacket::new_with_payload(b"business data");
-                packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
-                packet.flow_key = flow_key;
-                send_msg_internal(&peers, &foreign, &relay, None, packet, 2)
+                for p2p_only in [true, false] {
+                    let mut packet = ZCPacket::new_with_payload(b"business data");
+                    packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+                    packet.flow_key = flow_key;
+                    let result =
+                        send_msg_internal(&peers, &foreign, &relay, None, packet, 2, p2p_only)
+                            .await;
+                    if !direct && p2p_only {
+                        assert!(matches!(result, Err(Error::PeerNoConnectionError(2))));
+                        continue;
+                    }
+                    result.unwrap();
+                    let envelope = tokio::time::timeout(
+                        Duration::from_secs(1),
+                        recv_packet_envelope_from_chan(&mut receiver),
+                    )
                     .await
+                    .unwrap()
                     .unwrap();
-                let envelope = tokio::time::timeout(
-                    Duration::from_secs(1),
-                    recv_packet_envelope_from_chan(&mut receiver),
-                )
-                .await
-                .unwrap()
-                .unwrap();
-                let (packet, ingress) = envelope.into_parts();
-                assert_eq!(packet.payload(), b"business data");
-                assert_eq!(
-                    ingress.peer_connection().unwrap().1,
-                    remote_conns[remote_index].get_conn_id()
-                );
+                    let (packet, ingress) = envelope.into_parts();
+                    assert_eq!(packet.payload(), b"business data");
+                    assert_eq!(
+                        ingress.peer_connection().unwrap().1,
+                        remote_conns[remote_index].get_conn_id()
+                    );
+                }
             }
         }
     }
