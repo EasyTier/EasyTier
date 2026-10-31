@@ -1,4 +1,5 @@
 import { type } from '@tauri-apps/plugin-os';
+import { androidPreferences, saveAndroidPreferences } from './android_management';
 
 export interface WebClientConfig {
     config_server_url?: string
@@ -26,18 +27,20 @@ export interface RemoteMode {
     remote_rpc_address: string
 }
 
-export function saveMode(mode: Mode) {
+export async function saveMode(mode: Mode) {
+    if (type() === 'android') {
+        await saveAndroidPreferences({ profile: mode })
+        return
+    }
     localStorage.setItem('app_mode', JSON.stringify(mode))
 }
 
 
 export function loadMode(): Mode {
+    if (type() === 'android') return androidPreferences().profile
     const modeStr = localStorage.getItem('app_mode')
     if (modeStr) {
         let mode = JSON.parse(modeStr) as Mode
-        if (type() === 'android') {
-            return { ...mode, mode: 'normal' }
-        }
         return mode
     } else {
         return { mode: 'normal' }
