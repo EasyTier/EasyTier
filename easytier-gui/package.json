@@ -9,6 +9,7 @@
     "build": "pnpm --dir ../easytier-web/frontend-lib build && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:mobile-vpn": "vitest run src/composables/mobile_vpn*.test.ts",
+    "test:settings": "vitest run src/composables/settings.test.ts src/components/GuiSettings.test.ts",
     "tauri": "tauri",
     "lint": "eslint . --ignore-pattern src-tauri",
     "lint:fix": "eslint . --ignore-pattern src-tauri --fix"
@@ -45,6 +46,7 @@
     "default-gateway": "^7.2.2",
     "eslint": "^9.12.0",
     "eslint-plugin-format": "^0.1.2",
+    "happy-dom": "16.8.1",
     "postcss": "^8.4.47",
     "tailwindcss": "=3.4.17",
     "typescript": "^5.6.2",

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod elevate;
+mod settings;
 
 use anyhow::Context;
 #[cfg(target_os = "android")]
@@ -1429,13 +1430,17 @@ pub fn run_gui() -> std::process::ExitCode {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            app.webview_windows()
-                .values()
-                .next()
-                .expect("Sorry, no window found")
-                .set_focus()
-                .expect("Can't Bring Window to Focus");
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+                let _ = set_dock_visibility(app.clone(), true);
+            }
         }));
+        builder = builder.plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
     }
 
     builder = builder
@@ -1447,6 +1452,7 @@ pub fn run_gui() -> std::process::ExitCode {
 
     let app = builder
         .setup(|app| {
+            app.manage(settings::SettingsState::load(app.app_handle())?);
             // for logging config
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
@@ -1488,6 +1494,8 @@ pub fn run_gui() -> std::process::ExitCode {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            settings::get_gui_settings,
+            settings::save_gui_settings,
             parse_network_config,
             generate_network_config,
             run_network_instance,
@@ -1519,9 +1527,14 @@ pub fn run_gui() -> std::process::ExitCode {
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                let _ = _win.hide();
-                let _ = set_dock_visibility(_win.app_handle().clone(), false);
-                api.prevent_close();
+                if _win.state::<settings::SettingsState>().close_to_tray() {
+                    if _win.hide().is_ok() {
+                        let _ = set_dock_visibility(_win.app_handle().clone(), false);
+                        api.prevent_close();
+                    }
+                } else {
+                    _win.app_handle().exit(0);
+                }
             }
             _ => {}
         })

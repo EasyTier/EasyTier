@@ -1,0 +1,7 @@
+{
+  "identifier": "desktop-autostart",
+  "description": "Manage desktop login startup from GUI settings",
+  "windows": ["main"],
+  "platforms": ["windows", "linux", "macOS"],
+  "permissions": ["autostart:default"]
+}

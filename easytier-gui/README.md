@@ -2,6 +2,30 @@
 
 this is a GUI implementation for EasyTier, based on Tauri2.
 
+## Settings
+
+Open **Settings** in the upper-right corner to manage desktop startup and window
+behavior. Language, mode, configuration server, logs, About, and Exit are also
+available there.
+
+- **Launch at login** starts the GUI when you sign in to the operating system.
+  This switch takes effect immediately, independently of Save or Cancel.
+- **Minimize to tray on close** keeps the GUI and its networks running when you close the
+  window. This is enabled by default. Disable it to exit when closing the window;
+  use Exit to quit explicitly in either case.
+- **Start a network automatically** lets you select a saved network in
+  normal mode. Click Save to persist this choice and the close behavior. The GUI
+  starts the selected network once after its initial connection is ready; it does
+  not restart it on reconnect or if it is already running. A deleted selection
+  produces an error rather than starting another network.
+
+Enable both launch at login and automatic network startup to connect after signing
+in. This does not replace service mode for running before login. Desktop startup
+options are hidden on mobile platforms.
+
+When trying a new executable, exit any existing GUI instance first. Launching a
+second instance brings the existing instance to the foreground.
+
 ## Compile
 
 ### Install prerequisites

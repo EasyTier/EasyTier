@@ -81,6 +81,9 @@ jobs:
           pnpm-build-filter: easytier-gui...
           token: ${{ github.token }}
 
+      - name: Test GUI settings
+        run: pnpm --dir easytier-gui test:settings
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: gui-check-x86_64-unknown-linux-gnu

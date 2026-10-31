@@ -1,3 +1,19 @@
+gui_settings:
+  title: Settings
+  autostart: Launch at login
+  autostart_hint: Open EasyTier GUI when you sign in. This switch takes effect immediately. Administrator authorization may be required.
+  close_to_tray: Minimize to tray on close
+  close_to_tray_hint: Keep running in the background when the window is closed. Use Exit in the tray or settings to quit.
+  auto_start_network: Start a network automatically
+  auto_start_network_hint: Run the selected network each time the GUI opens. Enable Launch at login to connect automatically after signing in.
+  normal_mode_only: Available in normal mode only. Service mode manages startup through the system service; remote mode does not start networks automatically.
+  startup_network: Network to start
+  no_networks: No networks available. Create and save a network configuration first.
+  networks_unavailable: Cannot load networks. Connect the client and try again.
+  network_missing: The selected network no longer exists. Please select another network.
+  network_start_failed: Failed to start the selected network
+  tools: More settings
+  saved: Settings saved
 network: Network
 networking_method: Networking Method
 public_server: Public Server
