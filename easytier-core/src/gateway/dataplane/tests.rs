@@ -542,9 +542,29 @@ async fn listener_and_accepted_stream_own_independent_flow_lifetimes() {
     assert_eq!(&buf, b"after-listener-drop");
 
     drop(client);
-    assert_eq!(a.gateway.entries.count(), 0);
+    assert_eq!(a.gateway.entries.count(), 1);
+    assert_eq!(server.read(&mut buf).await.unwrap(), 0);
+    // The closed application no longer reads, but TCP must keep draining
+    // incoming data so the peer's queued data and FIN can finish sending.
+    tokio::time::timeout(timeout, async {
+        server.write_all(&vec![0; 1024 * 1024]).await.unwrap();
+        server.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
     drop(server);
-    assert_eq!(b.gateway.entries.count(), 0);
+
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while a.gateway.entries.count() != 0
+            || b.gateway.entries.count() != 0
+            || a.gateway.net.lock().await.is_some()
+            || b.gateway.net.lock().await.is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("TCP teardown must release the last flow and stack leases");
 
     stop_data_plane_pair(&a, &b).await;
 }

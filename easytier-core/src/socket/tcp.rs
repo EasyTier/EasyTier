@@ -363,15 +363,14 @@ where
     type Accepted = AcceptedTcpSocket<F>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
-        if self.listener.is_some() {
-            return Ok(());
-        }
-
+        // Calling listen again replaces the old binding, including after an error.
+        self.listener = None;
         let listener = self.factory.bind_tcp(self.options.clone()).await?;
         let local_addr = listener.local_addr()?;
         self.url
             .set_port(Some(local_addr.port()))
             .map_err(|_| anyhow::anyhow!("failed to update tcp listener port for {}", self.url))?;
+        self.options.bind.local_addr = Some(local_addr);
         self.listener = Some(listener);
         Ok(())
     }
@@ -749,5 +748,26 @@ mod tests {
         let accepted = socket_listener.accept().await.unwrap();
 
         assert_eq!(accepted.peer_addr().unwrap(), peer_addr);
+    }
+    #[tokio::test]
+    async fn tcp_socket_listener_releases_failed_binding_and_keeps_assigned_port() {
+        let bound_addr: SocketAddr = "127.0.0.1:12010".parse().unwrap();
+        let listener = Arc::new(MockTcpListener::new(
+            bound_addr,
+            vec![Err(io::ErrorKind::BrokenPipe.into())],
+        ));
+        let factory = Arc::new(MockTcpListenerFactory::new(listener));
+        let mut socket_listener = TcpSocketListener::new_with_options(
+            "tcp://127.0.0.1:0".parse().unwrap(),
+            TcpListenOptions::direct_connect("127.0.0.1:0".parse().unwrap()),
+            factory.clone(),
+        );
+        socket_listener.listen().await.unwrap();
+        assert!(socket_listener.accept().await.is_err());
+        assert!(socket_listener.listener.is_some());
+        socket_listener.listen().await.unwrap();
+        let binds = factory.binds.lock().unwrap();
+        assert_eq!(binds.len(), 2);
+        assert_eq!(binds[1].bind.local_addr, Some(bound_addr));
     }
 }

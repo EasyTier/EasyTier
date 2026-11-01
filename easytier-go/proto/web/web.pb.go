@@ -95,8 +95,11 @@ type HeartbeatRequest struct {
 	SupportConfigSource     bool                   `protobuf:"varint,9,opt,name=support_config_source,json=supportConfigSource,proto3" json:"support_config_source,omitempty"`
 	FailedNetworkInstances  []*common.UUID         `protobuf:"bytes,10,rep,name=failed_network_instances,json=failedNetworkInstances,proto3" json:"failed_network_instances,omitempty"`
 	SupportHeartbeatPolicy  bool                   `protobuf:"varint,11,opt,name=support_heartbeat_policy,json=supportHeartbeatPolicy,proto3" json:"support_heartbeat_policy,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Supports explicit manual mode patches and typed empty-manual readback.
+	// Older peers silently ignore unknown patch fields; missing means false.
+	SupportManualRoutesPatch bool `protobuf:"varint,12,opt,name=support_manual_routes_patch,json=supportManualRoutesPatch,proto3" json:"support_manual_routes_patch,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *HeartbeatRequest) Reset() {
@@ -202,6 +205,13 @@ func (x *HeartbeatRequest) GetFailedNetworkInstances() []*common.UUID {
 func (x *HeartbeatRequest) GetSupportHeartbeatPolicy() bool {
 	if x != nil {
 		return x.SupportHeartbeatPolicy
+	}
+	return false
+}
+
+func (x *HeartbeatRequest) GetSupportManualRoutesPatch() bool {
+	if x != nil {
+		return x.SupportManualRoutesPatch
 	}
 	return false
 }
@@ -346,7 +356,7 @@ const file_web_proto_rawDesc = "" +
 	"\fDeviceOsInfo\x12\x17\n" +
 	"\aos_type\x18\x01 \x01(\tR\x06osType\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
-	"\fdistribution\x18\x03 \x01(\tR\fdistribution\"\x9d\x04\n" +
+	"\fdistribution\x18\x03 \x01(\tR\fdistribution\"\xdc\x04\n" +
 	"\x10HeartbeatRequest\x12+\n" +
 	"\n" +
 	"machine_id\x18\x01 \x01(\v2\f.common.UUIDR\tmachineId\x12%\n" +
@@ -362,7 +372,8 @@ const file_web_proto_rawDesc = "" +
 	"\x15support_config_source\x18\t \x01(\bR\x13supportConfigSource\x12F\n" +
 	"\x18failed_network_instances\x18\n" +
 	" \x03(\v2\f.common.UUIDR\x16failedNetworkInstances\x128\n" +
-	"\x18support_heartbeat_policy\x18\v \x01(\bR\x16supportHeartbeatPolicy\"\xb6\x01\n" +
+	"\x18support_heartbeat_policy\x18\v \x01(\bR\x16supportHeartbeatPolicy\x12=\n" +
+	"\x1bsupport_manual_routes_patch\x18\f \x01(\bR\x18supportManualRoutesPatch\"\xb6\x01\n" +
 	"\x11HeartbeatResponse\x127\n" +
 	"\x15heartbeat_interval_ms\x18\x01 \x01(\rH\x00R\x13heartbeatIntervalMs\x88\x01\x01\x125\n" +
 	"\x14heartbeat_timeout_ms\x18\x02 \x01(\rH\x01R\x12heartbeatTimeoutMs\x88\x01\x01B\x18\n" +

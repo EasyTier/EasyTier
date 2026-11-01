@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level, instrument};
 
@@ -42,7 +42,6 @@ where
     socket_context: SocketContext,
     tasks: Arc<Mutex<JoinSet<()>>>,
 
-    interest_tids: Arc<DashSet<u32>>,
     tid_to_socket: Arc<DashMap<u32, Vec<PunchedUdpSocket<R::Socket>>>>,
 }
 
@@ -68,7 +67,6 @@ where
             socket_context,
             tasks,
 
-            interest_tids: Arc::new(DashSet::new()),
             tid_to_socket: Arc::new(DashMap::new()),
         }
     }
@@ -80,12 +78,11 @@ where
     pub async fn add_new_socket(&self, socket: Arc<R::Socket>) -> anyhow::Result<()> {
         let socket_map = self.sockets.clone();
         let local_addr = socket.local_addr()?;
-        let interest_tids = self.interest_tids.clone();
         let tid_to_socket = self.tid_to_socket.clone();
         socket_map.insert(local_addr, socket.clone());
         self.tasks.lock().unwrap().spawn(
             async move {
-                let _socket_map_guard = RemoveSocketOnDrop {
+                let socket_map_guard = RemoveSocketOnDrop {
                     sockets: socket_map,
                     local_addr,
                 };
@@ -106,17 +103,18 @@ where
 
                     tracing::debug!(?addr, ?tid, "got udp hole punch packet");
 
-                    if interest_tids.contains(&tid) {
+                    if let Some(mut punched) = tid_to_socket.get_mut(&tid) {
                         tracing::info!(?addr, ?tid, "got hole punching packet with interest tid");
-                        tid_to_socket
-                            .entry(tid)
-                            .or_default()
-                            .push(PunchedUdpSocket {
-                                socket: socket.clone(),
-                                tid,
-                                remote_addr: addr,
-                            });
-                        break;
+                        // Stop receiving and remove the candidate before handing it off.
+                        // The consumer may immediately reuse the socket or rebind its port.
+                        drop(socket_map_guard);
+                        tracing::debug!(?local_addr, "udp socket recv loop end");
+                        punched.push(PunchedUdpSocket {
+                            socket,
+                            tid,
+                            remote_addr: addr,
+                        });
+                        return;
                     }
                 }
                 tracing::debug!(?local_addr, "udp socket recv loop end");
@@ -170,7 +168,7 @@ where
     }
 
     pub fn add_interest_tid(&self, tid: u32) {
-        self.interest_tids.insert(tid);
+        self.tid_to_socket.entry(tid).or_default();
     }
 
     pub fn add_intreast_tid(&self, tid: u32) {
@@ -178,7 +176,6 @@ where
     }
 
     pub fn remove_interest_tid(&self, tid: u32) {
-        self.interest_tids.remove(&tid);
         self.tid_to_socket.remove(&tid);
     }
 
@@ -196,7 +193,6 @@ where
             .field("sockets", &self.sockets.len())
             .field("max_socket_count", &self.max_socket_count)
             .field("started", &self.started())
-            .field("interest_tids", &self.interest_tids.len())
             .field("tid_to_socket", &self.tid_to_socket.len())
             .finish()
     }
@@ -323,12 +319,36 @@ mod tests {
                 assert_eq!(punched.tid, tid);
                 assert_eq!(punched.remote_addr, remote_addr);
                 assert!(Arc::ptr_eq(&punched.socket, &socket));
+                assert!(array.sockets.is_empty());
+                drop(socket);
+                assert_eq!(Arc::strong_count(&punched.socket), 1);
                 return;
             }
             tokio::task::yield_now().await;
         }
 
         panic!("punched socket was not recorded");
+    }
+
+    #[tokio::test]
+    async fn removing_interest_drops_hits_and_ignores_late_packets() {
+        let array = UdpSocketArray::new(0, Arc::new(MockFactory::new()));
+        let tid = 7;
+        array.add_interest_tid(tid);
+        array.remove_interest_tid(tid);
+        let socket = Arc::new(MockSocket::new(
+            SocketAddr::from(([127, 0, 0, 1], 20000)),
+            vec![(
+                new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN)
+                    .into_bytes()
+                    .to_vec(),
+                SocketAddr::from(([10, 0, 0, 1], 1234)),
+            )],
+        ));
+        array.add_new_socket(socket).await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(array.tid_to_socket.is_empty());
+        assert_eq!(array.sockets.len(), 1);
     }
 
     #[tokio::test]

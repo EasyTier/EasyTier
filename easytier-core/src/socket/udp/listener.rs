@@ -116,15 +116,16 @@ where
     type Accepted = UdpSession;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
-        if self.layer.is_some() {
-            return Ok(());
-        }
+        self.layer = None;
+        self.socket = None;
+        *self.layer_ref.lock().unwrap() = None;
 
         let socket = self.factory.bind_udp(self.request.bind.clone()).await?;
         let local_addr = socket.local_addr()?;
         self.url
             .set_port(Some(local_addr.port()))
             .map_err(|_| anyhow::anyhow!("failed to update udp listener port for {}", self.url))?;
+        self.request.bind.local_addr = Some(local_addr);
 
         let layer = Arc::new(UdpSessionLayer::new_with_stun_responder(
             socket.clone(),

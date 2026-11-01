@@ -138,7 +138,8 @@ jobs:
           set -euo pipefail
           cargo_version=$(cargo metadata --format-version 1 --no-deps \
             --manifest-path easytier/Cargo.toml | jq -r '.packages[0].version')
-          last_tag=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)
+          # Rolling tags such as nightly are not package versions.
+          last_tag=$(git describe --tags --match 'v[0-9]*' --abbrev=0 HEAD 2>/dev/null || true)
           if [ -n "$last_tag" ]; then
             base_version=$(printf '%s\n' "$cargo_version" "${last_tag#v}" \
               | sort -V | tail -n 1)

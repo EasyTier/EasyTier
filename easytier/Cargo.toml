@@ -113,7 +113,7 @@ rcgen = { version = "0.14.10", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 
 # for tap device
-tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", rev = "5ba6be073e5b486b68c12f80fac5cfb50601f024", features = [
+tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", rev = "43621f70b02c47086b40d34fdde997719668a6c0", features = [
     "async",
 ], optional = true }
 # for net ns
@@ -426,6 +426,8 @@ endpoint-discovery = [
     "dep:rustls",
     "easytier-core/endpoint-discovery",
 ]
+# Trust policy is opt-in, including when building with full features.
+system-certificates = ["endpoint-discovery", "easytier-core/system-certificates"]
 dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]
 dhcp-ipv6 = ["easytier-core/dhcp-ipv6"]
 public-ipv6-provider = ["linux-netlink", "easytier-core/public-ipv6-provider"]

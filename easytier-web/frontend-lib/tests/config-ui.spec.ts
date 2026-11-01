@@ -416,6 +416,7 @@ describe('Config.vue network config projection', () => {
     expect(input(wrapper, '#no_tun').checked).toBe(true)
 
     expect(input(wrapper, '#hostname').value).toBe('host-a')
+    expect(input(wrapper, '#tld_dns_zone').value).toBe('et.net.')
     expect(input(wrapper, '#subnet-proxy').value).toBe('10.10.0.0/16,172.16.1.0/24')
     expect(input(wrapper, '#vpn_portal_wireguard_listen').value).toBe('0.0.0.0:22023')
     expect(input(wrapper, '#dev_name').value).toBe('tun-test')
@@ -446,6 +447,7 @@ describe('Config.vue network config projection', () => {
     await wrapper.find('#no_tun').setValue(false)
     await wrapper.find('#disable_ipv6').setValue(false)
     await setInput(wrapper, '#hostname', 'host-edited')
+    await setInput(wrapper, '#tld_dns_zone', 'nas.internal.')
     await setInput(wrapper, '#subnet-proxy', '10.7.0.0/16,172.17.0.0/16')
     await setInput(wrapper, '#vpn_portal_wireguard_listen', '[::]:23000')
     await setInput(wrapper, 'input[data-add-label="add_listener_url"]', 'tcp://0.0.0.0:13010')
@@ -474,6 +476,7 @@ describe('Config.vue network config projection', () => {
       no_tun: false,
       disable_ipv6: false,
       hostname: 'host-edited',
+      tld_dns_zone: 'nas.internal.',
       proxy_cidrs: ['10.7.0.0/16', '172.17.0.0/16'],
       vpn_portal_config: {
         wireguard_listen: '[::]:23000',
@@ -509,6 +512,7 @@ describe('Config.vue network config projection', () => {
       network_secret: 'secret-edited',
       peer_urls: ['tcp://peer-x:11010', 'udp://peer-y:11010'],
       listener_urls: ['tcp://0.0.0.0:13010'],
+      tld_dns_zone: 'nas.internal.',
       mtu: 1260,
       instance_recv_bps_limit: '9007199254740993',
       vpn_portal_config: {
@@ -528,6 +532,9 @@ describe('Config.vue network config projection', () => {
         dst_port: 9090,
       }],
     })
+
+    await setInput(wrapper, '#tld_dns_zone', '')
+    expect(toBackendNetworkConfig(curNetwork).tld_dns_zone).toBeUndefined()
   })
 
   it('shows a flag the configuration does not state as the value the core resolves', async () => {

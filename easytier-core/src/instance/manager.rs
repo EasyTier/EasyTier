@@ -387,7 +387,11 @@ where
         let instance_state_changes = self.instance_state_changes.clone();
         runtime.spawn(async move {
             if let Err(error) = instance.start().await {
-                tracing::error!(%error, %instance_id, "instance failed to start");
+                tracing::error!(
+                    error = %format_args!("{error:#}"),
+                    %instance_id,
+                    "instance failed to start"
+                );
             }
             instance_state_changes.mark_changed();
             notifier.notify_one();

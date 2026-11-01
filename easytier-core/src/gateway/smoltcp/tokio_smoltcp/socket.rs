@@ -97,6 +97,15 @@ pub struct TcpStream {
 }
 
 impl TcpStream {
+    /// Release the application stream while the reactor finishes TCP teardown.
+    pub(crate) fn close(self, keep_alive: impl Send + 'static) {
+        self.reactor.close_tcp(
+            self.handle,
+            Box::new(keep_alive),
+            smoltcp::time::Instant::now() + super::socket_allocator::TCP_TIMEOUT,
+        );
+    }
+
     pub(super) async fn connect(
         reactor: Arc<Reactor>,
         local_endpoint: IpEndpoint,
@@ -331,21 +340,21 @@ impl UdpSocket {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration as StdDuration;
+    use std::{sync::Arc, time::Duration as StdDuration};
 
     use smoltcp::{
         iface::Config,
         phy::{DeviceCapabilities, Medium},
         socket::tcp,
         time::Duration,
-        wire::{HardwareAddress, Ipv4Address, TcpControl, TcpSeqNumber},
+        wire::{HardwareAddress, Ipv4Address, Ipv4Packet, TcpControl, TcpPacket, TcpSeqNumber},
     };
 
     use super::super::{
         Net, NetConfig, channel_device,
         test_utils::{TcpPackets, recv_tcp, recv_tcp_for_port},
     };
-    use super::{TCP_LISTENER_MAX_PENDING, TcpListener};
+    use super::{TCP_LISTENER_MAX_PENDING, TcpListener, TcpStream};
 
     const LISTEN_ADDR: Ipv4Address = Ipv4Address::new(10, 126, 126, 1);
     const LISTEN_PORT: u16 = 34569;
@@ -415,6 +424,136 @@ mod tests {
             .into_iter()
             .map(|handle| listener.reactor.get_socket::<tcp::Socket>(handle).state())
             .collect()
+    }
+
+    async fn connected_stream(
+        net: &Net,
+        ingress: &tokio::sync::mpsc::Sender<std::io::Result<Vec<u8>>>,
+        egress: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    ) -> TcpStream {
+        let mut listener = net
+            .tcp_bind("10.126.126.1:34569".parse().unwrap())
+            .await
+            .unwrap();
+        let client_addr = Ipv4Address::new(10, 126, 126, 2);
+        let sequence = begin_handshake(ingress, egress, client_addr, 40000, 1000).await;
+        finish_handshake(ingress, client_addr, 40000, 1000, sequence).await;
+        tokio::time::timeout(StdDuration::from_secs(1), listener.accept())
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+    }
+
+    #[tokio::test]
+    async fn closing_stream_retransmits_fin_and_retains_time_wait() {
+        let (net, ingress, mut egress) = test_net();
+        let stream = connected_stream(&net, &ingress, &mut egress).await;
+        let reactor = stream.reactor.clone();
+        let keep_alive = Arc::new(());
+        let retained = Arc::downgrade(&keep_alive);
+        stream.close(keep_alive);
+
+        let fin = recv_tcp(&mut egress).await;
+        assert_eq!(fin.control, TcpControl::Fin);
+        // Lose the first FIN. The application handle is gone, but the reactor
+        // must still retransmit the same sequence number.
+        let retransmit = tokio::time::timeout(StdDuration::from_secs(3), egress.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let ipv4 = Ipv4Packet::new_checked(&retransmit).unwrap();
+        let tcp = TcpPacket::new_checked(ipv4.payload()).unwrap();
+        assert!(tcp.fin());
+        assert_eq!(tcp.seq_number(), fin.sequence);
+
+        let client_addr = Ipv4Address::new(10, 126, 126, 2);
+        let peer_fin = PACKETS.fin(client_addr, 40000, TcpSeqNumber(1001), fin.sequence + 1);
+        ingress.send(Ok(peer_fin.clone())).await.unwrap();
+        let ack = recv_tcp(&mut egress).await;
+        assert_eq!(ack.control, TcpControl::None);
+        assert_eq!(ack.ack_number, Some(TcpSeqNumber(1002)));
+        assert!(retained.upgrade().is_some());
+
+        // Lose our final ACK. TIME-WAIT must acknowledge the repeated FIN.
+        ingress.send(Ok(peer_fin)).await.unwrap();
+        let ack = recv_tcp(&mut egress).await;
+        assert_eq!(ack.control, TcpControl::None);
+        assert_eq!(ack.ack_number, Some(TcpSeqNumber(1002)));
+        tokio::time::timeout(StdDuration::from_secs(15), async {
+            while retained.upgrade().is_some() {
+                tokio::time::sleep(StdDuration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("TIME-WAIT must eventually release the socket and its leases");
+        assert_eq!(
+            reactor.socket_allocator().sockets().lock().iter().count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_stream_deadline_sends_reset_and_releases_socket() {
+        let (net, ingress, mut egress) = test_net();
+        let stream = connected_stream(&net, &ingress, &mut egress).await;
+        let reactor = stream.reactor.clone();
+        let keep_alive = Arc::new(());
+        let retained = Arc::downgrade(&keep_alive);
+        // Exercise the same reactor deadline with a short test budget.
+        reactor.close_tcp(
+            stream.handle,
+            Box::new(keep_alive),
+            smoltcp::time::Instant::now() + Duration::from_millis(150),
+        );
+        let fin = recv_tcp(&mut egress).await;
+        assert_eq!(fin.control, TcpControl::Fin);
+        ingress
+            .send(Ok(PACKETS.ack(
+                Ipv4Address::new(10, 126, 126, 2),
+                40000,
+                TcpSeqNumber(1001),
+                fin.sequence + 1,
+            )))
+            .await
+            .unwrap();
+        // The peer ACKs our FIN but never closes its own half (FIN-WAIT-2).
+        let reset = recv_tcp(&mut egress).await;
+        assert_eq!(reset.control, TcpControl::Rst);
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            while retained.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            reactor.socket_allocator().sockets().lock().iter().count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_reactor_releases_closing_streams() {
+        let (net, ingress, mut egress) = test_net();
+        let stream = connected_stream(&net, &ingress, &mut egress).await;
+        let reactor = stream.reactor.clone();
+        let keep_alive = Arc::new(());
+        let retained = Arc::downgrade(&keep_alive);
+        stream.close(keep_alive);
+        assert_eq!(recv_tcp(&mut egress).await.control, TcpControl::Fin);
+        drop(net);
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            while retained.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("stopping the reactor must release unfinished TCP teardown");
+        assert_eq!(
+            reactor.socket_allocator().sockets().lock().iter().count(),
+            0
+        );
     }
 
     #[tokio::test]

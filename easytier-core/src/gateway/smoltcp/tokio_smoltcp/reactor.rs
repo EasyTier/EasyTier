@@ -24,7 +24,10 @@ use std::{
     sync::Arc,
     task::{Context as TaskContext, Poll, Waker},
 };
-use tokio::{pin, select, sync::Notify};
+use tokio::{
+    pin, select,
+    sync::{Notify, mpsc},
+};
 
 use crate::foundation::time::sleep;
 
@@ -50,11 +53,18 @@ struct TcpListenerRegistry {
 
 type SharedTcpListenerRegistry = Arc<Mutex<TcpListenerRegistry>>;
 
+struct ClosingTcpSocket {
+    handle: OwnedSocketHandle,
+    deadline: Instant,
+    _keep_alive: Box<dyn Send>,
+}
+
 pub(crate) struct Reactor {
     notify: Arc<Notify>,
     iface: BufferInterface,
     socket_allocator: SocketAlloctor,
     tcp_listeners: SharedTcpListenerRegistry,
+    closing_tcp: mpsc::UnboundedSender<ClosingTcpSocket>,
 }
 
 async fn receive(
@@ -203,12 +213,14 @@ fn update_tcp_listeners(
     wakers
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     mut async_iface: impl super::device::AsyncDevice,
     iface: BufferInterface,
     mut device: BufferDevice,
     socket_allocator: SocketAlloctor,
     tcp_listeners: SharedTcpListenerRegistry,
+    mut closing_tcp: mpsc::UnboundedReceiver<ClosingTcpSocket>,
     notify: Arc<Notify>,
     stopper: Arc<Notify>,
 ) -> io::Result<()> {
@@ -219,21 +231,36 @@ async fn run(
         .max_burst_size
         .unwrap_or(MAX_BURST_SIZE);
     let mut recv_buf = VecDeque::with_capacity(max_burst_size);
+    let mut closing = Vec::<ClosingTcpSocket>::new();
+    let mut closed = Vec::new();
     pin!(timer);
 
     loop {
         let packets = device.take_send_queue();
 
         async_iface.send_all(&mut iter(packets).map(Ok)).await?;
+        // Keep routing and stack leases until the last protocol output has
+        // left the device queue. Drop handles outside the socket-set lock.
+        closed.clear();
+        while let Ok(socket) = closing_tcp.try_recv() {
+            closing.push(socket);
+        }
 
         if recv_buf.is_empty() && device.need_wait() {
             let start = Instant::now();
-            let deadline = {
+            let mut deadline = {
                 iface
                     .lock()
                     .poll_delay(start, &socket_allocator.sockets().lock())
                     .unwrap_or(default_timeout)
             };
+            for socket in &closing {
+                deadline = deadline.min(if socket.deadline <= start {
+                    Duration::ZERO
+                } else {
+                    socket.deadline - start
+                });
+            }
 
             if deadline != Duration::ZERO {
                 timer
@@ -243,6 +270,7 @@ async fn run(
                     _ = &mut timer => {},
                     _ = receive(&mut async_iface,&mut recv_buf) => {}
                     _ = notify.notified() => {}
+                    Some(socket) = closing_tcp.recv() => closing.push(socket),
                     _ = stopper.notified() => break,
                 };
             }
@@ -290,6 +318,21 @@ async fn run(
         iface.poll(now, &mut device, &mut sockets);
         listener_wakers.extend(update_tcp_listeners(&mut listeners, &mut sockets));
 
+        if prepare_tcp_close(now, &closing, &mut sockets) {
+            iface.poll(now, &mut device, &mut sockets);
+        }
+        let mut index = 0;
+        while index < closing.len() {
+            let socket = sockets.get::<tcp::Socket>(*closing[index].handle);
+            // Closed can still have an RST to dispatch. TIME-WAIT must also
+            // remain available to acknowledge a retransmitted peer FIN.
+            if socket.state() == tcp::State::Closed && socket.remote_endpoint().is_none() {
+                closed.push(closing.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+
         // wake up all closed sockets (smoltcp seems have a bug that it doesn't wake up closed sockets)
         for (_, socket) in sockets.iter_mut() {
             if let Socket::Tcp(tcp) = socket
@@ -309,6 +352,30 @@ async fn run(
     Ok(())
 }
 
+fn prepare_tcp_close(
+    now: Instant,
+    closing: &[ClosingTcpSocket],
+    sockets: &mut SocketSet<'static>,
+) -> bool {
+    let mut changed = false;
+    for entry in closing {
+        let socket = sockets.get_mut::<tcp::Socket>(*entry.handle);
+        // There is no application reader anymore. Keep the receive window
+        // open so queued peer data cannot prevent its FIN from reaching us.
+        if socket.can_recv() {
+            let _ = socket.recv(|data| (data.len(), ()));
+            changed = true;
+        }
+        // The normal TCP timeout measures inactivity, so ACKs can extend it.
+        // A released application resource has an absolute teardown deadline.
+        if now >= entry.deadline && socket.state() != tcp::State::Closed {
+            socket.abort();
+            changed = true;
+        }
+    }
+    changed
+}
+
 impl Reactor {
     pub fn new(
         async_device: impl super::device::AsyncDevice,
@@ -321,12 +388,14 @@ impl Reactor {
         let notify = Arc::new(Notify::new());
         let socket_allocator = SocketAlloctor::new(buffer_size);
         let tcp_listeners = Arc::new(Mutex::new(TcpListenerRegistry::default()));
+        let (closing_tx, closing_rx) = mpsc::unbounded_channel();
         let fut = run(
             async_device,
             iface.clone(),
             device,
             socket_allocator.clone(),
             tcp_listeners.clone(),
+            closing_rx,
             notify.clone(),
             stopper,
         );
@@ -337,6 +406,7 @@ impl Reactor {
                 iface,
                 socket_allocator,
                 tcp_listeners,
+                closing_tcp: closing_tx,
             },
             fut,
         )
@@ -349,6 +419,21 @@ impl Reactor {
             self.socket_allocator.sockets().lock(),
             |sockets: &mut smoltcp::iface::SocketSet<'_>| sockets.get_mut::<T>(handle),
         )
+    }
+    pub(super) fn close_tcp(
+        &self,
+        handle: OwnedSocketHandle,
+        keep_alive: Box<dyn Send>,
+        deadline: Instant,
+    ) {
+        self.get_socket::<tcp::Socket>(*handle).close();
+        // The receiver and all closing sockets belong to run(), so stopping
+        // the reactor also releases them without a detached cleanup task.
+        let _ = self.closing_tcp.send(ClosingTcpSocket {
+            handle,
+            deadline,
+            _keep_alive: keep_alive,
+        });
     }
     pub fn context(&self) -> MappedMutexGuard<'_, Context> {
         MutexGuard::map(self.iface.lock(), |iface| iface.context())

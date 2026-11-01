@@ -581,10 +581,7 @@ impl VirtualNic {
             config.platform_config(|config| {
                 // Wintun uses the GUID for Windows network profile identity.
                 // Include the name so explicitly shared NICs use the same GUID.
-                let identity = format!("https://easytier.rs/wintun/{}", dev_name.to_lowercase());
-                config.device_guid(
-                    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).as_u128(),
-                );
+                config.device_guid(crate::arch::windows::tun_device_guid(&dev_name).as_u128());
                 config.skip_config(true);
                 config.ring_cap(Some(std::cmp::min(
                     config.min_ring_cap() * 32,

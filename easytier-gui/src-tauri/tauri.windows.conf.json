@@ -7,6 +7,9 @@
             "./*.sys"
         ],
         "windows": {
+            "nsis": {
+                "installerHooks": "./windows/installer-hooks.nsh"
+            },
             "webviewInstallMode": {
                 "type": "embedBootstrapper"
             }

@@ -186,6 +186,143 @@ func testTCPDataPlane(
 	case <-ctx.Done():
 		t.Fatalf("blocked TCP read did not wake: %v", ctx.Err())
 	}
+
+	// FIN gate: Close must half-close the stream so the peer's read ends with
+	// io.EOF. Releasing the resource without shutdown_write drops the socket
+	// instead, which leaves the peer ESTABLISHED forever (the exit-node leak).
+	if err := serverConnection.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set server read deadline: %v", err)
+	}
+	if _, err := serverConnection.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("server read after client close = %v, want io.EOF (FIN not sent)", err)
+	}
+	if err := serverConnection.Close(); err != nil {
+		t.Fatalf("server close after EOF: %v", err)
+	}
+}
+
+// Application deadlines must not prevent the guest from closing TCP.
+func TestTCPCloseAfterExpiredDeadlines(t *testing.T) {
+	past := time.Now().Add(-time.Second)
+	for name, expire := range map[string]func(net.Conn) error{
+		"write": func(c net.Conn) error { return c.SetWriteDeadline(past) },
+		"full":  func(c net.Conn) error { return c.SetDeadline(past) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			host, server, client := startDataPlanePair(t, ctx)
+			defer host.Close(ctx)
+			defer server.Close(ctx)
+			defer client.Close(ctx)
+
+			listener := listenTCPEventually(t, ctx, server)
+			defer listener.Close()
+			accepted := make(chan connectionResult, 1)
+			go func() {
+				connection, err := listener.Accept()
+				accepted <- connectionResult{connection: connection, err: err}
+			}()
+			clientConnection := dialEventually(t, ctx, client,
+				fmt.Sprintf("10.144.0.101:%d", listener.Addr().(*net.TCPAddr).Port))
+			var serverConnection net.Conn
+			select {
+			case result := <-accepted:
+				if result.err != nil {
+					t.Fatalf("accept EasyTier TCP: %v", result.err)
+				}
+				serverConnection = result.connection
+			case <-ctx.Done():
+				t.Fatalf("accept EasyTier TCP: %v", ctx.Err())
+			}
+
+			if err := expire(clientConnection); err != nil {
+				t.Fatalf("set expired client deadline: %v", err)
+			}
+			if err := clientConnection.Close(); err != nil {
+				t.Fatalf("client close after expired deadline: %v", err)
+			}
+			if err := serverConnection.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatalf("set server read deadline: %v", err)
+			}
+			if _, err := serverConnection.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+				t.Fatalf("server read after expired-deadline close = %v, want io.EOF", err)
+			}
+			if err := expire(serverConnection); err != nil {
+				t.Fatalf("set expired server deadline: %v", err)
+			}
+			if err := serverConnection.Close(); err != nil {
+				t.Fatalf("server close after expired deadline: %v", err)
+			}
+		})
+	}
+}
+
+func TestTCPCloseWithBlockedWrite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	host, server, client := startDataPlanePair(t, ctx)
+	defer host.Close(ctx)
+	defer server.Close(ctx)
+	defer client.Close(ctx)
+
+	listener := listenTCPEventually(t, ctx, server)
+	defer listener.Close()
+	accepted := make(chan connectionResult, 1)
+	go func() {
+		connection, err := listener.Accept()
+		accepted <- connectionResult{connection: connection, err: err}
+	}()
+	clientConnection := dialEventually(t, ctx, client,
+		fmt.Sprintf("10.144.0.101:%d", listener.Addr().(*net.TCPAddr).Port))
+	defer clientConnection.Close()
+	var serverConnection net.Conn
+	select {
+	case result := <-accepted:
+		if result.err != nil {
+			t.Fatalf("accept EasyTier TCP: %v", result.err)
+		}
+		serverConnection = result.connection
+	case <-ctx.Done():
+		t.Fatalf("accept EasyTier TCP: %v", ctx.Err())
+	}
+	defer serverConnection.Close()
+	if err := serverConnection.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	written := make(chan error, 1)
+	go func() {
+		_, err := clientConnection.Write(make([]byte, 1024*1024))
+		written <- err
+	}()
+	// Observe real data before withholding reads to fill the TCP windows.
+	if _, err := io.ReadFull(serverConnection, make([]byte, 1)); err != nil {
+		t.Fatalf("read start of blocked write: %v", err)
+	}
+	select {
+	case err := <-written:
+		t.Fatalf("large write completed before Close: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := clientConnection.Close(); err != nil {
+		t.Fatalf("close with blocked write: %v", err)
+	}
+	select {
+	case err := <-written:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("blocked write after Close = %v, want net.ErrClosed", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("Close did not unblock Write: %v", ctx.Err())
+	}
+	// Bytes already accepted by TCP precede FIN; draining them must end in EOF.
+	if _, err := io.Copy(io.Discard, serverConnection); err != nil {
+		t.Fatalf("server read after Close = %v, want EOF", err)
+	}
+	if err := serverConnection.Close(); err != nil {
+		t.Fatalf("server close after EOF: %v", err)
+	}
 }
 
 func testUDPDataPlane(

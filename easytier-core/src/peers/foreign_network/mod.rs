@@ -1216,6 +1216,23 @@ impl ForeignNetworkManager {
         });
     }
 
+    /// Whether the peer map of `network_name` can route a packet back to
+    /// `peer_id`, using the same gateway lookup the packet router performs.
+    #[doc(hidden)]
+    pub async fn has_gateway_for_peer(&self, network_name: &str, peer_id: PeerId) -> Option<bool> {
+        let item = self
+            .data
+            .network_peer_maps
+            .get(network_name)
+            .map(|v| v.clone())?;
+        Some(
+            item.peer_map
+                .get_gateway_peer_id(peer_id, NextHopPolicy::LeastHop)
+                .await
+                .is_some(),
+        )
+    }
+
     pub async fn list_foreign_network_infos(
         &self,
         include_trusted_keys: bool,

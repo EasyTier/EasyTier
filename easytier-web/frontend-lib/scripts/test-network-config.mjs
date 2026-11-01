@@ -168,6 +168,7 @@ function allFieldFixture() {
     mtu: 1280,
     mapped_listeners: ['tcp://127.0.0.1:13010'],
     enable_magic_dns: true,
+    tld_dns_zone: 'nas.internal.',
     enable_private_mode: true,
     enable_quic_proxy: true,
     disable_quic_input: true,

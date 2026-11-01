@@ -25,7 +25,7 @@ pub(super) enum DataPlaneTcpStreamRoute {
 
 /// A TCP stream created by the data-plane API.
 pub struct DataPlaneTcpStream {
-    pub(super) stream: DataPlaneTcpIo,
+    stream: Option<DataPlaneTcpIo>,
     pub(super) local_addr: SocketAddr,
     pub(super) _route: DataPlaneTcpStreamRoute,
     pub(super) _data_plane_lease: Option<DataPlaneLease>,
@@ -53,7 +53,7 @@ impl DataPlaneTcpStream {
         generation: DataPlaneIoGuard,
     ) -> Self {
         Self {
-            stream,
+            stream: Some(stream),
             local_addr,
             _data_plane_lease: data_plane_lease,
             _route: route,
@@ -65,6 +65,21 @@ impl DataPlaneTcpStream {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+}
+
+impl Drop for DataPlaneTcpStream {
+    fn drop(&mut self) {
+        if let Some(DataPlaneTcpIo::Smoltcp(stream)) = self.stream.take() {
+            if self.generation.is_closed() {
+                return;
+            }
+            // The application is done, but FIN retransmissions and the peer's
+            // FIN still need this flow and the network stack until TCP closes.
+            let route = std::mem::replace(&mut self._route, DataPlaneTcpStreamRoute::External);
+            let lease = self._data_plane_lease.take();
+            stream.close((route, lease));
+        }
     }
 }
 
@@ -99,7 +114,7 @@ impl DataPlaneTcpListener {
             FlowData::DataPlaneRoute,
         );
         let accepted = DataPlaneTcpStream::new(
-            Box::new(stream),
+            DataPlaneTcpIo::Smoltcp(stream),
             local_addr,
             Some(self.data_plane_lease.clone()),
             DataPlaneTcpStreamRoute::Accepted { _flow: flow },
@@ -119,7 +134,7 @@ impl AsyncRead for DataPlaneTcpStream {
         if this.generation.ensure_open().is_err() || this.read_closed.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Err(this.generation.closed_io_error()));
         }
-        Pin::new(&mut this.stream).poll_read(cx, buf)
+        Pin::new(this.stream.as_mut().unwrap().as_mut()).poll_read(cx, buf)
     }
 }
 
@@ -134,7 +149,7 @@ impl AsyncWrite for DataPlaneTcpStream {
         {
             return Poll::Ready(Err(this.generation.closed_io_error()));
         }
-        Pin::new(&mut this.stream).poll_write(cx, buf)
+        Pin::new(this.stream.as_mut().unwrap().as_mut()).poll_write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
@@ -143,7 +158,7 @@ impl AsyncWrite for DataPlaneTcpStream {
         {
             return Poll::Ready(Err(this.generation.closed_io_error()));
         }
-        Pin::new(&mut this.stream).poll_flush(cx)
+        Pin::new(this.stream.as_mut().unwrap().as_mut()).poll_flush(cx)
     }
 
     fn poll_shutdown(
@@ -155,6 +170,6 @@ impl AsyncWrite for DataPlaneTcpStream {
         {
             return Poll::Ready(Err(this.generation.closed_io_error()));
         }
-        Pin::new(&mut this.stream).poll_shutdown(cx)
+        Pin::new(this.stream.as_mut().unwrap().as_mut()).poll_shutdown(cx)
     }
 }

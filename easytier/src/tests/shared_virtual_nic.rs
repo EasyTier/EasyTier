@@ -554,18 +554,24 @@ fn shared_tun_claim_cleanup_outlives_member_runtime() {
 #[case::static_ipv4(false)]
 #[case::with_dhcpv6(true)]
 #[tokio::test]
-#[serial_test::serial]
 async fn same_namespace_members_share_tun_across_independent_networks(#[case] dhcpv6: bool) {
     let dev_name = test_dev_name();
-    let first_peer_ns = TestNetnsGuard::new(short_name("sva"), "10.231.1.2/24", "fd31::2/64");
-    let second_peer_ns = TestNetnsGuard::new(short_name("svb"), "10.231.2.2/24", "fd32::2/64");
+    let mut network = TestNetwork::new();
+    // Nextest runs each case in its own process, so their shared TUNs must
+    // also have separate namespaces to avoid competing routes for the same IPs.
+    network.create_empty_namespace("shared");
+    network.create_namespace("first_peer", "10.231.1.2/24", "fd31::2/64");
+    network.create_namespace("second_peer", "10.231.2.2/24", "fd32::2/64");
+    let shared_ns = network.namespace("shared");
+    let first_peer_ns = network.namespace("first_peer");
+    let second_peer_ns = network.namespace("second_peer");
     let runtime = SharedTestRuntime::new();
 
     let first_config = test_config(
         "shared_tun_first",
         "shared_tun_network_a",
         "shared_tun_secret_a",
-        None,
+        Some(shared_ns),
         Some(&dev_name),
         "10.144.250.1/24",
     );
@@ -579,7 +585,7 @@ async fn same_namespace_members_share_tun_across_independent_networks(#[case] dh
         "shared_tun_second",
         "shared_tun_network_b",
         "shared_tun_secret_b",
-        None,
+        Some(shared_ns),
         Some(&dev_name),
         "10.144.251.1/24",
     );
@@ -593,7 +599,7 @@ async fn same_namespace_members_share_tun_across_independent_networks(#[case] dh
         "shared_tun_first_peer",
         "shared_tun_network_a",
         "shared_tun_secret_a",
-        Some(&first_peer_ns.name),
+        Some(first_peer_ns),
         None,
         "10.144.250.2/24",
     );
@@ -605,7 +611,7 @@ async fn same_namespace_members_share_tun_across_independent_networks(#[case] dh
         "shared_tun_second_peer",
         "shared_tun_network_b",
         "shared_tun_secret_b",
-        Some(&second_peer_ns.name),
+        Some(second_peer_ns),
         None,
         "10.144.251.2/24",
     );
@@ -648,21 +654,18 @@ async fn same_namespace_members_share_tun_across_independent_networks(#[case] dh
     )
     .await;
     wait_for_condition(
-        || async { ping_test(&first_peer_ns.name, "10.144.250.1", None).await },
+        || async { ping_test(first_peer_ns, "10.144.250.1", None).await },
         WAIT,
     )
     .await;
     wait_for_condition(
-        || async { ping_test(&second_peer_ns.name, "10.144.251.1", None).await },
+        || async { ping_test(second_peer_ns, "10.144.251.1", None).await },
         WAIT,
     )
     .await;
 
     if dhcpv6 {
-        for (instance, ns) in [
-            (&first, &first_peer_ns.name),
-            (&second, &second_peer_ns.name),
-        ] {
+        for (instance, ns) in [(&first, first_peer_ns), (&second, second_peer_ns)] {
             wait_for_condition(
                 || async { instance.get_global_ctx().get_ipv6().is_some() },
                 WAIT,
@@ -678,10 +681,10 @@ async fn same_namespace_members_share_tun_across_independent_networks(#[case] dh
         }
         // Removing one DHCP member must leave the other member's addresses
         // and the physical TUN intact.
-        let original_index = tun_ifindex(ROOT_NETNS_NAME, &dev_name);
+        let original_index = tun_ifindex(shared_ns, &dev_name);
         assert!(original_index.is_some());
         drop_insts(vec![first]).await;
-        assert_eq!(tun_ifindex(ROOT_NETNS_NAME, &dev_name), original_index);
+        assert_eq!(tun_ifindex(shared_ns, &dev_name), original_index);
         let address = second
             .get_global_ctx()
             .get_ipv6()
@@ -689,7 +692,7 @@ async fn same_namespace_members_share_tun_across_independent_networks(#[case] dh
             .address()
             .to_string();
         wait_for_condition(
-            || async { ping_test(&second_peer_ns.name, &address, None).await },
+            || async { ping_test(second_peer_ns, &address, None).await },
             WAIT,
         )
         .await;
