@@ -294,14 +294,10 @@ struct NetworkIdentityConfig {
 
 impl From<NetworkIdentity> for NetworkIdentityConfig {
     fn from(identity: NetworkIdentity) -> Self {
-        let authentication = if identity.network_secret.is_some() {
-            NetworkAuthentication::SharedSecret
-        } else {
-            NetworkAuthentication::Credential
-        };
+        // The marker is derived when dumping and only read when loading.
         Self {
             identity,
-            authentication: Some(authentication),
+            authentication: None,
         }
     }
 }
@@ -647,7 +643,18 @@ impl TomlConfig {
 
         let is_credential = match authentication {
             Some(NetworkAuthentication::SharedSecret) => false,
-            Some(NetworkAuthentication::Credential) => true,
+            Some(NetworkAuthentication::Credential) => {
+                if old_ns
+                    .network_secret
+                    .as_deref()
+                    .is_some_and(|secret| !secret.is_empty())
+                {
+                    anyhow::bail!(
+                        "[network_identity] sets authentication = \"credential\" together with a network_secret"
+                    );
+                }
+                true
+            }
             None => {
                 has_network_identity
                     && config.get_secure_mode().is_some_and(|mode| mode.enabled)

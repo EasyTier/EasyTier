@@ -7,8 +7,11 @@ including legacy passwords that contain surrounding whitespace. A password
 changed by another session is retained when the local password field is unchanged.
 
 Leaving the creation field empty generates a password automatically. Selecting
-**No password** creates an empty shared password instead. No-password networks
-can also enable **Secure Mode** and issue credentials to temporary members.
+**No password** creates an empty shared password instead; it is the only way to
+remove a password, so clearing the field in settings cannot be saved. Unchecking
+**No password** generates a new password. The API treats an exact empty string
+as no password and rejects a whitespace-only password. No-password networks can
+also enable **Secure Mode** and issue credentials to temporary members.
 
 Permanent members use the shared network identity, even when its password is
 empty. Temporary members use their own credential identity and receive no shared
@@ -29,4 +32,6 @@ The marker preserves the member's identity when the configuration is reloaded.
 Existing credential configurations without this marker keep their previous
 meaning: an omitted or empty password with Secure Mode identifies a credential
 member. Nodes must run a version that understands the marker to reload a
-passwordless Secure Mode network correctly; older versions ignore it.
+passwordless Secure Mode network correctly; older versions ignore it, so the
+console warns when both options are selected. A marker of `"credential"` next
+to a non-empty `network_secret` is rejected as contradictory.

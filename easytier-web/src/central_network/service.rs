@@ -396,10 +396,9 @@ impl CentralNetworkService {
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| generated_network_name(&settings.display_name));
         let mode = mode_from_settings(&settings, self.gateway_config())?;
-        // None means auto-generate; Some("") (after trim) means no password;
-        // Some(custom) means use the custom password.
         let network_secret = network_secret
-            .map(|s| s.trim().to_string())
+            .map(normalize_network_secret)
+            .transpose()?
             .unwrap_or_else(random_secret);
         let intent = CentralNetworkIntent {
             id: Uuid::new_v4(),
@@ -462,7 +461,11 @@ impl CentralNetworkService {
         }
         intent.virtual_cidr = request.settings.virtual_cidr;
         intent.secure_mode = request.settings.secure_mode;
-        if let Some(secret) = request.network_secret.map(|s| s.trim().to_string()) {
+        if let Some(secret) = request
+            .network_secret
+            .map(normalize_network_secret)
+            .transpose()?
+        {
             intent.network_secret = secret;
         }
         self.persist(intent).await?;
@@ -1265,6 +1268,19 @@ fn generated_network_name(display_name: &str) -> String {
     format!("{}-{suffix:08x}", base.chars().take(24).collect::<String>())
 }
 
+/// Trims a requested network secret. Only an exact empty string selects a
+/// passwordless network; a whitespace-only secret is rejected so that a
+/// mistyped password never silently removes the network's protection.
+fn normalize_network_secret(secret: String) -> Result<String, CentralNetworkServiceError> {
+    let trimmed = secret.trim();
+    if trimmed.is_empty() && !secret.is_empty() {
+        return Err(CentralNetworkServiceError::Invalid(
+            "network secret must not consist only of whitespace".to_owned(),
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
 fn random_secret() -> String {
     let mut secret = [0u8; 32];
     OsRng.fill_bytes(&mut secret);
@@ -1582,6 +1598,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn whitespace_only_secrets_are_rejected_and_custom_secrets_trimmed() {
+        let (service, user_id, _) = service().await;
+        let error = service
+            .create_network(user_id, standalone_settings(), Some(" \t ".to_owned()))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CentralNetworkServiceError::Invalid(_)));
+
+        let network = service
+            .create_network(
+                user_id,
+                standalone_settings(),
+                Some("  custom  ".to_owned()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(network.network_secret, "custom");
+        let network_id = Uuid::parse_str(&network.network_id).unwrap();
+
+        let error = service
+            .update_network(
+                user_id,
+                network_id,
+                UpdateNetworkReq {
+                    settings: standalone_settings(),
+                    network_secret: Some("   ".to_owned()),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CentralNetworkServiceError::Invalid(_)));
+        let unchanged = service.get_network(user_id, network_id).await.unwrap();
+        assert_eq!(unchanged.network_secret, "custom");
+    }
+
+    #[tokio::test]
     async fn passwordless_secure_networks_publish_restartable_member_configs() {
         use easytier::common::config::NetworkConfigExt as _;
         use easytier_core::management::remote_client::{PersistentConfig as _, Storage as _};
@@ -1623,7 +1675,7 @@ mod tests {
                         network_id,
                         UpdateNetworkReq {
                             settings: standalone_settings(),
-                            network_secret: Some(" \t ".to_owned()),
+                            network_secret: Some(String::new()),
                         },
                     )
                     .await

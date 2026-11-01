@@ -298,6 +298,20 @@ const settingsNoPassword = ref(false);
 // Keep the edit baseline separate from the polled network so unrelated
 // settings changes do not overwrite a secret updated by another session.
 const settingsSecretBaseline = ref('');
+// Clearing an edited secret never removes the password implicitly; only the
+// No password checkbox does. Unchanged legacy whitespace secrets stay valid,
+// but leaving No password needs a real secret.
+const settingsSecretMissing = computed(() =>
+    !settingsNoPassword.value
+    && settingsForm.value.network_secret.trim() === ''
+    && (settingsForm.value.network_secret !== settingsSecretBaseline.value
+        || settingsSecretBaseline.value === ''));
+const setSettingsNoPassword = (noPassword: boolean) => {
+    settingsNoPassword.value = noPassword;
+    if (!noPassword && settingsForm.value.network_secret.trim() === '') {
+        settingsForm.value.network_secret = uuidv4();
+    }
+};
 // Initial nodes in the same model as the GUI config form; an empty list
 // means Standalone.
 const initialNodes = ref<string[]>([]);
@@ -351,7 +365,7 @@ const loadSettingsForm = () => {
 };
 
 const saveSettings = async () => {
-    if (savingSettings.value) return;
+    if (savingSettings.value || settingsSecretMissing.value) return;
     savingSettings.value = true;
     try {
         // PublicServer retains its discovery mode while it has a single URL.
@@ -1183,17 +1197,19 @@ const switchTab = async (tab: string) => {
                     <div class="flex flex-col sm:flex-row gap-2">
                         <Password inputId="settings-network-secret" v-model="settingsForm.network_secret"
                             toggleMask :feedback="false" fluid
-                            class="flex-1 min-w-0" :disabled="savingSettings || settingsNoPassword"
+                            class="flex-1 min-w-0" :disabled="savingSettings || settingsNoPassword" :invalid="settingsSecretMissing"
                             :inputProps="{ autocomplete: 'new-password', 'aria-describedby': 'settings-network-secret-hint' }" />
                         <Button :label="t('web.network_detail.regenerate_secret')" icon="pi pi-refresh"
                             severity="secondary" outlined :disabled="savingSettings || settingsNoPassword"
                             @click="settingsForm.network_secret = uuidv4()" />
                     </div>
                     <div class="flex items-center gap-2">
-                        <Checkbox inputId="settings-no-password" v-model="settingsNoPassword" :binary="true" :disabled="savingSettings" />
+                        <Checkbox inputId="settings-no-password" :modelValue="settingsNoPassword" @update:modelValue="setSettingsNoPassword" :binary="true" :disabled="savingSettings" />
                         <label for="settings-no-password" class="text-sm">{{ t('web.network_detail.no_password') }}</label>
                     </div>
+                    <small v-if="settingsSecretMissing" class="text-red-500">{{ t('web.network_detail.network_secret_required') }}</small>
                     <small v-if="settingsNoPassword" class="text-500">{{ t('web.network_detail.no_password_hint') }}</small>
+                    <Message v-if="settingsNoPassword && settingsForm.secure_mode" severity="warn" size="small" :closable="false">{{ t('web.network_detail.secure_no_password_warning') }}</Message>
                     <small id="settings-network-secret-hint" class="text-500">{{ t('web.network_detail.network_secret_hint') }}</small>
                 </div>
                 <div v-if="gatewayFollowed()" class="flex items-start gap-2 p-3 surface-100 rounded-md">
@@ -1210,7 +1226,7 @@ const switchTab = async (tab: string) => {
                         :placeholder="t('initial_node_placeholder')" />
                 </div>
                 <div class="flex gap-2">
-                    <Button :label="t('web.common.save')" icon="pi pi-check" :loading="savingSettings" @click="saveSettings" />
+                    <Button :label="t('web.common.save')" icon="pi pi-check" :loading="savingSettings" :disabled="settingsSecretMissing" @click="saveSettings" />
                 </div>
                 <div class="mt-6 pt-4 border-t border-red-200 flex flex-col gap-2">
                     <div class="text-lg font-semibold text-red-500">{{ t('web.network_detail.danger_zone') }}</div>

@@ -231,6 +231,7 @@ const openNetwork = (network: CentralNetworkSummary) => {
                         <label for="create-no-password" class="text-sm">{{ t('web.network_list.no_password') }}</label>
                     </div>
                     <small v-if="createForm.no_password" class="text-500">{{ t('web.network_list.no_password_hint') }}</small>
+                    <Message v-if="createForm.no_password && createForm.secure_mode" severity="warn" size="small" :closable="false">{{ t('web.network_list.secure_no_password_warning') }}</Message>
                 </div>
                 <div class="flex flex-col gap-1">
                     <div class="flex items-center">

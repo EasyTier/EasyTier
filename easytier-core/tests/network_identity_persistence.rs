@@ -113,6 +113,16 @@ fn explicit_credential_identity_survives_reload_without_secure_mode() {
     assert_eq!(restored.get_network_identity().network_secret_digest, None);
 }
 
+#[test]
+fn credential_marker_with_network_secret_is_rejected() {
+    let error = TomlConfig::new_from_str(
+        "[network_identity]\nnetwork_name = \"credential-network\"\n\
+         network_secret = \"network-password\"\nauthentication = \"credential\"\n",
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("authentication = \"credential\""));
+}
+
 #[cfg(any(feature = "web-client", feature = "browser-config"))]
 mod api {
     use easytier_core::config::api_input::{NetworkConfig, NetworkConfigExt, NetworkingMethod};

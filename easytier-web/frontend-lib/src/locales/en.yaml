@@ -516,6 +516,7 @@ web:
     network_secret_placeholder: Leave empty to generate automatically
     no_password: No password
     no_password_hint: Disable password protection; members can join without a password
+    secure_no_password_warning: With no password and Secure Mode, member nodes must run a version newer than 2.7.0; older nodes are mistaken for temporary credential members after a restart
     create_hint: Enter a fixed network secret or generate one automatically. An empty field generates a secret on creation. You can change it later in network settings
     gateway_mode: Gateway
     gateway_hint: Members are meshed automatically through this console's built-in gateway (discovery and hole-punch assistance, no data relay by default)
@@ -548,6 +549,8 @@ web:
     no_password: No password
     no_password_hint: Disable password protection; members can join without a password
     network_secret_hint: Enter a fixed secret or generate a new one. Changes apply to member configs after saving
+    secure_no_password_warning: With no password and Secure Mode, member nodes must run a version newer than 2.7.0; older nodes are mistaken for temporary credential members after a restart
+    network_secret_required: Enter a network secret, or select No password
     danger_zone: Danger Zone
     delete: Delete Network
     delete_confirm: Delete network {name}? Managed configs of all members will be withdrawn

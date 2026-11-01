@@ -547,7 +547,7 @@ test('unchanged secret saves preserve external updates and refresh the form base
     assert.equal(Object.hasOwn(state.writes.filter(write => write.method === 'PATCH').at(-1).payload, 'network_secret'), false);
 });
 
-test('failed secret saves keep the draft for retry and allow explicit clearing', async t => {
+test('failed secret saves keep the draft for retry and clear only through No password', async t => {
     const { page, state } = await open(t, '/h/networks/network-0');
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     const secret = page.locator('#settings-network-secret');
@@ -565,7 +565,14 @@ test('failed secret saves keep the draft for retry and allow explicit clearing',
     assert.equal(state.networks[0].network_secret, draft.trim());
     assert.equal(await secret.inputValue(), draft.trim());
 
-    await secret.fill('');
+    const patches = state.writes.filter(write => write.method === 'PATCH').length;
+    for (const cleared of ['', '   ']) {
+        await secret.fill(cleared);
+        await page.getByText('Enter a network secret, or select No password', { exact: true }).waitFor();
+        assert.ok(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled());
+    }
+    assert.equal(state.writes.filter(write => write.method === 'PATCH').length, patches, 'an emptied field never removes the password');
+    await page.getByLabel('No password').check();
     await saveNetworkSettings(page, 'network-0');
     assert.equal(state.writes.filter(write => write.method === 'PATCH').at(-1).payload.network_secret, '');
     assert.equal(state.networks[0].network_secret, '');
@@ -584,6 +591,10 @@ test('create network with no password and toggle it back in settings', async t =
     assert.ok(await secret.isDisabled(), 'secret input is disabled when no-password is checked');
     assert.ok(await page.locator('#create-secure-mode').isChecked());
     assert.ok(await page.locator('#create-secure-mode').isEnabled());
+    await dialog.getByText(/member nodes must run a version newer than 2\.7\.0/).waitFor();
+    await page.locator('#create-secure-mode').uncheck();
+    assert.equal(await dialog.getByText(/member nodes must run a version newer than 2\.7\.0/).count(), 0);
+    await page.locator('#create-secure-mode').check();
     await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/networks/created-*');
     assert.equal(state.writes.filter(write => write.path === '/networks').at(-1).payload.network_secret, '');
@@ -597,8 +608,13 @@ test('create network with no password and toggle it back in settings', async t =
     assert.ok(await page.locator('#settings-secure-mode').isChecked());
     assert.ok(await page.locator('#settings-secure-mode').isEnabled());
 
+    await page.getByText(/member nodes must run a version newer than 2\.7\.0/).waitFor();
     await page.getByLabel('No password').uncheck();
     assert.ok(await settingsSecret.isEnabled(), 'secret input is re-enabled when no-password is unchecked');
+    assert.match(await settingsSecret.inputValue(), uuidV4Pattern, 'unchecking no-password generates a secret');
+    await settingsSecret.fill('');
+    await page.getByText('Enter a network secret, or select No password', { exact: true }).waitFor();
+    assert.ok(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled(), 'an empty secret cannot leave No password');
     await page.getByRole('button', { name: 'Regenerate network secret', exact: true }).click();
     const regenerated = await settingsSecret.inputValue();
     assert.match(regenerated, uuidV4Pattern);
