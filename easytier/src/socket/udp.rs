@@ -1,30 +1,25 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, SocketAddr},
     sync::Arc,
 };
 
+#[cfg(any(feature = "wireguard", test))]
+use crate::common::netns::NetNS;
+#[cfg(any(feature = "wireguard", test))]
+use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
 use async_trait::async_trait;
+use easytier_core::socket::BindConfig;
+use easytier_core::socket::SocketContext;
+use easytier_core::socket::udp::{
+    MAX_UDP_DATAGRAM_SIZE, MAX_UDP_SESSION_DATAGRAM_SIZE, UdpSocketDatagram, UdpSocketRecvMeta,
+    UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+};
 #[cfg(any(feature = "wireguard", test))]
 use easytier_core::socket::{
     NetNamespace,
     udp::{UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocketListener},
 };
-use easytier_core::socket::{
-    SocketContext,
-    udp::{
-        MAX_UDP_DATAGRAM_SIZE, MAX_UDP_SESSION_DATAGRAM_SIZE, UdpBindOptions, UdpSocketDatagram,
-        UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
-        VirtualUdpSocketFactory,
-    },
-};
 use tokio::net::UdpSocket;
-
-#[cfg(any(feature = "wireguard", test))]
-use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
-use crate::{
-    common::netns::NetNS,
-    tunnel::common::{BindDev, bind},
-};
 
 use super::udp_src;
 
@@ -140,56 +135,18 @@ impl RuntimeUdpSocketFactory {
     pub(crate) fn new() -> Self {
         Self
     }
-
-    fn bind_device_for(&self, options: &UdpBindOptions) -> BindDev {
-        if let Some(bind_device) = &options.bind_device {
-            return BindDev::from(bind_device.as_str());
-        }
-
-        if matches!(
-            options.purpose,
-            UdpSocketPurpose::DirectConnect
-                | UdpSocketPurpose::PortBoundListener
-                | UdpSocketPurpose::PortForward
-        ) {
-            return BindDev::Auto;
-        }
-
-        BindDev::Disabled
-    }
-}
-
-/// Creates a host-owned UDP socket, including any required protection, before
-/// it can be used by DNS, a route probe, or a virtual socket adapter.
-pub(crate) async fn create_udp_socket(options: &UdpBindOptions) -> anyhow::Result<UdpSocket> {
-    let factory = RuntimeUdpSocketFactory::new();
-    let bind_addr = options
-        .local_addr
-        .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
-    Ok(bind::<UdpSocket>()
-        .addr(bind_addr)
-        .dev(factory.bind_device_for(options))
-        .net_ns(NetNS::from_socket_context(&options.context))
-        .only_v6(options.only_v6)
-        // Independent UDP receivers must not share a bound endpoint, including
-        // kernel-assigned ports. Only an explicit request may enable reuse.
-        .reuse_addr(options.reuse_addr)
-        .reuse_port(options.reuse_port)
-        .maybe_socket_mark(options.context.socket_mark)
-        .need_protect(options.need_protect)
-        .call()
-        .await?)
 }
 
 #[async_trait]
 impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
     type Socket = RuntimeUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-        let socket = create_udp_socket(&options).await?;
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
+        let context = options.context.clone();
+        let socket = crate::socket::bind::<UdpSocket>(options).await?;
         Ok(Arc::new(RuntimeUdpSocket::new_with_context(
             Arc::new(socket),
-            options.context,
+            context,
         )))
     }
 }

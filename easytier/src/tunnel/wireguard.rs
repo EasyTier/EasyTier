@@ -25,14 +25,15 @@ use boringtun::{
 use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
+use easytier_core::socket::{BindConfig, SocketContext};
 use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 use easytier_core::tunnel::{IpVersion, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
     packet::{PEER_MANAGER_HEADER_SIZE, WG_TUNNEL_HEADER_SIZE, ZCPacket, ZCPacketType},
     socket::udp::{
-        UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
-        UdpSessionProtocol, UdpSessionSocket,
+        UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
+        UdpSessionSocket,
     },
     tunnel::wrapper::TunnelWrapper,
 };
@@ -641,10 +642,16 @@ impl WgTunnelListener {
         }
 
         let local_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let bind = UdpBindOptions::port_bound_listener(local_addr)
-            .with_socket_mark(self.socket_mark)
-            .with_bind_device(TunnelUrl::from(self.addr.clone()).bind_dev())
-            .with_only_v6(true);
+        let bind = BindConfig {
+            local_addr: Some(local_addr),
+            context: SocketContext {
+                socket_mark: self.socket_mark,
+                ..SocketContext::default()
+            },
+            bind_device: TunnelUrl::from(self.addr.clone()).bind_dev(),
+            only_v6: true,
+            ..BindConfig::default()
+        };
         let mut session_listener = new_runtime_udp_session_listener(
             self.addr.clone(),
             UdpSessionListenRequest::new(bind),
