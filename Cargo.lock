@@ -2526,7 +2526,6 @@ dependencies = [
  "atomic-write-file",
  "atomic_refcell",
  "base64 0.22.1",
- "bon",
  "boringtun-easytier",
  "bytecodec",
  "byteorder",
