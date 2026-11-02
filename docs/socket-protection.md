@@ -5,7 +5,7 @@ core has already connected. Core and WASI guests never need an OS file descripto
 
 ## Portable requests
 
-`TcpBindOptions::need_protect` and `UdpBindOptions::need_protect` travel through the
+`BindConfig::need_protect` travels through the
 existing connect/bind operations. A host requiring VPN bypass must acknowledge
 successful protection before connect, bind/listen, or publishing the socket.
 Failure or cancellation fails creation and discards the owned socket; emitting
@@ -16,12 +16,11 @@ the requirement as a no-op.
 - TCP transport/hole-punch listeners request protection. Hosts retain this flag
   on the listener and protect accepted children before handing them to core.
 - Local ProxyNat/SOCKS/port-forward/port-lease listeners do not request it.
-- UDP transport, candidates, listeners, NAT egress and STUN request protection;
-  HolePunchControl, local SOCKS/port-forward and port-lease sockets do not.
-- Low-level TCP/UDP bind options default to protection, including deserialization
-  of options without `need_protect`. The named local/TUN-facing constructors set
-  `false` explicitly. The UDP default keeps its historical purpose label for
-  socket setup; only the named `hole_punch_control()` constructor opts out.
+- UDP transport, candidates, listeners, NAT egress and STUN request protection.
+  Loopback control packets and inbound SOCKS associations explicitly opt out;
+  UDP port-forward and port-lease sockets also opt out.
+- `BindConfig` defaults to protection, including deserialization without
+  `need_protect`. Local/TUN-facing endpoints set `false` explicitly.
 - `with_bind()` replaces the **entire** bind object. A local listener's replacement
   must retain its opt-out rather than inherit the protected default. A native
   adapter must honor explicit `false`, not silently change it based on `purpose`.
@@ -50,11 +49,26 @@ new portable or WASI ABI. It takes only the native handle; the creation options
 select policy, without a second purpose enum. Namespace switching is confined to synchronous socket
 creation and never held across the callback's await.
 
-The existing native `bind` builder is async and shared by TCP/UDP creation. Its
-legacy direct-call default remains unprotected; portable factories explicitly
-pass their core bind options (default protected). Callers must await `.call()`.
-TCP listeners reuse TCP socket creation then listen, instead of duplicating the
-setup. Existing legacy WebSocket direct-call policy is unchanged.
+Core defines one portable `BindConfig` for TCP and UDP, passed to native hosts
+or WASI encoding. Native hosts create sockets through
+`easytier::socket::bind::<B>(BindConfig)`, an async function that creates,
+protects, configures and binds the requested socket type. `BindConfig` is a
+plain struct with public fields; callers build it with struct update syntax
+over `Default`. There is no separate native builder.
+Supplying `local_addr` binds TCP to that address; otherwise `context.ip_version`
+selects its family and source selection is deferred to connect. TCP connect
+requests set that family from their remote address before binding. UDP always
+binds a source address, using the requested family when none is specified.
+Native DNS and route probes use the same builder. Legacy WebSocket listeners
+explicitly keep their unprotected policy.
+
+`reuse_addr` is tri-state for both protocols: `None` selects the host default,
+while `Some(false)` and `Some(true)` are authoritative. Native bound sockets
+default to reuse on non-Windows hosts; unbound TCP sockets default to no reuse.
+Callers select device/reuse policy by setting the fields when constructing the
+configuration. The native host does not override those settings by inspecting an endpoint purpose
+tag. Multi-address connection attempts clone the configuration and override
+`local_addr` for each attempt.
 
 The HarmonyOS broker wakes the already-pending request consumer with `Notify`
 (no polling timer). It keeps a duplicate FD alive until ArkTS completes
@@ -71,12 +85,16 @@ never allow the first SYN/query to race ahead of protection.
 ## WASI option format
 
 The `easytier_host` import names and function signatures are unchanged. TCP
-connect, TCP listen and UDP bind use option document **version 3** (previously 2):
-one `u8` boolean `need_protect` is inserted immediately after the existing purpose
-byte and before the optional bind-device field. All other field encodings and
-purpose values are unchanged. The document version lets older hosts reject
-unsupported options instead of silently ignoring protection. DNS, environment,
-instance-config and data-plane layouts/versions are unchanged.
+connect/listen retain their version 3 bytes. UDP bind uses **version 4**:
+`reuse_addr` uses the same 0=default, 1=disabled, 2=enabled encoding as TCP, and
+the UDP purpose byte is removed. `need_protect` follows `only_v6`, before the
+optional bind-device field. A minimal UDP document is 48 bytes. Other option
+fields and DNS/environment/instance-config/data-plane layouts are unchanged.
+
+The bundled Go host accepts UDP versions 3 and 4, translating the legacy purpose
+defaults into the shared configuration at the version 3 boundary. Version 4
+keeps explicit false distinct from a host default. Older hosts reject the new
+UDP version instead of silently changing that request.
 
 An embedding host must update its versioned option decoder and honor the flag
 inside its existing creation implementation. The external host implementation

@@ -8,7 +8,6 @@ use derive_more::{From, TryInto};
 use easytier_core::tunnel::{IpVersion, TunnelError};
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
-pub mod common;
 pub(crate) mod protocol;
 
 #[cfg(feature = "wireguard")]
@@ -184,3 +183,5 @@ impl TryFrom<&url::Url> for TunnelScheme {
         })
     }
 }
+
+
