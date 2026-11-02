@@ -2,11 +2,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::socket::{IpVersion, SocketContext, tcp::TcpBindOptions};
+use crate::socket::BindConfig;
+use crate::socket::IpVersion;
 
 #[cfg(feature = "endpoint-discovery")]
 mod implementation;
 
+use crate::socket::SocketContext;
 #[cfg(feature = "endpoint-discovery")]
 pub(crate) use implementation::CoreManualEndpointResolver;
 
@@ -16,7 +18,7 @@ pub struct ManualEndpointDiscoveryConfig {
     pub network_name: String,
     pub http_timeout: Duration,
     pub http_ip_version: IpVersion,
-    pub http_tcp_bind: TcpBindOptions,
+    pub http_tcp_bind: BindConfig,
     pub dns_record_context: SocketContext,
     pub srv_protocols: Vec<String>,
 }
@@ -28,7 +30,7 @@ impl Default for ManualEndpointDiscoveryConfig {
             network_name: String::new(),
             http_timeout: Duration::from_secs(20),
             http_ip_version: IpVersion::Both,
-            http_tcp_bind: TcpBindOptions::default(),
+            http_tcp_bind: BindConfig::default(),
             dns_record_context: SocketContext::default(),
             srv_protocols: vec!["tcp".to_owned(), "udp".to_owned()],
         }

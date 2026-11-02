@@ -8,12 +8,13 @@ use dashmap::DashMap;
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level, instrument};
 
+use crate::socket::BindConfig;
 use crate::{
     foundation::task::reap_joinset_background,
     packet::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid},
     socket::{
         IpVersion, SocketContext,
-        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+        udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
     },
 };
 
@@ -131,10 +132,15 @@ where
         while self.sockets.len() < self.max_socket_count {
             let socket = self
                 .socket_factory
-                .bind_udp(
-                    UdpBindOptions::hole_punch_candidate()
-                        .with_context(self.socket_context.clone().with_ip_version(IpVersion::V4)),
-                )
+                .bind_udp(BindConfig {
+                    bind_device: Some("".into()),
+                    reuse_addr: Some(false),
+                    context: SocketContext {
+                        ip_version: IpVersion::V4,
+                        ..self.socket_context.clone()
+                    },
+                    ..BindConfig::default()
+                })
                 .await?;
             self.add_new_socket(socket).await?;
         }

@@ -15,6 +15,12 @@ use rand::seq::IteratorRandom as _;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 
+use super::client::{
+    HostResolverIter, StunDnsRuntime, StunNatTypeDetectResult, StunSocketRuntime,
+    TcpNatTypeDetector, UdpNatTypeDetector, stun_udp_bind_options, tcp_bind_request,
+    udp_bind_request,
+};
+use crate::socket::SocketContext;
 use crate::{
     config::{
         DEFAULT_TCP_STUN_SERVERS, DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS,
@@ -22,15 +28,9 @@ use crate::{
     },
     proto::common::{NatType, StunInfo},
     socket::{
-        IpVersion, SocketContext,
+        IpVersion,
         udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
     },
-};
-
-use super::client::{
-    HostResolverIter, StunDnsRuntime, StunNatTypeDetectResult, StunSocketRuntime,
-    TcpNatTypeDetector, UdpNatTypeDetector, stun_udp_bind_options, tcp_bind_request,
-    udp_bind_request,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,7 +207,10 @@ where
     ) -> Option<Ipv6Addr> {
         let mut resolver = HostResolverIter::new(
             dns,
-            socket_context.clone().with_ip_version(IpVersion::V6),
+            SocketContext {
+                ip_version: IpVersion::V6,
+                ..socket_context.clone()
+            },
             servers.to_vec(),
             10,
             true,
@@ -437,9 +440,10 @@ where
         if servers.is_empty() {
             let mut resolver = HostResolverIter::new(
                 self.dns.clone(),
-                self.tcp_socket_context
-                    .clone()
-                    .with_ip_version(IpVersion::V4),
+                SocketContext {
+                    ip_version: IpVersion::V4,
+                    ..self.tcp_socket_context.clone()
+                },
                 self.tcp_stun_servers.read().unwrap().clone(),
                 2,
                 false,
@@ -498,9 +502,10 @@ where
         if servers.is_empty() {
             let mut resolver = HostResolverIter::new(
                 self.dns.clone(),
-                self.udp_socket_context
-                    .clone()
-                    .with_ip_version(IpVersion::V4),
+                SocketContext {
+                    ip_version: IpVersion::V4,
+                    ..self.udp_socket_context.clone()
+                },
                 self.stun_servers.read().unwrap().clone(),
                 2,
                 false,

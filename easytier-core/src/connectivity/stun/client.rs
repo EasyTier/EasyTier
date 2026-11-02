@@ -19,17 +19,19 @@ use tokio::{
 };
 use tracing::{Instrument as _, Level};
 
+use crate::socket::BindConfig;
 use crate::{
     host::dns::{DnsQuery, DnsRecordResolver, DnsResolver},
     proto::common::NatType,
     socket::{
-        IpVersion, SocketContext,
-        tcp::{TcpBindOptions, TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory},
-        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+        IpVersion,
+        tcp::{TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory},
+        udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
     },
 };
 
 use crate::packet::stun::{Attribute, ChangeRequest, tid_to_u32, u32_to_tid};
+use crate::socket::SocketContext;
 use stun_codec::rfc5389::methods::BINDING;
 
 pub trait StunSocketRuntime: VirtualUdpSocketFactory + VirtualTcpSocketFactory {}
@@ -642,7 +644,10 @@ where
     ) -> anyhow::Result<StunNatTypeDetectResult> {
         let mut resolver = HostResolverIter::new(
             self.dns.clone(),
-            self.socket_context.clone().with_ip_version(IpVersion::V4),
+            SocketContext {
+                ip_version: IpVersion::V4,
+                ..self.socket_context.clone()
+            },
             self.stun_server_hosts.clone(),
             self.max_ip_per_domain,
             false,
@@ -706,10 +711,17 @@ pub(super) fn stun_udp_bind_options(
     context: SocketContext,
     ip_version: IpVersion,
     local_addr: SocketAddr,
-) -> UdpBindOptions {
-    UdpBindOptions::stun_probe()
-        .with_context(context.with_ip_version(ip_version))
-        .with_local_addr(Some(local_addr))
+) -> BindConfig {
+    BindConfig {
+        bind_device: Some("".into()),
+        reuse_addr: Some(false),
+        context: SocketContext {
+            ip_version,
+            ..context
+        },
+        local_addr: Some(local_addr),
+        ..BindConfig::default()
+    }
 }
 
 struct TcpStunClient<R> {
@@ -803,12 +815,17 @@ where
                 IpVersion::V6,
             ),
         };
-        let bind = TcpBindOptions::default()
-            .with_context(self.socket_context.clone().with_ip_version(ip_version))
-            .with_local_addr(Some(bind_addr))
-            .with_reuse_addr(true)
-            .with_reuse_port(true)
-            .with_only_v6(bind_addr.is_ipv6());
+        let bind = BindConfig {
+            context: SocketContext {
+                ip_version,
+                ..self.socket_context.clone()
+            },
+            local_addr: Some(bind_addr),
+            reuse_addr: Some(true),
+            reuse_port: true,
+            only_v6: bind_addr.is_ipv6(),
+            ..BindConfig::default()
+        };
         crate::foundation::time::timeout(
             self.conn_timeout,
             self.runtime.connect_tcp(
@@ -904,7 +921,10 @@ where
     ) -> anyhow::Result<StunNatTypeDetectResult> {
         let mut resolver = HostResolverIter::new(
             self.dns.clone(),
-            self.socket_context.clone().with_ip_version(IpVersion::V4),
+            SocketContext {
+                ip_version: IpVersion::V4,
+                ..self.socket_context.clone()
+            },
             self.stun_server_hosts.clone(),
             self.max_ip_per_domain,
             false,

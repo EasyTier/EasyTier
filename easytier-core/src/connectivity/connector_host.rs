@@ -21,6 +21,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     connectivity::{
         composite::{ConnectorEnvironment, ConnectorHostAdapter, ConnectorRuntime},
@@ -36,11 +38,10 @@ use crate::{
     },
     proto::peer_rpc::GetIpListResponse,
     socket::{
-        SocketContext,
         tcp::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
         },
-        udp::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocketFactory},
+        udp::{PreferredIpv6Source, VirtualUdpSocketFactory},
     },
 };
 
@@ -168,7 +169,7 @@ where
 {
     type Socket = HostUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         self.sockets.bind_udp(options).await
     }
 }
