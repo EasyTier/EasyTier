@@ -71,7 +71,10 @@ func decodeUDPMetadata(metadata []byte) (*net.UDPAddr, net.IP, uint32, uint32, e
 		if !allZero(metadata[5:17]) || !allZero(metadata[19:27]) {
 			return nil, nil, 0, 0, errors.New("noncanonical IPv4 peer metadata")
 		}
-		peerIP = net.IPv4(metadata[1], metadata[2], metadata[3], metadata[4])
+		// net.IPv4 returns a 16-byte v4-mapped form. Store canonical 4-byte
+		// IPv4 so netip.AddrPort keeps Is4() true; otherwise only_v6 socket
+		// selection would choose udp6 for an IPv4 bind.
+		peerIP = net.IPv4(metadata[1], metadata[2], metadata[3], metadata[4]).To4()
 	case 6:
 		peerIP = append(net.IP(nil), metadata[1:17]...)
 	default:
@@ -103,7 +106,7 @@ func decodeUDPMetadata(metadata []byte) (*net.UDPAddr, net.IP, uint32, uint32, e
 		if !allZero(metadata[32:48]) {
 			return nil, nil, 0, 0, errors.New("noncanonical optional IPv4")
 		}
-		optionalIP = net.IPv4(metadata[28], metadata[29], metadata[30], metadata[31])
+		optionalIP = net.IPv4(metadata[28], metadata[29], metadata[30], metadata[31]).To4()
 	case 6:
 		optionalIP = append(net.IP(nil), metadata[28:44]...)
 	default:

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"net/netip"
 	"unicode/utf8"
 
 	"github.com/easytier/easytier/easytier-go/platform"
@@ -28,13 +29,9 @@ func readOwnedOptions(module api.Module, pointer, length uint32) ([]byte, bool) 
 	return append([]byte(nil), options...), true
 }
 
-// optionsWireVersion matches OPTIONS_VERSION in
-// easytier-core/src/wasi/wire/options.rs. Version 3 appends a need_protect
-// byte after the purpose byte in every socket options document. The byte
-// requests VPN socket protection, which only Android-style VPN hosts can
-// honor; every other platform treats sockets as already protected, so the
-// decoders read and discard it.
+// TCP keeps its v3 layout. UDP v4 uses tri-state reuse_addr and no purpose tag.
 const optionsWireVersion = 3
+const udpOptionsWireVersion = 4
 
 func decodeTCPConnectOptions(encoded []byte) (platform.TCPConnectOptions, error) {
 	if len(encoded) < 76 || encoded[0] != optionsWireVersion {
@@ -55,14 +52,18 @@ func decodeTCPConnectOptions(encoded []byte) (platform.TCPConnectOptions, error)
 	if len(remainder) < 10 {
 		return platform.TCPConnectOptions{}, fmt.Errorf("truncated TCP bind policy")
 	}
-	bind, err := decodeTCPBindPolicy(
-		udpToTCPAddr(local),
+	bind, err := decodeSocketBindPolicy(
+		local,
 		socketContext,
 		remainder[0],
 		remainder[1],
 		remainder[2],
 		remainder[5:],
 	)
+	if err != nil {
+		return platform.TCPConnectOptions{}, err
+	}
+	bind.NeedProtect, err = decodeWireBool("TCP need_protect", remainder[4])
 	if err != nil {
 		return platform.TCPConnectOptions{}, err
 	}
@@ -77,50 +78,60 @@ func decodeTCPConnectOptions(encoded []byte) (platform.TCPConnectOptions, error)
 	}, nil
 }
 
-func decodeUDPBindOptions(encoded []byte) (platform.UDPBindOptions, error) {
-	if len(encoded) < 49 || encoded[0] != optionsWireVersion {
-		return platform.UDPBindOptions{}, fmt.Errorf("invalid UDP bind options")
+func decodeUDPBindOptions(encoded []byte) (platform.BindConfig, error) {
+	if len(encoded) < 48 || (encoded[0] != udpOptionsWireVersion && encoded[0] != optionsWireVersion) {
+		return platform.BindConfig{}, fmt.Errorf("invalid UDP bind options")
 	}
 	local, err := decodeSocketAddress(encoded[1:28], true)
 	if err != nil {
-		return platform.UDPBindOptions{}, err
+		return platform.BindConfig{}, err
 	}
-	socketContext, remainder, err := decodeSocketContext(encoded[28:])
+	context, remainder, err := decodeSocketContext(encoded[28:])
 	if err != nil {
-		return platform.UDPBindOptions{}, fmt.Errorf("invalid UDP socket context: %w", err)
+		return platform.BindConfig{}, fmt.Errorf("invalid UDP socket context: %w", err)
 	}
-	if len(remainder) < 10 {
-		return platform.UDPBindOptions{}, fmt.Errorf("truncated UDP bind policy")
+	if len(remainder) < 9 {
+		return platform.BindConfig{}, fmt.Errorf("truncated UDP bind policy")
 	}
-	reuseAddr, err := decodeWireBool("UDP reuse_addr", remainder[0])
+	policy := remainder
+	if encoded[0] == optionsWireVersion {
+		if len(remainder) < 10 || remainder[3] > 8 {
+			return platform.BindConfig{}, fmt.Errorf("invalid legacy UDP bind policy")
+		}
+		reuse, err := decodeWireBool("UDP reuse_addr", remainder[0])
+		if err != nil {
+			return platform.BindConfig{}, err
+		}
+		// v3 encoded reuse_addr as an authoritative boolean. Preserve false as
+		// explicit exclusion; turning it into a host default would allow hosts
+		// to enable endpoint sharing that the old caller did not request.
+		reuseMode := byte(1)
+		if reuse {
+			reuseMode = 2
+		}
+		policy = append([]byte{reuseMode, remainder[1], remainder[2], remainder[4]}, remainder[5:]...)
+	}
+	bind, err := decodeSocketBindPolicy(local, context, policy[0], policy[1], policy[2], policy[4:])
 	if err != nil {
-		return platform.UDPBindOptions{}, err
+		return platform.BindConfig{}, err
 	}
-	reusePort, err := decodeWireBool("UDP reuse_port", remainder[1])
+	bind.NeedProtect, err = decodeWireBool("UDP need_protect", policy[3])
 	if err != nil {
-		return platform.UDPBindOptions{}, err
+		return platform.BindConfig{}, err
 	}
-	onlyV6, err := decodeWireBool("UDP only_v6", remainder[2])
-	if err != nil {
-		return platform.UDPBindOptions{}, err
+	if encoded[0] == optionsWireVersion && bind.BindDevice == nil && remainder[3] != 2 && remainder[3] != 3 && remainder[3] != 7 {
+		disabled := ""
+		bind.BindDevice = &disabled
 	}
-	purpose, err := decodeUDPBindPurpose(remainder[3])
-	if err != nil {
-		return platform.UDPBindOptions{}, err
+	return bind, nil
+}
+
+func socketBuilderAddr(address *net.UDPAddr) *netip.AddrPort {
+	if address == nil {
+		return nil
 	}
-	device, err := decodeBindDevice(remainder[5:])
-	if err != nil {
-		return platform.UDPBindOptions{}, err
-	}
-	return platform.UDPBindOptions{
-		Context:    socketContext,
-		LocalAddr:  local,
-		BindDevice: device,
-		ReuseAddr:  reuseAddr,
-		ReusePort:  reusePort,
-		OnlyV6:     onlyV6,
-		Purpose:    purpose,
-	}, nil
+	value := address.AddrPort()
+	return &value
 }
 
 func decodeTCPListenOptions(encoded []byte) (platform.TCPListenOptions, error) {
@@ -138,14 +149,18 @@ func decodeTCPListenOptions(encoded []byte) (platform.TCPListenOptions, error) {
 	if len(remainder) < 10 {
 		return platform.TCPListenOptions{}, fmt.Errorf("truncated TCP listen bind policy")
 	}
-	bind, err := decodeTCPBindPolicy(
-		&net.TCPAddr{IP: local.IP, Port: local.Port, Zone: local.Zone},
+	bind, err := decodeSocketBindPolicy(
+		local,
 		socketContext,
 		remainder[0],
 		remainder[1],
 		remainder[2],
 		remainder[5:],
 	)
+	if err != nil {
+		return platform.TCPListenOptions{}, err
+	}
+	bind.NeedProtect, err = decodeWireBool("TCP need_protect", remainder[4])
 	if err != nil {
 		return platform.TCPListenOptions{}, err
 	}
@@ -156,14 +171,14 @@ func decodeTCPListenOptions(encoded []byte) (platform.TCPListenOptions, error) {
 	return platform.TCPListenOptions{Bind: bind, Purpose: purpose}, nil
 }
 
-func decodeTCPBindPolicy(
-	localAddr *net.TCPAddr,
+func decodeSocketBindPolicy(
+	localAddr *net.UDPAddr,
 	socketContext platform.SocketContext,
 	reuseMode byte,
 	reusePortByte byte,
 	onlyV6Byte byte,
 	deviceBytes []byte,
-) (platform.TCPBindOptions, error) {
+) (platform.BindConfig, error) {
 	var reuseAddr *bool
 	switch reuseMode {
 	case 0:
@@ -174,23 +189,23 @@ func decodeTCPBindPolicy(
 		value := true
 		reuseAddr = &value
 	default:
-		return platform.TCPBindOptions{}, fmt.Errorf("invalid TCP reuse_addr")
+		return platform.BindConfig{}, fmt.Errorf("invalid socket reuse_addr")
 	}
-	reusePort, err := decodeWireBool("TCP reuse_port", reusePortByte)
+	reusePort, err := decodeWireBool("socket reuse_port", reusePortByte)
 	if err != nil {
-		return platform.TCPBindOptions{}, err
+		return platform.BindConfig{}, err
 	}
-	onlyV6, err := decodeWireBool("TCP only_v6", onlyV6Byte)
+	onlyV6, err := decodeWireBool("socket only_v6", onlyV6Byte)
 	if err != nil {
-		return platform.TCPBindOptions{}, err
+		return platform.BindConfig{}, err
 	}
 	device, err := decodeBindDevice(deviceBytes)
 	if err != nil {
-		return platform.TCPBindOptions{}, err
+		return platform.BindConfig{}, err
 	}
-	return platform.TCPBindOptions{
+	return platform.BindConfig{
 		Context:    socketContext,
-		LocalAddr:  localAddr,
+		LocalAddr:  socketBuilderAddr(localAddr),
 		BindDevice: device,
 		ReuseAddr:  reuseAddr,
 		ReusePort:  reusePort,
@@ -385,31 +400,6 @@ func decodeTCPConnectPurpose(encoded byte) (platform.TCPConnectPurpose, error) {
 		return platform.TCPConnectDataPlane, nil
 	default:
 		return 0, fmt.Errorf("invalid TCP connect purpose %d", encoded)
-	}
-}
-
-func decodeUDPBindPurpose(encoded byte) (platform.UDPBindPurpose, error) {
-	switch encoded {
-	case 0:
-		return platform.UDPBindHolePunchControl, nil
-	case 1:
-		return platform.UDPBindHolePunchCandidate, nil
-	case 2:
-		return platform.UDPBindDirect, nil
-	case 3:
-		return platform.UDPBindPortBoundListener, nil
-	case 4:
-		return platform.UDPBindProxyNAT, nil
-	case 5:
-		return platform.UDPBindSTUNProbe, nil
-	case 6:
-		return platform.UDPBindSocks5, nil
-	case 7:
-		return platform.UDPBindPortForward, nil
-	case 8:
-		return platform.UDPBindPortLease, nil
-	default:
-		return 0, fmt.Errorf("invalid UDP bind purpose %d", encoded)
 	}
 }
 

@@ -1,19 +1,20 @@
 use std::io;
 
+use super::socket::{SOCKET_ADDRESS_LEN, decode_socket_address, encode_socket_address};
 use crate::host::socket::{
     HostSocketHandle,
     factory::{HostTcpConnectResult, HostUdpBindResult},
     listener::HostTcpBindResult,
 };
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::socket::{
-    IpVersion, SocketContext,
+    IpVersion,
     tcp::{TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose},
-    udp::{UdpBindOptions, UdpSocketPurpose},
 };
 
-use super::socket::{SOCKET_ADDRESS_LEN, decode_socket_address, encode_socket_address};
-
 const OPTIONS_VERSION: u8 = 3;
+const UDP_OPTIONS_VERSION: u8 = 4;
 pub(crate) const TCP_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN * 2;
 pub(crate) const BOUND_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN;
 
@@ -49,27 +50,20 @@ pub(crate) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Res
     Ok(encoded)
 }
 
-pub(crate) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_udp_bind_options(options: &BindConfig) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(
-        49 + context_variable_len(&options.context) + bind_device_len(&options.bind_device),
+        48 + context_variable_len(&options.context) + bind_device_len(&options.bind_device),
     );
-    encoded.push(OPTIONS_VERSION);
+    encoded.push(UDP_OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.local_addr);
     encode_context(&mut encoded, &options.context)?;
-    encoded.push(u8::from(options.reuse_addr));
+    encoded.push(match options.reuse_addr {
+        None => 0,
+        Some(false) => 1,
+        Some(true) => 2,
+    });
     encoded.push(u8::from(options.reuse_port));
     encoded.push(u8::from(options.only_v6));
-    encoded.push(match options.purpose {
-        UdpSocketPurpose::HolePunchControl => 0,
-        UdpSocketPurpose::HolePunchCandidate => 1,
-        UdpSocketPurpose::DirectConnect => 2,
-        UdpSocketPurpose::PortBoundListener => 3,
-        UdpSocketPurpose::ProxyNat => 4,
-        UdpSocketPurpose::StunProbe => 5,
-        UdpSocketPurpose::Socks5 => 6,
-        UdpSocketPurpose::PortForward => 7,
-        UdpSocketPurpose::PortLease => 8,
-    });
     encoded.push(u8::from(options.need_protect));
     encode_bind_device(&mut encoded, &options.bind_device)?;
     Ok(encoded)

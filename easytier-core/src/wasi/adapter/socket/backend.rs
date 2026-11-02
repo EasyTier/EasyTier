@@ -6,9 +6,10 @@ use crate::host::socket::{
     listener::{HostTcpBindResult, HostTcpListenerIo},
     udp::{HostUdpDatagram, HostUdpIo},
 };
+use crate::socket::BindConfig;
 use crate::socket::{
     tcp::{TcpConnectOptions, TcpListenOptions},
-    udp::{UdpBindOptions, UdpSocketSendMeta},
+    udp::UdpSocketSendMeta,
 };
 
 use crate::wasi::{
@@ -165,11 +166,7 @@ impl HostSocketFactoryIo for WasiHostSocketBackend {
         }
     }
 
-    fn submit_udp_bind(
-        &self,
-        operation: HostOperationId,
-        options: &UdpBindOptions,
-    ) -> io::Result<()> {
+    fn submit_udp_bind(&self, operation: HostOperationId, options: &BindConfig) -> io::Result<()> {
         let encoded = encode_udp_bind_options(options)?;
         status("start_udp_bind", unsafe {
             start_udp_bind(
