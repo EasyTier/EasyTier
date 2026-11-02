@@ -384,9 +384,18 @@ mod tests {
         let calls = AtomicUsize::new(0);
         let contexts = [
             SocketContext::default(),
-            SocketContext::default().with_ip_version(IpVersion::V4),
-            SocketContext::default().with_socket_mark(Some(7)),
-            SocketContext::default().with_netns(Some(NetNamespace::new("foreign-a"))),
+            SocketContext {
+                ip_version: IpVersion::V4,
+                ..SocketContext::default()
+            },
+            SocketContext {
+                socket_mark: Some(7),
+                ..SocketContext::default()
+            },
+            SocketContext {
+                netns: Some(NetNamespace::new("foreign-a")),
+                ..SocketContext::default()
+            },
         ];
 
         for context in &contexts {
@@ -410,8 +419,14 @@ mod tests {
     #[tokio::test]
     async fn slow_collection_does_not_block_a_different_context() {
         let cache = Arc::new(InterfaceAddrCache::new(Duration::from_secs(60)));
-        let slow_context = SocketContext::default().with_socket_mark(Some(1));
-        let other_context = SocketContext::default().with_socket_mark(Some(2));
+        let slow_context = SocketContext {
+            socket_mark: Some(1),
+            ..SocketContext::default()
+        };
+        let other_context = SocketContext {
+            socket_mark: Some(2),
+            ..SocketContext::default()
+        };
         let (started_tx, started_rx) = oneshot::channel();
         let (release_tx, release_rx) = oneshot::channel();
         let slow = tokio::spawn({
@@ -442,8 +457,14 @@ mod tests {
     #[tokio::test]
     async fn slow_collection_does_not_block_a_fresh_hit() {
         let cache = Arc::new(InterfaceAddrCache::new(Duration::from_secs(60)));
-        let cached_context = SocketContext::default().with_socket_mark(Some(1));
-        let slow_context = SocketContext::default().with_socket_mark(Some(2));
+        let cached_context = SocketContext {
+            socket_mark: Some(1),
+            ..SocketContext::default()
+        };
+        let slow_context = SocketContext {
+            socket_mark: Some(2),
+            ..SocketContext::default()
+        };
         cache
             .get_or_collect(&cached_context, || async { GetIpListResponse::default() })
             .await;

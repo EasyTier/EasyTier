@@ -163,12 +163,12 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct MockFactory {
-        bind_options: Mutex<Vec<UdpBindOptions>>,
+        bind_options: Mutex<Vec<BindConfig>>,
         sockets: Mutex<Vec<Arc<MockSocket>>>,
     }
 
     impl MockFactory {
-        fn bind_options(&self) -> Vec<UdpBindOptions> {
+        fn bind_options(&self) -> Vec<BindConfig> {
             self.bind_options.lock().unwrap().clone()
         }
 
@@ -181,7 +181,7 @@ mod tests {
     impl VirtualUdpSocketFactory for MockFactory {
         type Socket = MockSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.bind_options.lock().unwrap().push(options);
             let socket = Arc::new(MockSocket::default());
             self.sockets.lock().unwrap().push(socket.clone());
@@ -238,10 +238,12 @@ mod tests {
         assert!(listener_socket.sent().is_empty());
         assert_eq!(
             factory.bind_options(),
-            vec![
-                UdpBindOptions::hole_punch_control()
-                    .with_local_addr(Some("[::]:0".parse().unwrap()))
-            ]
+            vec![BindConfig {
+                bind_device: Some("".into()),
+                reuse_addr: Some(false),
+                local_addr: Some("[::]:0".parse().unwrap()),
+                ..BindConfig::default()
+            }]
         );
         let sockets = factory.sockets();
         assert_eq!(sockets.len(), 1);

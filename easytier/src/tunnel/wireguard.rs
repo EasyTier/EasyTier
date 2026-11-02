@@ -782,10 +782,11 @@ pub mod tests {
         common::global_ctx::tests::get_mock_global_ctx, host_runtime::native_host_runtime,
         tunnel::protocol::runtime_client_protocol_upgrader,
     };
+    use easytier_core::socket::BindConfig;
     use easytier_core::{
         connectivity::transport::{ConnectedTransport, UdpSessionMode, connect_udp},
         socket::SocketListener,
-        socket::udp::{UdpBindOptions, UdpSessionProtocol},
+        socket::udp::UdpSessionProtocol,
     };
 
     fn test_wg_config() -> WgConfig {
@@ -815,7 +816,10 @@ pub mod tests {
                     native_host_runtime(),
                     remote_addr,
                     Vec::new(),
-                    UdpBindOptions::direct_connect(),
+                    BindConfig {
+                        reuse_addr: Some(false),
+                        ..BindConfig::default()
+                    },
                     UdpSessionMode::Classified(UdpSessionProtocol::WireGuard),
                 )
                 .await

@@ -13,6 +13,7 @@ use easytier_core::{
     connectivity::protocol::raw::TunnelDialer,
     foundation::stats::{LabelSet, LabelType, MetricName, MetricSnapshot},
     process_runtime::CoreProcessRuntime,
+    socket::BindConfig,
     socket::SocketListener,
     tunnel::Tunnel,
 };
@@ -40,7 +41,7 @@ use crate::{
             runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener,
         },
     },
-    tunnel::common::tests::{
+    tunnel::tests::{
         _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, wait_for_condition,
         wait_for_condition_named,
     },
@@ -1370,7 +1371,7 @@ async fn subnet_proxy_test_udp(
     target_ip: &str,
     timeout: Duration,
 ) {
-    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
+    use crate::tunnel::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     let udp_listener = core_udp_listener(format!("udp://{}:22233", listen_ip).parse().unwrap());
@@ -1422,7 +1423,7 @@ async fn subnet_proxy_test_tcp(
     connect_ip: &str,
     timeout: Duration,
 ) {
-    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
+    use crate::tunnel::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     let tcp_listener = core_tcp_listener(format!("tcp://{listen_ip}:22223").parse().unwrap());
@@ -3565,7 +3566,10 @@ async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
                     host,
                     target,
                     Vec::new(),
-                    easytier_core::socket::udp::UdpBindOptions::direct_connect(),
+                    BindConfig {
+                        reuse_addr: Some(false),
+                        ..BindConfig::default()
+                    },
                     easytier_core::connectivity::transport::UdpSessionMode::EasyTierMux,
                 )
                 .await?,
@@ -3678,7 +3682,7 @@ pub async fn acl_rule_test_inbound(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     let network = prepare_linux_namespaces();
-    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
+    use crate::tunnel::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
     let insts = init_three_node_ex(
         &network,
@@ -3914,7 +3918,7 @@ pub async fn acl_rule_test_subnet_proxy(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     let network = Arc::new(prepare_linux_namespaces());
-    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
+    use crate::tunnel::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     let insts = init_three_node_ex(
@@ -4275,7 +4279,7 @@ pub async fn acl_group_base_test(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     let network = prepare_linux_namespaces();
-    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
+    use crate::tunnel::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     // 构造 ACL 配置，包含组信息
@@ -4709,7 +4713,7 @@ pub async fn acl_group_self_test(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     let network = prepare_linux_namespaces();
-    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
+    use crate::tunnel::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     // 构造 ACL 配置，包含组信息
@@ -4901,7 +4905,7 @@ pub async fn whitelist_test(
     )
     .await;
 
-    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
+    use crate::tunnel::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     let make_listener =
@@ -4984,7 +4988,7 @@ pub async fn config_patch_test() {
         },
         common::{PortForwardConfigPb, SocketType},
     };
-    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
+    use crate::tunnel::tests::_tunnel_pingpong_netns_with_timeout;
 
     let insts = init_three_node_ex(
         &network,

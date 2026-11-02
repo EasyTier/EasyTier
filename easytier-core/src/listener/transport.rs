@@ -720,6 +720,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::socket::BindConfig;
     use crate::{
         connectivity::protocol::{CoreServerProtocolUpgrader, ServerTunnelAcceptor},
         host::dns::{DnsQuery, DnsResolver},
@@ -727,8 +728,8 @@ mod tests {
         socket::{
             tcp::{VirtualTcpListener, VirtualTcpSocket},
             udp::{
-                UdpBindOptions, UdpSessionKind, UdpSessionProtocol, UdpSessionSocket,
-                VirtualUdpSocket, new_syn_packet,
+                UdpSessionKind, UdpSessionProtocol, UdpSessionSocket, VirtualUdpSocket,
+                new_syn_packet,
             },
         },
     };
@@ -879,7 +880,7 @@ mod tests {
         next_tcp_port: AtomicU16,
         next_udp_port: AtomicU16,
         tcp_bind_options: StdMutex<Vec<TcpListenOptions>>,
-        udp_bind_options: StdMutex<Vec<UdpBindOptions>>,
+        udp_bind_options: StdMutex<Vec<BindConfig>>,
         tcp_listeners: StdMutex<Vec<Arc<MockTcpListener>>>,
         udp_sockets: StdMutex<Vec<Arc<MockUdpSocket>>>,
     }
@@ -908,7 +909,7 @@ mod tests {
             self.tcp_bind_options.lock().unwrap()[index].clone()
         }
 
-        fn udp_bind_options(&self, index: usize) -> UdpBindOptions {
+        fn udp_bind_options(&self, index: usize) -> BindConfig {
             self.udp_bind_options.lock().unwrap()[index].clone()
         }
     }
@@ -938,7 +939,7 @@ mod tests {
     impl VirtualUdpSocketFactory for MockHost {
         type Socket = MockUdpSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             let local_addr = assigned_addr(options.local_addr, &self.next_udp_port);
             self.udp_bind_options.lock().unwrap().push(options);
             let socket = Arc::new(MockUdpSocket::new(local_addr));
@@ -1203,9 +1204,10 @@ mod tests {
         let host = Arc::new(MockHost::new());
         let mut tcp = TcpTransportListener::new(
             "tcp://listener.example".parse()?,
-            super::super::plan::unresolved_tcp_listener_options(
-                SocketContext::default().with_socket_mark(Some(7)),
-            ),
+            super::super::plan::unresolved_tcp_listener_options(SocketContext {
+                socket_mark: Some(7),
+                ..SocketContext::default()
+            }),
             None,
             host.clone(),
             Arc::new(MockDns),
@@ -1222,7 +1224,10 @@ mod tests {
             "wg://listener.example".parse()?,
             super::super::plan::unresolved_udp_session_listen_request(
                 &"wg://listener.example".parse()?,
-                SocketContext::default().with_socket_mark(Some(7)),
+                SocketContext {
+                    socket_mark: Some(7),
+                    ..SocketContext::default()
+                },
             ),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
             host.clone(),
@@ -1331,9 +1336,10 @@ mod tests {
         let host = Arc::new(MockHost::new());
         let mut listener = UdpTransportListener::<MockHost, MockTcpSocket>::new(
             "quic://127.0.0.1:0".parse()?,
-            UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
-                "127.0.0.1:0".parse()?,
-            )),
+            UdpSessionListenRequest::new(BindConfig {
+                local_addr: Some("127.0.0.1:0".parse()?),
+                ..BindConfig::default()
+            }),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
             host.clone(),
             Arc::new(MockDns),
@@ -1497,17 +1503,19 @@ mod tests {
                 },
                 TransportListenerConfig::Udp {
                     url: "udp://127.0.0.1:0".parse().unwrap(),
-                    request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
-                        "127.0.0.1:0".parse().unwrap(),
-                    )),
+                    request: UdpSessionListenRequest::new(BindConfig {
+                        local_addr: Some("127.0.0.1:0".parse().unwrap()),
+                        ..BindConfig::default()
+                    }),
                     accept_kind: UdpSessionAcceptKind::EasyTierMux,
                     must_succeed: true,
                 },
                 TransportListenerConfig::Udp {
                     url: "wg://127.0.0.1:0".parse().unwrap(),
-                    request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
-                        "127.0.0.1:0".parse().unwrap(),
-                    )),
+                    request: UdpSessionListenRequest::new(BindConfig {
+                        local_addr: Some("127.0.0.1:0".parse().unwrap()),
+                        ..BindConfig::default()
+                    }),
                     accept_kind: UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
                     must_succeed: true,
                 },

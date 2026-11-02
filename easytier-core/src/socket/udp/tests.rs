@@ -1,3 +1,4 @@
+use crate::socket::BindConfig;
 use std::{
     collections::VecDeque,
     io,
@@ -17,117 +18,35 @@ use futures::StreamExt;
 use stun_codec::{Message, MessageClass, MessageEncoder, rfc5389::methods::BINDING};
 use tokio::sync::{Semaphore, mpsc, watch};
 
+use super::{layer::*, packet::*, session::*, virtual_socket::*, *};
+use crate::socket::SocketContext;
 use crate::{
     packet::stun::{Attribute, ChangeRequest, u32_to_tid},
     packet::{UDP_TUNNEL_HEADER_SIZE, UdpPacketType, hole_punch_packet_tid},
-    socket::{IpVersion, NetNamespace, SocketContext, SocketListener},
+    socket::{IpVersion, NetNamespace, SocketListener},
 };
-
-use super::{layer::*, packet::*, session::*, virtual_socket::*, *};
-
-#[test]
-fn bind_options_constructors_describe_socket_purpose() {
-    let listener_addr = SocketAddr::from(([0, 0, 0, 0], 12345));
-
-    assert_eq!(
-        UdpBindOptions::hole_punch_control(),
-        UdpBindOptions {
-            context: SocketContext::default(),
-            local_addr: None,
-            bind_device: None,
-            reuse_addr: false,
-            reuse_port: false,
-            only_v6: false,
-            purpose: UdpSocketPurpose::HolePunchControl,
-            need_protect: true,
-        }
-    );
-    assert_eq!(
-        UdpBindOptions::hole_punch_candidate(),
-        UdpBindOptions {
-            context: SocketContext::default(),
-            local_addr: None,
-            bind_device: None,
-            reuse_addr: false,
-            reuse_port: false,
-            only_v6: false,
-            purpose: UdpSocketPurpose::HolePunchCandidate,
-            need_protect: true,
-        }
-    );
-    assert_eq!(
-        UdpBindOptions::direct_connect(),
-        UdpBindOptions {
-            context: SocketContext::default(),
-            local_addr: None,
-            bind_device: None,
-            reuse_addr: false,
-            reuse_port: false,
-            only_v6: false,
-            purpose: UdpSocketPurpose::DirectConnect,
-            need_protect: true,
-        }
-    );
-    assert_eq!(
-        UdpBindOptions::port_bound_listener(listener_addr),
-        UdpBindOptions {
-            context: SocketContext::default(),
-            local_addr: Some(listener_addr),
-            bind_device: None,
-            reuse_addr: false,
-            reuse_port: false,
-            only_v6: false,
-            purpose: UdpSocketPurpose::PortBoundListener,
-            need_protect: true,
-        }
-    );
-    assert_eq!(
-        UdpBindOptions::socks5(),
-        UdpBindOptions {
-            context: SocketContext::default(),
-            local_addr: None,
-            bind_device: None,
-            reuse_addr: false,
-            reuse_port: false,
-            only_v6: false,
-            purpose: UdpSocketPurpose::Socks5,
-            need_protect: true,
-        }
-    );
-    assert_eq!(
-        UdpBindOptions::port_forward(listener_addr).purpose,
-        UdpSocketPurpose::PortForward
-    );
-    assert_eq!(
-        UdpBindOptions::port_lease(listener_addr).purpose,
-        UdpSocketPurpose::PortLease
-    );
-    assert_eq!(
-        UdpBindOptions::default(),
-        UdpBindOptions::hole_punch_control().with_need_protect(true)
-    );
-}
 
 #[test]
 fn session_connect_request_keeps_peer_scoped_udp_shape() {
     let remote_addr = SocketAddr::from(([192, 0, 2, 1], 11010));
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], 22020));
 
-    let request = UdpSessionConnectRequest::wireguard(remote_addr)
-        .with_bind(UdpBindOptions::port_bound_listener(bind_addr));
+    let request = UdpSessionConnectRequest::wireguard(remote_addr).with_bind(BindConfig {
+        local_addr: Some(bind_addr),
+        ..BindConfig::default()
+    });
 
     assert_eq!(request.remote_addr, remote_addr);
     assert_eq!(request.protocol, UdpSessionProtocol::WireGuard);
     assert_eq!(
         request.bind,
-        UdpBindOptions {
+        BindConfig {
             context: SocketContext::default(),
             local_addr: Some(bind_addr),
             bind_device: None,
-            reuse_addr: false,
+            reuse_addr: None,
             reuse_port: false,
             only_v6: false,
-            purpose: UdpSocketPurpose::PortBoundListener,
             need_protect: true,
         }
     );
@@ -136,7 +55,10 @@ fn session_connect_request_keeps_peer_scoped_udp_shape() {
 #[test]
 fn session_listen_request_keeps_bind_options() {
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
-    let bind = UdpBindOptions::port_bound_listener(bind_addr);
+    let bind = BindConfig {
+        local_addr: Some(bind_addr),
+        ..BindConfig::default()
+    };
 
     assert_eq!(UdpSessionListenRequest::new(bind.clone()).bind, bind);
 }
@@ -291,9 +213,10 @@ async fn udp_session_listener_reports_bound_local_addr_before_accept() {
     };
 
     listener
-        .listen(UdpSessionListenRequest::new(
-            UdpBindOptions::port_bound_listener(local_addr),
-        ))
+        .listen(UdpSessionListenRequest::new(BindConfig {
+            local_addr: Some(local_addr),
+            ..BindConfig::default()
+        }))
         .await
         .unwrap();
 
@@ -1725,11 +1648,12 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
     .unwrap();
     assert_eq!(
         stun_responder.bind_options(),
-        vec![
-            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V4(
-                SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)
-            )))
-        ]
+        vec![BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            local_addr: Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))),
+            ..BindConfig::default()
+        }]
     );
     let responder_sockets = stun_responder.sockets();
     assert_eq!(responder_sockets.len(), 1);
@@ -2068,7 +1992,7 @@ type MockIncomingDatagrams = VecDeque<Vec<(Vec<u8>, SocketAddr)>>;
 
 struct MockVirtualUdpSocketFactory {
     next_port: AtomicU16,
-    bind_options: Mutex<Vec<UdpBindOptions>>,
+    bind_options: Mutex<Vec<BindConfig>>,
     sockets: Mutex<Vec<Arc<MockVirtualUdpSocket>>>,
     incoming: Mutex<MockIncomingDatagrams>,
 }
@@ -2089,7 +2013,7 @@ impl MockVirtualUdpSocketFactory {
         factory
     }
 
-    fn bind_options(&self) -> Vec<UdpBindOptions> {
+    fn bind_options(&self) -> Vec<BindConfig> {
         self.bind_options.lock().unwrap().clone()
     }
 
@@ -2102,7 +2026,7 @@ impl MockVirtualUdpSocketFactory {
 impl VirtualUdpSocketFactory for MockVirtualUdpSocketFactory {
     type Socket = MockVirtualUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         self.bind_options.lock().unwrap().push(options.clone());
         let local_addr = options
             .local_addr
@@ -2131,8 +2055,10 @@ async fn udp_session_dialer_binds_socket_and_returns_wireguard_session() {
     let mut dialer = UdpSessionDialer::new(factory.clone());
     let remote_addr = SocketAddr::from(([192, 0, 2, 10], 11010));
     let bind_addr = SocketAddr::from(([127, 0, 0, 1], 14000));
-    let request = UdpSessionConnectRequest::wireguard(remote_addr)
-        .with_bind(UdpBindOptions::port_bound_listener(bind_addr));
+    let request = UdpSessionConnectRequest::wireguard(remote_addr).with_bind(BindConfig {
+        local_addr: Some(bind_addr),
+        ..BindConfig::default()
+    });
     let expected_bind = request.bind.clone();
 
     let session = dialer.connect(request).await.unwrap();
@@ -2157,7 +2083,11 @@ async fn udp_session_socket_listener_builds_port_bound_bind_options() {
 
     assert_eq!(
         factory.bind_options(),
-        vec![UdpBindOptions::port_bound_listener(local_addr).with_only_v6(true)]
+        vec![BindConfig {
+            local_addr: Some(local_addr),
+            only_v6: true,
+            ..BindConfig::default()
+        }]
     );
     assert_eq!(listener.local_url().port(), Some(11010));
     assert_eq!(listener.connection_counter().get(), Some(0));
@@ -2276,9 +2206,12 @@ async fn udp_session_dialer_uses_factory_as_stun_responder() {
         factory.bind_options(),
         vec![
             expected_session_bind,
-            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V4(
-                SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)
-            )))
+            BindConfig {
+                bind_device: Some("".into()),
+                reuse_addr: Some(false),
+                local_addr: Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))),
+                ..BindConfig::default()
+            }
         ]
     );
     let sockets = factory.sockets();
@@ -2289,9 +2222,11 @@ async fn udp_session_dialer_uses_factory_as_stun_responder() {
 async fn v4_hole_punch_control_sender_uses_factory_socket() {
     let factory = MockVirtualUdpSocketFactory::new(13000);
     let dst_addr = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 11010);
-    let context = SocketContext::default()
-        .with_socket_mark(Some(0))
-        .with_netns(Some(NetNamespace::new("instance-a")));
+    let context = SocketContext {
+        socket_mark: Some(0),
+        netns: Some(NetNamespace::new("instance-a")),
+        ..SocketContext::default()
+    };
 
     send_v4_hole_punch_control_packet(&factory, context.clone(), 22020, dst_addr)
         .await
@@ -2299,15 +2234,17 @@ async fn v4_hole_punch_control_sender_uses_factory_socket() {
 
     assert_eq!(
         factory.bind_options(),
-        vec![
-            UdpBindOptions::hole_punch_control()
-                .with_need_protect(false)
-                .with_context(context.with_ip_version(IpVersion::V4))
-                .with_local_addr(Some(SocketAddr::V4(SocketAddrV4::new(
-                    Ipv4Addr::LOCALHOST,
-                    0
-                ))))
-        ]
+        vec![BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            need_protect: false,
+            context: SocketContext {
+                ip_version: IpVersion::V4,
+                ..context
+            },
+            local_addr: Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))),
+            ..BindConfig::default()
+        }]
     );
     let sockets = factory.sockets();
     assert_eq!(sockets.len(), 1);
@@ -2328,9 +2265,11 @@ async fn v6_hole_punch_control_sender_uses_factory_socket() {
         ip: "2001:db8::2".parse().unwrap(),
         ifindex: 42,
     };
-    let context = SocketContext::default()
-        .with_socket_mark(Some(0))
-        .with_netns(Some(NetNamespace::new("instance-a")));
+    let context = SocketContext {
+        socket_mark: Some(0),
+        netns: Some(NetNamespace::new("instance-a")),
+        ..SocketContext::default()
+    };
 
     send_v6_hole_punch_control_packet(
         &factory,
@@ -2344,17 +2283,22 @@ async fn v6_hole_punch_control_sender_uses_factory_socket() {
 
     assert_eq!(
         factory.bind_options(),
-        vec![
-            UdpBindOptions::hole_punch_control()
-                .with_need_protect(false)
-                .with_context(context.with_ip_version(IpVersion::V6))
-                .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
-                    Ipv6Addr::LOCALHOST,
-                    0,
-                    0,
-                    0
-                ))))
-        ]
+        vec![BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            need_protect: false,
+            context: SocketContext {
+                ip_version: IpVersion::V6,
+                ..context
+            },
+            local_addr: Some(SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::LOCALHOST,
+                0,
+                0,
+                0
+            ))),
+            ..BindConfig::default()
+        }]
     );
     let sockets = factory.sockets();
     assert_eq!(sockets.len(), 1);

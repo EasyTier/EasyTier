@@ -1109,9 +1109,11 @@ mod tests {
     #[test]
     fn fallback_listener_normalizes_context_to_ipv4() {
         let bind_addr = "0.0.0.0:23333".parse().unwrap();
-        let context = SocketContext::default()
-            .with_socket_mark(Some(0))
-            .with_netns(Some(crate::socket::NetNamespace::new("test-netns")));
+        let context = SocketContext {
+            socket_mark: Some(0),
+            netns: Some(crate::socket::NetNamespace::new("test-netns")),
+            ..SocketContext::default()
+        };
 
         let options = fallback_listener_options(context, bind_addr);
 

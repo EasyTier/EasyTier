@@ -674,7 +674,13 @@ mod tests {
                 network_name: "test-network".to_owned(),
                 timeout: Duration::from_secs(1),
                 ip_version: IpVersion::V4,
-                tcp_bind: TcpBindOptions::default().with_socket_mark(Some(9)),
+                tcp_bind: BindConfig {
+                    context: crate::socket::SocketContext {
+                        socket_mark: Some(9),
+                        ..SocketContext::default()
+                    },
+                    ..BindConfig::default()
+                },
             },
         )
         .await
@@ -734,7 +740,7 @@ mod tests {
                 network_name: "test-network".to_owned(),
                 timeout: Duration::from_secs(5),
                 ip_version: IpVersion::V4,
-                tcp_bind: TcpBindOptions::default(),
+                tcp_bind: BindConfig::default(),
             },
         )
         .await
@@ -989,7 +995,7 @@ mod tests {
                 network_name: "test-network".to_owned(),
                 http_timeout: Duration::from_secs(1),
                 http_ip_version: IpVersion::Both,
-                http_tcp_bind: TcpBindOptions::default(),
+                http_tcp_bind: BindConfig::default(),
                 dns_record_context: record_context.clone(),
                 srv_protocols: vec!["quic".to_owned()],
             },
@@ -1061,7 +1067,13 @@ mod tests {
                 network_name: "facade-network".to_owned(),
                 http_timeout: Duration::from_secs(1),
                 http_ip_version: IpVersion::V4,
-                http_tcp_bind: TcpBindOptions::default().with_socket_mark(Some(23)),
+                http_tcp_bind: BindConfig {
+                    context: crate::socket::SocketContext {
+                        socket_mark: Some(23),
+                        ..SocketContext::default()
+                    },
+                    ..BindConfig::default()
+                },
                 dns_record_context: SocketContext::default(),
                 srv_protocols: Vec::new(),
             },
@@ -1159,7 +1171,7 @@ mod tests {
                 network_name: "redirect-network".to_owned(),
                 http_timeout: Duration::from_secs(5),
                 http_ip_version: IpVersion::Both,
-                http_tcp_bind: TcpBindOptions::default(),
+                http_tcp_bind: BindConfig::default(),
                 dns_record_context: SocketContext::default(),
                 srv_protocols: Vec::new(),
             },

@@ -14,7 +14,7 @@ use crate::{
         shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedIpv4Route},
         test_instance::TestInstance as Instance,
     },
-    tunnel::common::tests::wait_for_condition,
+    tunnel::tests::wait_for_condition,
 };
 
 const PROXY_CIDR: &str = "10.1.2.0/24";

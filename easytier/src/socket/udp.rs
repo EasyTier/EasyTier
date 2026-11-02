@@ -160,6 +160,7 @@ mod tests {
             send_v6_hole_punch_control_packet,
         },
     };
+    use std::net::Ipv4Addr;
 
     use crate::host_runtime::native_host_runtime;
 
@@ -170,28 +171,37 @@ mod tests {
     async fn runtime_udp_bind_rejects_occupied_port() {
         for local_addr in ["0.0.0.0:0", "[::]:0"] {
             let local_addr = local_addr.parse().unwrap();
-            for bind in [
-                UdpBindOptions::port_bound_listener(local_addr),
-                UdpBindOptions::proxy_nat().with_local_addr(Some(local_addr)),
-                UdpBindOptions::port_forward(local_addr),
-            ] {
-                let bind = bind.with_only_v6(true);
-                let listener = create_udp_socket(&bind).await.unwrap();
-                let occupied = bind.with_local_addr(Some(listener.local_addr().unwrap()));
+            for need_protect in [true, false] {
+                let bind = BindConfig {
+                    local_addr: Some(local_addr),
+                    only_v6: true,
+                    need_protect,
+                    ..BindConfig::default()
+                };
+                let listener = crate::socket::bind::<UdpSocket>(bind.clone())
+                    .await
+                    .unwrap();
+                let occupied = BindConfig {
+                    local_addr: Some(listener.local_addr().unwrap()),
+                    ..bind
+                };
 
                 for reuse_addr in [false, true] {
-                    let error = create_udp_socket(&occupied.clone().with_reuse_addr(reuse_addr))
-                        .await
-                        .expect_err("another socket must not share a bound receive endpoint");
+                    let error = crate::socket::bind::<UdpSocket>(BindConfig {
+                        reuse_addr: Some(reuse_addr),
+                        ..occupied.clone()
+                    })
+                    .await
+                    .expect_err("another socket must not share a bound receive endpoint");
                     assert!(matches!(
-                        error.downcast_ref::<easytier_core::tunnel::TunnelError>(),
-                        Some(easytier_core::tunnel::TunnelError::IOError(error))
+                        error,
+                        easytier_core::tunnel::TunnelError::IOError(error)
                             if error.kind() == std::io::ErrorKind::AddrInUse
                     ));
                 }
 
                 drop(listener);
-                create_udp_socket(&occupied).await.unwrap();
+                crate::socket::bind::<UdpSocket>(occupied).await.unwrap();
             }
         }
     }
@@ -203,16 +213,19 @@ mod tests {
             ("[::]:0", "::1".parse::<IpAddr>().unwrap()),
         ] {
             let bind_addr = bind_addr.parse().unwrap();
-            let binds = [
-                UdpBindOptions::port_bound_listener(bind_addr),
-                UdpBindOptions::proxy_nat().with_local_addr(Some(bind_addr)),
-                UdpBindOptions::port_forward(bind_addr),
-            ];
+            let binds = [true, false].map(|need_protect| BindConfig {
+                local_addr: Some(bind_addr),
+                only_v6: true,
+                need_protect,
+                ..BindConfig::default()
+            });
             let mut listeners = Vec::new();
             let mut ports = std::collections::HashSet::new();
             for index in 0..128 {
-                let bind = binds[index % binds.len()].clone().with_only_v6(true);
-                let listener = create_udp_socket(&bind).await.unwrap();
+                let bind = binds[index % binds.len()].clone();
+                let listener = crate::socket::bind::<UdpSocket>(bind.clone())
+                    .await
+                    .unwrap();
                 assert!(ports.insert(listener.local_addr().unwrap().port()));
                 listeners.push(listener);
             }
@@ -234,6 +247,83 @@ mod tests {
                 assert_eq!(&packet[..len], &[index as u8]);
                 assert_eq!(source, sender.local_addr().unwrap());
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn factory_honors_explicit_udp_reuse() {
+        let addr = "127.0.0.1:0".parse().unwrap();
+        for need_protect in [false, true] {
+            for reuse in [None, Some(false), Some(true)] {
+                let options = BindConfig {
+                    local_addr: Some(addr),
+                    bind_device: Some("".into()),
+                    need_protect,
+                    reuse_addr: reuse,
+                    ..BindConfig::default()
+                };
+                let socket = RuntimeUdpSocketFactory::new()
+                    .bind_udp(options)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    socket2::SockRef::from(socket.socket.as_ref())
+                        .reuse_address()
+                        .unwrap(),
+                    reuse.unwrap_or(false)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn factory_reserves_udp_port_when_reuse_is_explicitly_disabled() {
+        let factory = RuntimeUdpSocketFactory::new();
+        let bind = BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            ..BindConfig::default()
+        };
+        let first = factory
+            .bind_udp(BindConfig {
+                local_addr: Some("127.0.0.1:0".parse().unwrap()),
+                ..bind.clone()
+            })
+            .await
+            .unwrap();
+        let address = first.local_addr().unwrap();
+        assert!(
+            factory
+                .bind_udp(BindConfig {
+                    local_addr: Some(address),
+                    ..bind
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn factory_uses_requested_family_without_an_explicit_local_address() {
+        for family in [
+            easytier_core::socket::IpVersion::V4,
+            easytier_core::socket::IpVersion::V6,
+        ] {
+            let socket = RuntimeUdpSocketFactory::new()
+                .bind_udp(BindConfig {
+                    reuse_addr: Some(false),
+                    context: easytier_core::socket::SocketContext {
+                        ip_version: family,
+                        ..SocketContext::default()
+                    },
+                    ..BindConfig::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                socket.local_addr().unwrap().is_ipv6(),
+                family == easytier_core::socket::IpVersion::V6
+            );
         }
     }
 
@@ -314,7 +404,10 @@ mod tests {
         let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
         let mut listener = new_runtime_udp_session_listener(
             "udp://0.0.0.0:0".parse().unwrap(),
-            UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(local_addr)),
+            UdpSessionListenRequest::new(BindConfig {
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            }),
             UdpSessionAcceptKind::EasyTierMux,
             NetNS::new(None),
         );
@@ -349,7 +442,10 @@ mod tests {
         let local_addr = "[::]:0".parse().unwrap();
         let mut listener = new_runtime_udp_session_listener(
             "udp://[::]:0".parse().unwrap(),
-            UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(local_addr)),
+            UdpSessionListenRequest::new(BindConfig {
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            }),
             UdpSessionAcceptKind::EasyTierMux,
             NetNS::new(None),
         );
@@ -378,49 +474,5 @@ mod tests {
         .await
         .expect("timeout waiting for v6 hole-punch packet")
         .unwrap();
-    }
-
-    #[test]
-    fn factory_interprets_bind_device_by_purpose() {
-        let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
-        let factory = RuntimeUdpSocketFactory::new();
-
-        assert!(matches!(
-            factory.bind_device_for(&UdpBindOptions::port_bound_listener(listener_addr)),
-            BindDev::Auto
-        ));
-        assert!(matches!(
-            factory.bind_device_for(&UdpBindOptions::direct_connect()),
-            BindDev::Auto
-        ));
-        assert!(matches!(
-            factory.bind_device_for(&UdpBindOptions::port_forward(listener_addr)),
-            BindDev::Auto
-        ));
-        assert!(matches!(
-            factory.bind_device_for(&UdpBindOptions::port_lease(listener_addr)),
-            BindDev::Disabled
-        ));
-        assert!(matches!(
-            factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
-            BindDev::Disabled
-        ));
-    }
-
-    #[test]
-    fn factory_applies_listener_bind_device_option() {
-        let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
-        let factory = RuntimeUdpSocketFactory::new();
-        let options = UdpBindOptions::port_bound_listener(listener_addr)
-            .with_bind_device(Some("eth0".to_owned()));
-
-        match factory.bind_device_for(&options) {
-            BindDev::Custom(dev) => assert_eq!(dev, "eth0"),
-            bind_device => panic!("unexpected bind device: {bind_device:?}"),
-        }
-        assert!(matches!(
-            factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
-            BindDev::Disabled
-        ));
     }
 }

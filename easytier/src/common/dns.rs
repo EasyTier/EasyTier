@@ -619,9 +619,11 @@ mod tests {
 
     #[test]
     fn runtime_dns_context_preserves_process_routing_inputs() {
-        let context = SocketContext::default()
-            .with_socket_mark(Some(0))
-            .with_netns(Some(easytier_core::socket::NetNamespace::new("instance-a")));
+        let context = SocketContext {
+            socket_mark: Some(0),
+            netns: Some(easytier_core::socket::NetNamespace::new("instance-a")),
+            ..SocketContext::default()
+        };
 
         assert_eq!(
             RuntimeDnsIoContext::from_socket_context(&context),
