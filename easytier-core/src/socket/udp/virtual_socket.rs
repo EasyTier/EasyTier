@@ -1,3 +1,4 @@
+use crate::socket::BindConfig;
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
@@ -8,9 +9,9 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 
-use crate::socket::{IpVersion, SocketContext};
-
 use super::packet::{new_v4_hole_punch_packet, new_v6_hole_punch_packet};
+use crate::socket::IpVersion;
+use crate::socket::SocketContext;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct UdpSocketRecvMeta {
@@ -139,15 +140,17 @@ where
     F: VirtualUdpSocketFactory,
 {
     let socket = factory
-        .bind_udp(
-            UdpBindOptions::hole_punch_control()
-                .with_need_protect(false)
-                .with_context(context.with_ip_version(IpVersion::V4))
-                .with_local_addr(Some(SocketAddr::V4(SocketAddrV4::new(
-                    Ipv4Addr::LOCALHOST,
-                    0,
-                )))),
-        )
+        .bind_udp(BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            need_protect: false,
+            context: SocketContext {
+                ip_version: IpVersion::V4,
+                ..context
+            },
+            local_addr: Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))),
+            ..BindConfig::default()
+        })
         .await?;
     let packet = new_v4_hole_punch_packet(&dst_addr).into_bytes();
     let listener_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener_port));
@@ -166,17 +169,22 @@ where
     F: VirtualUdpSocketFactory,
 {
     let socket = factory
-        .bind_udp(
-            UdpBindOptions::hole_punch_control()
-                .with_need_protect(false)
-                .with_context(context.with_ip_version(IpVersion::V6))
-                .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
-                    Ipv6Addr::LOCALHOST,
-                    0,
-                    0,
-                    0,
-                )))),
-        )
+        .bind_udp(BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            need_protect: false,
+            context: SocketContext {
+                ip_version: IpVersion::V6,
+                ..context
+            },
+            local_addr: Some(SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::LOCALHOST,
+                0,
+                0,
+                0,
+            ))),
+            ..BindConfig::default()
+        })
         .await?;
     let packet = new_v6_hole_punch_packet(&dst_addr, preferred_src).into_bytes();
     let listener_addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, listener_port, 0, 0));
@@ -184,147 +192,18 @@ where
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UdpSocketPurpose {
-    HolePunchControl,
-    HolePunchCandidate,
-    DirectConnect,
-    PortBoundListener,
-    ProxyNat,
-    StunProbe,
-    Socks5,
-    PortForward,
-    PortLease,
+#[async_trait]
+pub trait VirtualUdpSocketFactory: Send + Sync + 'static {
+    type Socket: VirtualUdpSocket;
+
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UdpBindOptions {
-    #[serde(default)]
-    pub context: SocketContext,
-    /// Request host VPN bypass before bind or datagram I/O. Protection must be
-    /// acknowledged inside creation, not emitted as a fire-and-forget event.
-    /// Defaults to true; local/TUN-facing endpoints explicitly opt out.
-    #[serde(default = "crate::socket::default_need_protect")]
-    pub need_protect: bool,
-    pub local_addr: Option<SocketAddr>,
-    pub bind_device: Option<String>,
-    pub reuse_addr: bool,
-    pub reuse_port: bool,
-    pub only_v6: bool,
-    pub purpose: UdpSocketPurpose,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreferredIpv6Source {
+    pub ip: Ipv6Addr,
+    pub ifindex: u32,
 }
-
-impl UdpBindOptions {
-    fn for_purpose(purpose: UdpSocketPurpose) -> Self {
-        Self {
-            context: SocketContext::default(),
-            need_protect: crate::socket::default_need_protect(),
-            local_addr: None,
-            bind_device: None,
-            reuse_addr: false,
-            reuse_port: false,
-            only_v6: false,
-            purpose,
-        }
-    }
-
-    pub fn hole_punch_control() -> Self {
-        Self::for_purpose(UdpSocketPurpose::HolePunchControl)
-    }
-
-    pub fn hole_punch_candidate() -> Self {
-        Self::for_purpose(UdpSocketPurpose::HolePunchCandidate)
-    }
-
-    pub fn direct_connect() -> Self {
-        Self::for_purpose(UdpSocketPurpose::DirectConnect)
-    }
-
-    pub fn port_bound_listener(local_addr: SocketAddr) -> Self {
-        Self {
-            local_addr: Some(local_addr),
-            ..Self::for_purpose(UdpSocketPurpose::PortBoundListener)
-        }
-    }
-
-    pub fn proxy_nat() -> Self {
-        Self::for_purpose(UdpSocketPurpose::ProxyNat)
-    }
-
-    pub fn stun_probe() -> Self {
-        Self::for_purpose(UdpSocketPurpose::StunProbe)
-    }
-
-    pub fn socks5() -> Self {
-        Self::for_purpose(UdpSocketPurpose::Socks5)
-    }
-
-    pub fn port_forward(local_addr: SocketAddr) -> Self {
-        Self::for_purpose(UdpSocketPurpose::PortForward)
-            .with_need_protect(false)
-            .with_local_addr(Some(local_addr))
-    }
-
-    pub fn port_lease(local_addr: SocketAddr) -> Self {
-        Self::for_purpose(UdpSocketPurpose::PortLease)
-            .with_need_protect(false)
-            .with_local_addr(Some(local_addr))
-    }
-
-    pub fn with_local_addr(mut self, local_addr: Option<SocketAddr>) -> Self {
-        self.local_addr = local_addr;
-        self
-    }
-
-    pub fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
-        self.context.socket_mark = socket_mark;
-        self
-    }
-
-    pub fn with_context(mut self, context: SocketContext) -> Self {
-        self.context = context;
-        self
-    }
-
-    pub fn with_need_protect(mut self, need_protect: bool) -> Self {
-        self.need_protect = need_protect;
-        self
-    }
-
-    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
-        self.context.ip_version = ip_version;
-        self
-    }
-
-    pub fn with_bind_device(mut self, bind_device: Option<String>) -> Self {
-        self.bind_device = bind_device;
-        self
-    }
-
-    pub fn with_reuse_addr(mut self, reuse_addr: bool) -> Self {
-        self.reuse_addr = reuse_addr;
-        self
-    }
-
-    pub fn with_reuse_port(mut self, reuse_port: bool) -> Self {
-        self.reuse_port = reuse_port;
-        self
-    }
-
-    pub fn with_only_v6(mut self, only_v6: bool) -> Self {
-        self.only_v6 = only_v6;
-        self
-    }
-}
-
-impl Default for UdpBindOptions {
-    fn default() -> Self {
-        // Preserve the existing default purpose/socket setup; local-only
-        // control packets opt out explicitly at their loopback call sites.
-        Self::for_purpose(UdpSocketPurpose::HolePunchControl)
-    }
-}
-
 #[cfg(test)]
 mod option_tests {
     use super::*;
@@ -358,17 +237,4 @@ mod option_tests {
         assert_eq!(restored, local);
         assert!(!restored.need_protect);
     }
-}
-
-#[async_trait]
-pub trait VirtualUdpSocketFactory: Send + Sync + 'static {
-    type Socket: VirtualUdpSocket;
-
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>>;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PreferredIpv6Source {
-    pub ip: Ipv6Addr,
-    pub ifindex: u32,
 }
