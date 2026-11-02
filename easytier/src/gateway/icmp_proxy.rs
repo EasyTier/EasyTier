@@ -3,15 +3,12 @@ use std::{
     sync::Arc,
 };
 
-use easytier_core::{
-    gateway::proxy::icmp_host::{IcmpProxyHost, IcmpProxySocket, ProxyRuntimeError},
-    socket::SocketContext,
-};
+use crate::common::netns::NetNS;
+use easytier_core::gateway::proxy::icmp_host::{IcmpProxyHost, IcmpProxySocket, ProxyRuntimeError};
+use easytier_core::socket::SocketContext;
 use socket2::Socket;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
-
-use crate::common::netns::NetNS;
 
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeIcmpProxyHost;

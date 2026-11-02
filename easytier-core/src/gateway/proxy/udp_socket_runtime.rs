@@ -12,9 +12,10 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::socket::BindConfig;
 use crate::{
     foundation::time,
-    socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+    socket::udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
 };
 
 use super::{
@@ -242,7 +243,7 @@ where
 {
     factory: Arc<F>,
     policy: Arc<P>,
-    bind_options: UdpBindOptions,
+    bind_options: BindConfig,
     receive_timeout: Duration,
     entries: Arc<DashMap<UdpNatEntryId, Arc<UdpSocketEntrySlot<F::Socket>>>>,
     closing: AtomicBool,
@@ -256,7 +257,7 @@ where
     pub fn new(
         factory: Arc<F>,
         policy: Arc<P>,
-        bind_options: UdpBindOptions,
+        bind_options: BindConfig,
         receive_timeout: Duration,
     ) -> Self {
         Self {

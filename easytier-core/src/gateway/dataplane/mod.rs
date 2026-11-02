@@ -30,6 +30,7 @@ use tokio::{
     task::JoinSet,
 };
 
+use crate::socket::BindConfig;
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
     foundation::task::reap_joinset_background,
@@ -46,11 +47,9 @@ use crate::{
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
     socket::{
-        SocketContext,
         tcp::{
-            TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpSocketPurpose,
-            VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket,
-            VirtualTcpSocketFactory,
+            TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListener,
+            VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
         },
         udp::VirtualUdpSocketFactory,
     },
@@ -71,8 +70,6 @@ mod tests;
 mod udp;
 mod udp_fragments;
 
-use udp_fragments::UdpFragments;
-
 use self::{
     deadline::{DataPlaneDeadline, DataPlaneIoDeadline},
     error::DataPlaneResult,
@@ -85,6 +82,8 @@ use self::{
     },
     stack::SmoltcpPlane,
 };
+use crate::socket::SocketContext;
+use udp_fragments::UdpFragments;
 
 pub(crate) use self::resource::DataPlaneConsumerLease;
 use self::tcp::DataPlaneTcpStreamRoute;
@@ -664,19 +663,16 @@ where
         data_plane_ref: DataPlaneLease,
     ) -> DataPlaneResult<DataPlaneTcpStream> {
         let (ipv4_addr, smoltcp_net, generation) = self.wait_data_plane_net(deadline).await?;
-        let listen_options = TcpListenOptions::port_lease("0.0.0.0:0".parse().unwrap());
+        let bind_addr = "0.0.0.0:0".parse().unwrap();
+        let bind = BindConfig {
+            local_addr: Some(bind_addr),
+            need_protect: false,
+            context: self.socket_context.clone(),
+            ..BindConfig::default()
+        };
+        let listen_options = TcpListenOptions::port_lease(bind_addr).with_bind(bind);
         let reservation = generation
-            .while_open(
-                deadline.run(
-                    self.host.bind_tcp(
-                        listen_options.clone().with_bind(
-                            listen_options
-                                .bind
-                                .with_context(self.socket_context.clone()),
-                        ),
-                    ),
-                ),
-            )
+            .while_open(deadline.run(self.host.bind_tcp(listen_options)))
             .await?;
         let local_port = reservation
             .local_addr()
@@ -715,7 +711,10 @@ where
     ) -> DataPlaneResult<DataPlaneTcpStream> {
         let connect_options = TcpConnectOptions::direct_connect(dst_addr)
             .with_purpose(options.purpose)
-            .with_bind(TcpBindOptions::default().with_context(self.socket_context.clone()));
+            .with_bind(BindConfig {
+                context: self.socket_context.clone(),
+                ..BindConfig::default()
+            });
         let socket = self
             .runtime_guard
             .while_open(options.deadline.run(self.host.connect_tcp(connect_options)))

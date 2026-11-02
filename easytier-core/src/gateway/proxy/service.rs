@@ -10,19 +10,6 @@ use std::{
 use cidr::Ipv4Inet;
 use tokio::sync::Mutex;
 
-use crate::{
-    config::IpPrefix,
-    config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
-    connectivity::{
-        direct::DirectConnectorHost, hole_punch::tcp::TcpHolePunchHost, protocol::protocol_uses_udp,
-    },
-    foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
-    listener::RunningListenerRegistry,
-    peers::peer_manager::PeerManagerCore,
-    process_runtime::ProtectedTcpPortRegistry,
-    socket::{IpVersion, SocketContext, udp::UdpBindOptions},
-};
-
 use super::{
     cidr_table::ProxyCidrTable,
     icmp_proxy_service::IcmpProxyService,
@@ -37,12 +24,33 @@ use super::{
     udp_proxy_service::UdpProxyService,
     udp_socket_runtime::UdpSocketProxyRuntime,
 };
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
+use crate::{
+    config::IpPrefix,
+    config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
+    connectivity::{
+        direct::DirectConnectorHost, hole_punch::tcp::TcpHolePunchHost, protocol::protocol_uses_udp,
+    },
+    foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
+    listener::RunningListenerRegistry,
+    peers::peer_manager::PeerManagerCore,
+    process_runtime::ProtectedTcpPortRegistry,
+    socket::IpVersion,
+};
 
 const UDP_PROXY_SOCKET_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const PROXY_FRAGMENT_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn udp_proxy_bind_options(context: SocketContext) -> UdpBindOptions {
-    UdpBindOptions::proxy_nat().with_context(context.with_ip_version(IpVersion::V4))
+fn udp_proxy_bind_options(context: SocketContext) -> BindConfig {
+    BindConfig {
+        bind_device: Some("".into()),
+        context: SocketContext {
+            ip_version: IpVersion::V4,
+            ..context
+        },
+        ..BindConfig::default()
+    }
 }
 
 fn ipv4_inet(prefix: &IpPrefix) -> Option<Ipv4Inet> {
@@ -322,7 +330,10 @@ where
                     policy: runtime.clone(),
                     host,
                     socket: std::sync::Mutex::new(None),
-                    context: icmp_socket_context.with_ip_version(IpVersion::V4),
+                    context: SocketContext {
+                        ip_version: IpVersion::V4,
+                        ..icmp_socket_context
+                    },
                 }),
                 cidr_table.clone(),
                 PROXY_FRAGMENT_TIMEOUT,

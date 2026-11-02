@@ -5,6 +5,7 @@ use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
 use anyhow::Context;
 use async_trait::async_trait;
 use easytier_core::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
+use easytier_core::socket::BindConfig;
 use easytier_core::socket::SocketContext;
 #[cfg(feature = "dns-resolver")]
 use hickory_proto::runtime::{RuntimeProvider, TokioRuntimeProvider, iocompat::AsyncIoTokioAsStd};
@@ -22,19 +23,14 @@ use hickory_resolver::{Resolver, TokioResolver};
 use once_cell::sync::Lazy;
 use tokio::net::lookup_host;
 #[cfg(feature = "dns-resolver")]
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 #[cfg(feature = "dns-resolver")]
 use tokio::sync::Semaphore;
 
 use super::error::Error;
 use super::netns::NetNS;
 #[cfg(feature = "dns-resolver")]
-use crate::{
-    socket::{tcp::create_tcp_socket, udp::create_udp_socket},
-    socket_protector::native_socket_protection_available,
-};
-#[cfg(feature = "dns-resolver")]
-use easytier_core::socket::{NetNamespace, tcp::TcpBindOptions, udp::UdpBindOptions};
+use crate::socket_protector::native_socket_protection_available;
 
 #[cfg(feature = "dns-resolver")]
 pub fn get_default_resolver_config() -> ResolverConfig {
@@ -174,9 +170,14 @@ impl RuntimeDnsIoContext {
 
     #[cfg(feature = "dns-resolver")]
     fn socket_context(&self) -> SocketContext {
-        SocketContext::default()
-            .with_netns(self.netns.clone().map(NetNamespace::new))
-            .with_socket_mark(self.socket_mark)
+        SocketContext {
+            socket_mark: self.socket_mark,
+            netns: self
+                .netns
+                .clone()
+                .map(easytier_core::socket::NetNamespace::new),
+            ..SocketContext::default()
+        }
     }
 }
 
@@ -214,18 +215,27 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
         bind_addr: Option<SocketAddr>,
         wait_for: Option<Duration>,
     ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Tcp>>>> {
-        let options = TcpBindOptions::default()
-            .with_context(self.context.socket_context())
-            .with_local_addr(bind_addr)
-            .with_bind_device(Some(String::new()))
-            .with_reuse_addr(false);
+        let socket_context = self.context.socket_context();
         Box::pin(async move {
             let wait_for = wait_for.unwrap_or(Duration::from_secs(5));
             let connect = async {
-                let socket = create_tcp_socket(server_addr, &options)
-                    .await
-                    .map_err(io::Error::other)?;
-                socket.set_nodelay(true)?;
+                let socket = crate::socket::bind::<TcpSocket>(BindConfig {
+                    local_addr: bind_addr,
+                    bind_device: Some("".into()),
+                    context: SocketContext {
+                        ip_version: if server_addr.is_ipv6() {
+                            easytier_core::socket::IpVersion::V6
+                        } else {
+                            easytier_core::socket::IpVersion::V4
+                        },
+                        ..socket_context
+                    },
+                    reuse_addr: Some(false),
+                    need_protect: true,
+                    ..BindConfig::default()
+                })
+                .await
+                .map_err(io::Error::other)?;
                 socket.connect(server_addr).await
             };
             match tokio::time::timeout(wait_for, connect).await {
@@ -244,10 +254,19 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
         local_addr: SocketAddr,
         _server_addr: SocketAddr,
     ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Udp>>>> {
-        let options = UdpBindOptions::default()
-            .with_context(self.context.socket_context())
-            .with_local_addr(Some(local_addr));
-        Box::pin(async move { create_udp_socket(&options).await.map_err(io::Error::other) })
+        let socket_context = self.context.socket_context();
+        Box::pin(async move {
+            crate::socket::bind::<UdpSocket>(BindConfig {
+                local_addr: Some(local_addr),
+                bind_device: Some("".into()),
+                context: socket_context,
+                reuse_addr: Some(false),
+                need_protect: true,
+                ..BindConfig::default()
+            })
+            .await
+            .map_err(io::Error::other)
+        })
     }
 }
 

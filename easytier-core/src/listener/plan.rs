@@ -8,19 +8,19 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use super::{ExternalListenerFactory, transport::TransportListenerConfig};
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     connectivity::{
         protocol::{ProtocolTransport, ServerProtocolUpgrader, protocol_transport},
         transport::UdpSessionMode,
     },
     socket::{
-        SocketContext,
-        tcp::{TcpBindOptions, TcpListenOptions},
-        udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest},
+        tcp::TcpListenOptions,
+        udp::{UdpSessionAcceptKind, UdpSessionListenRequest},
     },
 };
-
-use super::{ExternalListenerFactory, transport::TransportListenerConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ListenerKind {
@@ -312,17 +312,18 @@ pub(crate) fn unresolved_udp_session_listen_request(
     url: &Url,
     context: SocketContext,
 ) -> UdpSessionListenRequest {
-    UdpSessionListenRequest::new(
-        UdpBindOptions::port_bound_listener("0.0.0.0:0".parse().unwrap())
-            .with_local_addr(None)
-            .with_context(context)
-            .with_bind_device(listener_url_bind_device(url)),
-    )
+    UdpSessionListenRequest::new(BindConfig {
+        context,
+        bind_device: listener_url_bind_device(url),
+        ..BindConfig::default()
+    })
 }
 
 pub(crate) fn unresolved_tcp_listener_options(context: SocketContext) -> TcpListenOptions {
-    TcpListenOptions::direct_connect("0.0.0.0:0".parse().unwrap())
-        .with_bind(TcpBindOptions::default().with_context(context))
+    TcpListenOptions::direct_connect("0.0.0.0:0".parse().unwrap()).with_bind(BindConfig {
+        context,
+        ..BindConfig::default()
+    })
 }
 
 pub(crate) fn is_url_host_ipv6(url: &Url) -> bool {

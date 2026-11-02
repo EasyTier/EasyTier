@@ -10,6 +10,7 @@ use easytier_core::connectivity::hole_punch::port_mapping::{
     ActiveUdpPortMapping as CoreActiveUdpPortMapping, UdpPortMappingAttemptError,
     UdpPortMappingBackend, UdpPortMappingLifecycle,
 };
+use easytier_core::socket::BindConfig;
 use natpmp::{
     Protocol as NatPmpProtocol, Response as NatPmpResponse, get_default_gateway,
     new_natpmp_async_with,
@@ -35,10 +36,12 @@ async fn new_protected_natpmp(
         .map(Ok)
         .unwrap_or_else(|| get_default_gateway().map_err(anyhow::Error::from))?;
     let gateway_addr = SocketAddr::V4(SocketAddrV4::new(gateway, natpmp::NATPMP_PORT));
-    let socket = crate::socket::udp::create_udp_socket(
-        &easytier_core::socket::udp::UdpBindOptions::direct_connect()
-            .with_local_addr(Some("0.0.0.0:0".parse().unwrap())),
-    )
+    let socket = crate::socket::bind::<UdpSocket>(BindConfig {
+        local_addr: Some("0.0.0.0:0".parse().unwrap()),
+        reuse_addr: Some(false),
+        need_protect: true,
+        ..BindConfig::default()
+    })
     .await
     .context("create protected nat-pmp socket")?;
     socket
@@ -535,11 +538,15 @@ async fn resolve_internal_addr(
         listener_ipv4_host(local_listener).ok_or_else(|| anyhow!("listener must be ipv4"))?;
 
     let ip = if host.is_unspecified() {
-        let options = easytier_core::socket::udp::UdpBindOptions::default()
-            .with_local_addr(Some("0.0.0.0:0".parse().unwrap()));
-        let udp = crate::socket::udp::create_udp_socket(&options)
-            .await
-            .context("create protected probe socket for gateway route")?;
+        let udp = crate::socket::bind::<UdpSocket>(BindConfig {
+            local_addr: Some("0.0.0.0:0".parse().unwrap()),
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            need_protect: true,
+            ..BindConfig::default()
+        })
+        .await
+        .context("create protected probe socket for gateway route")?;
         udp.connect(gateway_addr)
             .await
             .with_context(|| format!("connect probe socket to gateway {gateway_addr}"))?;
