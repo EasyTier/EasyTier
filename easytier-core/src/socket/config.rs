@@ -53,4 +53,28 @@ pub struct BindConfig {
     pub only_v6: bool,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn default_requests_protection_and_serde_keeps_tri_state_reuse() {
+        assert!(BindConfig::default().need_protect);
+        assert_eq!(BindConfig::default().context, SocketContext::default());
+        for reuse in [None, Some(false), Some(true)] {
+            let options = BindConfig {
+                reuse_addr: reuse,
+                bind_device: Some(String::new()),
+                need_protect: false,
+                ..BindConfig::default()
+            };
+            let restored: BindConfig =
+                serde_json::from_str(&serde_json::to_string(&options).unwrap()).unwrap();
+            assert_eq!(restored, options);
+            assert_eq!(restored.reuse_addr, reuse);
+        }
+        let omitted: BindConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted, BindConfig::default());
+        assert!(omitted.need_protect);
+    }
+}

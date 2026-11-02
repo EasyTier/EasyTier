@@ -1032,9 +1032,11 @@ mod tests {
 
     #[test]
     fn stun_udp_bind_request_preserves_context_and_family() {
-        let context = SocketContext::default()
-            .with_socket_mark(Some(0))
-            .with_netns(Some(crate::socket::NetNamespace::new("instance-a")));
+        let context = SocketContext {
+            socket_mark: Some(0),
+            netns: Some(crate::socket::NetNamespace::new("instance-a")),
+            ..SocketContext::default()
+        };
         let local_addr = "0.0.0.0:0".parse().unwrap();
 
         let options = stun_udp_bind_options(context, IpVersion::V4, local_addr);
@@ -1046,9 +1048,7 @@ mod tests {
             Some("instance-a")
         );
         assert_eq!(options.local_addr, Some(local_addr));
-        assert_eq!(
-            options.purpose,
-            crate::socket::udp::UdpSocketPurpose::StunProbe
-        );
+        assert_eq!(options.reuse_addr, Some(false));
+        assert_eq!(options.bind_device.as_deref(), Some(""));
     }
 }

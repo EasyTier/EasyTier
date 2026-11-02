@@ -278,6 +278,21 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn connect_tcp_selects_remote_family_without_a_local_bind_address() {
+        for ip in ["127.0.0.1", "::1"] {
+            let listener = TcpListener::bind((ip, 0)).await.unwrap();
+            let remote_addr = listener.local_addr().unwrap();
+            let socket = connect_tcp(TcpConnectOptions::direct_connect(remote_addr))
+                .await
+                .unwrap();
+            let (_, local_addr) = listener.accept().await.unwrap();
+            assert_eq!(socket.peer_addr().unwrap(), remote_addr);
+            assert_eq!(socket.local_addr().unwrap(), local_addr);
+            assert_eq!(local_addr.is_ipv6(), remote_addr.is_ipv6());
+        }
+    }
+
+    #[tokio::test]
     async fn runtime_tcp_owned_split_preserves_full_duplex_and_shutdown() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -299,32 +314,5 @@ mod tests {
         writer.shutdown().await.unwrap();
         let mut after_shutdown = [0; 1];
         assert_eq!(server.read(&mut after_shutdown).await.unwrap(), 0);
-    }
-
-    #[test]
-    fn tcp_connect_binds_when_socket_option_requires_pre_connect_setup() {
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_local_addr(Some("127.0.0.1:0".parse().unwrap()))
-        ));
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_reuse_port(true)
-        ));
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_only_v6(true)
-        ));
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_bind_device(Some("eth0".to_owned()))
-        ));
-        assert!(!must_bind_before_connect(&TcpBindOptions::default()));
-        assert!(!must_bind_before_connect(
-            &TcpBindOptions::default().with_reuse_addr(native_reuse_addr_default())
-        ));
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_reuse_addr(!native_reuse_addr_default())
-        ));
-        assert_eq!(
-            native_reuse_addr(&TcpBindOptions::default()),
-            native_reuse_addr_default()
-        );
     }
 }

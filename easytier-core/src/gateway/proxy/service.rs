@@ -517,9 +517,11 @@ mod tests {
 
     #[test]
     fn udp_proxy_bind_options_preserve_the_datagram_context() {
-        let context = SocketContext::default()
-            .with_socket_mark(Some(73))
-            .with_netns(Some(crate::socket::NetNamespace::new("udp-proxy")));
+        let context = SocketContext {
+            socket_mark: Some(73),
+            netns: Some(crate::socket::NetNamespace::new("udp-proxy")),
+            ..SocketContext::default()
+        };
 
         let options = udp_proxy_bind_options(context);
 
@@ -529,9 +531,7 @@ mod tests {
             options.context.netns.as_ref().map(|netns| netns.token()),
             Some("udp-proxy")
         );
-        assert_eq!(
-            options.purpose,
-            crate::socket::udp::UdpSocketPurpose::ProxyNat
-        );
+        assert_eq!(options.reuse_addr, None);
+        assert_eq!(options.bind_device.as_deref(), Some(""));
     }
 }

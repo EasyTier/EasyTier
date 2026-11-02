@@ -1368,9 +1368,11 @@ mod tests {
         let addrs = resolve_url_addrs(
             &url,
             crate::connectivity::protocol::protocol_default_port("tcp").unwrap(),
-            SocketContext::default()
-                .with_ip_version(IpVersion::V6)
-                .with_socket_mark(Some(7)),
+            SocketContext {
+                ip_version: IpVersion::V6,
+                socket_mark: Some(7),
+                ..SocketContext::default()
+            },
             &resolver,
         )
         .await

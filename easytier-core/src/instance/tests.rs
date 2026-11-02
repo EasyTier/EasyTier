@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 
 use super::*;
+use crate::socket::SocketContext;
 use crate::{
     config::toml::ConfigLoader as _,
     listener::transport::TransportListenerConfig,
     socket::{
-        SocketContext, SocketListener,
+        SocketListener,
         udp::{UdpSessionAcceptKind, UdpSessionProtocol},
     },
 };
@@ -76,7 +77,10 @@ fn core_plans_transport_and_external_listener_capabilities() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap(),
         false,
-        SocketContext::default().with_socket_mark(Some(7)),
+        SocketContext {
+            socket_mark: Some(7),
+            ..SocketContext::default()
+        },
     );
 
     let plan = prepare_listener_plan::<(), ()>(
@@ -260,11 +264,12 @@ mod portable_runtime {
         listener::transport::AcceptedTransport,
         peers::peer_manager::PortablePeerManagerConfig,
         proto::{common::StunInfo, peer_rpc::GetIpListResponse},
-        socket::{SocketContext, udp::PreferredIpv6Source},
+        socket::udp::PreferredIpv6Source,
     };
 
     #[cfg(feature = "proxy-packet")]
     use crate::gateway::proxy::wrapped_transport::WrappedTransportKind;
+    use crate::socket::SocketContext;
 
     #[async_trait]
     impl ManualConnectorHost for TestHost {

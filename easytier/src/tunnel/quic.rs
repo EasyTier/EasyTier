@@ -664,6 +664,7 @@ impl ServerTunnelAcceptor for QuicAcceptedSession {
 mod tests {
     use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+    use easytier_core::socket::BindConfig;
     use easytier_core::{
         connectivity::{
             protocol::ServerProtocolAdmissionController,
@@ -672,15 +673,15 @@ mod tests {
         packet::ZCPacket,
         socket::SocketListener,
         socket::udp::{
-            UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
-            UdpSessionSocket, VirtualUdpSocket,
+            UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol, UdpSessionSocket,
+            VirtualUdpSocket,
         },
     };
     use futures::{SinkExt, StreamExt};
 
     use crate::{
         common::netns::NetNS, host_runtime::native_host_runtime,
-        socket::udp::new_runtime_udp_session_listener, tunnel::common::tests::_tunnel_echo_server,
+        socket::udp::new_runtime_udp_session_listener, tunnel::tests::_tunnel_echo_server,
     };
 
     use super::*;
@@ -694,7 +695,11 @@ mod tests {
                 UdpSessionListenRequest::new(
                     // Port-bound listeners enable address reuse on Unix. This test
                     // needs an exclusive ephemeral port across parallel processes.
-                    UdpBindOptions::direct_connect().with_local_addr(Some(bind_addr)),
+                    BindConfig {
+                        reuse_addr: Some(false),
+                        local_addr: Some(bind_addr),
+                        ..BindConfig::default()
+                    },
                 ),
                 UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
                 NetNS::new(None),
@@ -707,7 +712,10 @@ mod tests {
                 native_host_runtime(),
                 remote_addr,
                 Vec::new(),
-                UdpBindOptions::direct_connect(),
+                BindConfig {
+                    reuse_addr: Some(false),
+                    ..BindConfig::default()
+                },
                 UdpSessionMode::Classified(UdpSessionProtocol::Quic),
             )
             .await

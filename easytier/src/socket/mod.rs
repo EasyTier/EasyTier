@@ -215,4 +215,156 @@ pub(crate) async fn bind<B: Bindable>(config: BindConfig) -> Result<B, TunnelErr
     B::finalize(socket)
 }
 
+#[cfg(test)]
+mod tests {
+    use easytier_core::socket::SocketContext;
+    use easytier_core::socket::{BindConfig, IpVersion};
+    use easytier_core::tunnel::TunnelError;
 
+    use super::{TcpListener, TcpSocket, UdpSocket, bind};
+
+    #[tokio::test]
+    async fn bind_tcp_uses_configured_family_and_preserves_optional_source_binding_and_options() {
+        for ip in ["127.0.0.1", "::1"] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            let listener = TcpListener::bind((ip, 0)).await.unwrap();
+            let remote_addr = listener.local_addr().unwrap();
+            for (local_addr, reuse_addr) in [
+                (None, None),
+                (None, Some(true)),
+                (Some(std::net::SocketAddr::new(ip, 0)), None),
+                (Some(std::net::SocketAddr::new(ip, 0)), Some(false)),
+            ] {
+                let socket = bind::<TcpSocket>(BindConfig {
+                    context: SocketContext {
+                        ip_version: if ip.is_ipv6() {
+                            IpVersion::V6
+                        } else {
+                            IpVersion::V4
+                        },
+                        ..SocketContext::default()
+                    },
+                    local_addr,
+                    bind_device: Some("".into()),
+                    only_v6: ip.is_ipv6(),
+                    reuse_addr,
+                    reuse_port: true,
+                    ..BindConfig::default()
+                })
+                .await
+                .unwrap();
+
+                let addr = socket.local_addr().unwrap();
+                assert_eq!(addr.port() == 0, local_addr.is_none());
+                let socket_ref = socket2::SockRef::from(&socket);
+                assert_eq!(
+                    socket_ref.reuse_address().unwrap(),
+                    reuse_addr.unwrap_or(local_addr.is_some() && !cfg!(target_os = "windows"))
+                );
+                if ip.is_ipv6() {
+                    assert!(socket_ref.only_v6().unwrap());
+                }
+                #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+                assert!(socket_ref.reuse_port().unwrap());
+
+                let stream = socket.connect(remote_addr).await.unwrap();
+                let (_, peer) = listener.accept().await.unwrap();
+                assert_eq!(stream.local_addr().unwrap(), peer);
+                assert_eq!(peer.ip(), ip);
+                if local_addr.is_some() {
+                    assert_eq!(peer, addr);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_occupied_ports() {
+        for ip in ["127.0.0.1", "::1"] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            let occupied_udp = std::net::UdpSocket::bind((ip, 0)).unwrap();
+            let occupied_tcp = std::net::TcpListener::bind((ip, 0)).unwrap();
+            let udp_addr = occupied_udp.local_addr().unwrap();
+            let tcp_addr = occupied_tcp.local_addr().unwrap();
+
+            for error in [
+                bind::<UdpSocket>(BindConfig {
+                    local_addr: Some(udp_addr),
+                    ..BindConfig::default()
+                })
+                .await
+                .unwrap_err(),
+                bind::<TcpSocket>(BindConfig {
+                    local_addr: Some(tcp_addr),
+                    ..BindConfig::default()
+                })
+                .await
+                .unwrap_err(),
+                bind::<TcpListener>(BindConfig {
+                    local_addr: Some(tcp_addr),
+                    ..BindConfig::default()
+                })
+                .await
+                .unwrap_err(),
+            ] {
+                assert!(matches!(
+                    error,
+                    TunnelError::IOError(error) if error.kind() == std::io::ErrorKind::AddrInUse
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_nonlocal_ipv6_address() {
+        let addr = "[2001:db8::ffff]:0".parse().unwrap();
+        for error in [
+            bind::<UdpSocket>(BindConfig {
+                local_addr: Some(addr),
+                bind_device: Some("".into()),
+                ..BindConfig::default()
+            })
+            .await
+            .unwrap_err(),
+            bind::<TcpSocket>(BindConfig {
+                local_addr: Some(addr),
+                bind_device: Some("".into()),
+                ..BindConfig::default()
+            })
+            .await
+            .unwrap_err(),
+            bind::<TcpListener>(BindConfig {
+                local_addr: Some(addr),
+                bind_device: Some("".into()),
+                ..BindConfig::default()
+            })
+            .await
+            .unwrap_err(),
+        ] {
+            assert!(matches!(
+                error,
+                TunnelError::IOError(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable
+            ));
+        }
+    }
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_env = "ohos"
+    ))]
+    #[tokio::test]
+    async fn bind_custom_device_is_applied_for_unspecified_addr() {
+        use std::net::SocketAddr;
+
+        let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let _err = bind::<UdpSocket>(BindConfig {
+            local_addr: Some(addr),
+            bind_device: Some("et/invalid-device-name".into()),
+            ..BindConfig::default()
+        })
+        .await
+        .expect_err("custom device must not be skipped for unspecified bind addr");
+    }
+}

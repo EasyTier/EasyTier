@@ -48,7 +48,7 @@ func (factory *blockingSocketFactory) ConnectTCP(
 
 func (*blockingSocketFactory) BindUDP(
 	context.Context,
-	platform.UDPBindOptions,
+	platform.BindConfig,
 ) (net.PacketConn, error) {
 	return nil, errors.New("not used")
 }

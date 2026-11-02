@@ -137,9 +137,11 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_collector_starts_with_native_runtime() {
-        let context = SocketContext::default()
-            .with_socket_mark(Some(0))
-            .with_netns(Some(NetNamespace::new("instance-a")));
+        let context = SocketContext {
+            socket_mark: Some(0),
+            netns: Some(NetNamespace::new("instance-a")),
+            ..SocketContext::default()
+        };
         let collector = runtime_stun_info_collector(context);
 
         assert_eq!(

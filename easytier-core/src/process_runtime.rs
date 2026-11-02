@@ -143,6 +143,8 @@ mod tests {
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     use super::*;
+    use crate::socket::BindConfig;
+    use crate::socket::SocketContext;
     use crate::{
         connectivity::{
             manual::ManualInterfaceAddrs,
@@ -151,9 +153,9 @@ mod tests {
         host::dns::{DnsQuery, DnsRecordResolver, DnsSrvRecord},
         packet::ZCPacket,
         socket::{
-            IpVersion, NetNamespace, SocketContext,
+            IpVersion, NetNamespace,
             tcp::{TcpConnectOptions, VirtualTcpSocket},
-            udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+            udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
         },
     };
 
@@ -246,7 +248,7 @@ mod tests {
     impl VirtualUdpSocketFactory for TestHost {
         type Socket = TestUdpSocket;
 
-        async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, _options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             anyhow::bail!("Ring connector must not use UDP")
         }
     }
@@ -370,10 +372,11 @@ mod tests {
         let listener_id = uuid::Uuid::new_v4();
         let mut listener = runtime.bind_ring_tunnel(listener_id).unwrap();
         let queries = Arc::new(Mutex::new(Vec::new()));
-        let dns_context = SocketContext::new()
-            .with_ip_version(IpVersion::V6)
-            .with_socket_mark(Some(42))
-            .with_netns(Some(NetNamespace::new("discovery-netns")));
+        let dns_context = SocketContext {
+            ip_version: IpVersion::V6,
+            socket_mark: Some(42),
+            netns: Some(NetNamespace::new("discovery-netns")),
+        };
         let connector = runtime.manual_connector(
             Arc::new(TestHost),
             Arc::new(TestDns),

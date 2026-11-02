@@ -151,9 +151,9 @@ where
 mod tests {
     use std::{collections::HashMap, sync::Mutex};
 
-    use crate::socket::{IpVersion, SocketContext};
-
     use super::*;
+    use crate::socket::IpVersion;
+    use crate::socket::SocketContext;
 
     enum TestDnsOperation {
         Resolve {

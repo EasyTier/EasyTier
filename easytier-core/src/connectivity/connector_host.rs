@@ -486,7 +486,7 @@ mod tests {
         fn submit_udp_bind(
             &self,
             _operation: HostOperationId,
-            _options: &UdpBindOptions,
+            _options: &BindConfig,
         ) -> io::Result<()> {
             unsupported()
         }
@@ -608,7 +608,10 @@ mod tests {
             environment_io.clone(),
         );
         let remote = "203.0.113.1:11010".parse().unwrap();
-        let context = SocketContext::default().with_socket_mark(Some(7));
+        let context = SocketContext {
+            socket_mark: Some(7),
+            ..SocketContext::default()
+        };
         let local = ManualConnectorHost::local_addr_for_remote(&host, remote, context.clone())
             .await
             .unwrap();
@@ -679,7 +682,10 @@ mod tests {
         ));
         let handler = DirectConnectorRpcHandler::new_with_stun(
             host,
-            SocketContext::default().with_socket_mark(Some(7)),
+            SocketContext {
+                socket_mark: Some(7),
+                ..SocketContext::default()
+            },
             Some(Arc::new(FixedStunProvider)),
         );
 
@@ -725,7 +731,10 @@ mod tests {
         let handler = DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
             host,
             Arc::new(crate::connectivity::NoLocalListeners),
-            SocketContext::default().with_socket_mark(Some(7)),
+            SocketContext {
+                socket_mark: Some(7),
+                ..SocketContext::default()
+            },
             Some(Arc::new(FixedStunProvider)),
         );
 

@@ -204,37 +204,3 @@ pub struct PreferredIpv6Source {
     pub ip: Ipv6Addr,
     pub ifindex: u32,
 }
-#[cfg(test)]
-mod option_tests {
-    use super::*;
-
-    #[test]
-    fn udp_constructor_protection_defaults_match_endpoint_role() {
-        let local = SocketAddr::from(([0, 0, 0, 0], 11010));
-
-        assert!(UdpBindOptions::default().need_protect);
-        assert!(UdpBindOptions::hole_punch_control().need_protect);
-        assert!(UdpBindOptions::hole_punch_candidate().need_protect);
-        assert!(UdpBindOptions::direct_connect().need_protect);
-        assert!(UdpBindOptions::port_bound_listener(local).need_protect);
-        assert!(UdpBindOptions::proxy_nat().need_protect);
-        assert!(UdpBindOptions::stun_probe().need_protect);
-        assert!(UdpBindOptions::socks5().need_protect);
-        assert!(!UdpBindOptions::port_forward(local).need_protect);
-        assert!(!UdpBindOptions::port_lease(local).need_protect);
-    }
-
-    #[test]
-    fn udp_bind_serde_defaults_to_protected_and_preserves_opt_out() {
-        let options: UdpBindOptions = serde_json::from_str(
-            r#"{"local_addr":null,"bind_device":null,"reuse_addr":false,"reuse_port":false,"only_v6":false,"purpose":"DirectConnect"}"#,
-        )
-        .unwrap();
-        assert!(options.need_protect);
-        let local = UdpBindOptions::port_forward("0.0.0.0:15555".parse().unwrap());
-        let restored: UdpBindOptions =
-            serde_json::from_str(&serde_json::to_string(&local).unwrap()).unwrap();
-        assert_eq!(restored, local);
-        assert!(!restored.need_protect);
-    }
-}

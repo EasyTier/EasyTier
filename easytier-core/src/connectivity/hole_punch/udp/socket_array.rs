@@ -277,7 +277,7 @@ mod tests {
 
     struct MockFactory {
         next_port: AtomicU16,
-        bind_options: TokioMutex<Vec<UdpBindOptions>>,
+        bind_options: TokioMutex<Vec<BindConfig>>,
     }
 
     impl MockFactory {
@@ -293,7 +293,7 @@ mod tests {
     impl VirtualUdpSocketFactory for MockFactory {
         type Socket = MockSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.bind_options.lock().await.push(options);
             let port = self.next_port.fetch_add(1, Ordering::Relaxed);
             Ok(Arc::new(MockSocket::new(
@@ -381,9 +381,11 @@ mod tests {
     #[tokio::test]
     async fn start_binds_up_to_max_socket_count() {
         let runtime = Arc::new(MockFactory::new());
-        let context = SocketContext::default()
-            .with_socket_mark(Some(0))
-            .with_netns(Some(NetNamespace::new("instance-a")));
+        let context = SocketContext {
+            socket_mark: Some(0),
+            netns: Some(NetNamespace::new("instance-a")),
+            ..SocketContext::default()
+        };
         let array = UdpSocketArray::new_with_context(2, runtime.clone(), context.clone());
 
         array.start().await.unwrap();
@@ -395,10 +397,24 @@ mod tests {
         assert_eq!(
             bind_options.as_slice(),
             &[
-                UdpBindOptions::hole_punch_candidate()
-                    .with_context(context.clone().with_ip_version(IpVersion::V4)),
-                UdpBindOptions::hole_punch_candidate()
-                    .with_context(context.with_ip_version(IpVersion::V4)),
+                BindConfig {
+                    bind_device: Some("".into()),
+                    reuse_addr: Some(false),
+                    context: SocketContext {
+                        ip_version: IpVersion::V4,
+                        ..context.clone()
+                    },
+                    ..BindConfig::default()
+                },
+                BindConfig {
+                    bind_device: Some("".into()),
+                    reuse_addr: Some(false),
+                    context: SocketContext {
+                        ip_version: IpVersion::V4,
+                        ..context
+                    },
+                    ..BindConfig::default()
+                },
             ]
         );
     }

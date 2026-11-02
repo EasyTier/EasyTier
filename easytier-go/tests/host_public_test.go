@@ -638,7 +638,7 @@ func (factory *recordingSocketFactory) ConnectTCP(
 
 func (factory *recordingSocketFactory) BindUDP(
 	ctx context.Context,
-	options platform.UDPBindOptions,
+	options platform.BindConfig,
 ) (net.PacketConn, error) {
 	return factory.inner.BindUDP(ctx, options)
 }

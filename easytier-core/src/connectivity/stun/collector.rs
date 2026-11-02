@@ -561,10 +561,10 @@ mod tests {
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     use crate::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
+    use crate::socket::BindConfig;
     use crate::socket::{
         NetNamespace,
         tcp::{TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory},
-        udp::{UdpBindOptions, UdpSocketPurpose},
     };
 
     use crate::packet::stun::Attribute;
@@ -660,14 +660,14 @@ mod tests {
 
     #[derive(Default)]
     struct MockRuntime {
-        udp_binds: Mutex<Vec<UdpBindOptions>>,
+        udp_binds: Mutex<Vec<BindConfig>>,
     }
 
     #[async_trait]
     impl VirtualUdpSocketFactory for MockRuntime {
         type Socket = MockUdpSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.udp_binds.lock().unwrap().push(options);
             Ok(Arc::new(MockUdpSocket {
                 local_addr: "0.0.0.0:40000".parse().unwrap(),
@@ -721,12 +721,16 @@ mod tests {
 
     #[test]
     fn collector_keeps_udp_and_tcp_socket_contexts_separate() {
-        let udp_context = SocketContext::default()
-            .with_socket_mark(Some(11))
-            .with_netns(Some(NetNamespace::new("udp-instance")));
-        let tcp_context = SocketContext::default()
-            .with_socket_mark(Some(22))
-            .with_netns(Some(NetNamespace::new("tcp-instance")));
+        let udp_context = SocketContext {
+            socket_mark: Some(11),
+            netns: Some(NetNamespace::new("udp-instance")),
+            ..SocketContext::default()
+        };
+        let tcp_context = SocketContext {
+            socket_mark: Some(22),
+            netns: Some(NetNamespace::new("tcp-instance")),
+            ..SocketContext::default()
+        };
         let collector = StunInfoCollector::new_with_socket_contexts(
             Arc::new(MockRuntime::default()),
             Arc::new(MockDns),
@@ -744,9 +748,11 @@ mod tests {
     #[tokio::test]
     async fn udp_mapping_uses_portable_runtime_and_instance_context() {
         let runtime = Arc::new(MockRuntime::default());
-        let context = SocketContext::default()
-            .with_socket_mark(Some(0))
-            .with_netns(Some(NetNamespace::new("instance-a")));
+        let context = SocketContext {
+            socket_mark: Some(0),
+            netns: Some(NetNamespace::new("instance-a")),
+            ..SocketContext::default()
+        };
         let collector = StunInfoCollector::new(
             runtime.clone(),
             Arc::new(MockDns),
@@ -761,7 +767,8 @@ mod tests {
         assert_eq!(mapped, "198.51.100.10:40123".parse().unwrap());
         let binds = runtime.udp_binds.lock().unwrap();
         assert!(!binds.is_empty());
-        assert_eq!(binds[0].purpose, UdpSocketPurpose::StunProbe);
+        assert_eq!(binds[0].reuse_addr, Some(false));
+        assert_eq!(binds[0].bind_device.as_deref(), Some(""));
         assert_eq!(binds[0].local_addr, Some("0.0.0.0:0".parse().unwrap()));
         assert_eq!(binds[0].context.ip_version, IpVersion::V4);
         assert_eq!(binds[0].context.socket_mark, Some(0));

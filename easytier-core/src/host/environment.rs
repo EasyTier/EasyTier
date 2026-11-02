@@ -147,7 +147,10 @@ mod tests {
         let runtime = HostSocketRuntime::new();
         let io = Arc::new(TestIo::default());
         let remote = "203.0.113.1:11010".parse().unwrap();
-        let context = SocketContext::default().with_socket_mark(Some(7));
+        let context = SocketContext {
+            socket_mark: Some(7),
+            ..SocketContext::default()
+        };
         let task = tokio::spawn({
             let runtime = runtime.clone();
             let io = io.clone();

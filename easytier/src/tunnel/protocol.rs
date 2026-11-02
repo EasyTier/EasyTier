@@ -257,7 +257,7 @@ mod tests {
             else {
                 panic!("WebSocket must upgrade directly to a tunnel");
             };
-            crate::tunnel::common::tests::_tunnel_echo_server(tunnel, true).await;
+            crate::tunnel::tests::_tunnel_echo_server(tunnel, true).await;
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -329,13 +329,13 @@ mod tests {
             common::netns::NetNS, host_runtime::native_host_runtime,
             socket::udp::new_runtime_udp_session_listener,
         };
+        use easytier_core::socket::BindConfig;
         use easytier_core::{
             connectivity::transport::{UdpSessionMode, connect_udp},
             packet::ZCPacket,
             socket::SocketListener,
             socket::udp::{
-                UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
-                VirtualUdpSocket,
+                UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol, VirtualUdpSocket,
             },
         };
         use futures::{SinkExt, StreamExt};
@@ -343,9 +343,11 @@ mod tests {
         let bind_addr = bind_addr.parse().unwrap();
         let mut listener = new_runtime_udp_session_listener(
             format!("wg://{bind_addr}").parse().unwrap(),
-            UdpSessionListenRequest::new(
-                UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(bind_addr.is_ipv6()),
-            ),
+            UdpSessionListenRequest::new(BindConfig {
+                local_addr: Some(bind_addr),
+                only_v6: bind_addr.is_ipv6(),
+                ..BindConfig::default()
+            }),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
             NetNS::new(None),
         );
@@ -364,7 +366,7 @@ mod tests {
             else {
                 panic!("WireGuard must upgrade directly to a tunnel");
             };
-            crate::tunnel::common::tests::_tunnel_echo_server(tunnel, false).await;
+            crate::tunnel::tests::_tunnel_echo_server(tunnel, false).await;
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -372,7 +374,10 @@ mod tests {
                 native_host_runtime(),
                 remote_addr,
                 Vec::new(),
-                UdpBindOptions::direct_connect(),
+                BindConfig {
+                    reuse_addr: Some(false),
+                    ..BindConfig::default()
+                },
                 UdpSessionMode::Classified(UdpSessionProtocol::WireGuard),
             )
             .await
@@ -405,6 +410,7 @@ mod tests {
             common::netns::NetNS, host_runtime::native_host_runtime,
             socket::udp::new_runtime_udp_session_listener,
         };
+        use easytier_core::socket::BindConfig;
         use easytier_core::{
             connectivity::{
                 protocol::ServerProtocolAdmissionController,
@@ -413,8 +419,7 @@ mod tests {
             packet::ZCPacket,
             socket::SocketListener,
             socket::udp::{
-                UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
-                VirtualUdpSocket,
+                UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol, VirtualUdpSocket,
             },
         };
         use futures::{SinkExt, StreamExt};
@@ -422,9 +427,11 @@ mod tests {
         let bind_addr = bind_addr.parse().unwrap();
         let mut listener = new_runtime_udp_session_listener(
             format!("quic://{bind_addr}").parse().unwrap(),
-            UdpSessionListenRequest::new(
-                UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(bind_addr.is_ipv6()),
-            ),
+            UdpSessionListenRequest::new(BindConfig {
+                local_addr: Some(bind_addr),
+                only_v6: bind_addr.is_ipv6(),
+                ..BindConfig::default()
+            }),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
             NetNS::new(None),
         );
@@ -449,7 +456,7 @@ mod tests {
                 panic!("QUIC must keep accepting connections from its UDP session");
             };
             let tunnel = accepted.accept().await.unwrap();
-            crate::tunnel::common::tests::_tunnel_echo_server(tunnel, false).await;
+            crate::tunnel::tests::_tunnel_echo_server(tunnel, false).await;
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -457,7 +464,10 @@ mod tests {
                 native_host_runtime(),
                 remote_addr,
                 Vec::new(),
-                UdpBindOptions::direct_connect(),
+                BindConfig {
+                    reuse_addr: Some(false),
+                    ..BindConfig::default()
+                },
                 UdpSessionMode::Classified(UdpSessionProtocol::Quic),
             )
             .await

@@ -265,14 +265,14 @@ mod tests {
     #[derive(Default)]
     struct MockHost {
         binds: AtomicUsize,
-        options: Mutex<Vec<UdpBindOptions>>,
+        options: Mutex<Vec<BindConfig>>,
     }
 
     #[async_trait::async_trait]
     impl VirtualUdpSocketFactory for MockHost {
         type Socket = MockSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.binds.fetch_add(1, Ordering::Relaxed);
             self.options.lock().unwrap().push(options);
             Ok(Arc::new(MockSocket::default()))
@@ -282,7 +282,10 @@ mod tests {
     #[tokio::test]
     async fn resolves_and_binds_only_through_host_capabilities() {
         let host = Arc::new(MockHost::default());
-        let context = SocketContext::default().with_socket_mark(Some(7));
+        let context = SocketContext {
+            socket_mark: Some(7),
+            ..SocketContext::default()
+        };
         let runtime =
             HostSocks5ServerRuntime::new(host.clone(), Arc::new(StaticDns), context.clone());
 
@@ -297,10 +300,8 @@ mod tests {
         assert_eq!(association.local_addr().unwrap().port(), 42000);
         assert_eq!(host.binds.load(Ordering::Relaxed), 1);
         let options = host.options.lock().unwrap();
-        assert_eq!(
-            options[0].purpose,
-            crate::socket::udp::UdpSocketPurpose::Socks5
-        );
+        assert_eq!(options[0].reuse_addr, Some(false));
+        assert_eq!(options[0].bind_device.as_deref(), Some(""));
         assert_eq!(options[0].context.socket_mark, context.socket_mark);
         assert_eq!(options[0].context.ip_version, IpVersion::V6);
         assert!(
