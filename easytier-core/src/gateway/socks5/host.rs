@@ -4,17 +4,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    host::dns::{DnsQuery, DnsResolver},
-    socket::{
-        IpVersion, SocketContext,
-        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
-    },
-};
-
 use super::{
     codec::{AddrError, Result, SocksError, TargetAddr, new_udp_header, parse_udp_request},
     server::{Socks5ServerRuntime, Socks5UdpAssociation},
+};
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
+use crate::{
+    host::dns::{DnsQuery, DnsResolver},
+    socket::{
+        IpVersion,
+        udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
+    },
 };
 
 /// Portable SOCKS command runtime backed exclusively by host capabilities.
@@ -65,16 +66,23 @@ where
         }
     }
 
-    fn udp_bind_options(&self) -> UdpBindOptions {
-        UdpBindOptions::socks5()
-            .with_need_protect(false)
-            .with_context(self.socket_context.clone().with_ip_version(IpVersion::V6))
-            .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
+    fn udp_bind_options(&self) -> BindConfig {
+        BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            need_protect: false,
+            context: SocketContext {
+                ip_version: IpVersion::V6,
+                ..self.socket_context.clone()
+            },
+            local_addr: Some(SocketAddr::V6(SocketAddrV6::new(
                 Ipv6Addr::UNSPECIFIED,
                 0,
                 0,
                 0,
-            ))))
+            ))),
+            ..BindConfig::default()
+        }
     }
 }
 
@@ -124,16 +132,21 @@ where
     async fn transfer(self: Box<Self>) -> Result<()> {
         let outbound = self
             .host
-            .bind_udp(
-                UdpBindOptions::socks5()
-                    .with_context(self.socket_context.clone().with_ip_version(IpVersion::V6))
-                    .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
-                        Ipv6Addr::UNSPECIFIED,
-                        0,
-                        0,
-                        0,
-                    )))),
-            )
+            .bind_udp(BindConfig {
+                bind_device: Some("".into()),
+                reuse_addr: Some(false),
+                context: SocketContext {
+                    ip_version: IpVersion::V6,
+                    ..self.socket_context.clone()
+                },
+                local_addr: Some(SocketAddr::V6(SocketAddrV6::new(
+                    Ipv6Addr::UNSPECIFIED,
+                    0,
+                    0,
+                    0,
+                ))),
+                ..BindConfig::default()
+            })
             .await
             .map_err(SocksError::Other)?;
         tokio::try_join!(

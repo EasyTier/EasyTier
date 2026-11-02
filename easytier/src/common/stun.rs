@@ -5,11 +5,10 @@ use std::{net::SocketAddr, sync::Arc};
 
 #[cfg(test)]
 use async_trait::async_trait;
+use easytier_core::connectivity::stun::StunInfoCollector as CoreStunInfoCollector;
 #[cfg(test)]
 use easytier_core::connectivity::stun::{StunInfoProvider, StunSocketMapper};
-use easytier_core::{
-    connectivity::stun::StunInfoCollector as CoreStunInfoCollector, socket::SocketContext,
-};
+use easytier_core::socket::SocketContext;
 #[cfg(test)]
 use easytier_proto::common::{NatType, StunInfo};
 

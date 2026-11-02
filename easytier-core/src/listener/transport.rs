@@ -5,6 +5,7 @@ use rand::seq::SliceRandom as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
+use crate::socket::SocketContext;
 use crate::{
     connectivity::{
         manual::resolve_url_addrs,
@@ -19,7 +20,7 @@ use crate::{
         plan::ListenerPlanFailure,
     },
     socket::{
-        IpVersion, ListenerConnectionCounter, SocketContext, SocketListener,
+        IpVersion, ListenerConnectionCounter, SocketListener,
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
             UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocket,
@@ -561,7 +562,10 @@ async fn resolve_listener_addr(
     resolve_url_addrs(
         url,
         default_port,
-        context.with_ip_version(IpVersion::Both),
+        SocketContext {
+            ip_version: IpVersion::Both,
+            ..context
+        },
         dns,
     )
     .await?

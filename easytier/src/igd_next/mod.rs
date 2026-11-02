@@ -13,9 +13,10 @@ use std::{collections::HashMap, fmt, net::SocketAddr, time::Duration};
 use std::net::IpAddr;
 
 use bytes::Bytes;
+use easytier_core::socket::BindConfig;
 use easytier_core::socket::{
     tcp::TcpConnectOptions,
-    udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+    udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
 };
 use http_body_util::{BodyExt as _, Full, Limited};
 use hyper::{
@@ -102,7 +103,11 @@ pub(crate) async fn search_gateway(options: SearchOptions) -> Result<Gateway, Se
 }
 
 async fn search_gateway_inner(options: SearchOptions) -> Result<Gateway, SearchError> {
-    let bind_options = UdpBindOptions::direct_connect().with_local_addr(Some(options.bind_addr));
+    let bind_options = BindConfig {
+        reuse_addr: Some(false),
+        local_addr: Some(options.bind_addr),
+        ..BindConfig::default()
+    };
     let socket = RuntimeUdpSocketFactory::new()
         .bind_udp(bind_options)
         .await

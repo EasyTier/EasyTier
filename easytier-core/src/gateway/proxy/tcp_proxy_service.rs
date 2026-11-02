@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 
+use crate::socket::BindConfig;
 use crate::{
     foundation::time::timeout,
     packet::ZCPacket,
@@ -16,7 +17,7 @@ use crate::{
     },
     socket::{
         SocketContext,
-        tcp::{TcpBindOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory},
+        tcp::{TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory},
     },
 };
 
@@ -265,16 +266,15 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         let listener = self
             .listener_factory
             .bind_tcp(
-                TcpListenOptions::proxy_nat(listen_addr).with_bind(
-                    TcpBindOptions::default()
-                        .with_need_protect(false)
-                        .with_context(
-                            self.socket_context
-                                .clone()
-                                .with_ip_version(crate::socket::IpVersion::V4),
-                        )
-                        .with_local_addr(Some(listen_addr)),
-                ),
+                TcpListenOptions::proxy_nat(listen_addr).with_bind(BindConfig {
+                    need_protect: false,
+                    context: SocketContext {
+                        ip_version: crate::socket::IpVersion::V4,
+                        ..self.socket_context.clone()
+                    },
+                    local_addr: Some(listen_addr),
+                    ..BindConfig::default()
+                }),
             )
             .await?;
         self.engine.set_local_port(listener.local_addr()?.port());

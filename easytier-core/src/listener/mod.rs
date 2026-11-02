@@ -9,9 +9,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+use crate::socket::SocketContext;
 use crate::{
     events::{CoreEvent, CoreEventSink},
-    socket::{SocketContext, SocketListener},
+    socket::SocketListener,
 };
 
 pub mod plan;
