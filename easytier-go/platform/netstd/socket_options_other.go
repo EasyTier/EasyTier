@@ -9,13 +9,13 @@ import (
 	"github.com/easytier/easytier/easytier-go/platform"
 )
 
-func applyTCPSocketOptions(
+func applySocketOptions(
 	_ uintptr,
 	_ string,
-	options platform.TCPBindOptions,
+	options platform.BindConfig,
 ) error {
 	if options.ReuseAddr == nil && !options.ReusePort && !options.OnlyV6 {
 		return nil
 	}
-	return fmt.Errorf("TCP socket options are not supported on %s", runtime.GOOS)
+	return fmt.Errorf("socket options are not supported on %s", runtime.GOOS)
 }

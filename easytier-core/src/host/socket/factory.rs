@@ -1,8 +1,9 @@
 use std::{io, net::SocketAddr, sync::Arc, task::Poll};
 
+use crate::socket::BindConfig;
 use crate::socket::{
     tcp::{TcpConnectOptions, VirtualTcpSocketFactory},
-    udp::{UdpBindOptions, VirtualUdpSocketFactory},
+    udp::VirtualUdpSocketFactory,
 };
 use async_trait::async_trait;
 
@@ -46,11 +47,7 @@ pub trait HostSocketFactoryIo: HostSocketIo {
         operation: HostOperationId,
     ) -> Poll<io::Result<HostTcpConnectResult>>;
 
-    fn submit_udp_bind(
-        &self,
-        operation: HostOperationId,
-        options: &UdpBindOptions,
-    ) -> io::Result<()>;
+    fn submit_udp_bind(&self, operation: HostOperationId, options: &BindConfig) -> io::Result<()>;
 
     fn take_udp_bind(&self, operation: HostOperationId) -> Poll<io::Result<HostUdpBindResult>>;
 }
@@ -106,7 +103,7 @@ where
         ))
     }
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> io::Result<Arc<HostUdpSocket>> {
+    async fn bind_udp(&self, options: BindConfig) -> io::Result<Arc<HostUdpSocket>> {
         let context = options.context.clone();
         let result = self
             .runtime
@@ -145,7 +142,7 @@ where
 {
     type Socket = HostUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         Ok(self.bind_udp(options).await?)
     }
 }
