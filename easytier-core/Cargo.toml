@@ -33,6 +33,7 @@ chrono = { workspace = true, features = ["clock"] }
 cidr = { workspace = true, features = ["serde"] }
 crossbeam-utils.workspace = true
 dashmap.workspace = true
+educe.workspace = true
 bon.workspace = true
 easytier-proto = { workspace = true, features = ["core"] }
 futures = { workspace = true, features = ["std", "async-await"] }
