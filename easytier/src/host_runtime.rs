@@ -3,20 +3,6 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use async_trait::async_trait;
-use easytier_core::{
-    connectivity::{composite::ConnectorRuntime, transport::ConnectedByteStream},
-    host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
-    socket::{
-        SocketContext,
-        tcp::{
-            TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
-            VirtualTcpSocketFactory,
-        },
-        udp::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocketFactory},
-    },
-};
-
 use crate::{
     common::{
         dns::RuntimeDnsResolver,
@@ -27,6 +13,20 @@ use crate::{
     socket::{
         tcp::{RuntimeTcpListener, RuntimeTcpSocket},
         udp::{RuntimeUdpSocket, RuntimeUdpSocketFactory},
+    },
+};
+use async_trait::async_trait;
+use easytier_core::socket::BindConfig;
+use easytier_core::socket::SocketContext;
+use easytier_core::{
+    connectivity::{composite::ConnectorRuntime, transport::ConnectedByteStream},
+    host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
+    socket::{
+        tcp::{
+            TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
+            VirtualTcpSocketFactory,
+        },
+        udp::{PreferredIpv6Source, VirtualUdpSocketFactory},
     },
 };
 
@@ -116,10 +116,15 @@ impl ConnectorRuntime for NativeHostRuntime {
                 SocketAddr::V6(SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, 0, 0, 0))
             }
         };
-        let options = UdpBindOptions::default()
-            .with_context(context)
-            .with_local_addr(Some(bind_addr));
-        let socket = crate::socket::udp::create_udp_socket(&options).await?;
+        let socket = crate::socket::bind::<tokio::net::UdpSocket>(BindConfig {
+            local_addr: Some(bind_addr),
+            bind_device: Some("".into()),
+            context,
+            reuse_addr: Some(false),
+            need_protect: true,
+            ..BindConfig::default()
+        })
+        .await?;
         socket.connect(remote_addr).await?;
         Ok(socket.local_addr()?)
     }
@@ -171,7 +176,7 @@ impl VirtualTcpListenerFactory for NativeHostRuntime {
 impl VirtualUdpSocketFactory for NativeHostRuntime {
     type Socket = RuntimeUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         let socket = self.udp_sockets.bind_udp(options).await?;
         #[cfg(target_os = "windows")]
         crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;

@@ -29,6 +29,7 @@ use self::packet::MacAddr;
 use futures::Future;
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::socket::set_mark;
 use dashmap::DashMap;
 
 struct IpToIfNameCache {
@@ -442,7 +443,9 @@ async fn connect_socket_with_cache(
         // straight to the TUN device, which the kernel doesn't tag with
         // SO_MARK. Operators relying on fwmark for FakeTCP must mark the
         // TUN device's traffic with a separate nftables/iptables rule.
-        crate::tunnel::common::apply_socket_mark(&socket2::SockRef::from(&os_socket), socket_mark)?;
+        if let Some(mark) = socket_mark {
+            set_mark(&socket2::SockRef::from(&os_socket), mark)?;
+        }
         os_socket.bind("0.0.0.0:0".parse().unwrap())?;
         let local_addr = SocketAddr::new(local_ip, os_socket.local_addr()?.port());
 
