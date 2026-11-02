@@ -1,10 +1,11 @@
+use crate::socket::BindConfig;
 use std::{fmt, io, net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::socket::{IpVersion, SocketContext, SocketListener};
+use crate::socket::SocketListener;
 
 pub type VirtualTcpReadHalf = Box<dyn AsyncRead + Unpin + Send + 'static>;
 pub type VirtualTcpWriteHalf = Box<dyn AsyncWrite + Unpin + Send + 'static>;
@@ -51,93 +52,10 @@ pub enum TcpSocketPurpose {
     DataPlane,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TcpBindOptions {
-    #[serde(default)]
-    pub context: SocketContext,
-    /// Request host VPN bypass during creation, before bind/connect/listen.
-    /// Hosts with a protection service must await its acknowledgement; local
-    /// listeners opt out explicitly. Defaults to true, including when omitted
-    /// from serialized options. Accepted children inherit this requirement.
-    #[serde(default = "super::default_need_protect")]
-    pub need_protect: bool,
-    pub local_addr: Option<SocketAddr>,
-    pub bind_device: Option<String>,
-    /// `None` delegates the platform default to the host socket adapter.
-    pub reuse_addr: Option<bool>,
-    pub reuse_port: bool,
-    pub only_v6: bool,
-}
-
-impl TcpBindOptions {
-    pub fn new() -> Self {
-        Self {
-            context: SocketContext::default(),
-            need_protect: super::default_need_protect(),
-            local_addr: None,
-            bind_device: None,
-            reuse_addr: None,
-            reuse_port: false,
-            only_v6: false,
-        }
-    }
-
-    pub fn with_local_addr(mut self, local_addr: Option<SocketAddr>) -> Self {
-        self.local_addr = local_addr;
-        self
-    }
-
-    pub fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
-        self.context.socket_mark = socket_mark;
-        self
-    }
-
-    pub fn with_context(mut self, context: SocketContext) -> Self {
-        self.context = context;
-        self
-    }
-
-    pub fn with_need_protect(mut self, need_protect: bool) -> Self {
-        self.need_protect = need_protect;
-        self
-    }
-
-    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
-        self.context.ip_version = ip_version;
-        self
-    }
-
-    pub fn with_bind_device(mut self, bind_device: Option<String>) -> Self {
-        self.bind_device = bind_device;
-        self
-    }
-
-    pub fn with_reuse_addr(mut self, reuse_addr: bool) -> Self {
-        self.reuse_addr = Some(reuse_addr);
-        self
-    }
-
-    pub fn with_reuse_port(mut self, reuse_port: bool) -> Self {
-        self.reuse_port = reuse_port;
-        self
-    }
-
-    pub fn with_only_v6(mut self, only_v6: bool) -> Self {
-        self.only_v6 = only_v6;
-        self
-    }
-}
-
-impl Default for TcpBindOptions {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpConnectOptions {
     pub remote_addr: SocketAddr,
-    pub bind: TcpBindOptions,
+    pub bind: BindConfig,
     pub purpose: TcpSocketPurpose,
 }
 
@@ -145,7 +63,7 @@ impl TcpConnectOptions {
     pub fn direct_connect(remote_addr: SocketAddr) -> Self {
         Self {
             remote_addr,
-            bind: TcpBindOptions::default(),
+            bind: BindConfig::default(),
             purpose: TcpSocketPurpose::DirectConnect,
         }
     }
@@ -158,23 +76,18 @@ impl TcpConnectOptions {
     pub fn hole_punch(remote_addr: SocketAddr, local_addr: Option<SocketAddr>) -> Self {
         Self {
             remote_addr,
-            bind: TcpBindOptions::default().with_local_addr(local_addr),
+            bind: BindConfig {
+                local_addr,
+                ..BindConfig::default()
+            },
             purpose: TcpSocketPurpose::HolePunch,
-        }
-    }
-
-    pub fn manual_connect(remote_addr: SocketAddr, local_addr: Option<SocketAddr>) -> Self {
-        Self {
-            remote_addr,
-            bind: TcpBindOptions::default().with_local_addr(local_addr),
-            purpose: TcpSocketPurpose::ManualConnect,
         }
     }
 
     pub fn proxy_nat(remote_addr: SocketAddr) -> Self {
         Self {
             remote_addr,
-            bind: TcpBindOptions::default(),
+            bind: BindConfig::default(),
             purpose: TcpSocketPurpose::ProxyNat,
         }
     }
@@ -182,24 +95,15 @@ impl TcpConnectOptions {
     pub fn stun_probe(remote_addr: SocketAddr, local_addr: SocketAddr) -> Self {
         Self {
             remote_addr,
-            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            bind: BindConfig {
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            },
             purpose: TcpSocketPurpose::StunProbe,
         }
     }
 
-    pub fn socks5(remote_addr: SocketAddr) -> Self {
-        Self::direct_connect(remote_addr).with_purpose(TcpSocketPurpose::Socks5)
-    }
-
-    pub fn port_forward(remote_addr: SocketAddr) -> Self {
-        Self::direct_connect(remote_addr).with_purpose(TcpSocketPurpose::PortForward)
-    }
-
-    pub fn data_plane(remote_addr: SocketAddr) -> Self {
-        Self::direct_connect(remote_addr).with_purpose(TcpSocketPurpose::DataPlane)
-    }
-
-    pub fn with_bind(mut self, bind: TcpBindOptions) -> Self {
+    pub fn with_bind(mut self, bind: BindConfig) -> Self {
         self.bind = bind;
         self
     }
@@ -234,69 +138,86 @@ pub enum TcpListenPurpose {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpListenOptions {
-    pub bind: TcpBindOptions,
+    pub bind: BindConfig,
     pub purpose: TcpListenPurpose,
 }
 
 impl TcpListenOptions {
     pub fn direct_connect(local_addr: SocketAddr) -> Self {
         Self {
-            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            bind: BindConfig {
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            },
             purpose: TcpListenPurpose::DirectConnect,
         }
     }
 
     pub fn hole_punch(local_addr: SocketAddr) -> Self {
         Self {
-            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            bind: BindConfig {
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            },
             purpose: TcpListenPurpose::HolePunch,
         }
     }
 
     pub fn manual_connect(local_addr: SocketAddr) -> Self {
         Self {
-            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            bind: BindConfig {
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            },
             purpose: TcpListenPurpose::ManualConnect,
         }
     }
 
     pub fn proxy_nat(local_addr: SocketAddr) -> Self {
         Self {
-            bind: TcpBindOptions::default()
-                .with_need_protect(false)
-                .with_local_addr(Some(local_addr)),
+            bind: BindConfig {
+                need_protect: false,
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            },
             purpose: TcpListenPurpose::ProxyNat,
         }
     }
 
     pub fn socks5(local_addr: SocketAddr) -> Self {
         Self {
-            bind: TcpBindOptions::default()
-                .with_need_protect(false)
-                .with_local_addr(Some(local_addr)),
+            bind: BindConfig {
+                need_protect: false,
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            },
             purpose: TcpListenPurpose::Socks5,
         }
     }
 
     pub fn port_forward(local_addr: SocketAddr) -> Self {
         Self {
-            bind: TcpBindOptions::default()
-                .with_need_protect(false)
-                .with_local_addr(Some(local_addr)),
+            bind: BindConfig {
+                need_protect: false,
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            },
             purpose: TcpListenPurpose::PortForward,
         }
     }
 
     pub fn port_lease(local_addr: SocketAddr) -> Self {
         Self {
-            bind: TcpBindOptions::default()
-                .with_need_protect(false)
-                .with_local_addr(Some(local_addr)),
+            bind: BindConfig {
+                need_protect: false,
+                local_addr: Some(local_addr),
+                ..BindConfig::default()
+            },
             purpose: TcpListenPurpose::PortLease,
         }
     }
 
-    pub fn with_bind(mut self, bind: TcpBindOptions) -> Self {
+    pub fn with_bind(mut self, bind: BindConfig) -> Self {
         self.bind = bind;
         self
     }
