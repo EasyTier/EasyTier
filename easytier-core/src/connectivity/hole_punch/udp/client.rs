@@ -12,11 +12,12 @@ use rand::Rng;
 use tokio::sync::RwLock;
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::socket::{BindConfig, SocketContext};
 use crate::{
     config::PeerId,
     connectivity::stun::StunInfoProvider,
     packet::{HOLE_PUNCH_PACKET_BODY_LEN, new_hole_punch_packet},
-    socket::udp::{UdpBindOptions, VirtualUdpSocket},
+    socket::udp::VirtualUdpSocket,
 };
 
 use super::{
@@ -88,11 +89,15 @@ where
 
     let local_socket = UdpHolePunchRuntime::bind_udp(
         runtime.as_ref(),
-        UdpBindOptions::hole_punch_control().with_context(
-            runtime
-                .socket_context()
-                .with_ip_version(crate::socket::IpVersion::V4),
-        ),
+        BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            context: SocketContext {
+                ip_version: crate::socket::IpVersion::V4,
+                ..runtime.socket_context()
+            },
+            ..BindConfig::default()
+        },
     )
     .await?;
     let resolved = runtime

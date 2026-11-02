@@ -7,6 +7,8 @@ use async_trait::async_trait;
 
 use super::super::{HolePunchTunnelSink, port_mapping::UdpPortMappingLease};
 
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     config::P2pPolicyFlags,
     connectivity::{
@@ -16,10 +18,9 @@ use crate::{
     foundation::task::ExternalTaskSignal,
     peers::PeerConnectionOrigin,
     socket::{
-        ListenerConnectionCounter, SocketContext,
+        ListenerConnectionCounter,
         udp::{
-            UdpBindOptions, UdpHolePunchObserverRegistry, UdpSession, VirtualUdpSocket,
-            VirtualUdpSocketFactory,
+            UdpHolePunchObserverRegistry, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory,
         },
     },
     tunnel::Tunnel,
@@ -317,15 +318,19 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
         SocketContext::default()
     }
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>>;
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>>;
 
     async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
         UdpHolePunchRuntime::bind_udp(
             self,
-            UdpBindOptions::direct_connect().with_context(
-                self.socket_context()
-                    .with_ip_version(crate::socket::IpVersion::V4),
-            ),
+            BindConfig {
+                reuse_addr: Some(false),
+                context: SocketContext {
+                    ip_version: crate::socket::IpVersion::V4,
+                    ..self.socket_context()
+                },
+                ..BindConfig::default()
+            },
         )
         .await
     }
@@ -359,7 +364,7 @@ where
 {
     type Socket = T::Socket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         UdpHolePunchRuntime::bind_udp(self, options).await
     }
 }

@@ -10,6 +10,7 @@ use std::{
 use async_trait::async_trait;
 use url::Url;
 
+use crate::socket::BindConfig;
 use crate::{
     connectivity::{
         direct::DirectConnectorHost,
@@ -22,7 +23,7 @@ use crate::{
         tcp::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
         },
-        udp::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocketFactory},
+        udp::{PreferredIpv6Source, VirtualUdpSocketFactory},
     },
 };
 
@@ -207,7 +208,7 @@ where
 {
     type Socket = S::Socket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         self.sockets.bind_udp(options).await
     }
 }

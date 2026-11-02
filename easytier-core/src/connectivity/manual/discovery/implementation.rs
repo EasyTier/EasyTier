@@ -14,17 +14,18 @@ use tokio_rustls::TlsConnector;
 use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
+use super::super::{ManualEndpointResolver, resolve_url_addrs};
+use super::ManualEndpointDiscoveryConfig;
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     connectivity::transport,
     host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
     socket::{
-        IpVersion, SocketContext,
-        tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
+        IpVersion,
+        tcp::{TcpSocketPurpose, VirtualTcpSocketFactory},
     },
 };
-
-use super::super::{ManualEndpointResolver, resolve_url_addrs};
-use super::ManualEndpointDiscoveryConfig;
 
 const HTTP_DEFAULT_PORT: u16 = 80;
 const HTTPS_DEFAULT_PORT: u16 = 443;
@@ -36,7 +37,7 @@ pub(crate) struct HttpDiscoveryRequest {
     pub network_name: String,
     pub timeout: Duration,
     pub ip_version: IpVersion,
-    pub tcp_bind: TcpBindOptions,
+    pub tcp_bind: BindConfig,
 }
 
 pub(crate) struct CoreManualEndpointResolver<H>
@@ -152,11 +153,10 @@ where
     let addrs = resolve_url_addrs(
         &request.url,
         default_port,
-        request
-            .tcp_bind
-            .context
-            .clone()
-            .with_ip_version(request.ip_version),
+        SocketContext {
+            ip_version: request.ip_version,
+            ..request.tcp_bind.context.clone()
+        },
         dns,
     )
     .await?;

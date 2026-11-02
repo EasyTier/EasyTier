@@ -10,7 +10,8 @@ use stun_codec::rfc5389::methods::BINDING;
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
 use crate::packet::stun::{Attribute, ChangeRequest, tid_to_u32, u32_to_tid};
-use crate::socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory};
+use crate::socket::BindConfig;
+use crate::socket::udp::{VirtualUdpSocket, VirtualUdpSocketFactory};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StunResponseSendSource {
@@ -90,11 +91,13 @@ where
                 "[::]:0".parse().unwrap()
             };
             let socket = factory
-                .bind_udp(
-                    UdpBindOptions::hole_punch_control()
-                        .with_context(socket.socket_context())
-                        .with_local_addr(Some(bind_addr)),
-                )
+                .bind_udp(BindConfig {
+                    bind_device: Some("".into()),
+                    reuse_addr: Some(false),
+                    context: socket.socket_context(),
+                    local_addr: Some(bind_addr),
+                    ..BindConfig::default()
+                })
                 .await?;
             socket.send_to(&response.bytes, addr).await?;
         }

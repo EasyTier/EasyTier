@@ -13,6 +13,12 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use url::{Host, Url};
 
+use super::manual::{
+    ManualConnectorHost, collect_bind_addrs, convert_idn_to_ascii, resolve_remote_addr,
+    resolve_url_addrs,
+};
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     config::PeerId,
     connectivity::hole_punch::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
@@ -43,19 +49,14 @@ use crate::{
         rpc_types::{self, controller::BaseController},
     },
     socket::{
-        IpVersion, SocketContext,
-        tcp::{TcpBindOptions, TcpSocketPurpose},
+        IpVersion,
+        tcp::TcpSocketPurpose,
         udp::{
-            PreferredIpv6Source, UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory,
+            PreferredIpv6Source, VirtualUdpSocket, VirtualUdpSocketFactory,
             send_v4_hole_punch_control_packet, send_v6_hole_punch_control_packet,
         },
     },
     tunnel::Tunnel,
-};
-
-use super::manual::{
-    ManualConnectorHost, collect_bind_addrs, convert_idn_to_ascii, resolve_remote_addr,
-    resolve_url_addrs,
 };
 
 mod udp;
@@ -126,8 +127,8 @@ pub struct DirectConnectorOptions {
     pub allow_public_server: bool,
     pub bind_device: bool,
     pub allow_interface_bind: bool,
-    pub tcp_bind: TcpBindOptions,
-    pub udp_bind: UdpBindOptions,
+    pub tcp_bind: BindConfig,
+    pub udp_bind: BindConfig,
     #[serde(skip)]
     pub testing: bool,
 }
@@ -140,8 +141,11 @@ impl Default for DirectConnectorOptions {
             allow_public_server: false,
             bind_device: false,
             allow_interface_bind: true,
-            tcp_bind: TcpBindOptions::default(),
-            udp_bind: UdpBindOptions::direct_connect(),
+            tcp_bind: BindConfig::default(),
+            udp_bind: BindConfig {
+                reuse_addr: Some(false),
+                ..BindConfig::default()
+            },
             testing: false,
         }
     }
@@ -153,7 +157,10 @@ impl DirectConnectorOptions {
             DirectTransport::Tcp(_) => self.tcp_bind.context.clone(),
             DirectTransport::Udp(_) => self.udp_bind.context.clone(),
         };
-        context.with_ip_version(ip_version)
+        SocketContext {
+            ip_version,
+            ..context
+        }
     }
 }
 
@@ -715,17 +722,15 @@ where
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
         let socket = self
             .host
-            .bind_udp(
-                UdpBindOptions::direct_connect()
-                    .with_context(
-                        self.options
-                            .udp_bind
-                            .context
-                            .clone()
-                            .with_ip_version(IpVersion::V4),
-                    )
-                    .with_local_addr(Some("0.0.0.0:0".parse().unwrap())),
-            )
+            .bind_udp(BindConfig {
+                reuse_addr: Some(false),
+                context: SocketContext {
+                    ip_version: IpVersion::V4,
+                    ..self.options.udp_bind.context.clone()
+                },
+                local_addr: Some("0.0.0.0:0".parse().unwrap()),
+                ..BindConfig::default()
+            })
             .await?;
         let connector_addr = self
             .stun
@@ -750,17 +755,15 @@ where
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
         let socket = self
             .host
-            .bind_udp(
-                UdpBindOptions::direct_connect()
-                    .with_context(
-                        self.options
-                            .udp_bind
-                            .context
-                            .clone()
-                            .with_ip_version(IpVersion::V6),
-                    )
-                    .with_local_addr(Some("[::]:0".parse().unwrap())),
-            )
+            .bind_udp(BindConfig {
+                reuse_addr: Some(false),
+                context: SocketContext {
+                    ip_version: IpVersion::V6,
+                    ..self.options.udp_bind.context.clone()
+                },
+                local_addr: Some("[::]:0".parse().unwrap()),
+                ..BindConfig::default()
+            })
             .await?;
         let connector_ips = self.collect_ipv6_hole_punch_candidates().await?;
         if !connector_ips.is_empty() {
@@ -1180,7 +1183,10 @@ async fn resolve_mapped_listener_addrs(
     resolve_url_addrs(
         listener,
         port,
-        context.with_ip_version(IpVersion::Both),
+        SocketContext {
+            ip_version: IpVersion::Both,
+            ..context
+        },
         dns,
     )
     .await

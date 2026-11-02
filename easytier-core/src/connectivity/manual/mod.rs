@@ -18,6 +18,8 @@ use tokio::task::JoinSet;
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use url::Url;
 
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::tunnel::ring::RingTunnelRegistry;
 use crate::{
     connectivity::{
@@ -29,9 +31,9 @@ use crate::{
     peers::{PeerConnectionOrigin, peer_manager::PeerManagerCore},
     proto::common::TunnelInfo,
     socket::{
-        IpVersion, SocketContext,
-        tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
-        udp::{UdpBindOptions, VirtualUdpSocketFactory},
+        IpVersion,
+        tcp::{TcpSocketPurpose, VirtualTcpSocketFactory},
+        udp::VirtualUdpSocketFactory,
     },
     tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
@@ -291,8 +293,8 @@ pub struct ManualConnectorOptions {
     pub endpoint_discovery_timeout: Duration,
     pub bind_device: bool,
     pub allow_interface_bind: bool,
-    pub tcp_bind: TcpBindOptions,
-    pub udp_bind: UdpBindOptions,
+    pub tcp_bind: BindConfig,
+    pub udp_bind: BindConfig,
 }
 
 impl Default for ManualConnectorOptions {
@@ -303,8 +305,11 @@ impl Default for ManualConnectorOptions {
             endpoint_discovery_timeout: Duration::from_secs(20),
             bind_device: false,
             allow_interface_bind: true,
-            tcp_bind: TcpBindOptions::default(),
-            udp_bind: UdpBindOptions::direct_connect(),
+            tcp_bind: BindConfig::default(),
+            udp_bind: BindConfig {
+                reuse_addr: Some(false),
+                ..BindConfig::default()
+            },
         }
     }
 }
@@ -334,7 +339,10 @@ impl ManualConnectorOptions {
             ManualTransport::Udp(_) => self.udp_bind.context.clone(),
             ManualTransport::ByteStream => SocketContext::default(),
         };
-        context.with_ip_version(ip_version)
+        SocketContext {
+            ip_version,
+            ..context
+        }
     }
 }
 
@@ -703,7 +711,10 @@ async fn resolve_reconnect_ip_versions(
         resolve_url_addrs(
             url,
             MANUAL_PREFLIGHT_DEFAULT_PORT,
-            context.with_ip_version(IpVersion::Both),
+            SocketContext {
+                ip_version: IpVersion::Both,
+                ..context
+            },
             dns,
         ),
     )
@@ -905,8 +916,8 @@ pub(crate) async fn connect_resolved<H>(
     transport: ManualTransport,
     remote_addr: SocketAddr,
     bind_addrs: Vec<SocketAddr>,
-    tcp_bind: TcpBindOptions,
-    udp_bind: UdpBindOptions,
+    tcp_bind: BindConfig,
+    udp_bind: BindConfig,
 ) -> anyhow::Result<ConnectedTransport<<H as VirtualTcpSocketFactory>::Socket>>
 where
     H: ManualConnectorHost,
