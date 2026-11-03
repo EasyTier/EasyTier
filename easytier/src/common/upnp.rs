@@ -36,12 +36,17 @@ async fn new_protected_natpmp(
         .map(Ok)
         .unwrap_or_else(|| get_default_gateway().map_err(anyhow::Error::from))?;
     let gateway_addr = SocketAddr::V4(SocketAddrV4::new(gateway, natpmp::NATPMP_PORT));
-    let socket = crate::socket::bind::<UdpSocket>(BindConfig {
-        local_addr: Some("0.0.0.0:0".parse().unwrap()),
-        reuse_addr: Some(false),
-        need_protect: true,
-        ..BindConfig::default()
-    })
+    // Mapping operations run on a thread already inside the target namespace.
+    let net_ns = NetNS::current()?;
+    let socket = crate::socket::bind::<UdpSocket>(
+        &net_ns,
+        BindConfig {
+            local_addr: Some("0.0.0.0:0".parse().unwrap()),
+            reuse_addr: Some(false),
+            need_protect: true,
+            ..BindConfig::default()
+        },
+    )
     .await
     .context("create protected nat-pmp socket")?;
     socket
@@ -546,13 +551,17 @@ async fn resolve_internal_addr(
         listener_ipv4_host(local_listener).ok_or_else(|| anyhow!("listener must be ipv4"))?;
 
     let ip = if host.is_unspecified() {
-        let udp = crate::socket::bind::<UdpSocket>(BindConfig {
-            local_addr: Some("0.0.0.0:0".parse().unwrap()),
-            bind_device: Some("".into()),
-            reuse_addr: Some(false),
-            need_protect: true,
-            ..BindConfig::default()
-        })
+        let net_ns = NetNS::current()?;
+        let udp = crate::socket::bind::<UdpSocket>(
+            &net_ns,
+            BindConfig {
+                local_addr: Some("0.0.0.0:0".parse().unwrap()),
+                bind_device: Some("".into()),
+                reuse_addr: Some(false),
+                need_protect: true,
+                ..BindConfig::default()
+            },
+        )
         .await
         .context("create protected probe socket for gateway route")?;
         udp.connect(gateway_addr)
