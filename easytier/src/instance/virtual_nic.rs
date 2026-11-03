@@ -262,8 +262,8 @@ impl VirtualNicConfig {
         self.mtu
     }
 
-    pub fn net_ns_name(&self) -> Option<String> {
-        self.net_ns.name()
+    pub fn net_ns(&self) -> &NetNS {
+        &self.net_ns
     }
 }
 
