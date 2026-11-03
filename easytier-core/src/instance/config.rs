@@ -23,7 +23,7 @@ use crate::{
         context::PeerRuntimeSnapshotInput,
         peer_manager::{PortablePeerManagerConfig, RouteAlgoType},
     },
-    socket::{NetNamespace, SocketContext},
+    socket::SocketContext,
     tunnel::encrypt::algorithm_is_available,
 };
 
@@ -195,7 +195,6 @@ impl CoreInstanceConfig {
         let network_name = identity.network_name.clone();
         let socket_context = SocketContext {
             socket_mark: flags.socket_mark,
-            netns: config.get_netns().map(NetNamespace::new),
             ..SocketContext::default()
         };
         let hostname = match config.get_hostname() {
