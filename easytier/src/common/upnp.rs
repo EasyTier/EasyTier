@@ -377,7 +377,8 @@ async fn establish_nat_pmp_mapping_in_netns(
 }
 
 fn should_run_port_mapping_in_dedicated_thread(net_ns: &NetNS) -> bool {
-    net_ns.name().is_some()
+    // Runtime threads stay in the process namespace; any other one needs its own thread.
+    NetNS::process().map_or(true, |process| process != *net_ns)
 }
 
 async fn add_udp_mapping_port_igd(
