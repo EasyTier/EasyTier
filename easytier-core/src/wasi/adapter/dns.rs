@@ -20,11 +20,25 @@ use crate::{
 const MAX_DNS_RESULT_LEN: usize = 1024 * 1024;
 
 #[derive(Default)]
-pub struct WasiHostDnsIo;
+pub struct WasiHostDnsIo {
+    netns: Option<String>,
+}
+
+impl WasiHostDnsIo {
+    pub fn new(netns: Option<String>) -> Self {
+        Self { netns }
+    }
+}
 
 impl HostDnsIo for WasiHostDnsIo {
     fn submit_resolve(&self, operation: HostOperationId, query: &DnsQuery) -> io::Result<()> {
-        submit_query("start_dns_resolve", operation, query, start_dns_resolve)
+        submit_query(
+            "start_dns_resolve",
+            operation,
+            query,
+            self.netns.as_deref(),
+            start_dns_resolve,
+        )
     }
 
     fn take_resolve(&self, operation: HostOperationId) -> Poll<io::Result<Vec<IpAddr>>> {
@@ -37,7 +51,13 @@ impl HostDnsIo for WasiHostDnsIo {
     }
 
     fn submit_txt(&self, operation: HostOperationId, query: &DnsQuery) -> io::Result<()> {
-        submit_query("start_dns_txt", operation, query, start_dns_txt)
+        submit_query(
+            "start_dns_txt",
+            operation,
+            query,
+            self.netns.as_deref(),
+            start_dns_txt,
+        )
     }
 
     fn take_txt(&self, operation: HostOperationId) -> Poll<io::Result<String>> {
@@ -45,7 +65,13 @@ impl HostDnsIo for WasiHostDnsIo {
     }
 
     fn submit_srv(&self, operation: HostOperationId, query: &DnsQuery) -> io::Result<()> {
-        submit_query("start_dns_srv", operation, query, start_dns_srv)
+        submit_query(
+            "start_dns_srv",
+            operation,
+            query,
+            self.netns.as_deref(),
+            start_dns_srv,
+        )
     }
 
     fn take_srv(&self, operation: HostOperationId) -> Poll<io::Result<Vec<DnsSrvRecord>>> {
@@ -61,9 +87,10 @@ fn submit_query(
     name: &'static str,
     operation: HostOperationId,
     query: &DnsQuery,
+    netns: Option<&str>,
     submit: unsafe extern "C" fn(u64, u32, u32) -> i32,
 ) -> io::Result<()> {
-    let encoded = encode_query(query)?;
+    let encoded = encode_query(query, netns)?;
     let length = u32::try_from(encoded.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "DNS query is too long"))?;
     host_status(name, unsafe {
