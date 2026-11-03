@@ -254,6 +254,11 @@ pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
 }
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) fn list_tun_links() -> Result<std::collections::BTreeSet<String>, Error> {
+    netlink::NetlinkIfConfiger::list_tun_links()
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(crate) fn get_interface_index(name: &str) -> Result<u32, Error> {
     netlink::NetlinkIfConfiger::get_interface_index(name)
 }
