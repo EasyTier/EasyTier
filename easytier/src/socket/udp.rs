@@ -4,7 +4,7 @@ use std::{
 };
 
 #[cfg(any(feature = "wireguard", test))]
-use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
+use crate::host_runtime::NativeHostRuntime;
 use async_trait::async_trait;
 use easytier_core::socket::BindConfig;
 use easytier_core::socket::SocketContext;
@@ -13,9 +13,8 @@ use easytier_core::socket::udp::{
     UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
 };
 #[cfg(any(feature = "wireguard", test))]
-use easytier_core::socket::{
-    NetNamespace,
-    udp::{UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocketListener},
+use easytier_core::socket::udp::{
+    UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocketListener,
 };
 use tokio::net::UdpSocket;
 
@@ -28,12 +27,11 @@ pub(crate) type RuntimeUdpSessionSocketListener = UdpSessionSocketListener<Nativ
 #[cfg(any(feature = "wireguard", test))]
 pub(crate) fn new_runtime_udp_session_listener(
     url: url::Url,
-    mut request: UdpSessionListenRequest,
+    request: UdpSessionListenRequest,
     accept_kind: UdpSessionAcceptKind,
     net_ns: NetNS,
 ) -> RuntimeUdpSessionSocketListener {
-    request.bind.context.netns = net_ns.name().map(NetNamespace::new);
-    let runtime = native_host_runtime();
+    let runtime = Arc::new(NativeHostRuntime::new(net_ns));
     UdpSessionSocketListener::new_with_request(url, request, accept_kind, runtime)
 }
 
