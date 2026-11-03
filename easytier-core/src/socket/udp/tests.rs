@@ -23,7 +23,7 @@ use crate::socket::SocketContext;
 use crate::{
     packet::stun::{Attribute, ChangeRequest, u32_to_tid},
     packet::{UDP_TUNNEL_HEADER_SIZE, UdpPacketType, hole_punch_packet_tid},
-    socket::{IpVersion, NetNamespace, SocketListener},
+    socket::{IpVersion, SocketListener},
 };
 
 #[test]
@@ -2224,7 +2224,6 @@ async fn v4_hole_punch_control_sender_uses_factory_socket() {
     let dst_addr = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 11010);
     let context = SocketContext {
         socket_mark: Some(0),
-        netns: Some(NetNamespace::new("instance-a")),
         ..SocketContext::default()
     };
 
@@ -2267,7 +2266,6 @@ async fn v6_hole_punch_control_sender_uses_factory_socket() {
     };
     let context = SocketContext {
         socket_mark: Some(0),
-        netns: Some(NetNamespace::new("instance-a")),
         ..SocketContext::default()
     };
 

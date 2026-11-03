@@ -143,7 +143,6 @@ impl<'a> Decoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::socket::NetNamespace;
     use crate::socket::SocketContext;
 
     #[test]
@@ -153,10 +152,9 @@ mod tests {
             SocketContext {
                 ip_version: IpVersion::V6,
                 socket_mark: Some(0x01020304),
-                netns: Some(NetNamespace::new("netns0")),
             },
         );
-        let encoded = encode_query(&query).unwrap();
+        let encoded = encode_query(&query, Some("netns0")).unwrap();
 
         let mut expected = vec![DNS_WIRE_VERSION, 6, 1, 1, 2, 3, 4, 1];
         expected.extend_from_slice(&6_u32.to_be_bytes());
@@ -165,14 +163,16 @@ mod tests {
         expected.extend_from_slice(b"peer.example");
         assert_eq!(encoded, expected);
 
-        let without_optional = encode_query(&DnsQuery::new(
-            "v4.example",
-            SocketContext {
-                ip_version: IpVersion::V4,
-                socket_mark: None,
-                netns: None,
-            },
-        ))
+        let without_optional = encode_query(
+            &DnsQuery::new(
+                "v4.example",
+                SocketContext {
+                    ip_version: IpVersion::V4,
+                    socket_mark: None,
+                },
+            ),
+            None,
+        )
         .unwrap();
         assert_eq!(
             &without_optional[..12],

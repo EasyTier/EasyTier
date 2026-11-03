@@ -327,7 +327,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
-    use crate::socket::{IpVersion, NetNamespace};
+    use crate::socket::IpVersion;
 
     #[tokio::test]
     async fn concurrent_cache_misses_share_one_collection() {
@@ -390,10 +390,6 @@ mod tests {
             },
             SocketContext {
                 socket_mark: Some(7),
-                ..SocketContext::default()
-            },
-            SocketContext {
-                netns: Some(NetNamespace::new("foreign-a")),
                 ..SocketContext::default()
             },
         ];
