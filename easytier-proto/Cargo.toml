@@ -21,6 +21,9 @@ base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["serde"], optional = true }
 cidr = { workspace = true, features = ["serde"], optional = true }
+delegate = { workspace = true, optional = true }
+derive_more = { workspace = true, optional = true }
+educe = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
@@ -86,6 +89,9 @@ core = [
     "dep:bytes",
     "dep:chrono",
     "dep:cidr",
+    "dep:delegate",
+    "dep:derive_more",
+    "dep:educe",
     "dep:hmac",
     "dep:pbjson",
     "dep:prost",
