@@ -21,7 +21,7 @@ use crate::igd_next::{
     AddAnyPortError, Gateway, PortMappingProtocol, SearchOptions, search_gateway,
 };
 
-use super::netns::NetNS;
+use super::netns::{NetNS, NetNSImpl};
 
 const UPNP_SEARCH_TIMEOUT: Duration = Duration::from_secs(1);
 const UPNP_SEARCH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -253,17 +253,25 @@ pub(crate) fn spawn_udp_port_mapping_lifecycle(
 ) {
     if should_run_port_mapping_in_dedicated_thread(&net_ns) {
         tokio::task::spawn_blocking(move || {
-            let _g = net_ns.guard();
-            match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime.block_on(lifecycle),
-                Err(err) => tracing::error!(
+            let entered = net_ns.run(|| {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime.block_on(lifecycle),
+                    Err(err) => tracing::error!(
+                        ?err,
+                        %local_listener,
+                        "failed to build runtime for udp port mapping renew task"
+                    ),
+                }
+            });
+            if let Err(err) = entered {
+                tracing::error!(
                     ?err,
                     %local_listener,
-                    "failed to build runtime for udp port mapping renew task"
-                ),
+                    "failed to enter network namespace for udp port mapping renew task"
+                );
             }
         });
     } else {
@@ -280,15 +288,16 @@ async fn discover_igd_gateway_in_netns(
     }
 
     tokio::task::spawn_blocking(move || {
-        let _g = net_ns.guard();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build runtime for igd gateway discovery")?
-            .block_on(ActiveUdpPortMapping::discover_igd_gateway(
-                &net_ns,
-                &local_listener,
-            ))
+        net_ns.run(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("build runtime for igd gateway discovery")?
+                .block_on(ActiveUdpPortMapping::discover_igd_gateway(
+                    &net_ns,
+                    &local_listener,
+                ))
+        })?
     })
     .await
     .context("join igd gateway discovery task")?
@@ -305,16 +314,17 @@ async fn establish_igd_mapping_in_netns(
     }
 
     tokio::task::spawn_blocking(move || {
-        let _g = net_ns.guard();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build runtime for igd mapping establishment")?
-            .block_on(ActiveUdpPortMapping::establish_via_igd(
-                &local_listener,
-                gateway,
-                local_addr,
-            ))
+        net_ns.run(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("build runtime for igd mapping establishment")?
+                .block_on(ActiveUdpPortMapping::establish_via_igd(
+                    &local_listener,
+                    gateway,
+                    local_addr,
+                ))
+        })?
     })
     .await
     .context("join igd mapping establishment task")?
@@ -329,14 +339,15 @@ async fn discover_nat_pmp_gateway_in_netns(
     }
 
     tokio::task::spawn_blocking(move || {
-        let _g = net_ns.guard();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build runtime for nat-pmp gateway discovery")?
-            .block_on(ActiveUdpPortMapping::discover_nat_pmp_gateway(
-                &local_listener,
-            ))
+        net_ns.run(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("build runtime for nat-pmp gateway discovery")?
+                .block_on(ActiveUdpPortMapping::discover_nat_pmp_gateway(
+                    &local_listener,
+                ))
+        })?
     })
     .await
     .context("join nat-pmp gateway discovery task")?
@@ -354,16 +365,17 @@ async fn establish_nat_pmp_mapping_in_netns(
     }
 
     tokio::task::spawn_blocking(move || {
-        let _g = net_ns.guard();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build runtime for nat-pmp mapping establishment")?
-            .block_on(ActiveUdpPortMapping::establish_via_nat_pmp(
-                &local_listener,
-                gateway,
-                local_addr,
-            ))
+        net_ns.run(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("build runtime for nat-pmp mapping establishment")?
+                .block_on(ActiveUdpPortMapping::establish_via_nat_pmp(
+                    &local_listener,
+                    gateway,
+                    local_addr,
+                ))
+        })?
     })
     .await
     .context("join nat-pmp mapping establishment task")?
