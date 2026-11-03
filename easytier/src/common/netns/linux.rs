@@ -111,3 +111,20 @@ impl NetNSImpl for NetNS {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_wrong_netns_type_and_path_names() {
+        let error = NetNS::at(Path::new("/proc/thread-self/ns/mnt")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        for name in ["", ".", "..", "/tmp/test", "a/b"] {
+            assert_eq!(
+                NetNS::open(Some(name)).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+}
