@@ -795,17 +795,21 @@ async fn credential_peer_reconnects_to_admin_with_portal_client_online() {
     let (server_public, client_private) =
         test_wireguard_keys(&portal_config, "portal-client").unwrap();
     {
-        let net_ns = crate::common::netns::NetNS::new(Some(network.namespace("ns_c4").to_owned()));
-        let _guard = net_ns.guard();
-        run_wireguard_client(
-            &wireguard_ifname("wg0"),
-            "10.1.1.4:22121".parse().unwrap(),
-            Key::try_from(server_public.as_slice()).unwrap(),
-            Key::try_from(client_private.as_slice()).unwrap(),
-            vec!["10.154.0.0/24".to_owned()],
-            "10.154.0.10".to_owned(),
-        )
-        .unwrap();
+        use crate::common::netns::{NetNS, NetNSImpl as _};
+        let net_ns = NetNS::open(Some(network.namespace("ns_c4"))).unwrap();
+        net_ns
+            .run(|| {
+                run_wireguard_client(
+                    &wireguard_ifname("wg0"),
+                    "10.1.1.4:22121".parse().unwrap(),
+                    Key::try_from(server_public.as_slice()).unwrap(),
+                    Key::try_from(client_private.as_slice()).unwrap(),
+                    vec!["10.154.0.0/24".to_owned()],
+                    "10.154.0.10".to_owned(),
+                )
+                .unwrap();
+            })
+            .unwrap();
     }
 
     let public_server_forwarded_before =

@@ -26,7 +26,7 @@ use crate::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
         global_ctx::GlobalCtxEvent,
-        netns::NetNS,
+        netns::{NetNS, NetNSImpl as _},
         stun::MockStunInfoCollector,
     },
     instance::test_instance::TestInstance as Instance,
@@ -286,14 +286,15 @@ deny 0-65535 0.0.0.0/0 0-65535
 
 async fn tcp_connect_in_ns(netns: &'static str, ip: Ipv4Addr, port: u16) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || {
-        let _g = NetNS::new(Some(netns.to_owned())).guard();
+        let stream =
+            NetNS::open(Some(netns))?.run(|| std::net::TcpStream::connect((ip, port)))??;
+        stream.set_nonblocking(true)?;
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("build runtime for tcp connect in netns")?
             .block_on(async move {
-                tokio::net::TcpStream::connect((ip, port))
-                    .await
+                tokio::net::TcpStream::from_std(stream)
                     .map(|_| ())
                     .context("tcp connect in netns")
             })
@@ -819,7 +820,7 @@ async fn query_mappings(
     expected_external_ip: Ipv4Addr,
 ) -> Result<Vec<PortMappingEntry>, Error> {
     tokio::task::spawn_blocking(move || {
-        let _g = NetNS::new(Some(query_netns.to_owned())).guard();
+        NetNS::open(Some(query_netns))?.run(|| {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -862,6 +863,7 @@ async fn query_mappings(
 
                 Ok(entries)
             })
+        })?
     })
     .await
     .context("join test igd query task")

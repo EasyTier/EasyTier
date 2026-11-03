@@ -199,7 +199,6 @@ pub(crate) mod tests {
         tunnel::Tunnel,
     };
 
-    use crate::common::netns::NetNS;
 
     #[cfg(target_os = "windows")]
     #[test]
@@ -322,8 +321,6 @@ pub(crate) mod tests {
     async fn _tunnel_pingpong_netns<L, C>(
         mut listener: L,
         connector: C,
-        l_netns: NetNS,
-        c_netns: NetNS,
         buf: Vec<u8>,
         timeout: std::time::Duration,
     ) -> anyhow::Result<()>
@@ -331,7 +328,7 @@ pub(crate) mod tests {
         L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
         C: TunnelDialer,
     {
-        tokio::time::timeout(timeout, l_netns.run_async(|| listener.listen()))
+        tokio::time::timeout(timeout, listener.listen())
             .await
             .context("listener setup timed out")?
             .context("listener setup failed")?;
@@ -346,7 +343,7 @@ pub(crate) mod tests {
             _tunnel_echo_server(ret, false).await
         }));
 
-        let tunnel = tokio::time::timeout(timeout, c_netns.run_async(|| connector.connect()))
+        let tunnel = tokio::time::timeout(timeout, connector.connect())
             .await
             .context("connect timed out")?
             .context("connect failed")?;
@@ -400,8 +397,6 @@ pub(crate) mod tests {
     pub(crate) async fn _tunnel_pingpong_netns_with_timeout<L, C>(
         listener: L,
         connector: C,
-        l_netns: NetNS,
-        c_netns: NetNS,
         buf: Vec<u8>,
         timeout: std::time::Duration,
     ) -> Result<(), anyhow::Error>
@@ -412,7 +407,7 @@ pub(crate) mod tests {
         // Each phase has its own deadline; connection setup must not consume
         // the echo or shutdown budget. Dropping the caller cancels both tasks.
         let handle = AbortOnDropHandle::new(tokio::spawn(async move {
-            _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf, timeout).await
+            _tunnel_pingpong_netns(listener, connector, buf, timeout).await
         }));
 
         match handle.await {
@@ -440,18 +435,13 @@ pub(crate) mod tests {
     pub(crate) async fn _tunnel_bench_netns<L, C>(
         mut listener: L,
         connector: C,
-        netns_l: NetNS,
-        netns_c: NetNS,
         meter: Option<&(dyn Fn() -> u64 + Sync)>,
     ) -> (usize, Option<(u64, std::time::Duration)>)
     where
         L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
         C: TunnelDialer,
     {
-        {
-            let _g = netns_l.guard();
-            listener.listen().await.unwrap();
-        }
+        listener.listen().await.unwrap();
 
         let bps = Arc::new(AtomicU64::new(0));
         let bps_clone = bps.clone();
@@ -476,10 +466,7 @@ pub(crate) mod tests {
             }
         });
 
-        let tunnel = {
-            let _g = netns_c.guard();
-            connector.connect().await.unwrap()
-        };
+        let tunnel = connector.connect().await.unwrap();
 
         let (_recv, mut send) = tunnel.split();
 

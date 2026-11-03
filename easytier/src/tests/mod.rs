@@ -252,9 +252,11 @@ pub async fn drop_insts(insts: Vec<Instance>) {
 }
 
 pub async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
-    use crate::common::netns::{NetNS, ROOT_NETNS_NAME};
-    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
-    let code = tokio::process::Command::new("ip")
+    use crate::common::netns::{NetNS, NetNSImpl as _, ROOT_NETNS_NAME};
+    let mut child = NetNS::open(Some(ROOT_NETNS_NAME))
+        .unwrap()
+        .run(|| {
+            tokio::process::Command::new("ip")
         .args([
             "netns",
             "exec",
@@ -270,8 +272,10 @@ pub async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<u
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .await
+        .spawn()
+        })
+        .unwrap()
         .unwrap();
+    let code = child.wait().await.unwrap();
     code.code().unwrap() == 0
 }
