@@ -291,10 +291,10 @@ pub async fn local_ipv6() -> std::io::Result<std::net::Ipv6Addr> {
     }
 }
 
-pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
+pub(crate) async fn collect_interfaces(netns: NetNS, filter: bool) -> Vec<NetworkInterface> {
     #[cfg(target_os = "linux")]
     {
-        run_in_namespace(net_ns, move || async move {
+        run_in_namespace(netns, move || async move {
             collect_interfaces_in_current_namespace(filter).await
         })
         .await
@@ -306,7 +306,7 @@ pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<Netwo
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = net_ns;
+        let _ = netns;
         collect_interfaces_in_current_namespace(filter).await
     }
 }
@@ -435,7 +435,7 @@ async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInt
 }
 
 #[cfg(target_os = "linux")]
-async fn run_in_namespace<T, F, Fut>(net_ns: NetNS, operation: F) -> std::io::Result<T>
+async fn run_in_namespace<T, F, Fut>(netns: NetNS, operation: F) -> std::io::Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> Fut + Send + 'static,
@@ -447,17 +447,17 @@ where
             .enable_all()
             .build()
             .expect("build namespace-local runtime");
-        net_ns.run(|| runtime.block_on(operation()))
+        netns.run(|| runtime.block_on(operation()))
     })
     .await
     .expect("namespace-local network operation panicked")
 }
 
-#[tracing::instrument(skip(net_ns))]
-pub(crate) async fn collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
+#[tracing::instrument(skip(netns))]
+pub(crate) async fn collect_local_ip_addrs(netns: NetNS) -> GetIpListResponse {
     #[cfg(target_os = "linux")]
     {
-        return run_in_namespace(net_ns, || async {
+        return run_in_namespace(netns, || async {
             collect_local_ip_addrs_in_current_namespace().await
         })
         .await
@@ -469,7 +469,7 @@ pub(crate) async fn collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = net_ns;
+        let _ = netns;
         collect_local_ip_addrs_in_current_namespace().await
     }
 }

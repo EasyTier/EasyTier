@@ -680,8 +680,10 @@ mod tests {
     use futures::{SinkExt, StreamExt};
 
     use crate::{
-        common::netns::{NetNS, NetNSImpl as _}, host_runtime::native_host_runtime,
-        socket::udp::new_runtime_udp_session_listener, tunnel::tests::_tunnel_echo_server,
+        common::netns::{NetNS, NetNSImpl as _},
+        host_runtime::native_host_runtime,
+        socket::udp::new_runtime_udp_session_listener,
+        tunnel::tests::_tunnel_echo_server,
     };
 
     use super::*;

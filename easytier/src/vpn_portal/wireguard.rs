@@ -250,7 +250,7 @@ impl WireGuardPortalHost {
             only_v6,
             ..BindConfig::default()
         };
-        let runtime = Arc::new(NativeHostRuntime::new(self.global_ctx.net_ns.clone()));
+        let runtime = Arc::new(NativeHostRuntime::new(self.global_ctx.netns.clone()));
         let socket = runtime.bind_udp(options.clone()).await?;
         options.local_addr = Some(socket.local_addr()?);
         Ok(Arc::new(PortalSocket {
@@ -452,10 +452,7 @@ mod tests {
             ..BindConfig::default()
         };
         let runtime = crate::host_runtime::native_host_runtime();
-        let initial = runtime
-            .bind_udp(options.clone())
-            .await
-            .unwrap();
+        let initial = runtime.bind_udp(options.clone()).await.unwrap();
         let local = initial.local_addr().unwrap();
         options.local_addr = Some(local);
         let old_socket = Arc::downgrade(&initial);

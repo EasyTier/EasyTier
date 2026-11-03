@@ -199,7 +199,6 @@ pub(crate) mod tests {
         tunnel::Tunnel,
     };
 
-
     #[cfg(target_os = "windows")]
     #[test]
     fn interface_snapshot_lookup_smoke_test() {

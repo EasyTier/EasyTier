@@ -248,8 +248,13 @@ async fn failed_claim_update_closes_all_members_and_allows_recreation() {
 
     let netns = TestNetnsGuard::new(short_name("svf"), "10.233.1.2/24", "fd43::2/64");
     let dev_name = test_dev_name();
-    let config =
-        || VirtualNicConfig::new(dev_name.clone(), 1400, NetNS::open(Some(&netns.name)).unwrap());
+    let config = || {
+        VirtualNicConfig::new(
+            dev_name.clone(),
+            1400,
+            NetNS::open(Some(&netns.name)).unwrap(),
+        )
+    };
     let mut registry = SharedVirtualNicRegistry::new();
     let first_closed = Arc::new(Notify::new());
     let second_closed = Arc::new(Notify::new());
@@ -489,8 +494,13 @@ fn shared_tun_claim_cleanup_outlives_member_runtime() {
 
     let netns = TestNetnsGuard::new(short_name("svc"), "10.235.1.2/24", "fd46::2/64");
     let dev_name = test_dev_name();
-    let config =
-        || VirtualNicConfig::new(dev_name.clone(), 1400, NetNS::open(Some(&netns.name)).unwrap());
+    let config = || {
+        VirtualNicConfig::new(
+            dev_name.clone(),
+            1400,
+            NetNS::open(Some(&netns.name)).unwrap(),
+        )
+    };
     let mut registry = SharedVirtualNicRegistry::new();
     let first = registry.create_member(
         dev_name.clone(),

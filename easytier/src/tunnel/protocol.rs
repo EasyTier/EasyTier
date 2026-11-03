@@ -326,7 +326,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_wireguard_upgraders_consume_core_udp_sessions(#[case] bind_addr: &str) {
         use crate::{
-            common::netns::{NetNS, NetNSImpl as _}, host_runtime::native_host_runtime,
+            common::netns::{NetNS, NetNSImpl as _},
+            host_runtime::native_host_runtime,
             socket::udp::new_runtime_udp_session_listener,
         };
         use easytier_core::socket::BindConfig;
@@ -407,7 +408,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_quic_upgraders_consume_core_udp_sessions(#[case] bind_addr: &str) {
         use crate::{
-            common::netns::{NetNS, NetNSImpl as _}, host_runtime::native_host_runtime,
+            common::netns::{NetNS, NetNSImpl as _},
+            host_runtime::native_host_runtime,
             socket::udp::new_runtime_udp_session_listener,
         };
         use easytier_core::socket::BindConfig;

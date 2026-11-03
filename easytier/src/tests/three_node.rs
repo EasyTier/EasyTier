@@ -54,31 +54,31 @@ fn metric_value(metrics: &[MetricSnapshot], name: MetricName, labels: &LabelSet)
         .map(|metric| metric.value)
 }
 
-fn core_tcp_listener(url: url::Url, net_ns: NetNS) -> TcpTunnelListener<NativeHostRuntime> {
+fn core_tcp_listener(url: url::Url, netns: NetNS) -> TcpTunnelListener<NativeHostRuntime> {
     let addr = url
         .socket_addrs(|| Some(11010))
         .expect("test TCP listener URL should resolve")
         .into_iter()
         .next()
         .expect("test TCP listener URL should have an address");
-    // Mirrors `runtime_rpc_listener`, bound to `net_ns` instead of the process namespace.
+    // Mirrors `runtime_rpc_listener`, bound to `netns` instead of the process namespace.
     let bind = BindConfig {
         local_addr: Some(addr),
         only_v6: true,
         need_protect: false,
         ..BindConfig::default()
     };
-    TcpTunnelListener::new_with_bind(addr, bind, Arc::new(NativeHostRuntime::new(net_ns)))
+    TcpTunnelListener::new_with_bind(addr, bind, Arc::new(NativeHostRuntime::new(netns)))
 }
 
-fn core_tcp_dialer(url: url::Url, net_ns: NetNS) -> TcpTunnelDialer<NativeHostRuntime> {
-    let runtime = Arc::new(NativeHostRuntime::new(net_ns));
+fn core_tcp_dialer(url: url::Url, netns: NetNS) -> TcpTunnelDialer<NativeHostRuntime> {
+    let runtime = Arc::new(NativeHostRuntime::new(netns));
     TcpTunnelDialer::new(url, runtime.clone(), runtime)
 }
 
 fn core_udp_listener(
     url: url::Url,
-    net_ns: NetNS,
+    netns: NetNS,
 ) -> impl SocketListener<Accepted = Box<dyn Tunnel>> + Sync {
     let addr = url
         .socket_addrs(|| Some(11010))
@@ -86,7 +86,7 @@ fn core_udp_listener(
         .into_iter()
         .next()
         .expect("test UDP listener URL should have an address");
-    // Mirrors `runtime_udp_tunnel_listener`, bound to `net_ns`.
+    // Mirrors `runtime_udp_tunnel_listener`, bound to `netns`.
     let bind = BindConfig {
         local_addr: Some(addr),
         bind_device: crate::tunnel::TunnelUrl::from(url.clone()).bind_dev(),
@@ -96,12 +96,12 @@ fn core_udp_listener(
     UdpTunnelListener::new_with_request(
         url,
         UdpSessionListenRequest::new(bind),
-        Arc::new(NativeHostRuntime::new(net_ns)),
+        Arc::new(NativeHostRuntime::new(netns)),
     )
 }
 
-fn core_udp_dialer(url: url::Url, net_ns: NetNS) -> impl TunnelDialer {
-    let runtime = Arc::new(NativeHostRuntime::new(net_ns));
+fn core_udp_dialer(url: url::Url, netns: NetNS) -> impl TunnelDialer {
+    let runtime = Arc::new(NativeHostRuntime::new(netns));
     UdpTunnelDialer::new(url, runtime.clone(), runtime)
 }
 
@@ -1938,8 +1938,8 @@ pub async fn udp_broadcast_test() {
     let network = prepare_linux_namespaces();
     let _insts = init_three_node(&network, "tcp").await;
 
-    let udp_broadcast_responder = |net_ns: NetNS, counter: Arc<AtomicU32>| async move {
-        let socket = net_ns
+    let udp_broadcast_responder = |netns: NetNS, counter: Arc<AtomicU32>| async move {
+        let socket = netns
             .run(|| std::net::UdpSocket::bind("0.0.0.0:22111"))
             .unwrap()
             .unwrap();
@@ -1970,8 +1970,8 @@ pub async fn udp_broadcast_test() {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     // send broadcast
-    let net_ns = NetNS::open(Some(network.namespace("net_a"))).unwrap();
-    let socket = net_ns
+    let netns = NetNS::open(Some(network.namespace("net_a"))).unwrap();
+    let socket = netns
         .run(|| std::net::UdpSocket::bind("0.0.0.0:0"))
         .unwrap()
         .unwrap();
@@ -2179,7 +2179,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
         "10.1.2.3:22121".parse().unwrap()
     };
 
-    let net_ns = NetNS::open(Some(network.namespace("net_d"))).unwrap();
+    let netns = NetNS::open(Some(network.namespace("net_d"))).unwrap();
     let portal_config = insts[2]
         .get_global_ctx()
         .config
@@ -2204,7 +2204,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     );
     let (server_public, client_private) =
         test_wireguard_keys(&portal_config, "test-client").unwrap();
-    net_ns
+    netns
         .run(|| {
             run_wireguard_client(
                 &wireguard_ifname("wg0"),
@@ -2303,10 +2303,10 @@ pub async fn wireguard_vpn_portal_multi_client() {
         (network.namespace("net_d"), "client-a", "10.144.144.4"),
         (network.namespace("net_f"), "client-b", "10.144.144.5"),
     ] {
-        let net_ns = NetNS::open(Some(ns)).unwrap();
+        let netns = NetNS::open(Some(ns)).unwrap();
         let (server_public, client_private) =
             test_wireguard_keys(&portal_config, client_name).unwrap();
-        net_ns
+        netns
             .run(|| {
                 run_wireguard_client(
                     &wireguard_ifname("wg0"),
@@ -2356,8 +2356,8 @@ pub async fn wireguard_vpn_portal_multi_client() {
     let task_network = network.clone();
     let echo_task = tokio::spawn(async move {
         let network = task_network;
-        let net_ns = NetNS::open(Some(network.namespace("net_a"))).unwrap();
-        let socket = net_ns
+        let netns = NetNS::open(Some(network.namespace("net_a"))).unwrap();
+        let socket = netns
             .run(|| std::net::TcpListener::bind("0.0.0.0:22222"))
             .unwrap()
             .unwrap();
@@ -2371,8 +2371,8 @@ pub async fn wireguard_vpn_portal_multi_client() {
         st.write_all(&rbuf).await.unwrap();
     });
     {
-        let net_ns = NetNS::open(Some(network.namespace("net_d"))).unwrap();
-        let mut stream = net_ns
+        let netns = NetNS::open(Some(network.namespace("net_d"))).unwrap();
+        let mut stream = netns
             .run(|| tokio::net::TcpSocket::new_v4().unwrap())
             .unwrap()
             .connect("10.144.144.1:22222".parse().unwrap())
@@ -2448,10 +2448,10 @@ pub async fn wireguard_vpn_portal_client_roaming() {
         .get_vpn_portal_config()
         .unwrap();
     {
-        let net_ns = NetNS::open(Some(network.namespace("net_d"))).unwrap();
+        let netns = NetNS::open(Some(network.namespace("net_d"))).unwrap();
         let (server_public, client_private) =
             test_wireguard_keys(&portal_config, "roaming-client").unwrap();
-        net_ns
+        netns
             .run(|| {
                 run_wireguard_client(
                     &wireguard_ifname("wg0"),
@@ -2607,10 +2607,10 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
 
     // 初始客户端上线
     {
-        let net_ns = NetNS::open(Some(network.namespace("net_d"))).unwrap();
+        let netns = NetNS::open(Some(network.namespace("net_d"))).unwrap();
         let (server_public, client_private) =
             test_wireguard_keys(&portal_config, "client-a").unwrap();
-        net_ns
+        netns
             .run(|| {
                 run_wireguard_client(
                     &wireguard_ifname("wg0"),
@@ -2698,10 +2698,10 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
 
     // 新客户端立即可以握手上线，原客户端不受影响
     {
-        let net_ns = NetNS::open(Some(network.namespace("net_f"))).unwrap();
+        let netns = NetNS::open(Some(network.namespace("net_f"))).unwrap();
         let (server_public, client_private) =
             test_wireguard_keys(&portal_config, "client-b").unwrap();
-        net_ns
+        netns
             .run(|| {
                 run_wireguard_client(
                     &wireguard_ifname("wg0"),
@@ -2809,7 +2809,7 @@ pub async fn socks5_vpn_portal(
     let task_network = network.clone();
     let task = tokio::spawn(async move {
         let network = task_network;
-        let net_ns = if dst_addr_clone == "10.144.144.1" {
+        let netns = if dst_addr_clone == "10.144.144.1" {
             NetNS::open(Some(network.namespace("net_a"))).unwrap()
         } else if dst_addr_clone == "10.144.144.3" {
             NetNS::open(Some(network.namespace("net_c"))).unwrap()
@@ -2817,7 +2817,7 @@ pub async fn socks5_vpn_portal(
             NetNS::open(Some(network.namespace("net_d"))).unwrap()
         };
 
-        let socket = net_ns
+        let socket = netns
             .run(|| std::net::TcpListener::bind("0.0.0.0:22222"))
             .unwrap()
             .unwrap();
@@ -2838,14 +2838,14 @@ pub async fn socks5_vpn_portal(
         assert_eq!(rbuf, buf_clone.as_slice());
     });
 
-    let net_ns = if dst_addr == "10.1.2.4" {
+    let netns = if dst_addr == "10.1.2.4" {
         NetNS::open(Some(network.namespace("net_c"))).unwrap()
     } else {
         NetNS::open(Some(network.namespace("net_a"))).unwrap()
     };
 
     println!("connect to socks5 portal");
-    let stream = net_ns
+    let stream = netns
         .run(|| tokio::net::TcpSocket::new_v4().unwrap())
         .unwrap()
         .connect("127.0.0.1:12345".parse().unwrap())
@@ -3598,7 +3598,7 @@ async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
     let host = crate::instance::host::native_instance_host(
         inst.get_global_ctx(),
         std::sync::Arc::new(crate::host_runtime::NativeHostRuntime::new(
-            inst.get_global_ctx().net_ns.clone(),
+            inst.get_global_ctx().netns.clone(),
         )),
     );
     let protocol = crate::tunnel::protocol::runtime_client_protocol_upgrader(inst.get_global_ctx());
@@ -4479,29 +4479,29 @@ pub async fn acl_group_base_test(
     println!("Testing group-based ACL rules...");
 
     let make_listener =
-        |port: u16, net_ns: NetNS| -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync> {
+        |port: u16, netns: NetNS| -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync> {
             match protocol {
                 "tcp" => Box::new(core_tcp_listener(
                     format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
-                    net_ns,
+                    netns,
                 )),
                 "udp" => Box::new(core_udp_listener(
                     format!("udp://0.0.0.0:{}", port).parse().unwrap(),
-                    net_ns,
+                    netns,
                 )),
                 _ => panic!("unsupported protocol: {}", protocol),
             }
         };
 
-    let make_connector = |port: u16, net_ns: NetNS| -> Box<dyn TunnelDialer> {
+    let make_connector = |port: u16, netns: NetNS| -> Box<dyn TunnelDialer> {
         match protocol {
             "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
-                net_ns,
+                netns,
             )),
             "udp" => Box::new(core_udp_dialer(
                 format!("udp://10.144.144.3:{}", port).parse().unwrap(),
-                net_ns,
+                netns,
             )),
             _ => panic!("unsupported protocol: {}", protocol),
         }
@@ -4881,29 +4881,29 @@ pub async fn acl_group_self_test(
     println!("Testing group-based ACL rules...");
 
     let make_listener =
-        |port: u16, net_ns: NetNS| -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync> {
+        |port: u16, netns: NetNS| -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync> {
             match protocol {
                 "tcp" => Box::new(core_tcp_listener(
                     format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
-                    net_ns,
+                    netns,
                 )),
                 "udp" => Box::new(core_udp_listener(
                     format!("udp://0.0.0.0:{}", port).parse().unwrap(),
-                    net_ns,
+                    netns,
                 )),
                 _ => panic!("unsupported protocol: {}", protocol),
             }
         };
 
-    let make_connector = |port: u16, net_ns: NetNS| -> Box<dyn TunnelDialer> {
+    let make_connector = |port: u16, netns: NetNS| -> Box<dyn TunnelDialer> {
         match protocol {
             "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
-                net_ns,
+                netns,
             )),
             "udp" => Box::new(core_udp_dialer(
                 format!("udp://10.144.144.3:{}", port).parse().unwrap(),
-                net_ns,
+                netns,
             )),
             _ => panic!("unsupported protocol: {}", protocol),
         }
@@ -4994,30 +4994,30 @@ pub async fn whitelist_test(
 
     let make_listener = |protocol: &str,
                          port: u16,
-                         net_ns: NetNS|
+                         netns: NetNS|
      -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync> {
         match protocol {
             "tcp" => Box::new(core_tcp_listener(
                 format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
-                net_ns,
+                netns,
             )),
             "udp" => Box::new(core_udp_listener(
                 format!("udp://0.0.0.0:{}", port).parse().unwrap(),
-                net_ns,
+                netns,
             )),
             _ => panic!("unsupported protocol: {}", protocol),
         }
     };
 
-    let make_connector = |protocol: &str, port: u16, net_ns: NetNS| -> Box<dyn TunnelDialer> {
+    let make_connector = |protocol: &str, port: u16, netns: NetNS| -> Box<dyn TunnelDialer> {
         match protocol {
             "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
-                net_ns,
+                netns,
             )),
             "udp" => Box::new(core_udp_dialer(
                 format!("udp://10.144.144.3:{}", port).parse().unwrap(),
-                net_ns,
+                netns,
             )),
             _ => panic!("unsupported protocol: {}", protocol),
         }

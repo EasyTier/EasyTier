@@ -53,7 +53,7 @@ use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, tim
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
     tun_dev: Option<String>,
-    net_ns: NetNS,
+    netns: NetNS,
     fake_ip: Ipv4Addr,
     manage_fake_ip_route: bool,
     route_store: MagicDnsRecordStore,
@@ -363,10 +363,10 @@ impl MagicDnsServerInstance {
     async fn add_fake_ip_route(
         tun_dev_name: &str,
         fake_ip: Ipv4Addr,
-        net_ns: &NetNS,
+        netns: &NetNS,
         cost: Option<i32>,
     ) -> Result<(), anyhow::Error> {
-        let ifcfg = IfConfiger::new(net_ns.clone());
+        let ifcfg = IfConfiger::new(netns.clone());
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
             Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
                 ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
@@ -379,8 +379,8 @@ impl MagicDnsServerInstance {
         }
     }
 
-    async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, net_ns: &NetNS) {
-        let ifcfg = IfConfiger::new(net_ns.clone());
+    async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, netns: &NetNS) {
+        let ifcfg = IfConfiger::new(netns.clone());
         if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
             tracing::warn!(
                 ?err,
@@ -439,13 +439,13 @@ impl MagicDnsServerInstance {
             } else {
                 None
             };
-            Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
+            Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.netns, cost).await?;
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
             tun_dev: tun_dev.clone(),
-            net_ns: global_ctx.net_ns.clone(),
+            netns: global_ctx.netns.clone(),
             fake_ip,
             manage_fake_ip_route,
             route_store: MagicDnsRecordStore::default(),
@@ -498,7 +498,7 @@ impl MagicDnsServerInstance {
             && !self.tun_inet.contains(&self.data.fake_ip)
             && let Some(tun_dev_name) = &self.data.tun_dev
         {
-            Self::remove_fake_ip_route(tun_dev_name, self.data.fake_ip, &self.data.net_ns).await;
+            Self::remove_fake_ip_route(tun_dev_name, self.data.fake_ip, &self.data.netns).await;
         }
 
         self.packet_filter.close().await;

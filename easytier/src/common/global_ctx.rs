@@ -81,7 +81,7 @@ pub struct GlobalCtx {
     pub inst_name: String,
     pub id: uuid::Uuid,
     pub config: Box<dyn ConfigLoader>,
-    pub net_ns: NetNS,
+    pub netns: NetNS,
     pub network: NetworkIdentity,
 
     event_bus: EventBus,
@@ -101,7 +101,7 @@ impl std::fmt::Debug for GlobalCtx {
         f.debug_struct("GlobalCtx")
             .field("inst_name", &self.inst_name)
             .field("id", &self.id)
-            .field("net_ns", &self.net_ns)
+            .field("netns", &self.netns)
             .field("event_bus", &"EventBus")
             .field("ipv4", &self.cached_ipv4)
             .finish()
@@ -116,7 +116,7 @@ impl PublicIpv6Host for GlobalCtx {
         &self,
         prefix: cidr::Ipv6Cidr,
     ) -> HashSet<Ipv6Addr> {
-        let ip_list = crate::common::network::collect_local_ip_addrs(self.net_ns.clone()).await;
+        let ip_list = crate::common::network::collect_local_ip_addrs(self.netns.clone()).await;
         let mut reserved = HashSet::new();
         reserved.extend(
             ip_list
@@ -138,16 +138,16 @@ impl PublicIpv6Host for GlobalCtx {
 
 impl GlobalCtx {
     pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
-        let net_ns = NetNS::open(config_fs.get_netns().as_deref())
+        let netns = NetNS::open(config_fs.get_netns().as_deref())
             .expect("open the configured network namespace");
-        Self::new_inner(config_fs, None, None, net_ns)
+        Self::new_inner(config_fs, None, None, netns)
     }
 
     pub(crate) fn new_with_runtime_config(
         config_fs: impl ConfigLoader + 'static,
         runtime: &CoreInstanceConfig,
         host: &CoreInstanceHostConfig,
-        net_ns: NetNS,
+        netns: NetNS,
     ) -> Self {
         let runtime = CoreInstanceRuntimeConfig {
             services: runtime.connectivity.runtime.clone(),
@@ -159,14 +159,14 @@ impl GlobalCtx {
                 .map(|protocol| protocol.to_ascii_lowercase())
                 .collect()
         });
-        Self::new_inner(config_fs, Some(&runtime), protocols, net_ns)
+        Self::new_inner(config_fs, Some(&runtime), protocols, netns)
     }
 
     fn new_inner(
         config_fs: impl ConfigLoader + 'static,
         runtime: Option<&CoreInstanceRuntimeConfig>,
         runtime_endpoint_protocols: Option<HashSet<String>>,
-        net_ns: NetNS,
+        netns: NetNS,
     ) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
@@ -194,7 +194,7 @@ impl GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
             config: Box::new(config_fs),
-            net_ns: net_ns.clone(),
+            netns: netns.clone(),
             network,
 
             event_bus,

@@ -14,7 +14,7 @@ use easytier_core::connectivity::hole_punch::port_mapping::{
 use crate::common::{netns::NetNS, upnp};
 
 struct RuntimeUdpHolePunchPlatform {
-    net_ns: NetNS,
+    netns: NetNS,
 }
 
 #[async_trait]
@@ -24,7 +24,7 @@ impl UdpPortMappingPlatform for RuntimeUdpHolePunchPlatform {
         backend: UdpPortMappingBackend,
         local_listener: &url::Url,
     ) -> Result<Box<dyn ActiveUdpPortMapping>, UdpPortMappingAttemptError> {
-        upnp::establish_udp_port_mapping(self.net_ns.clone(), backend, local_listener.clone()).await
+        upnp::establish_udp_port_mapping(self.netns.clone(), backend, local_listener.clone()).await
     }
 
     fn spawn_udp_port_mapping_lifecycle(
@@ -32,10 +32,10 @@ impl UdpPortMappingPlatform for RuntimeUdpHolePunchPlatform {
         local_listener: url::Url,
         lifecycle: UdpPortMappingLifecycle,
     ) {
-        upnp::spawn_udp_port_mapping_lifecycle(self.net_ns.clone(), local_listener, lifecycle);
+        upnp::spawn_udp_port_mapping_lifecycle(self.netns.clone(), local_listener, lifecycle);
     }
 }
 
-pub(crate) fn runtime_udp_hole_punch_platform(net_ns: NetNS) -> Arc<dyn UdpPortMappingPlatform> {
-    Arc::new(RuntimeUdpHolePunchPlatform { net_ns })
+pub(crate) fn runtime_udp_hole_punch_platform(netns: NetNS) -> Arc<dyn UdpPortMappingPlatform> {
+    Arc::new(RuntimeUdpHolePunchPlatform { netns })
 }

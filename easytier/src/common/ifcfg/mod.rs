@@ -214,7 +214,7 @@ pub struct DummyIfConfiger {}
 
 impl DummyIfConfiger {
     #[allow(dead_code)]
-    pub fn new(_net_ns: NetNS) -> Self {
+    pub fn new(_netns: NetNS) -> Self {
         Self::default()
     }
 }

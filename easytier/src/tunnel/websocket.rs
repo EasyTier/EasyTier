@@ -314,9 +314,9 @@ impl WsTunnelListener {
         self.listener = None;
 
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let net_ns = NetNS::current()?;
+        let netns = NetNS::current()?;
         let listener = crate::socket::bind::<TcpListener>(
-            &net_ns,
+            &netns,
             BindConfig {
                 local_addr: Some(addr),
                 only_v6: true,

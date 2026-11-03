@@ -12,16 +12,16 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 pub(crate) struct RuntimeIcmpProxyHost {
-    net_ns: NetNS,
+    netns: NetNS,
 }
 
 impl RuntimeIcmpProxyHost {
-    pub(crate) fn new(net_ns: NetNS) -> Self {
-        Self { net_ns }
+    pub(crate) fn new(netns: NetNS) -> Self {
+        Self { netns }
     }
 
     fn create_raw_socket(&self) -> Result<Socket, std::io::Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let socket = Socket::new(
                 socket2::Domain::IPV4,
                 socket2::Type::RAW,
@@ -163,9 +163,7 @@ mod tests {
                 let mut sockets = Vec::new();
                 for _ in 0..30 {
                     sockets.push(
-                        RuntimeIcmpProxyHost::new(
-                            NetNS::current().unwrap(),
-                        )
+                        RuntimeIcmpProxyHost::new(NetNS::current().unwrap())
                             .open_icmp_v4(SocketContext::default())
                             .await
                             .unwrap(),

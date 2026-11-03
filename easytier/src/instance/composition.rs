@@ -64,7 +64,7 @@ pub(super) fn compose_native_core_instance(
         runtime_core_host_config()
     };
     let configured_netns = toml_config.get_netns();
-    let net_ns = NetNS::open(cfg_select! {
+    let netns = NetNS::open(cfg_select! {
         target_os = "linux" => configured_netns.as_deref(),
         _ => {
             if host_config.ignore_unsupported_config {
@@ -79,7 +79,7 @@ pub(super) fn compose_native_core_instance(
         toml_config.clone(),
         &normalized,
         &host_config,
-        net_ns,
+        netns,
     ));
     let runtime_host = NativeInstanceRuntimeHost::new_with_executor(
         global_ctx.clone(),
@@ -205,7 +205,7 @@ pub(crate) fn runtime_core_host_adapters(
     process_runtime: Arc<CoreProcessRuntime>,
     packet_sink: Arc<dyn PacketSink>,
 ) -> CoreHostAdapters<NativeInstanceHost> {
-    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.net_ns.clone()));
+    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.netns.clone()));
     let host = native_instance_host(global_ctx.clone(), runtime_dns.clone());
     let adapters = CoreHostAdapters::new(host, runtime_dns, packet_sink, process_runtime);
     configure_runtime_core_host_adapters(global_ctx, adapters, runtime_core_host_config())
@@ -217,7 +217,7 @@ pub(crate) fn runtime_core_host_adapters_with_packet_egress(
     process_runtime: Arc<CoreProcessRuntime>,
     packet_egress: Arc<dyn PacketEgressHost>,
 ) -> CoreHostAdapters<NativeInstanceHost> {
-    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.net_ns.clone()));
+    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.netns.clone()));
     let host = native_instance_host(global_ctx.clone(), runtime_dns.clone());
     let adapters =
         CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
@@ -230,7 +230,7 @@ fn runtime_core_host_adapters_with_packet_egress_and_config(
     packet_egress: Arc<dyn PacketEgressHost>,
     host_config: easytier_core::instance::CoreInstanceHostConfig,
 ) -> CoreHostAdapters<NativeInstanceHost> {
-    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.net_ns.clone()));
+    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.netns.clone()));
     let host = native_instance_host(global_ctx.clone(), runtime_dns.clone());
     let adapters =
         CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
@@ -257,21 +257,21 @@ fn configure_runtime_core_host_adapters(
     }
     adapters.protocol = Some(runtime_client_protocol_upgrader(global_ctx.clone()));
     adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory::new(
-        global_ctx.net_ns.clone(),
+        global_ctx.netns.clone(),
     )));
     adapters.server_protocol = Some(runtime_server_protocol_upgrader(global_ctx.clone()));
     #[cfg(feature = "upnp")]
     if host_config.upnp_enabled {
         adapters.udp_hole_punch_platform = Some(
             crate::instance::udp_hole_punch::runtime_udp_hole_punch_platform(
-                global_ctx.net_ns.clone(),
+                global_ctx.netns.clone(),
             ),
         );
     }
     #[cfg(feature = "icmp-proxy")]
     {
         adapters.icmp_proxy_host = Some(Arc::new(
-            crate::gateway::icmp_proxy::RuntimeIcmpProxyHost::new(global_ctx.net_ns.clone()),
+            crate::gateway::icmp_proxy::RuntimeIcmpProxyHost::new(global_ctx.netns.clone()),
         ));
     }
     #[cfg(feature = "proxy-cidr-monitor")]
@@ -308,7 +308,7 @@ pub(crate) fn runtime_one_shot_manual_connector(
     process_runtime: Arc<CoreProcessRuntime>,
 ) -> anyhow::Result<ManualTunnelConnector<NativeInstanceHost>> {
     let normalized = CoreInstanceConfig::from_toml_with_host(config, &runtime_core_host_config())?;
-    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.net_ns.clone()));
+    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.netns.clone()));
     let host = native_instance_host(global_ctx.clone(), runtime_dns.clone());
     let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;

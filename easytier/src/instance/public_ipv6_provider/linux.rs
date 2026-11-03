@@ -380,7 +380,7 @@ impl NdpProxyRuntime {
         };
 
         global_ctx
-            .net_ns
+            .netns
             .run(|| {
                 if self.wan_iface.as_deref() != Some(desired.target.wan_interface.as_str()) {
                     if !self.clear_current_locked() {
@@ -417,11 +417,11 @@ impl NdpProxyRuntime {
     }
 
     fn clear_current(&mut self, global_ctx: &ArcGlobalCtx) -> bool {
-        self.clear_current_in_netns(&global_ctx.net_ns)
+        self.clear_current_in_netns(&global_ctx.netns)
     }
 
-    fn clear_current_in_netns(&mut self, net_ns: &NetNS) -> bool {
-        net_ns
+    fn clear_current_in_netns(&mut self, netns: &NetNS) -> bool {
+        netns
             .run(|| self.clear_current_locked())
             .unwrap_or_else(|error| {
                 tracing::warn!(%error, "cannot enter namespace for NDP cleanup");
@@ -597,8 +597,8 @@ fn sync_ndp_proxy_entries(
     Ok(())
 }
 
-fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) -> bool {
-    let complete = runtime.clear_current_in_netns(net_ns);
+fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, netns: &NetNS) -> bool {
+    let complete = runtime.clear_current_in_netns(netns);
     if !complete {
         tracing::warn!(
             remaining_entries = runtime.applied.len(),
@@ -611,7 +611,7 @@ fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) -> b
 
 pub(super) struct RuntimePublicIpv6ProviderPlatform {
     global_ctx: std::sync::Weak<crate::common::global_ctx::GlobalCtx>,
-    net_ns: NetNS,
+    netns: NetNS,
     event_receiver: tokio::sync::Mutex<tokio::sync::broadcast::Receiver<GlobalCtxEvent>>,
     ndp_proxy: std::sync::Mutex<NdpProxyRuntime>,
 }
@@ -620,7 +620,7 @@ impl RuntimePublicIpv6ProviderPlatform {
     pub(super) fn new(global_ctx: &ArcGlobalCtx) -> Arc<Self> {
         Arc::new(Self {
             global_ctx: Arc::downgrade(global_ctx),
-            net_ns: global_ctx.net_ns.clone(),
+            netns: global_ctx.netns.clone(),
             event_receiver: tokio::sync::Mutex::new(global_ctx.subscribe()),
             ndp_proxy: std::sync::Mutex::new(NdpProxyRuntime::default()),
         })
@@ -637,7 +637,7 @@ impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
             return Err(PublicIpv6PlatformError::Unavailable);
         };
 
-        global_ctx.net_ns.run(|| {
+        global_ctx.netns.run(|| {
         ensure_linux_ipv6_forwarding()
             .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))?;
 
@@ -684,7 +684,7 @@ impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
             return Ok(());
         }
         if desired.is_none() {
-            return cleanup_ndp_proxy_runtime(&mut runtime, &self.net_ns)
+            return cleanup_ndp_proxy_runtime(&mut runtime, &self.netns)
                 .then_some(())
                 .ok_or_else(|| {
                     PublicIpv6PlatformError::Failed(format!(

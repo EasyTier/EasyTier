@@ -137,12 +137,12 @@ fn dump_netlink_messages<T: NetlinkDecode>(
 }
 
 pub struct NetlinkIfConfiger {
-    net_ns: NetNS,
+    netns: NetNS,
 }
 
 impl NetlinkIfConfiger {
-    pub fn new(net_ns: NetNS) -> Self {
-        Self { net_ns }
+    pub fn new(netns: NetNS) -> Self {
+        Self { netns }
     }
 
     pub(crate) fn get_interface_index(name: &str) -> Result<u32, Error> {
@@ -388,7 +388,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let message = NetlinkIfConfiger::ipv4_route_message(
                 NetlinkIfConfiger::get_interface_index(name)?,
                 address,
@@ -411,7 +411,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let routes = Self::list_routes()?;
             let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
@@ -442,7 +442,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let message = Self::ipv4_route_message(
                 Self::get_interface_index(name)?,
                 address,
@@ -464,7 +464,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let broadcast = if cidr_prefix == 32 {
                 address
             } else {
@@ -489,7 +489,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     }
 
     async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let mut flags = Self::get_flags(name)?;
             flags.set(InterfaceFlags::IFF_UP, up);
             Self::set_flags(name, flags)?;
@@ -498,7 +498,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     }
 
     async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             if let Some(ip) = ip {
                 let prefix_len = Self::get_prefix_len(name, ip.address())?;
                 Self::remove_one_ip(name, ip.address(), prefix_len)?;
@@ -516,7 +516,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     }
 
     async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             Self::mtu_op(name, SIOCSIFMTU, mtu as libc::c_int)?;
 
             Ok(())
@@ -529,7 +529,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let message = AddressMessage::new(
                 libc::AF_INET6 as u8,
                 Self::get_interface_index(name)?,
@@ -546,7 +546,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     }
 
     async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             if let Some(ipv6) = ip {
                 let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
                 Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
@@ -571,7 +571,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let mut builder = RouteMessageBuilder::new(libc::AF_INET6 as u8)
                 .oif(Self::get_interface_index(name)?)
                 .priority(cost.unwrap_or(65535) as u32)
@@ -598,7 +598,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        self.net_ns.run(|| {
+        self.netns.run(|| {
             let routes = Self::list_route_messages(libc::AF_INET6 as u8)?;
             let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
@@ -624,8 +624,8 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::netns::{NetNS, NetNSImpl};
     use super::*;
+    use crate::common::netns::{NetNS, NetNSImpl};
     use std::process::Command;
 
     const DUMMY_IFACE_NAME: &str = "dummy";

@@ -101,8 +101,8 @@ pub const ROOT_NETNS_NAME: &str = "_root_ns";
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use easytier_core::socket::BindConfig;
     use crate::host_runtime::NativeHostRuntime;
+    use easytier_core::socket::BindConfig;
 
     #[cfg(target_os = "linux")]
     pub(crate) fn isolated_netns_for_test() -> io::Result<NetNS> {
@@ -222,18 +222,18 @@ pub(crate) mod tests {
 
     #[test]
     fn nested_current_domain_operations_restore_errors_and_unwind() {
-        let net_ns = NetNS::current().unwrap();
+        let netns = NetNS::current().unwrap();
         assert!(
-            net_ns
-                .run(|| net_ns.run(|| Err::<(), _>("operation")))
+            netns
+                .run(|| netns.run(|| Err::<(), _>("operation")))
                 .unwrap()
                 .unwrap()
                 .is_err()
         );
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            net_ns.run(|| panic!("operation panic")).unwrap();
+            netns.run(|| panic!("operation panic")).unwrap();
         }));
         assert!(panic.is_err());
-        assert_eq!(NetNS::current().unwrap().id(), net_ns.id());
+        assert_eq!(NetNS::current().unwrap().id(), netns.id());
     }
 }

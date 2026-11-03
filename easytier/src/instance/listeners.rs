@@ -11,12 +11,12 @@ use crate::socket::tcp::RuntimeTcpSocket;
 
 pub(crate) struct RuntimeExternalListenerFactory {
     #[cfg_attr(not(feature = "faketcp"), allow(dead_code))]
-    net_ns: NetNS,
+    netns: NetNS,
 }
 
 impl RuntimeExternalListenerFactory {
-    pub(crate) fn new(net_ns: NetNS) -> Self {
-        Self { net_ns }
+    pub(crate) fn new(netns: NetNS) -> Self {
+        Self { netns }
     }
 }
 
@@ -40,7 +40,7 @@ impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
             #[cfg(feature = "faketcp")]
             "faketcp" => Box::new(RuntimeFakeTcpSocketListener::new(
                 request.url,
-                self.net_ns.clone(),
+                self.netns.clone(),
             )),
             #[cfg(unix)]
             "unix" => Box::new(RuntimeUnixStreamListener::new(request.url)),
@@ -127,9 +127,9 @@ struct RuntimeFakeTcpSocketListener {
 
 #[cfg(feature = "faketcp")]
 impl RuntimeFakeTcpSocketListener {
-    fn new(url: url::Url, net_ns: NetNS) -> Self {
+    fn new(url: url::Url, netns: NetNS) -> Self {
         Self {
-            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url, net_ns),
+            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url, netns),
         }
     }
 }
@@ -171,8 +171,8 @@ impl SocketListener for RuntimeFakeTcpSocketListener {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::netns::{NetNS, NetNSImpl};
     use super::*;
+    use crate::common::netns::{NetNS, NetNSImpl};
 
     #[test]
     fn external_listener_capabilities_follow_native_build() {

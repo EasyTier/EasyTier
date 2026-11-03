@@ -60,7 +60,7 @@ fn format_win_error(error: u32) -> String {
 
 impl WindowsIfConfiger {
     /// This platform has a single network namespace.
-    pub fn new(_net_ns: NetNS) -> Self {
+    pub fn new(_netns: NetNS) -> Self {
         Self::default()
     }
 

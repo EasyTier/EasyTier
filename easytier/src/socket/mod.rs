@@ -98,11 +98,8 @@ impl Bindable for UdpSocket {
 /// selection to connect while UDP binds an ephemeral source port.
 /// Protection completes before bind/listen; namespace guards never cross an
 /// await. Failures drop the unbound socket instead of allowing early I/O.
-/// All synchronous socket setup runs inside `net_ns`.
-pub(crate) async fn bind<B: Bindable>(
-    net_ns: &NetNS,
-    config: BindConfig,
-) -> Result<B, TunnelError> {
+/// All synchronous socket setup runs inside `netns`.
+pub(crate) async fn bind<B: Bindable>(netns: &NetNS, config: BindConfig) -> Result<B, TunnelError> {
     let BindConfig {
         context,
         need_protect,
@@ -132,7 +129,7 @@ pub(crate) async fn bind<B: Bindable>(
     let reuse_addr = reuse_addr.unwrap_or(
         B::TYPE != socket2::Type::DGRAM && addr.is_some() && !cfg!(target_os = "windows"),
     );
-    let (socket, dev) = net_ns.run(|| -> Result<_, TunnelError> {
+    let (socket, dev) = netns.run(|| -> Result<_, TunnelError> {
         let dev = match bind_device.as_deref() {
             None => addr.and_then(|addr| get_interface_name_by_ip(&addr.ip())),
             Some("") => None,
@@ -152,7 +149,7 @@ pub(crate) async fn bind<B: Bindable>(
     })??;
     crate::socket_protector::protect_native_socket(&socket, need_protect).await?;
     // Restore the requested namespace for synchronous configuration and bind only.
-    net_ns.run(|| {
+    netns.run(|| {
         #[cfg(target_os = "windows")]
         {
             let is_udp = B::TYPE == socket2::Type::DGRAM;

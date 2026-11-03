@@ -14,11 +14,11 @@ use std::net::IpAddr;
 
 use bytes::Bytes;
 use easytier_core::socket::BindConfig;
-use easytier_core::tunnel::TunnelError;
 use easytier_core::socket::{
     tcp::TcpConnectOptions,
     udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
 };
+use easytier_core::tunnel::TunnelError;
 use http_body_util::{BodyExt as _, Full, Limited};
 use hyper::{
     Method, Request,
@@ -113,8 +113,8 @@ async fn search_gateway_inner(options: SearchOptions) -> Result<Gateway, SearchE
         ..BindConfig::default()
     };
     // Port mapping calls this on a thread already inside the target namespace.
-    let net_ns = NetNS::current().map_err(SearchError::Io)?;
-    let socket = RuntimeUdpSocketFactory::new(net_ns)
+    let netns = NetNS::current().map_err(SearchError::Io)?;
+    let socket = RuntimeUdpSocketFactory::new(netns)
         .bind_udp(bind_options)
         .await
         .map_err(|error| SearchError::Io(std::io::Error::other(error.to_string())))?;
@@ -217,8 +217,8 @@ async fn send_http_request_inner(
     soap_action: Option<&str>,
     body: String,
 ) -> Result<Bytes, HttpTransportError> {
-    let net_ns = NetNS::current().map_err(TunnelError::from)?;
-    let stream = connect_tcp(&net_ns, TcpConnectOptions::direct_connect(addr)).await?;
+    let netns = NetNS::current().map_err(TunnelError::from)?;
+    let stream = connect_tcp(&netns, TcpConnectOptions::direct_connect(addr)).await?;
     let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
     let body = Bytes::from(body);
     let mut request = Request::builder()
