@@ -6,11 +6,19 @@ use easytier_core::listener::{
 };
 use easytier_core::socket::SocketListener;
 
-#[cfg(feature = "faketcp")]
 use crate::common::netns::NetNS;
 use crate::socket::tcp::RuntimeTcpSocket;
 
-pub(crate) struct RuntimeExternalListenerFactory;
+pub(crate) struct RuntimeExternalListenerFactory {
+    #[cfg_attr(not(feature = "faketcp"), allow(dead_code))]
+    net_ns: NetNS,
+}
+
+impl RuntimeExternalListenerFactory {
+    pub(crate) fn new(net_ns: NetNS) -> Self {
+        Self { net_ns }
+    }
+}
 
 impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
     for RuntimeExternalListenerFactory
@@ -32,7 +40,7 @@ impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
             #[cfg(feature = "faketcp")]
             "faketcp" => Box::new(RuntimeFakeTcpSocketListener::new(
                 request.url,
-                NetNS::from_socket_context(&request.socket_context),
+                self.net_ns.clone(),
             )),
             #[cfg(unix)]
             "unix" => Box::new(RuntimeUnixStreamListener::new(request.url)),

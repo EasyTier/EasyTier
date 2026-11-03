@@ -256,7 +256,9 @@ fn configure_runtime_core_host_adapters(
         adapters.wrapped_transports = runtime_wrapped_transport_engines(&host_config);
     }
     adapters.protocol = Some(runtime_client_protocol_upgrader(global_ctx.clone()));
-    adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory));
+    adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory::new(
+        global_ctx.net_ns.clone(),
+    )));
     adapters.server_protocol = Some(runtime_server_protocol_upgrader(global_ctx.clone()));
     #[cfg(feature = "upnp")]
     if host_config.upnp_enabled {
@@ -268,7 +270,9 @@ fn configure_runtime_core_host_adapters(
     }
     #[cfg(feature = "icmp-proxy")]
     {
-        adapters.icmp_proxy_host = Some(Arc::new(crate::gateway::icmp_proxy::RuntimeIcmpProxyHost));
+        adapters.icmp_proxy_host = Some(Arc::new(
+            crate::gateway::icmp_proxy::RuntimeIcmpProxyHost::new(global_ctx.net_ns.clone()),
+        ));
     }
     #[cfg(feature = "proxy-cidr-monitor")]
     {
