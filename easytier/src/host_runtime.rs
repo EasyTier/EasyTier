@@ -6,7 +6,7 @@ use std::{
 use crate::{
     common::{
         dns::RuntimeDnsResolver,
-        netns::NetNS,
+        netns::{NetNS, NetNSImpl},
         network::{collect_interfaces, collect_local_ip_addrs},
     },
     proto::peer_rpc::GetIpListResponse,
@@ -30,25 +30,38 @@ use easytier_core::{
     },
 };
 
-/// Process-wide native implementation of the host capabilities consumed by core.
+/// Native implementation of the host capabilities consumed by core, bound to
+/// one network namespace.
 ///
-/// Instance-specific policy is carried by each request's socket context so a
-/// process-wide service never captures one instance's namespace or mark.
+/// Other instance-specific policy is carried by each request's socket context
+/// so a shared runtime never captures one instance's mark.
 #[derive(Debug)]
 pub struct NativeHostRuntime {
+    net_ns: NetNS,
     udp_sockets: RuntimeUdpSocketFactory,
     dns: RuntimeDnsResolver,
 }
 
+impl NativeHostRuntime {
+    pub(crate) fn new(net_ns: NetNS) -> Self {
+        Self {
+            udp_sockets: RuntimeUdpSocketFactory::new(net_ns.clone()),
+            dns: RuntimeDnsResolver::new(net_ns.clone()),
+            net_ns,
+        }
+    }
+}
+
 static NATIVE_HOST_RUNTIME: OnceLock<Arc<NativeHostRuntime>> = OnceLock::new();
 
+/// Runtime of the process's own network namespace, for callers that do not
+/// belong to an instance.
 pub(crate) fn native_host_runtime() -> Arc<NativeHostRuntime> {
     NATIVE_HOST_RUNTIME
         .get_or_init(|| {
-            Arc::new(NativeHostRuntime {
-                udp_sockets: RuntimeUdpSocketFactory::new(),
-                dns: RuntimeDnsResolver::new(),
-            })
+            Arc::new(NativeHostRuntime::new(
+                NetNS::process().expect("open the process network namespace"),
+            ))
         })
         .clone()
 }
@@ -62,7 +75,7 @@ impl VirtualTcpSocketFactory for NativeHostRuntime {
         if options.purpose == TcpSocketPurpose::FakeTcp {
             let remote_addr = options.remote_addr;
             let socket_mark = options.bind.context.socket_mark;
-            let net_ns = NetNS::from_socket_context(&options.bind.context);
+            let net_ns = self.net_ns.clone();
             let socket =
                 crate::socket::fake_tcp::connect_socket(remote_addr, socket_mark, net_ns).await?;
             return Ok(RuntimeTcpSocket::from_fake_tcp(socket));
@@ -73,7 +86,7 @@ impl VirtualTcpSocketFactory for NativeHostRuntime {
             anyhow::bail!("FakeTCP socket support is disabled")
         }
 
-        crate::socket::tcp::connect_tcp(options)
+        crate::socket::tcp::connect_tcp(&self.net_ns, options)
             .await
             .map_err(anyhow::Error::from)
     }
@@ -116,14 +129,17 @@ impl ConnectorRuntime for NativeHostRuntime {
                 SocketAddr::V6(SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, 0, 0, 0))
             }
         };
-        let socket = crate::socket::bind::<tokio::net::UdpSocket>(BindConfig {
-            local_addr: Some(bind_addr),
-            bind_device: Some("".into()),
-            context,
-            reuse_addr: Some(false),
-            need_protect: true,
-            ..BindConfig::default()
-        })
+        let socket = crate::socket::bind::<tokio::net::UdpSocket>(
+            &self.net_ns,
+            BindConfig {
+                local_addr: Some(bind_addr),
+                bind_device: Some("".into()),
+                context,
+                reuse_addr: Some(false),
+                need_protect: true,
+                ..BindConfig::default()
+            },
+        )
         .await?;
         socket.connect(remote_addr).await?;
         Ok(socket.local_addr()?)
@@ -132,9 +148,9 @@ impl ConnectorRuntime for NativeHostRuntime {
     async fn preferred_ipv6_source(
         &self,
         ip: std::net::Ipv6Addr,
-        context: SocketContext,
+        _context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
-        collect_interfaces(NetNS::from_socket_context(&context), false)
+        collect_interfaces(self.net_ns.clone(), false)
             .await
             .into_iter()
             .find(|interface| {
@@ -149,15 +165,16 @@ impl ConnectorRuntime for NativeHostRuntime {
             })
     }
 
-    async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        collect_local_ip_addrs(NetNS::from_socket_context(context)).await
+    async fn collect_ip_addrs(&self, _context: &SocketContext) -> GetIpListResponse {
+        collect_local_ip_addrs(self.net_ns.clone()).await
     }
 }
 
 impl NativeHostRuntime {
-    pub(crate) fn is_local_ip(&self, ip: &IpAddr, context: &SocketContext) -> bool {
-        NetNS::from_socket_context(context)
+    pub(crate) fn is_local_ip(&self, ip: &IpAddr, _context: &SocketContext) -> bool {
+        self.net_ns
             .run(|| std::net::UdpSocket::bind(format!("{ip}:0")).is_ok())
+            .unwrap_or(false)
     }
 }
 
@@ -167,7 +184,7 @@ impl VirtualTcpListenerFactory for NativeHostRuntime {
 
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
         Ok(Arc::new(
-            crate::socket::tcp::bind_tcp_listener(options).await?,
+            crate::socket::tcp::bind_tcp_listener(&self.net_ns, options).await?,
         ))
     }
 }
