@@ -501,10 +501,9 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_acl(Some(acl.clone()));
         }
 
-        cfg.patch_flags(FlagsPatch {
+        cfg.patch_flags(FlagsPatch! {
             dev_name: self.dev_name.clone(),
             enable_ipv6: self.disable_ipv6.map(|disabled| !disabled),
-            socket_mark: self.socket_mark,
             enable_encryption: self.disable_encryption.map(|disabled| !disabled),
             relay_network_whitelist: self.enable_relay_network_whitelist.map(|enabled| {
                 if enabled {
@@ -523,31 +522,15 @@ impl NetworkConfigExt for NetworkConfig {
             private_mode: self.enable_private_mode,
             encryption_algorithm: self.encryption_algorithm.clone(),
             data_compress_algo: self.data_compress_algo.map(|algorithm| algorithm.max(1)),
-            latency_first: self.latency_first,
-            use_smoltcp: self.use_smoltcp,
-            enable_kcp_proxy: self.enable_kcp_proxy,
-            disable_kcp_input: self.disable_kcp_input,
-            enable_quic_proxy: self.enable_quic_proxy,
-            disable_quic_input: self.disable_quic_input,
-            disable_p2p: self.disable_p2p,
-            p2p_only: self.p2p_only,
-            lazy_p2p: self.lazy_p2p,
-            bind_device: self.bind_device,
-            no_tun: self.no_tun,
-            enable_exit_node: self.enable_exit_node,
-            relay_all_peer_rpc: self.relay_all_peer_rpc,
-            need_p2p: self.need_p2p,
-            multi_thread: self.multi_thread,
-            proxy_forward_by_system: self.proxy_forward_by_system,
-            disable_tcp_hole_punching: self.disable_tcp_hole_punching,
-            disable_udp_hole_punching: self.disable_udp_hole_punching,
-            disable_upnp: self.disable_upnp,
-            disable_relay_data: self.disable_relay_data,
-            prefer_peer_relay: self.prefer_peer_relay,
-            enable_udp_broadcast_relay: self.enable_udp_broadcast_relay,
-            disable_sym_hole_punching: self.disable_sym_hole_punching,
-            instance_recv_bps_limit: self.instance_recv_bps_limit,
-            ..Default::default()
+            default_protocol: None,
+            disable_relay_kcp: None,
+            disable_relay_quic: None,
+            quic_listen_port: None,
+            foreign_relay_bps_limit: None,
+            multi_thread_count: None,
+            enable_relay_foreign_network_kcp: None,
+            enable_relay_foreign_network_quic: None,
+            ..self
         });
         Ok(cfg)
     }

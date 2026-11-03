@@ -228,6 +228,7 @@ fn main() -> anyhow::Result<()> {
         common.message_type.push(patch);
 
         config.disable_comments([".common.FlagsPatch"]);
+        config.type_attribute(".common.FlagsPatch", "#[derive(refield::Refield)]");
     }
 
     let descriptors = prost::Message::encode_to_vec(&descriptor_set);

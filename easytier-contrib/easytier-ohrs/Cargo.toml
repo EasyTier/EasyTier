@@ -37,6 +37,7 @@ napi-ohos = { version = "1.1", default-features = false, features = [
     "web_stream",
 ] }
 once_cell.workspace = true
+refield.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }

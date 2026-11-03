@@ -2694,6 +2694,7 @@ dependencies = [
  "prost-types 0.14.4",
  "quanta",
  "rand 0.8.8",
+ "refield",
  "ring",
  "rustls",
  "rustls-pki-types",
@@ -2836,6 +2837,7 @@ dependencies = [
  "napi-derive-ohos",
  "napi-ohos",
  "once_cell",
+ "refield",
  "serde",
  "serde_json",
  "tokio",
@@ -2871,6 +2873,7 @@ dependencies = [
  "prost-types 0.14.4",
  "prost-wkt-types",
  "quote",
+ "refield",
  "reqwest",
  "serde",
  "serde_json",
@@ -7765,6 +7768,30 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "refield"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3506289cbeefe4852dc91b941ea9c19cdd13408433438f71502805c780020f5"
+dependencies = [
+ "refield-macros",
+]
+
+[[package]]
+name = "refield-macros"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f82ceac1396193e00c020f856a788983f9f811d7a59c27978f5256e35142745"
+dependencies = [
+ "darling 0.24.1",
+ "derive_more",
+ "proc-macro-crate 3.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+ "unicode-ident",
 ]
 
 [[package]]

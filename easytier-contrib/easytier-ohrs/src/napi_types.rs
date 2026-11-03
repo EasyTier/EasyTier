@@ -3,10 +3,12 @@
 use easytier_ohos_core::runtime::state::runtime_state as kernel_types;
 use easytier_ohos_features::config::services::schema_service as feature_schema;
 use easytier_ohos_features::config::types::stored_config as feature_types;
+use easytier_proto::CollectionExt;
 use napi_derive_ohos::napi;
+use refield::Refield;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct SocketProtectionRequest {
@@ -19,15 +21,14 @@ impl From<easytier_ohos_core::socket_protection::SocketProtectionRequest>
     for SocketProtectionRequest
 {
     fn from(value: easytier_ohos_core::socket_protection::SocketProtectionRequest) -> Self {
-        Self {
+        SocketProtectionRequest! {
             request_id: value.request_id.to_string(),
-            socket_fd: value.socket_fd,
-            purpose: value.purpose,
+            ..value
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct StoredConfigMeta {
@@ -41,14 +42,7 @@ pub struct StoredConfigMeta {
 
 impl From<feature_types::StoredConfigMeta> for StoredConfigMeta {
     fn from(value: feature_types::StoredConfigMeta) -> Self {
-        Self {
-            config_id: value.config_id,
-            display_name: value.display_name,
-            created_at: value.created_at,
-            updated_at: value.updated_at,
-            favorite: value.favorite,
-            temporary: value.temporary,
-        }
+        StoredConfigMeta! { ..value }
     }
 }
 
@@ -69,7 +63,7 @@ impl From<feature_types::StoredConfigRecord> for StoredConfigRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct StoredConfigList {
@@ -78,13 +72,14 @@ pub struct StoredConfigList {
 
 impl From<feature_types::StoredConfigList> for StoredConfigList {
     fn from(value: feature_types::StoredConfigList) -> Self {
-        Self {
-            configs: value.configs.into_iter().map(Into::into).collect(),
+        StoredConfigList! {
+            configs: value.configs.convert(),
+            ..value
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct ExportTomlResult {
@@ -93,13 +88,11 @@ pub struct ExportTomlResult {
 
 impl From<feature_types::ExportTomlResult> for ExportTomlResult {
     fn from(value: feature_types::ExportTomlResult) -> Self {
-        Self {
-            toml_text: value.toml_text,
-        }
+        ExportTomlResult! { ..value }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct SharedConfigLinkPayload {
@@ -110,11 +103,7 @@ pub struct SharedConfigLinkPayload {
 
 impl From<feature_types::SharedConfigLinkPayload> for SharedConfigLinkPayload {
     fn from(value: feature_types::SharedConfigLinkPayload) -> Self {
-        Self {
-            config_json: value.config_json,
-            display_name: value.display_name,
-            only_start: value.only_start,
-        }
+        SharedConfigLinkPayload! { ..value }
     }
 }
 
@@ -126,7 +115,7 @@ pub struct LocalSocketSyncMessage {
     pub payload_json: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[napi(object)]
 pub struct KeyValuePair {
     pub key: String,
@@ -135,14 +124,11 @@ pub struct KeyValuePair {
 
 impl From<feature_types::KeyValuePair> for KeyValuePair {
     fn from(value: feature_types::KeyValuePair) -> Self {
-        Self {
-            key: value.key,
-            value: value.value,
-        }
+        KeyValuePair! { ..value }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct SnapshotImportResult {
@@ -154,16 +140,11 @@ pub struct SnapshotImportResult {
 
 impl From<feature_types::SnapshotImportResult> for SnapshotImportResult {
     fn from(value: feature_types::SnapshotImportResult) -> Self {
-        Self {
-            ok: value.ok,
-            error_code: value.error_code,
-            error_message: value.error_message,
-            snapshot_invalid: value.snapshot_invalid,
-        }
+        SnapshotImportResult! { ..value }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[napi(object)]
 pub struct FieldOption {
     pub label: String,
@@ -172,14 +153,11 @@ pub struct FieldOption {
 
 impl From<feature_schema::FieldOption> for FieldOption {
     fn from(value: feature_schema::FieldOption) -> Self {
-        Self {
-            label: value.label,
-            value: value.value,
-        }
+        FieldOption! { ..value }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[napi(object)]
 pub struct ValidationRule {
     pub rule_type: String,
@@ -189,15 +167,11 @@ pub struct ValidationRule {
 
 impl From<feature_schema::ValidationRule> for ValidationRule {
     fn from(value: feature_schema::ValidationRule) -> Self {
-        Self {
-            rule_type: value.rule_type,
-            arg: value.arg,
-            message: value.message,
-        }
+        ValidationRule! { ..value }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[napi(object)]
 pub struct NetworkConfigSchema {
     pub node_kind: String,
@@ -217,25 +191,17 @@ pub struct NetworkConfigSchema {
 
 impl From<feature_schema::NetworkConfigSchema> for NetworkConfigSchema {
     fn from(value: feature_schema::NetworkConfigSchema) -> Self {
-        Self {
-            node_kind: value.node_kind,
-            name: value.name,
-            field_number: value.field_number,
-            type_name: value.type_name,
-            semantic_type: value.semantic_type,
-            value_kind: value.value_kind,
-            is_list: value.is_list,
-            required: value.required,
-            default_value_text: value.default_value_text,
-            enum_options: value.enum_options.into_iter().map(Into::into).collect(),
-            validations: value.validations.into_iter().map(Into::into).collect(),
-            children: value.children.into_iter().map(Into::into).collect(),
-            definitions: value.definitions.into_iter().map(Into::into).collect(),
+        NetworkConfigSchema! {
+            enum_options: value.enum_options.convert(),
+            validations: value.validations.convert(),
+            children: value.children.convert(),
+            definitions: value.definitions.convert(),
+            ..value
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Refield)]
 #[napi(object)]
 pub struct ConfigFieldMapping {
     pub field_name: String,
@@ -244,14 +210,11 @@ pub struct ConfigFieldMapping {
 
 impl From<feature_schema::ConfigFieldMapping> for ConfigFieldMapping {
     fn from(value: feature_schema::ConfigFieldMapping) -> Self {
-        Self {
-            field_name: value.field_name,
-            field_number: value.field_number,
-        }
+        ConfigFieldMapping! { ..value }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct PeerConnStats {
@@ -264,17 +227,11 @@ pub struct PeerConnStats {
 
 impl From<kernel_types::PeerConnStats> for PeerConnStats {
     fn from(value: kernel_types::PeerConnStats) -> Self {
-        Self {
-            rx_bytes: value.rx_bytes,
-            tx_bytes: value.tx_bytes,
-            rx_packets: value.rx_packets,
-            tx_packets: value.tx_packets,
-            latency_us: value.latency_us,
-        }
+        PeerConnStats! { ..value }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct PeerConnInfo {
@@ -297,27 +254,14 @@ pub struct PeerConnInfo {
 
 impl From<kernel_types::PeerConnInfo> for PeerConnInfo {
     fn from(value: kernel_types::PeerConnInfo) -> Self {
-        Self {
-            conn_id: value.conn_id,
-            my_peer_id: value.my_peer_id,
-            peer_id: value.peer_id,
-            features: value.features,
-            tunnel_type: value.tunnel_type,
-            local_addr: value.local_addr,
-            remote_addr: value.remote_addr,
-            resolved_remote_addr: value.resolved_remote_addr,
+        PeerConnInfo! {
             stats: value.stats.map(Into::into),
-            loss_rate: value.loss_rate,
-            is_client: value.is_client,
-            network_name: value.network_name,
-            is_closed: value.is_closed,
-            secure_auth_level: value.secure_auth_level,
-            peer_identity_type: value.peer_identity_type,
+            ..value
         }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct PeerInfo {
@@ -329,16 +273,14 @@ pub struct PeerInfo {
 
 impl From<kernel_types::PeerInfo> for PeerInfo {
     fn from(value: kernel_types::PeerInfo) -> Self {
-        Self {
-            peer_id: value.peer_id,
-            default_conn_id: value.default_conn_id,
-            directly_connected_conns: value.directly_connected_conns,
-            conns: value.conns.into_iter().map(Into::into).collect(),
+        PeerInfo! {
+            conns: value.conns.convert(),
+            ..value
         }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct RouteView {
@@ -360,26 +302,11 @@ pub struct RouteView {
 
 impl From<kernel_types::RouteView> for RouteView {
     fn from(value: kernel_types::RouteView) -> Self {
-        Self {
-            peer_id: value.peer_id,
-            hostname: value.hostname,
-            ipv4: value.ipv4,
-            ipv4_cidr: value.ipv4_cidr,
-            ipv6_cidr: value.ipv6_cidr,
-            proxy_cidrs: value.proxy_cidrs,
-            next_hop_peer_id: value.next_hop_peer_id,
-            cost: value.cost,
-            path_latency: value.path_latency,
-            udp_nat_type: value.udp_nat_type,
-            tcp_nat_type: value.tcp_nat_type,
-            inst_id: value.inst_id,
-            version: value.version,
-            is_public_server: value.is_public_server,
-        }
+        RouteView! { ..value }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct MyNodeInfo {
@@ -396,21 +323,11 @@ pub struct MyNodeInfo {
 
 impl From<kernel_types::MyNodeInfo> for MyNodeInfo {
     fn from(value: kernel_types::MyNodeInfo) -> Self {
-        Self {
-            virtual_ipv4: value.virtual_ipv4,
-            virtual_ipv4_cidr: value.virtual_ipv4_cidr,
-            hostname: value.hostname,
-            version: value.version,
-            peer_id: value.peer_id,
-            listeners: value.listeners,
-            vpn_portal_cfg: value.vpn_portal_cfg,
-            udp_nat_type: value.udp_nat_type,
-            tcp_nat_type: value.tcp_nat_type,
-        }
+        MyNodeInfo! { ..value }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct RuntimeInstanceState {
@@ -431,25 +348,16 @@ pub struct RuntimeInstanceState {
 
 impl From<kernel_types::RuntimeInstanceState> for RuntimeInstanceState {
     fn from(value: kernel_types::RuntimeInstanceState) -> Self {
-        Self {
-            config_id: value.config_id,
-            instance_id: value.instance_id,
-            display_name: value.display_name,
-            running: value.running,
-            tun_required: value.tun_required,
-            tun_attached: value.tun_attached,
-            magic_dns_enabled: value.magic_dns_enabled,
-            need_exit_node: value.need_exit_node,
-            error_message: value.error_message,
+        RuntimeInstanceState! {
             my_node_info: value.my_node_info.map(Into::into),
-            events: value.events,
-            routes: value.routes.into_iter().map(Into::into).collect(),
-            peers: value.peers.into_iter().map(Into::into).collect(),
+            routes: value.routes.convert(),
+            peers: value.peers.convert(),
+            ..value
         }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct TunAggregateState {
@@ -462,17 +370,11 @@ pub struct TunAggregateState {
 
 impl From<kernel_types::TunAggregateState> for TunAggregateState {
     fn from(value: kernel_types::TunAggregateState) -> Self {
-        Self {
-            active: value.active,
-            attached_instance_ids: value.attached_instance_ids,
-            aggregated_routes: value.aggregated_routes,
-            dns_servers: value.dns_servers,
-            need_rebuild: value.need_rebuild,
-        }
+        TunAggregateState! { ..value }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Refield)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct RuntimeAggregateState {
@@ -483,10 +385,10 @@ pub struct RuntimeAggregateState {
 
 impl From<kernel_types::RuntimeAggregateState> for RuntimeAggregateState {
     fn from(value: kernel_types::RuntimeAggregateState) -> Self {
-        Self {
-            instances: value.instances.into_iter().map(Into::into).collect(),
+        RuntimeAggregateState! {
+            instances: value.instances.convert(),
             tun: value.tun.into(),
-            running_instance_count: value.running_instance_count,
+            ..value
         }
     }
 }

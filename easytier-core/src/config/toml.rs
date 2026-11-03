@@ -12,6 +12,7 @@ use anyhow::Context;
 #[cfg(feature = "rich-config-errors")]
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
 use optionize::Optionizable;
+use refield::{Refield, refield};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::{acl::Acl, common::SecureModeConfig};
@@ -173,7 +174,7 @@ pub trait LoggingConfigLoader {
 
 use super::NetworkSecretDigest;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Refield, Debug, Clone, Deserialize, Serialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
@@ -183,31 +184,23 @@ pub struct NetworkIdentity {
 
 impl From<super::NetworkIdentity> for NetworkIdentity {
     fn from(value: super::NetworkIdentity) -> Self {
-        Self {
-            network_name: value.network_name,
-            network_secret: value.network_secret,
-            network_secret_digest: value.network_secret_digest,
-        }
+        NetworkIdentity! { ..value }
     }
 }
 
 impl From<&NetworkIdentity> for super::NetworkIdentity {
     fn from(value: &NetworkIdentity) -> Self {
-        Self {
+        refield!(super::NetworkIdentity {
             network_name: value.network_name.clone(),
             network_secret: value.network_secret.clone(),
-            network_secret_digest: value.network_secret_digest,
-        }
+            ..*value
+        })
     }
 }
 
 impl From<NetworkIdentity> for super::NetworkIdentity {
     fn from(value: NetworkIdentity) -> Self {
-        Self {
-            network_name: value.network_name,
-            network_secret: value.network_secret,
-            network_secret_digest: value.network_secret_digest,
-        }
+        refield!(super::NetworkIdentity { ..value })
     }
 }
 

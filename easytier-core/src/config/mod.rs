@@ -52,6 +52,7 @@ use anyhow::Context as _;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use easytier_proto::{CollectionExt, common as common_pb, core_config as pb};
 use optionize::Optionizable;
+use refield::Refield;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -137,7 +138,7 @@ pub fn normalize_secure_mode_config(
     Ok(config)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Refield, Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
@@ -183,7 +184,7 @@ impl NetworkIdentity {
     }
 }
 
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Refield, Eq, PartialEq, Hash)]
 struct NetworkIdentityWithOnlyDigest {
     network_name: String,
     network_secret_digest: Option<NetworkSecretDigest>,
@@ -211,9 +212,9 @@ fn network_secret_digest(network_name: &str, network_secret: &str) -> NetworkSec
 
 impl From<NetworkIdentity> for NetworkIdentityWithOnlyDigest {
     fn from(identity: NetworkIdentity) -> Self {
-        Self {
+        NetworkIdentityWithOnlyDigest! {
             network_secret_digest: identity.secret_digest(),
-            network_name: identity.network_name,
+            ..identity
         }
     }
 }
@@ -249,7 +250,7 @@ pub struct CoreConfig {
     pub traffic: TrafficConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Refield, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeConfig {
     pub peer_id: Option<PeerId>,
     pub instance_id: Option<[u8; 16]>,
@@ -278,7 +279,7 @@ pub struct ProxyNetworkConfig {
     pub mapped: Option<IpPrefix>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Refield, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForeignNetworkConfig {
     pub name: String,
     pub cidrs: Vec<IpPrefix>,
@@ -317,7 +318,7 @@ pub struct P2pPolicyFlags {
     pub need_p2p: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Refield, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TrafficConfig {
     pub mtu: Option<u16>,
     pub instance_recv_bps_limit: Option<u64>,
@@ -393,11 +394,9 @@ impl TryFrom<pb::NodeConfig> for NodeConfig {
     type Error = ConfigError;
 
     fn try_from(value: pb::NodeConfig) -> Result<Self, Self::Error> {
-        Ok(Self {
-            peer_id: value.peer_id,
+        Ok(NodeConfig! {
             instance_id: value.instance_id.map(uuid_to_bytes),
-            hostname: value.hostname,
-            network_name: value.network_name,
+            ..value
         })
     }
 }
@@ -506,9 +505,9 @@ impl TryFrom<pb::ForeignNetworkConfig> for ForeignNetworkConfig {
     type Error = ConfigError;
 
     fn try_from(value: pb::ForeignNetworkConfig) -> Result<Self, Self::Error> {
-        Ok(Self {
-            name: value.name,
+        Ok(ForeignNetworkConfig! {
             cidrs: value.cidrs.try_convert()?,
+            ..value
         })
     }
 }
@@ -548,13 +547,12 @@ impl TryFrom<pb::TrafficConfig> for TrafficConfig {
     type Error = ConfigError;
 
     fn try_from(value: pb::TrafficConfig) -> Result<Self, Self::Error> {
-        Ok(Self {
+        Ok(TrafficConfig! {
             mtu: value
                 .mtu
                 .map(|mtu| u16::try_from(mtu).map_err(|_| ConfigError::InvalidMtu(mtu)))
                 .transpose()?,
-            instance_recv_bps_limit: value.instance_recv_bps_limit,
-            foreign_relay_bps_limit: value.foreign_relay_bps_limit,
+            ..value
         })
     }
 }
