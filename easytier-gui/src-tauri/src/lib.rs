@@ -3,6 +3,9 @@
 
 mod elevate;
 
+#[cfg(target_os = "linux")]
+mod linux_tray;
+
 use anyhow::Context;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
@@ -1413,8 +1416,46 @@ mod service {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum UserTrayUpdate {
+    Menu { show: String, quit: String },
+    RunState { running: bool },
+    Tooltip { tooltip: String },
+}
+
+#[tauri::command]
+fn update_user_tray(update: UserTrayUpdate) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_tray::update(update).map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = update;
+        Err("The tray is managed by this GUI process".to_string())
+    }
+}
+
+#[tauri::command]
+fn uses_user_tray() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux_tray::is_controlled()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run_gui() -> std::process::ExitCode {
+    #[cfg(target_os = "linux")]
+    if !elevate::Command::is_elevated() {
+        return linux_tray::run();
+    }
+
     #[cfg(not(target_os = "android"))]
     if !check_sudo() {
         use std::process;
@@ -1428,14 +1469,18 @@ pub fn run_gui() -> std::process::ExitCode {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            app.webview_windows()
-                .values()
-                .next()
-                .expect("Sorry, no window found")
-                .set_focus()
-                .expect("Can't Bring Window to Focus");
-        }));
+        // The user-session tray already enforces a single GUI instance.
+        // Its elevated child must not compete for the same D-Bus name.
+        if !uses_user_tray() {
+            builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+                app.webview_windows()
+                    .values()
+                    .next()
+                    .expect("Sorry, no window found")
+                    .set_focus()
+                    .expect("Can't Bring Window to Focus");
+            }));
+        }
     }
 
     builder = builder
@@ -1447,6 +1492,11 @@ pub fn run_gui() -> std::process::ExitCode {
 
     let app = builder
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            if linux_tray::is_controlled() {
+                linux_tray::listen(app.handle().clone())?;
+            }
+
             // for logging config
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
@@ -1466,24 +1516,26 @@ pub fn run_gui() -> std::process::ExitCode {
 
             // for tray icon, menu need to be built in js
             #[cfg(not(target_os = "android"))]
-            let _tray_menu = TrayIconBuilder::with_id("main")
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        toggle_window_visibility(app);
-                    }
-                })
-                .icon(tauri::image::Image::from_bytes(include_bytes!(
-                    "../icons/icon.png"
-                ))?)
-                .icon_as_template(true)
-                .build(app)?;
+            if !uses_user_tray() {
+                let _tray_menu = TrayIconBuilder::with_id("main")
+                    .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            toggle_window_visibility(app);
+                        }
+                    })
+                    .icon(tauri::image::Image::from_bytes(include_bytes!(
+                        "../icons/icon.png"
+                    ))?)
+                    .icon_as_template(true)
+                    .build(app)?;
+            }
 
             Ok(())
         })
@@ -1515,6 +1567,8 @@ pub fn run_gui() -> std::process::ExitCode {
             init_web_client,
             is_web_client_connected,
             get_log_dir_path,
+            uses_user_tray,
+            update_user_tray,
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]

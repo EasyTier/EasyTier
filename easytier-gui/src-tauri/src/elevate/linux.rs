@@ -22,6 +22,11 @@ impl Command {
     /// Prompting the user with a graphical OS dialog for the root password,
     /// excuting the command with escalated privileges, and return the output
     pub fn output(&self) -> Result<Output> {
+        Ok(self.elevated_command()?.output()?)
+    }
+
+    /// Build the elevated command so callers can configure its standard streams.
+    pub fn elevated_command(&self) -> Result<StdCommand> {
         let mut command = StdCommand::new("pkexec");
         let display = env::var("DISPLAY");
         let xauthority = env::var("XAUTHORITY");
@@ -58,7 +63,6 @@ impl Command {
             command.args(args);
         }
 
-        let output = command.output()?;
-        Ok(output)
+        Ok(command)
     }
 }

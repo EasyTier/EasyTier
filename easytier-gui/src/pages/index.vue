@@ -350,10 +350,7 @@ async function reconnectClient() {
 
 onMounted(async () => {
   window.setTimeout(async () => {
-    await setTrayMenu([
-      await MenuItemShow(t('tray.show')),
-      await MenuItemExit(t('tray.exit')),
-    ])
+    await setTrayMenu({ show: t('tray.show'), quit: t('tray.exit') })
   }, 1000)
 })
 
@@ -408,10 +405,7 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     icon: 'pi pi-language',
     command: async () => {
       await I18nUtils.loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
-      await setTrayMenu([
-        await MenuItemShow(t('tray.show')),
-        await MenuItemExit(t('tray.exit')),
-      ])
+      await setTrayMenu({ show: t('tray.show'), quit: t('tray.exit') })
     },
   },
   {
