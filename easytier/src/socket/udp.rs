@@ -4,8 +4,6 @@ use std::{
 };
 
 #[cfg(any(feature = "wireguard", test))]
-use crate::common::netns::NetNS;
-#[cfg(any(feature = "wireguard", test))]
 use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
 use async_trait::async_trait;
 use easytier_core::socket::BindConfig;
@@ -22,6 +20,7 @@ use easytier_core::socket::{
 use tokio::net::UdpSocket;
 
 use super::udp_src;
+use crate::common::netns::NetNS;
 
 #[cfg(any(feature = "wireguard", test))]
 pub(crate) type RuntimeUdpSessionSocketListener = UdpSessionSocketListener<NativeHostRuntime>;
@@ -128,12 +127,14 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RuntimeUdpSocketFactory;
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeUdpSocketFactory {
+    net_ns: NetNS,
+}
 
 impl RuntimeUdpSocketFactory {
-    pub(crate) fn new() -> Self {
-        Self
+    pub(crate) fn new(net_ns: NetNS) -> Self {
+        Self { net_ns }
     }
 }
 
@@ -143,7 +144,7 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
 
     async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         let context = options.context.clone();
-        let socket = crate::socket::bind::<UdpSocket>(options).await?;
+        let socket = crate::socket::bind::<UdpSocket>(&self.net_ns, options).await?;
         Ok(Arc::new(RuntimeUdpSocket::new_with_context(
             Arc::new(socket),
             context,

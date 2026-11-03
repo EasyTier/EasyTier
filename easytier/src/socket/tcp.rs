@@ -21,6 +21,7 @@ use tokio::{
     net::{TcpListener, TcpSocket, TcpStream},
 };
 
+use crate::common::netns::NetNS;
 use crate::socket_protector::protect_native_socket;
 
 enum RuntimeTcpSocketInner {
@@ -202,6 +203,7 @@ impl VirtualTcpListener for RuntimeTcpListener {
 }
 
 pub(crate) async fn bind_tcp_listener(
+    net_ns: &NetNS,
     options: TcpListenOptions,
 ) -> Result<RuntimeTcpListener, TunnelError> {
     let purpose = options.purpose;
@@ -215,7 +217,7 @@ pub(crate) async fn bind_tcp_listener(
         bind_options.bind_device = Some(String::new());
     }
     let need_protect = bind_options.need_protect;
-    let listener = crate::socket::bind::<TcpListener>(bind_options).await?;
+    let listener = crate::socket::bind::<TcpListener>(net_ns, bind_options).await?;
     Ok(RuntimeTcpListener {
         listener,
         purpose,
@@ -224,6 +226,7 @@ pub(crate) async fn bind_tcp_listener(
 }
 
 pub(crate) async fn connect_tcp(
+    net_ns: &NetNS,
     options: TcpConnectOptions,
 ) -> Result<RuntimeTcpSocket, TunnelError> {
     let remote_addr = options.remote_addr;
@@ -235,7 +238,7 @@ pub(crate) async fn connect_tcp(
         easytier_core::socket::IpVersion::V4
     };
 
-    let socket = crate::socket::bind::<TcpSocket>(bind_options).await?;
+    let socket = crate::socket::bind::<TcpSocket>(net_ns, bind_options).await?;
     let stream = socket.connect(remote_addr).await?;
     prepare_connected_tcp_socket(&stream, purpose)?;
     Ok(RuntimeTcpSocket::new(stream))
