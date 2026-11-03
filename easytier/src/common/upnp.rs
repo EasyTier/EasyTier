@@ -115,10 +115,8 @@ impl ActiveUdpPortMapping {
     }
 
     async fn discover_igd_gateway(
-        net_ns: &NetNS,
         local_listener: &url::Url,
     ) -> anyhow::Result<(Gateway, SocketAddr)> {
-        let _g = net_ns.guard();
         let gateway = search_gateway(SearchOptions {
             timeout: Some(UPNP_SEARCH_TIMEOUT),
             single_search_timeout: Some(UPNP_SEARCH_RESPONSE_TIMEOUT),
@@ -284,7 +282,7 @@ async fn discover_igd_gateway_in_netns(
     local_listener: url::Url,
 ) -> anyhow::Result<(Gateway, SocketAddr)> {
     if !should_run_port_mapping_in_dedicated_thread(&net_ns) {
-        return ActiveUdpPortMapping::discover_igd_gateway(&net_ns, &local_listener).await;
+        return ActiveUdpPortMapping::discover_igd_gateway(&local_listener).await;
     }
 
     tokio::task::spawn_blocking(move || {
@@ -293,10 +291,7 @@ async fn discover_igd_gateway_in_netns(
                 .enable_all()
                 .build()
                 .context("build runtime for igd gateway discovery")?
-                .block_on(ActiveUdpPortMapping::discover_igd_gateway(
-                    &net_ns,
-                    &local_listener,
-                ))
+                .block_on(ActiveUdpPortMapping::discover_igd_gateway(&local_listener))
         })?
     })
     .await
