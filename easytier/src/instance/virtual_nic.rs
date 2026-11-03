@@ -11,7 +11,7 @@ use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     ifcfg::{IfConfiger, IfConfiguerTrait},
-    netns::NetNS,
+    netns::{NetNS, NetNSImpl},
 };
 
 use easytier_core::{
@@ -303,10 +303,11 @@ impl VirtualNic {
     }
 
     pub fn new(config: VirtualNicConfig) -> Self {
+        let ifcfg = Box::new(IfConfiger::new(config.net_ns.clone()));
         Self {
             config,
             ifname: None,
-            ifcfg: Box::new(IfConfiger::default()),
+            ifcfg,
             #[cfg(target_os = "windows")]
             name_reservation: None,
         }
@@ -592,8 +593,7 @@ impl VirtualNic {
 
         config.up();
 
-        let _g = self.config.net_ns.guard();
-        Ok(tun::create(&config)?)
+        Ok(self.config.net_ns.run(|| tun::create(&config))??)
     }
 
     #[cfg(any(mobile, all(test, unix)))]
@@ -692,7 +692,6 @@ impl VirtualNic {
 
         {
             // set mtu by ourselves, rust-tun does not handle it correctly on windows
-            let _g = self.config.net_ns.guard();
             self.ifcfg.set_mtu(ifname.as_str(), self.config.mtu).await?;
         }
 
@@ -752,7 +751,6 @@ impl VirtualNic {
     }
 
     pub async fn link_up(&self) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg.set_link_status(self.ifname(), true).await?;
         Ok(())
     }
@@ -778,7 +776,6 @@ impl VirtualNic {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv4_route_with_source_hint(self.ifname(), address, cidr, cost, source_hint)
             .await?;
@@ -786,7 +783,6 @@ impl VirtualNic {
     }
 
     pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .remove_ipv4_route(self.ifname(), address, cidr)
             .await?;
@@ -800,7 +796,6 @@ impl VirtualNic {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .remove_ipv4_route_with_cost_and_source_hint(
                 self.ifname(),
@@ -823,7 +818,6 @@ impl VirtualNic {
         cidr: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv6_route(self.ifname(), address, cidr, cost)
             .await?;
@@ -831,7 +825,6 @@ impl VirtualNic {
     }
 
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .remove_ipv6_route(self.ifname(), address, cidr)
             .await?;
@@ -839,19 +832,16 @@ impl VirtualNic {
     }
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg.remove_ip(self.ifname(), ip).await?;
         Ok(())
     }
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg.remove_ipv6(self.ifname(), ip).await?;
         Ok(())
     }
 
     pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv4_ip(self.ifname(), ip, cidr as u8)
             .await?;
@@ -859,7 +849,6 @@ impl VirtualNic {
     }
 
     pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv6_ip(self.ifname(), ip, cidr as u8)
             .await?;
@@ -867,7 +856,6 @@ impl VirtualNic {
     }
 
     pub async fn set_mtu(&self, mtu: u32) -> Result<(), Error> {
-        let _g = self.config.net_ns.guard();
         self.ifcfg.set_mtu(self.ifname(), mtu).await?;
         Ok(())
     }
@@ -890,7 +878,7 @@ impl VirtualNic {
     }
 
     pub fn get_ifcfg(&self) -> IfConfiger {
-        IfConfiger::default()
+        IfConfiger::new(self.config.net_ns.clone())
     }
 }
 
