@@ -5,13 +5,9 @@ use crate::socket::IpVersion;
 
 const DNS_WIRE_VERSION: u8 = 1;
 
-pub(crate) fn encode_query(query: &DnsQuery) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_query(query: &DnsQuery, netns: Option<&str>) -> io::Result<Vec<u8>> {
     let host = query.host.as_bytes();
-    let netns = query
-        .context
-        .netns
-        .as_ref()
-        .map(|netns| netns.token().as_bytes());
+    let netns = netns.map(str::as_bytes);
     let host_len = encoded_len("DNS host", host.len())?;
     let netns_len = encoded_len("DNS netns token", netns.map_or(0, <[u8]>::len))?;
     let mut encoded = Vec::with_capacity(16 + host.len() + netns.map_or(0, <[u8]>::len));

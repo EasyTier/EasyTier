@@ -18,15 +18,17 @@ const UDP_OPTIONS_VERSION: u8 = 4;
 pub(crate) const TCP_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN * 2;
 pub(crate) const BOUND_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN;
 
-pub(crate) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_tcp_connect_options(
+    options: &TcpConnectOptions,
+    netns: Option<&str>,
+) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(
-        76 + context_variable_len(&options.bind.context)
-            + bind_device_len(&options.bind.bind_device),
+        76 + context_variable_len(netns) + bind_device_len(&options.bind.bind_device),
     );
     encoded.push(OPTIONS_VERSION);
     encoded.extend_from_slice(&encode_socket_address(options.remote_addr));
     encode_optional_address(&mut encoded, options.bind.local_addr);
-    encode_context(&mut encoded, &options.bind.context)?;
+    encode_context(&mut encoded, &options.bind.context, netns)?;
     encoded.push(match options.bind.reuse_addr {
         None => 0,
         Some(false) => 1,
@@ -50,13 +52,16 @@ pub(crate) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Res
     Ok(encoded)
 }
 
-pub(crate) fn encode_udp_bind_options(options: &BindConfig) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_udp_bind_options(
+    options: &BindConfig,
+    netns: Option<&str>,
+) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(
-        48 + context_variable_len(&options.context) + bind_device_len(&options.bind_device),
+        48 + context_variable_len(netns) + bind_device_len(&options.bind_device),
     );
     encoded.push(UDP_OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.local_addr);
-    encode_context(&mut encoded, &options.context)?;
+    encode_context(&mut encoded, &options.context, netns)?;
     encoded.push(match options.reuse_addr {
         None => 0,
         Some(false) => 1,
@@ -69,14 +74,16 @@ pub(crate) fn encode_udp_bind_options(options: &BindConfig) -> io::Result<Vec<u8
     Ok(encoded)
 }
 
-pub(crate) fn encode_tcp_listen_options(options: &TcpListenOptions) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_tcp_listen_options(
+    options: &TcpListenOptions,
+    netns: Option<&str>,
+) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(
-        49 + context_variable_len(&options.bind.context)
-            + bind_device_len(&options.bind.bind_device),
+        49 + context_variable_len(netns) + bind_device_len(&options.bind.bind_device),
     );
     encoded.push(OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.bind.local_addr);
-    encode_context(&mut encoded, &options.bind.context)?;
+    encode_context(&mut encoded, &options.bind.context, netns)?;
     encoded.push(match options.bind.reuse_addr {
         None => 0,
         Some(false) => 1,
@@ -153,14 +160,18 @@ fn encode_mark(encoded: &mut Vec<u8>, mark: Option<u32>) {
     encoded.extend_from_slice(&mark.unwrap_or_default().to_be_bytes());
 }
 
-fn encode_context(encoded: &mut Vec<u8>, context: &SocketContext) -> io::Result<()> {
+fn encode_context(
+    encoded: &mut Vec<u8>,
+    context: &SocketContext,
+    netns: Option<&str>,
+) -> io::Result<()> {
     encoded.push(match context.ip_version {
         IpVersion::V4 => 0,
         IpVersion::V6 => 1,
         IpVersion::Both => 2,
     });
     encode_mark(encoded, context.socket_mark);
-    let netns = context.netns.as_ref().map(|netns| netns.token().as_bytes());
+    let netns = netns.map(str::as_bytes);
     encoded.push(u8::from(netns.is_some()));
     let length = u32::try_from(netns.map_or(0, <[u8]>::len))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "netns token is too long"))?;
@@ -171,9 +182,12 @@ fn encode_context(encoded: &mut Vec<u8>, context: &SocketContext) -> io::Result<
     Ok(())
 }
 
-pub(crate) fn encode_socket_context(context: &SocketContext) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(11 + context_variable_len(context));
-    encode_context(&mut encoded, context)?;
+pub(crate) fn encode_socket_context(
+    context: &SocketContext,
+    netns: Option<&str>,
+) -> io::Result<Vec<u8>> {
+    let mut encoded = Vec::with_capacity(11 + context_variable_len(netns));
+    encode_context(&mut encoded, context, netns)?;
     Ok(encoded)
 }
 
@@ -191,11 +205,8 @@ fn bind_device_len(device: &Option<String>) -> usize {
     device.as_ref().map_or(0, String::len)
 }
 
-fn context_variable_len(context: &SocketContext) -> usize {
-    context
-        .netns
-        .as_ref()
-        .map_or(0, |netns| netns.token().len())
+fn context_variable_len(netns: Option<&str>) -> usize {
+    netns.map_or(0, str::len)
 }
 
 #[cfg(test)]
