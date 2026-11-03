@@ -22,7 +22,11 @@ use crate::common::global_ctx::GlobalCtxEvent;
 use crate::instance::public_ipv6_provider::runtime_public_ipv6_provider_platform;
 use crate::{
     common::global_ctx::ArcGlobalCtx,
-    common::{config::TomlConfig, global_ctx::GlobalCtx},
+    common::{
+        config::{ConfigLoader as _, TomlConfig},
+        global_ctx::GlobalCtx,
+        netns::{NetNS, NetNSImpl},
+    },
     host_runtime::native_host_runtime,
     instance::config::{
         compact_runtime_core_host_config, runtime_core_host_config, runtime_peer_credential_storage,
@@ -59,11 +63,23 @@ pub(super) fn compose_native_core_instance(
     } else {
         runtime_core_host_config()
     };
+    let configured_netns = toml_config.get_netns();
+    let net_ns = NetNS::open(cfg_select! {
+        target_os = "linux" => configured_netns.as_deref(),
+        _ => {
+            if host_config.ignore_unsupported_config {
+                None
+            } else {
+                configured_netns.as_deref()
+            }
+        },
+    })?;
     let normalized = CoreInstanceConfig::from_toml_with_host(&toml_config, &host_config)?;
     let global_ctx = Arc::new(GlobalCtx::new_with_runtime_config(
         toml_config.clone(),
         &normalized,
         &host_config,
+        net_ns,
     ));
     let runtime_host = NativeInstanceRuntimeHost::new_with_executor(
         global_ctx.clone(),
