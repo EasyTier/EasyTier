@@ -1,14 +1,8 @@
 use std::{net::IpAddr, sync::Arc};
 
-use crate::{
-    common::global_ctx::ArcGlobalCtx,
-    host_runtime::NativeHostRuntime,
-};
+use crate::{common::global_ctx::ArcGlobalCtx, host_runtime::NativeHostRuntime};
+use easytier_core::connectivity::composite::{ConnectorEnvironment, ConnectorHostAdapter};
 use easytier_core::socket::SocketContext;
-use easytier_core::{
-    connectivity::composite::{ConnectorEnvironment, ConnectorHostAdapter},
-    socket::NetNamespace,
-};
 
 pub type NativeInstanceHost = ConnectorHostAdapter<NativeHostRuntime, NativeInstanceEnvironment>;
 
@@ -26,7 +20,6 @@ impl NativeInstanceEnvironment {
     fn new(global_ctx: ArcGlobalCtx, runtime: Arc<NativeHostRuntime>) -> Self {
         let socket_context = SocketContext {
             socket_mark: global_ctx.get_flags().socket_mark,
-            netns: global_ctx.net_ns.name().map(NetNamespace::new),
             ..SocketContext::default()
         };
         Self {

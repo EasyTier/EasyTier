@@ -29,7 +29,7 @@ use easytier_core::{
         PortalClientConfig, PortalClientConfigPlan, PortalHost, PortalListener, PortalSession,
     },
     socket::{
-        ListenerConnectionCounter, NetNamespace, SocketListener,
+        ListenerConnectionCounter, SocketListener,
         udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
     },
 };
@@ -242,7 +242,6 @@ impl WireGuardPortalHost {
     ) -> anyhow::Result<Arc<PortalSocket>> {
         let context = SocketContext {
             socket_mark: self.global_ctx.get_flags().socket_mark,
-            netns: self.global_ctx.net_ns.name().map(NetNamespace::new),
             ..SocketContext::default()
         };
         let mut options = BindConfig {
