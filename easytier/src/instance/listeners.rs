@@ -114,7 +114,6 @@ impl Drop for RuntimeUnixStreamListener {
 
 #[cfg(feature = "faketcp")]
 struct RuntimeFakeTcpSocketListener {
-    net_ns: NetNS,
     inner: crate::socket::fake_tcp::FakeTcpSocketListener,
 }
 
@@ -122,8 +121,7 @@ struct RuntimeFakeTcpSocketListener {
 impl RuntimeFakeTcpSocketListener {
     fn new(url: url::Url, net_ns: NetNS) -> Self {
         Self {
-            net_ns,
-            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url),
+            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url, net_ns),
         }
     }
 }
@@ -144,7 +142,6 @@ impl SocketListener for RuntimeFakeTcpSocketListener {
     type Accepted = AcceptedTransport<RuntimeTcpSocket>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
-        let _guard = self.net_ns.guard();
         SocketListener::listen(&mut self.inner).await?;
         Ok(())
     }

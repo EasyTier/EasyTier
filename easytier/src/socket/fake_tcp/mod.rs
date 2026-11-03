@@ -21,7 +21,10 @@ use easytier_core::{
     tunnel::{IpVersion, TunnelError},
 };
 
-use crate::{common::netns::NetNS, tunnel::FromUrl};
+use crate::{
+    common::netns::{NetNS, NetNSImpl},
+    tunnel::FromUrl,
+};
 
 use self::netfilter::create_tun;
 use self::packet::MacAddr;
@@ -95,11 +98,12 @@ async fn create_tun_off_runtime(
         net_ns.run(|| create_tun(&interface_name, src_addr, dst_addr))
     })
     .await
-    .map_err(|e| TunnelError::InternalError(format!("faketcp create_tun task failed: {e}")))?
+    .map_err(|e| TunnelError::InternalError(format!("faketcp create_tun task failed: {e}")))??
     .map_err(Into::into)
 }
 
 pub(crate) struct FakeTcpSocketListener {
+    net_ns: NetNS,
     addr: url::Url,
     os_listener: Option<tokio::net::TcpListener>,
     // interface_name -> fake tcp stack
@@ -119,8 +123,9 @@ impl std::fmt::Debug for FakeTcpSocketListener {
 }
 
 impl FakeTcpSocketListener {
-    pub(crate) fn new(addr: url::Url) -> Self {
+    pub(crate) fn new(addr: url::Url, net_ns: NetNS) -> Self {
         FakeTcpSocketListener {
+            net_ns,
             addr,
             os_listener: None,
             stack_map: DashMap::new(),
@@ -193,7 +198,7 @@ impl FakeTcpSocketListener {
             interface_name.to_string(),
             None,
             local_socket_addr,
-            NetNS::new(None),
+            NetNS::current()?,
         )
         .await?;
         tracing::info!(
@@ -384,7 +389,18 @@ impl FakeTcpSocketListener {
     async fn listen_socket(&mut self) -> Result<(), TunnelError> {
         let port = self.addr.port().unwrap_or(0);
         let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
+        // Same options as `TcpListener::bind`, applied inside the listener's namespace.
+        let os_listener = self.net_ns.run(|| {
+            let socket = if bind_addr.is_ipv4() {
+                tokio::net::TcpSocket::new_v4()?
+            } else {
+                tokio::net::TcpSocket::new_v6()?
+            };
+            #[cfg(not(windows))]
+            socket.set_reuseaddr(true)?;
+            socket.bind(bind_addr)?;
+            socket.listen(1024)
+        })??;
         tracing::info!(port, "FakeTcpSocketListener listening");
         self.os_listener = Some(os_listener);
         Ok(())
@@ -456,7 +472,7 @@ async fn connect_socket_with_cache(
                     "Failed to get interface name".into(),
                 ))?;
         Ok::<_, TunnelError>((local_addr, interface_name, mac, os_socket))
-    })?;
+    })??;
 
     let tun = create_tun_off_runtime(interface_name, Some(remote_addr), local_addr, net_ns).await?;
     let stack = stack::Stack::new(tun, mac);
