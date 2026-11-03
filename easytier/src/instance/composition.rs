@@ -27,7 +27,7 @@ use crate::{
         global_ctx::GlobalCtx,
         netns::{NetNS, NetNSImpl},
     },
-    host_runtime::native_host_runtime,
+    host_runtime::NativeHostRuntime,
     instance::config::{
         compact_runtime_core_host_config, runtime_core_host_config, runtime_peer_credential_storage,
     },
@@ -205,8 +205,8 @@ pub(crate) fn runtime_core_host_adapters(
     process_runtime: Arc<CoreProcessRuntime>,
     packet_sink: Arc<dyn PacketSink>,
 ) -> CoreHostAdapters<NativeInstanceHost> {
-    let host = native_instance_host(global_ctx.clone());
-    let runtime_dns = native_host_runtime();
+    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.net_ns.clone()));
+    let host = native_instance_host(global_ctx.clone(), runtime_dns.clone());
     let adapters = CoreHostAdapters::new(host, runtime_dns, packet_sink, process_runtime);
     configure_runtime_core_host_adapters(global_ctx, adapters, runtime_core_host_config())
 }
@@ -217,8 +217,8 @@ pub(crate) fn runtime_core_host_adapters_with_packet_egress(
     process_runtime: Arc<CoreProcessRuntime>,
     packet_egress: Arc<dyn PacketEgressHost>,
 ) -> CoreHostAdapters<NativeInstanceHost> {
-    let host = native_instance_host(global_ctx.clone());
-    let runtime_dns = native_host_runtime();
+    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.net_ns.clone()));
+    let host = native_instance_host(global_ctx.clone(), runtime_dns.clone());
     let adapters =
         CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
     configure_runtime_core_host_adapters(global_ctx, adapters, runtime_core_host_config())
@@ -230,8 +230,8 @@ fn runtime_core_host_adapters_with_packet_egress_and_config(
     packet_egress: Arc<dyn PacketEgressHost>,
     host_config: easytier_core::instance::CoreInstanceHostConfig,
 ) -> CoreHostAdapters<NativeInstanceHost> {
-    let host = native_instance_host(global_ctx.clone());
-    let runtime_dns = native_host_runtime();
+    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.net_ns.clone()));
+    let host = native_instance_host(global_ctx.clone(), runtime_dns.clone());
     let adapters =
         CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
     configure_runtime_core_host_adapters(global_ctx, adapters, host_config)
@@ -304,8 +304,8 @@ pub(crate) fn runtime_one_shot_manual_connector(
     process_runtime: Arc<CoreProcessRuntime>,
 ) -> anyhow::Result<ManualTunnelConnector<NativeInstanceHost>> {
     let normalized = CoreInstanceConfig::from_toml_with_host(config, &runtime_core_host_config())?;
-    let host = native_instance_host(global_ctx.clone());
-    let runtime_dns = native_host_runtime();
+    let runtime_dns = Arc::new(NativeHostRuntime::new(global_ctx.net_ns.clone()));
+    let host = native_instance_host(global_ctx.clone(), runtime_dns.clone());
     let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
     Ok(process_runtime.manual_connector(

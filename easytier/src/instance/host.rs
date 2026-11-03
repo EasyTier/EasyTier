@@ -2,7 +2,7 @@ use std::{net::IpAddr, sync::Arc};
 
 use crate::{
     common::global_ctx::ArcGlobalCtx,
-    host_runtime::{NativeHostRuntime, native_host_runtime},
+    host_runtime::NativeHostRuntime,
 };
 use easytier_core::socket::SocketContext;
 use easytier_core::{
@@ -15,7 +15,7 @@ pub type NativeInstanceHost = ConnectorHostAdapter<NativeHostRuntime, NativeInst
 /// Instance facts queried by portable connector policy.
 ///
 /// This Adapter never creates or operates sockets. Mechanical network I/O is
-/// owned by the process-wide [`NativeHostRuntime`] composed beside it.
+/// owned by the instance's [`NativeHostRuntime`] composed beside it.
 pub struct NativeInstanceEnvironment {
     global_ctx: ArcGlobalCtx,
     runtime: Arc<NativeHostRuntime>,
@@ -37,8 +37,10 @@ impl NativeInstanceEnvironment {
     }
 }
 
-pub(crate) fn native_instance_host(global_ctx: ArcGlobalCtx) -> Arc<NativeInstanceHost> {
-    let runtime = native_host_runtime();
+pub(crate) fn native_instance_host(
+    global_ctx: ArcGlobalCtx,
+    runtime: Arc<NativeHostRuntime>,
+) -> Arc<NativeInstanceHost> {
     Arc::new(ConnectorHostAdapter::new(
         runtime.clone(),
         Arc::new(NativeInstanceEnvironment::new(global_ctx, runtime)),
