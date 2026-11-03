@@ -6,9 +6,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use easytier_core::connectivity::composite::ConnectorRuntime as _;
 use easytier_core::peers::public_ipv6::PublicIpv6Host;
-use easytier_core::socket::NetNamespace;
 use easytier_core::tunnel::effective_encryption_uses_xor;
 use easytier_core::{
     config::{PeerId, peers::PeerRuntimeSnapshot, runtime::CoreInstanceRuntimeConfig},
@@ -24,7 +22,6 @@ use crate::proto::api::config::InstanceConfigPatch;
 use crate::proto::api::instance::PeerConnInfo;
 use crate::proto::common::PortForwardConfigPb;
 use crossbeam::atomic::AtomicCell;
-use easytier_core::socket::SocketContext;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "management", derive(serde::Serialize, serde::Deserialize))]
@@ -119,14 +116,7 @@ impl PublicIpv6Host for GlobalCtx {
         &self,
         prefix: cidr::Ipv6Cidr,
     ) -> HashSet<Ipv6Addr> {
-        let context = SocketContext {
-            socket_mark: self.get_flags().socket_mark,
-            netns: self.net_ns.name().map(NetNamespace::new),
-            ..SocketContext::default()
-        };
-        let ip_list = crate::host_runtime::native_host_runtime()
-            .collect_ip_addrs(&context)
-            .await;
+        let ip_list = crate::common::network::collect_local_ip_addrs(self.net_ns.clone()).await;
         let mut reserved = HashSet::new();
         reserved.extend(
             ip_list
