@@ -1111,7 +1111,6 @@ impl NicCtx {
         #[cfg(mobile)]
         let nic_config = VirtualNicConfig {
             dev_name: String::new(),
-            net_ns: NetNS::new(None),
             ..nic_config
         };
         // Only an explicitly configured name opts into sharing.
