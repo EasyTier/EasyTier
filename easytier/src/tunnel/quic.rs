@@ -680,7 +680,7 @@ mod tests {
     use futures::{SinkExt, StreamExt};
 
     use crate::{
-        common::netns::NetNS, host_runtime::native_host_runtime,
+        common::netns::{NetNS, NetNSImpl as _}, host_runtime::native_host_runtime,
         socket::udp::new_runtime_udp_session_listener, tunnel::tests::_tunnel_echo_server,
     };
 
@@ -702,7 +702,7 @@ mod tests {
                     },
                 ),
                 UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
-                NetNS::new(None),
+                NetNS::current().unwrap(),
             );
             listener.listen().await.unwrap();
             let remote_addr = listener.bound_socket().unwrap().local_addr().unwrap();

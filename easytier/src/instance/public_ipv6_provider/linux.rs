@@ -1308,7 +1308,7 @@ mod tests {
 
         assert!(super::cleanup_ndp_proxy_runtime(
             &mut runtime,
-            &crate::common::netns::NetNS::new(None)
+            &<crate::common::netns::NetNS as crate::common::netns::NetNSImpl>::current().unwrap()
         ));
         assert!(
             !crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)

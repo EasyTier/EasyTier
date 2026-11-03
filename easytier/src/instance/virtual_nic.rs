@@ -1817,7 +1817,7 @@ mod tests {
 
         use super::{IfConfiger, NicBackend, VirtualNicConfig};
         use crate::{
-            common::{global_ctx::GlobalCtxEvent, ifcfg::IfConfiguerTrait, netns::NetNS},
+            common::{global_ctx::GlobalCtxEvent, ifcfg::IfConfiguerTrait, netns::{NetNS, NetNSImpl as _}},
             instance::{
                 composition::{NativeCoreInstance, runtime_core_host_adapters},
                 config::test_core_instance_config,
@@ -1838,14 +1838,17 @@ mod tests {
                 .args(["netns", "del", &namespace])
                 .status();
         }
-        let net_ns = NetNS::new(Some(namespace.clone()));
+        let net_ns = NetNS::open(Some(&namespace)).unwrap();
         // Avoid DAD probes and use an unowned source to test destination claims.
         {
-            let _guard = net_ns.guard();
-            std::fs::write("/proc/sys/net/ipv6/conf/default/accept_dad", "0").unwrap();
-            // Keep automatic link-local traffic out of the member packet streams.
-            std::fs::write("/proc/sys/net/ipv6/conf/default/addr_gen_mode", "1").unwrap();
-            let ifcfg = IfConfiger::default();
+            net_ns
+                .run(|| {
+                    std::fs::write("/proc/sys/net/ipv6/conf/default/accept_dad", "0").unwrap();
+                    // Keep automatic link-local traffic out of the member packet streams.
+                    std::fs::write("/proc/sys/net/ipv6/conf/default/addr_gen_mode", "1").unwrap();
+                })
+                .unwrap();
+            let ifcfg = IfConfiger::new(net_ns.clone());
             ifcfg.set_link_status("lo", true).await.unwrap();
             ifcfg
                 .add_ipv6_ip("lo", "fdff::1".parse().unwrap(), 128)
@@ -1891,12 +1894,13 @@ mod tests {
             net_ns
                 .run(|| IfConfiger::list_addresses(&ifname))
                 .unwrap()
+                .unwrap()
                 .contains(&"fd00::1/64".parse().unwrap())
         );
         // Linux completes IPv6 address activation asynchronously, even without DAD probes.
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                match net_ns.run(|| UdpSocket::bind("[fd00::1]:0")) {
+                match net_ns.run(|| UdpSocket::bind("[fd00::1]:0")).unwrap() {
                     Ok(_) => break,
                     Err(err) if err.kind() == std::io::ErrorKind::AddrNotAvailable => {
                         tokio::time::sleep(Duration::from_millis(10)).await;

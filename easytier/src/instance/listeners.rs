@@ -171,11 +171,12 @@ impl SocketListener for RuntimeFakeTcpSocketListener {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::netns::{NetNS, NetNSImpl};
     use super::*;
 
     #[test]
     fn external_listener_capabilities_follow_native_build() {
-        let factory = RuntimeExternalListenerFactory;
+        let factory = RuntimeExternalListenerFactory::new(NetNS::current().unwrap());
 
         assert_eq!(
             factory.supports_scheme("faketcp"),

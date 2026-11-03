@@ -92,6 +92,7 @@ impl IcmpProxyHost for RuntimeIcmpProxyHost {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::netns::{NetNS, NetNSImpl};
     use std::time::Duration;
 
     use super::*;
@@ -162,7 +163,9 @@ mod tests {
                 let mut sockets = Vec::new();
                 for _ in 0..30 {
                     sockets.push(
-                        RuntimeIcmpProxyHost
+                        RuntimeIcmpProxyHost::new(
+                            NetNS::current().unwrap(),
+                        )
                             .open_icmp_v4(SocketContext::default())
                             .await
                             .unwrap(),

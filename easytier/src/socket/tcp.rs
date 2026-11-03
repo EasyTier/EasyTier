@@ -276,6 +276,7 @@ pub(crate) fn prepare_proxy_tcp_socket(stream: &TcpStream) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::netns::{NetNS, NetNSImpl};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
@@ -285,9 +286,12 @@ mod tests {
         for ip in ["127.0.0.1", "::1"] {
             let listener = TcpListener::bind((ip, 0)).await.unwrap();
             let remote_addr = listener.local_addr().unwrap();
-            let socket = connect_tcp(TcpConnectOptions::direct_connect(remote_addr))
-                .await
-                .unwrap();
+            let socket = connect_tcp(
+                &NetNS::current().unwrap(),
+                TcpConnectOptions::direct_connect(remote_addr),
+            )
+            .await
+            .unwrap();
             let (_, local_addr) = listener.accept().await.unwrap();
             assert_eq!(socket.peer_addr().unwrap(), remote_addr);
             assert_eq!(socket.local_addr().unwrap(), local_addr);

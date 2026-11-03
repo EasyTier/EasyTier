@@ -220,6 +220,7 @@ pub(crate) async fn bind<B: Bindable>(
 
 #[cfg(test)]
 mod tests {
+    use crate::common::netns::{NetNS, NetNSImpl};
     use easytier_core::socket::SocketContext;
     use easytier_core::socket::{BindConfig, IpVersion};
     use easytier_core::tunnel::TunnelError;
@@ -238,22 +239,25 @@ mod tests {
                 (Some(std::net::SocketAddr::new(ip, 0)), None),
                 (Some(std::net::SocketAddr::new(ip, 0)), Some(false)),
             ] {
-                let socket = bind::<TcpSocket>(BindConfig {
-                    context: SocketContext {
-                        ip_version: if ip.is_ipv6() {
-                            IpVersion::V6
-                        } else {
-                            IpVersion::V4
+                let socket = bind::<TcpSocket>(
+                    &NetNS::current().unwrap(),
+                    BindConfig {
+                        context: SocketContext {
+                            ip_version: if ip.is_ipv6() {
+                                IpVersion::V6
+                            } else {
+                                IpVersion::V4
+                            },
+                            ..SocketContext::default()
                         },
-                        ..SocketContext::default()
+                        local_addr,
+                        bind_device: Some("".into()),
+                        only_v6: ip.is_ipv6(),
+                        reuse_addr,
+                        reuse_port: true,
+                        ..BindConfig::default()
                     },
-                    local_addr,
-                    bind_device: Some("".into()),
-                    only_v6: ip.is_ipv6(),
-                    reuse_addr,
-                    reuse_port: true,
-                    ..BindConfig::default()
-                })
+                )
                 .await
                 .unwrap();
 
@@ -291,22 +295,31 @@ mod tests {
             let tcp_addr = occupied_tcp.local_addr().unwrap();
 
             for error in [
-                bind::<UdpSocket>(BindConfig {
-                    local_addr: Some(udp_addr),
-                    ..BindConfig::default()
-                })
+                bind::<UdpSocket>(
+                    &NetNS::current().unwrap(),
+                    BindConfig {
+                        local_addr: Some(udp_addr),
+                        ..BindConfig::default()
+                    },
+                )
                 .await
                 .unwrap_err(),
-                bind::<TcpSocket>(BindConfig {
-                    local_addr: Some(tcp_addr),
-                    ..BindConfig::default()
-                })
+                bind::<TcpSocket>(
+                    &NetNS::current().unwrap(),
+                    BindConfig {
+                        local_addr: Some(tcp_addr),
+                        ..BindConfig::default()
+                    },
+                )
                 .await
                 .unwrap_err(),
-                bind::<TcpListener>(BindConfig {
-                    local_addr: Some(tcp_addr),
-                    ..BindConfig::default()
-                })
+                bind::<TcpListener>(
+                    &NetNS::current().unwrap(),
+                    BindConfig {
+                        local_addr: Some(tcp_addr),
+                        ..BindConfig::default()
+                    },
+                )
                 .await
                 .unwrap_err(),
             ] {
@@ -322,25 +335,34 @@ mod tests {
     async fn bind_rejects_nonlocal_ipv6_address() {
         let addr = "[2001:db8::ffff]:0".parse().unwrap();
         for error in [
-            bind::<UdpSocket>(BindConfig {
-                local_addr: Some(addr),
-                bind_device: Some("".into()),
-                ..BindConfig::default()
-            })
+            bind::<UdpSocket>(
+                &NetNS::current().unwrap(),
+                BindConfig {
+                    local_addr: Some(addr),
+                    bind_device: Some("".into()),
+                    ..BindConfig::default()
+                },
+            )
             .await
             .unwrap_err(),
-            bind::<TcpSocket>(BindConfig {
-                local_addr: Some(addr),
-                bind_device: Some("".into()),
-                ..BindConfig::default()
-            })
+            bind::<TcpSocket>(
+                &NetNS::current().unwrap(),
+                BindConfig {
+                    local_addr: Some(addr),
+                    bind_device: Some("".into()),
+                    ..BindConfig::default()
+                },
+            )
             .await
             .unwrap_err(),
-            bind::<TcpListener>(BindConfig {
-                local_addr: Some(addr),
-                bind_device: Some("".into()),
-                ..BindConfig::default()
-            })
+            bind::<TcpListener>(
+                &NetNS::current().unwrap(),
+                BindConfig {
+                    local_addr: Some(addr),
+                    bind_device: Some("".into()),
+                    ..BindConfig::default()
+                },
+            )
             .await
             .unwrap_err(),
         ] {
@@ -362,11 +384,14 @@ mod tests {
         use std::net::SocketAddr;
 
         let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-        let _err = bind::<UdpSocket>(BindConfig {
-            local_addr: Some(addr),
-            bind_device: Some("et/invalid-device-name".into()),
-            ..BindConfig::default()
-        })
+        let _err = bind::<UdpSocket>(
+            &NetNS::current().unwrap(),
+            BindConfig {
+                local_addr: Some(addr),
+                bind_device: Some("et/invalid-device-name".into()),
+                ..BindConfig::default()
+            },
+        )
         .await
         .expect_err("custom device must not be skipped for unspecified bind addr");
     }

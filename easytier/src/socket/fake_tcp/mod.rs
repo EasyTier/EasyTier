@@ -515,6 +515,7 @@ pub(crate) async fn connect_socket(
 
 #[cfg(test)]
 mod tests {
+    use crate::common::netns::{NetNS, NetNSImpl};
     use easytier_core::socket::SocketListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -530,8 +531,10 @@ mod tests {
                 }
             }
 
-            let mut listener =
-                FakeTcpSocketListener::new("faketcp://0.0.0.0:31011".parse().unwrap());
+            let mut listener = FakeTcpSocketListener::new(
+                "faketcp://0.0.0.0:31011".parse().unwrap(),
+                NetNS::current().unwrap(),
+            );
             listener.listen().await.unwrap();
             let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
 
@@ -544,10 +547,13 @@ mod tests {
                 socket.write_all(b"pong").await.unwrap();
             });
 
-            let mut socket =
-                connect_socket("127.0.0.1:31011".parse().unwrap(), None, NetNS::new(None))
-                    .await
-                    .unwrap();
+            let mut socket = connect_socket(
+                "127.0.0.1:31011".parse().unwrap(),
+                None,
+                NetNS::current().unwrap(),
+            )
+            .await
+            .unwrap();
             server_ready_rx.await.unwrap();
             socket.write_all(b"ping").await.unwrap();
             let mut response = [0; 4];

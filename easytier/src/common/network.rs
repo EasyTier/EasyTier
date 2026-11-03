@@ -543,12 +543,14 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn namespace_operation_does_not_migrate_between_os_threads() {
-        let (before, after) = run_in_namespace(NetNS::new(None), || async {
+        use crate::common::netns::NetNSImpl as _;
+        let (before, after) = run_in_namespace(NetNS::current().unwrap(), || async {
             let before = std::thread::current().id();
             tokio::task::yield_now().await;
             (before, std::thread::current().id())
         })
-        .await;
+        .await
+        .unwrap();
 
         assert_eq!(before, after);
     }

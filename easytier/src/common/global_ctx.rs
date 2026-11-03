@@ -500,7 +500,12 @@ pub mod tests {
             easytier_core::instance::CoreInstanceConfig::from_toml_with_host(&config, &host)
                 .unwrap();
 
-        let global_ctx = GlobalCtx::new_with_runtime_config(config.clone(), &normalized, &host);
+        let global_ctx = GlobalCtx::new_with_runtime_config(
+            config.clone(),
+            &normalized,
+            &host,
+            <NetNS as NetNSImpl>::current().unwrap(),
+        );
 
         assert_eq!(config.get_mapped_listeners().len(), 2);
         assert_eq!(global_ctx.runtime_mapped_listeners().len(), 1);

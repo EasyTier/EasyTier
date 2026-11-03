@@ -629,16 +629,19 @@ mod tests {
 
     #[test]
     fn runtime_dns_context_preserves_process_routing_inputs() {
+        use crate::common::netns::NetNSImpl as _;
         let context = SocketContext {
             socket_mark: Some(0),
-            netns: Some(easytier_core::socket::NetNamespace::new("instance-a")),
             ..SocketContext::default()
         };
+        let netns = NetNS::current().unwrap();
+        let resolver = RuntimeDnsResolver::new(netns.clone());
 
         assert_eq!(
-            RuntimeDnsIoContext::from_socket_context(&context),
+            RuntimeDnsIoContext::from_socket_context(&context, &resolver),
             RuntimeDnsIoContext {
-                netns: Some("instance-a".to_owned()),
+                netns,
+                process_netns: true,
                 socket_mark: Some(0),
             }
         );

@@ -451,7 +451,8 @@ mod tests {
             need_protect: false,
             ..BindConfig::default()
         };
-        let initial = native_host_runtime()
+        let runtime = crate::host_runtime::native_host_runtime();
+        let initial = runtime
             .bind_udp(options.clone())
             .await
             .unwrap();
@@ -461,6 +462,7 @@ mod tests {
         let socket = Arc::new(PortalSocket {
             socket: tokio::sync::RwLock::new(Some(initial)),
             options,
+            runtime,
         });
         let endpoint = socket.clone();
         let mut rebind = Box::pin(socket.rebind());

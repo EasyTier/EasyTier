@@ -152,6 +152,7 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::netns::{NetNS, NetNSImpl};
     use easytier_core::{
         socket::SocketListener,
         socket::udp::{
@@ -177,19 +178,25 @@ mod tests {
                     need_protect,
                     ..BindConfig::default()
                 };
-                let listener = crate::socket::bind::<UdpSocket>(bind.clone())
-                    .await
-                    .unwrap();
+                let listener = crate::socket::bind::<UdpSocket>(
+                    &NetNS::current().unwrap(),
+                    bind.clone(),
+                )
+                .await
+                .unwrap();
                 let occupied = BindConfig {
                     local_addr: Some(listener.local_addr().unwrap()),
                     ..bind
                 };
 
                 for reuse_addr in [false, true] {
-                    let error = crate::socket::bind::<UdpSocket>(BindConfig {
-                        reuse_addr: Some(reuse_addr),
-                        ..occupied.clone()
-                    })
+                    let error = crate::socket::bind::<UdpSocket>(
+                        &NetNS::current().unwrap(),
+                        BindConfig {
+                            reuse_addr: Some(reuse_addr),
+                            ..occupied.clone()
+                        },
+                    )
                     .await
                     .expect_err("another socket must not share a bound receive endpoint");
                     assert!(matches!(
@@ -200,7 +207,12 @@ mod tests {
                 }
 
                 drop(listener);
-                crate::socket::bind::<UdpSocket>(occupied).await.unwrap();
+                crate::socket::bind::<UdpSocket>(
+                    &NetNS::current().unwrap(),
+                    occupied,
+                )
+                .await
+                .unwrap();
             }
         }
     }
@@ -222,9 +234,12 @@ mod tests {
             let mut ports = std::collections::HashSet::new();
             for index in 0..128 {
                 let bind = binds[index % binds.len()].clone();
-                let listener = crate::socket::bind::<UdpSocket>(bind.clone())
-                    .await
-                    .unwrap();
+                let listener = crate::socket::bind::<UdpSocket>(
+                    &NetNS::current().unwrap(),
+                    bind.clone(),
+                )
+                .await
+                .unwrap();
                 assert!(ports.insert(listener.local_addr().unwrap().port()));
                 listeners.push(listener);
             }
@@ -261,10 +276,12 @@ mod tests {
                     reuse_addr: reuse,
                     ..BindConfig::default()
                 };
-                let socket = RuntimeUdpSocketFactory::new()
-                    .bind_udp(options)
-                    .await
-                    .unwrap();
+                let socket = RuntimeUdpSocketFactory::new(
+                    NetNS::current().unwrap(),
+                )
+                .bind_udp(options)
+                .await
+                .unwrap();
                 assert_eq!(
                     socket2::SockRef::from(socket.socket.as_ref())
                         .reuse_address()
@@ -277,7 +294,8 @@ mod tests {
 
     #[tokio::test]
     async fn factory_reserves_udp_port_when_reuse_is_explicitly_disabled() {
-        let factory = RuntimeUdpSocketFactory::new();
+        let factory =
+            RuntimeUdpSocketFactory::new(NetNS::current().unwrap());
         let bind = BindConfig {
             bind_device: Some("".into()),
             reuse_addr: Some(false),
@@ -308,17 +326,18 @@ mod tests {
             easytier_core::socket::IpVersion::V4,
             easytier_core::socket::IpVersion::V6,
         ] {
-            let socket = RuntimeUdpSocketFactory::new()
-                .bind_udp(BindConfig {
-                    reuse_addr: Some(false),
-                    context: easytier_core::socket::SocketContext {
-                        ip_version: family,
-                        ..SocketContext::default()
-                    },
-                    ..BindConfig::default()
-                })
-                .await
-                .unwrap();
+            let socket =
+                RuntimeUdpSocketFactory::new(NetNS::current().unwrap())
+                    .bind_udp(BindConfig {
+                        reuse_addr: Some(false),
+                        context: easytier_core::socket::SocketContext {
+                            ip_version: family,
+                            ..SocketContext::default()
+                        },
+                        ..BindConfig::default()
+                    })
+                    .await
+                    .unwrap();
             assert_eq!(
                 socket.local_addr().unwrap().is_ipv6(),
                 family == easytier_core::socket::IpVersion::V6
@@ -408,7 +427,7 @@ mod tests {
                 ..BindConfig::default()
             }),
             UdpSessionAcceptKind::EasyTierMux,
-            NetNS::new(None),
+            NetNS::current().unwrap(),
         );
         listener.listen().await.unwrap();
 
@@ -446,7 +465,7 @@ mod tests {
                 ..BindConfig::default()
             }),
             UdpSessionAcceptKind::EasyTierMux,
-            NetNS::new(None),
+            NetNS::current().unwrap(),
         );
         listener.listen().await.unwrap();
 
