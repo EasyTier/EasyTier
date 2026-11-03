@@ -298,11 +298,15 @@ pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<Netwo
             collect_interfaces_in_current_namespace(filter).await
         })
         .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "failed to enter network namespace");
+            Vec::new()
+        })
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _g = net_ns.guard();
+        let _ = net_ns;
         collect_interfaces_in_current_namespace(filter).await
     }
 }
@@ -431,12 +435,13 @@ async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInt
 }
 
 #[cfg(target_os = "linux")]
-async fn run_in_namespace<T, F, Fut>(net_ns: NetNS, operation: F) -> T
+async fn run_in_namespace<T, F, Fut>(net_ns: NetNS, operation: F) -> std::io::Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = T> + 'static,
 {
+    use super::netns::NetNSImpl;
     tokio::task::spawn_blocking(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -455,12 +460,16 @@ pub(crate) async fn collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
         return run_in_namespace(net_ns, || async {
             collect_local_ip_addrs_in_current_namespace().await
         })
-        .await;
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "failed to enter network namespace");
+            GetIpListResponse::default()
+        });
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _g = net_ns.guard();
+        let _ = net_ns;
         collect_local_ip_addrs_in_current_namespace().await
     }
 }
