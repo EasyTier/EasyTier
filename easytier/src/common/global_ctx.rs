@@ -17,7 +17,7 @@ use easytier_core::{
 
 use super::{
     config::{ConfigLoader, Flags, NetworkIdentity},
-    netns::NetNS,
+    netns::{NetNS, NetNSImpl},
 };
 #[cfg(feature = "management")]
 use crate::proto::api::config::InstanceConfigPatch;
@@ -104,7 +104,7 @@ impl std::fmt::Debug for GlobalCtx {
         f.debug_struct("GlobalCtx")
             .field("inst_name", &self.inst_name)
             .field("id", &self.id)
-            .field("net_ns", &self.net_ns.name())
+            .field("net_ns", &self.net_ns)
             .field("event_bus", &"EventBus")
             .field("ipv4", &self.cached_ipv4)
             .finish()
@@ -148,13 +148,16 @@ impl PublicIpv6Host for GlobalCtx {
 
 impl GlobalCtx {
     pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
-        Self::new_inner(config_fs, None, None)
+        let net_ns = NetNS::open(config_fs.get_netns().as_deref())
+            .expect("open the configured network namespace");
+        Self::new_inner(config_fs, None, None, net_ns)
     }
 
     pub(crate) fn new_with_runtime_config(
         config_fs: impl ConfigLoader + 'static,
         runtime: &CoreInstanceConfig,
         host: &CoreInstanceHostConfig,
+        net_ns: NetNS,
     ) -> Self {
         let runtime = CoreInstanceRuntimeConfig {
             services: runtime.connectivity.runtime.clone(),
@@ -166,17 +169,17 @@ impl GlobalCtx {
                 .map(|protocol| protocol.to_ascii_lowercase())
                 .collect()
         });
-        Self::new_inner(config_fs, Some(&runtime), protocols)
+        Self::new_inner(config_fs, Some(&runtime), protocols, net_ns)
     }
 
     fn new_inner(
         config_fs: impl ConfigLoader + 'static,
         runtime: Option<&CoreInstanceRuntimeConfig>,
         runtime_endpoint_protocols: Option<HashSet<String>>,
+        net_ns: NetNS,
     ) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
-        let net_ns = NetNS::new(config_fs.get_netns());
         let hostname = runtime
             .and_then(|runtime| runtime.peer.runtime.core.node.hostname.clone())
             .unwrap_or_else(|| match config_fs.get_hostname() {
