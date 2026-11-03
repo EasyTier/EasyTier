@@ -141,8 +141,11 @@ impl FakeTcpSocketListener {
                         tracing::warn!("accept fail with local_addr error");
                         continue;
                     };
-                    let Some((interface_name, mac)) =
-                        self.ip_to_ifname.get_ifname(&local_addr.ip())
+                    // A cache miss enumerates interfaces, which must see the
+                    // listener's namespace rather than this worker thread's.
+                    let Some((interface_name, mac)) = self
+                        .netns
+                        .run(|| self.ip_to_ifname.get_ifname(&local_addr.ip()))?
                     else {
                         tracing::warn!("accept fail with interface_name error");
                         continue;
@@ -198,7 +201,7 @@ impl FakeTcpSocketListener {
             interface_name.to_string(),
             None,
             local_socket_addr,
-            NetNS::current()?,
+            self.netns.clone(),
         )
         .await?;
         tracing::info!(
