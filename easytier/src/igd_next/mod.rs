@@ -14,6 +14,7 @@ use std::net::IpAddr;
 
 use bytes::Bytes;
 use easytier_core::socket::BindConfig;
+use easytier_core::tunnel::TunnelError;
 use easytier_core::socket::{
     tcp::TcpConnectOptions,
     udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
@@ -35,7 +36,10 @@ use errors::GetExternalIpError;
 pub(crate) use errors::GetGenericPortMappingEntryError;
 use errors::{AddPortError, HttpTransportError, RemovePortError, RequestError, SearchError};
 
-use crate::socket::{tcp::connect_tcp, udp::RuntimeUdpSocketFactory};
+use crate::{
+    common::netns::{NetNS, NetNSImpl},
+    socket::{tcp::connect_tcp, udp::RuntimeUdpSocketFactory},
+};
 
 const DEFAULT_SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -108,7 +112,9 @@ async fn search_gateway_inner(options: SearchOptions) -> Result<Gateway, SearchE
         local_addr: Some(options.bind_addr),
         ..BindConfig::default()
     };
-    let socket = RuntimeUdpSocketFactory::new()
+    // Port mapping calls this on a thread already inside the target namespace.
+    let net_ns = NetNS::current().map_err(SearchError::Io)?;
+    let socket = RuntimeUdpSocketFactory::new(net_ns)
         .bind_udp(bind_options)
         .await
         .map_err(|error| SearchError::Io(std::io::Error::other(error.to_string())))?;
@@ -211,7 +217,8 @@ async fn send_http_request_inner(
     soap_action: Option<&str>,
     body: String,
 ) -> Result<Bytes, HttpTransportError> {
-    let stream = connect_tcp(TcpConnectOptions::direct_connect(addr)).await?;
+    let net_ns = NetNS::current().map_err(TunnelError::from)?;
+    let stream = connect_tcp(&net_ns, TcpConnectOptions::direct_connect(addr)).await?;
     let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
     let body = Bytes::from(body);
     let mut request = Request::builder()

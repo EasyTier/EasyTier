@@ -10,7 +10,10 @@ use quanta::Instant;
 
 use super::FromUrl;
 use crate::{
-    common::{netns::NetNS, shrink_dashmap},
+    common::{
+        netns::{NetNS, NetNSImpl},
+        shrink_dashmap,
+    },
     proto::common::TunnelInfo,
     socket::udp::{RuntimeUdpSessionSocketListener, new_runtime_udp_session_listener},
     tunnel::{TunnelUrl, build_url_from_socket_addr},
@@ -656,7 +659,7 @@ impl WgTunnelListener {
             self.addr.clone(),
             UdpSessionListenRequest::new(bind),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
-            NetNS::new(None),
+            NetNS::current()?,
         );
         easytier_core::socket::SocketListener::listen(&mut session_listener).await?;
         let session_listener = Arc::new(session_listener);
