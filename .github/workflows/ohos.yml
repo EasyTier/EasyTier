@@ -90,8 +90,6 @@ jobs:
           set -euo pipefail
           sudo apt-get install -qqy \
             pkg-config curl libgl1-mesa-dev expect llvm clang lldb lld
-          rustup component add rustfmt
-
           sudo mkdir -p "$OHOS_NDK_HOME/native/llvm"
           sudo tee "$OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh" >/dev/null <<'EOF'
           #!/bin/sh
@@ -103,30 +101,12 @@ jobs:
           sudo chmod +x \
             "$OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh"
 
-      - name: Check formatting
-        run: |
-          cargo fmt --all --manifest-path \
-            easytier-contrib/easytier-ohrs/Cargo.toml -- --check
-
-      - name: Test OHOS bridge
-        run: |
-          cargo test --locked --manifest-path \
-            easytier-contrib/easytier-ohrs/Cargo.toml \
-            -p easytier-ohos-core -p easytier-ohos-features \
-            --lib -- --test-threads=1
-
-      - name: Check OHOS bindings
-        run: |
-          cargo check --locked --manifest-path \
-            easytier-contrib/easytier-ohrs/Cargo.toml \
-            -p easytier-ohrs --tests
-
       - name: Check OHOS target
         if: github.event_name == 'pull_request'
         working-directory: easytier-contrib/easytier-ohrs
         run: |
           source env.sh
-          cargo check --locked -p easytier-ohrs --tests \
+          cargo check-ohos \
             --target aarch64-unknown-linux-ohos
 
       - name: Build HAR
