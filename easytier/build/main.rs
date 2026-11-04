@@ -65,6 +65,43 @@ fn check_locale() {
     }
 }
 
+fn git_output(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .env("TZ", "UTC")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8(output.stdout).ok()?.trim().to_string())
+}
+
+fn set_git_commit_date() {
+    let suffix = git_output(&["log", "-1", "--format=%cd", "--date=format-local:%Y%m%d"])
+        .map(|date| format!("-{date}"))
+        .unwrap_or_default();
+    println!("cargo:rustc-env=EASYTIER_COMMIT_DATE={suffix}");
+
+    // Refresh the date even when a new commit does not change package sources.
+    let args = [
+        "rev-parse",
+        "--git-path",
+        "HEAD",
+        "--git-path",
+        "refs",
+        "--git-path",
+        "packed-refs",
+    ];
+    if let Some(paths) = git_output(&args) {
+        for path in paths.lines() {
+            if std::path::Path::new(path).exists() {
+                println!("cargo:rerun-if-changed={path}");
+            }
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     cfg_aliases! {
         mobile: {
@@ -88,5 +125,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     WindowsBuild::check_for_win();
 
     check_locale();
+    set_git_commit_date();
     Ok(())
 }
