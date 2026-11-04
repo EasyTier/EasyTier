@@ -254,12 +254,18 @@ core_clap:
   private_mode:
     en: "if true, foreign networks are only allowed when this node can verify they use the same network secret, or when a foreign credential node is already trusted via admin-issued credential propagation; different or missing secrets are otherwise rejected."
     zh-CN: "如果为true，则仅允许两类 foreign network 接入：本节点能验证其使用相同 network secret 的节点，或已通过 foreign network 管理节点传播而被信任的 credential 节点；否则 secret 不同或缺失时会被拒绝。"
+  foreign_relay_limit:
+    en: "the maximum rate limit for foreign network relay, default is no limit (e.g. 10MB, 1.5GiB, 100Mbps)"
+    zh-CN: "作为共享节点时，限制非本地网络的流量转发速率，默认无限制（支持单位如 10MB、1.5GiB、100Mbps）"
+  instance_recv_limit:
+    en: "the maximum total receive rate limit for this instance, default is no limit (e.g. 50MB, 1GiB, 100Mbps)"
+    zh-CN: "限制当前网络实例整体入站流量的总接收速率，默认无限制（支持单位如 50MB、1GiB、100Mbps）"
   foreign_relay_bps_limit:
-    en: "the maximum bps limit for foreign network relay, default is no limit. unit: BPS (bytes per second)"
-    zh-CN: "作为共享节点时，限制非本地网络的流量转发速率，默认无限制，单位 BPS （字节每秒）"
+    en: "deprecated: use foreign_relay_limit instead. The maximum bps limit for foreign network relay, default is no limit. unit: BPS (bytes per second)"
+    zh-CN: "已废弃：请改用 foreign_relay_limit。作为共享节点时，限制非本地网络的流量转发速率，默认无限制，单位 BPS （字节每秒）"
   instance_recv_bps_limit:
-    en: "the maximum total receive bps limit for this instance, default is no limit. unit: BPS (bytes per second)"
-    zh-CN: "限制当前网络实例整体入站流量的总接收速率，默认无限制，单位 BPS （字节每秒）"
+    en: "deprecated: use instance_recv_limit instead. The maximum total receive bps limit for this instance, default is no limit. unit: BPS (bytes per second)"
+    zh-CN: "已废弃：请改用 instance_recv_limit。限制当前网络实例整体入站流量的总接收速率，默认无限制，单位 BPS （字节每秒）"
   tcp_whitelist:
     en: "tcp port whitelist. Supports single ports (80) and ranges (8000-9000)"
     zh-CN: "TCP 端口白名单。支持单个端口（80）和范围（8000-9000）"

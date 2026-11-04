@@ -29,6 +29,7 @@ base64.workspace = true
 bitflags = "2.13"
 bytecodec.workspace = true
 bytes.workspace = true
+bytesize.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 cidr = { workspace = true, features = ["serde"] }
 crossbeam-utils.workspace = true

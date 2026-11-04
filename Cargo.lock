@@ -1124,6 +1124,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytesize"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7354288c522e7e980fafd2075d63d1285794c3a6a16cdd492f189ea406e5f18b"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "bzip2"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2654,6 +2663,7 @@ dependencies = [
  "bon",
  "bytecodec",
  "bytes",
+ "bytesize",
  "chacha20poly1305 0.10.1",
  "chrono",
  "cidr",

@@ -99,7 +99,14 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
         .and_then(|algorithm| CompressionAlgoPb::try_from(algorithm).ok())
         .map(i32::from);
     result.encryption_algorithm = flags.encryption_algorithm;
-    result.instance_recv_bps_limit = flags.instance_recv_bps_limit;
+    result.instance_recv_bps_limit = flags
+        .instance_recv_limit
+        .as_deref()
+        .and_then(|s| crate::config::parse_bandwidth_limit(s).ok().flatten())
+        .or({
+            #[allow(deprecated)]
+            flags.instance_recv_bps_limit
+        });
     result.enable_private_mode = flags.private_mode;
 
     result.enable_relay_network_whitelist = flags
@@ -559,6 +566,11 @@ impl NetworkConfigExt for NetworkConfig {
             prefer_peer_relay: self.prefer_peer_relay,
             enable_udp_broadcast_relay: self.enable_udp_broadcast_relay,
             disable_sym_hole_punching: self.disable_sym_hole_punching,
+            instance_recv_limit: self
+                .instance_recv_bps_limit
+                .filter(|bps| *bps != u64::MAX)
+                .map(crate::config::format_bandwidth_limit),
+            #[allow(deprecated)]
             instance_recv_bps_limit: self.instance_recv_bps_limit,
             ..Default::default()
         });
@@ -907,6 +919,21 @@ mod tests {
                 continue;
             }
 
+            if name == "instance_recv_limit" {
+                let mut projected = NetworkConfig::default();
+                set_network_flags(
+                    &mut projected,
+                    FlagsPatch {
+                        instance_recv_limit: Some("10MB".to_owned()),
+                        ..Default::default()
+                    },
+                );
+                let projected = serde_json::to_value(projected).unwrap();
+                assert_eq!(projected[&api_field], "10000000");
+                assert!(!negate);
+                continue;
+            }
+
             let declared = defaults[name]
                 .as_bool()
                 .unwrap_or_else(|| panic!("{name} is not a boolean flag"));
@@ -939,7 +966,7 @@ mod tests {
                     enable_relay_network_whitelist: whitelist,
                     latency_first: Some(false),
                     mtu: Some(0),
-                    instance_recv_bps_limit: Some(u64::MAX),
+                    instance_recv_bps_limit: Some(10_000_000),
                     ..standalone_config()
                 };
                 let config = input.gen_config().unwrap();
@@ -949,7 +976,7 @@ mod tests {
                 assert_eq!(output.enable_relay_network_whitelist, whitelist);
                 assert_eq!(output.latency_first, Some(false));
                 assert_eq!(output.mtu, Some(0));
-                assert_eq!(output.instance_recv_bps_limit, Some(u64::MAX));
+                assert_eq!(output.instance_recv_bps_limit, Some(10_000_000));
                 assert_eq!(output.disable_ipv6, None);
                 assert_eq!(output.encryption_algorithm, None);
             }
@@ -1299,7 +1326,7 @@ disable_p2p = true
 [flags]
 disableP2p = true
 enableEncryption = false
-foreignRelayBpsLimit = 1234
+foreignRelayBpsLimit = "10MB"
 "#;
         let parsed_orig = TomlConfigLoader::new_from_str(original).unwrap();
         let mut network_config = NetworkConfig::new_from_config(&parsed_orig).unwrap();
@@ -1310,7 +1337,7 @@ foreignRelayBpsLimit = 1234
             .expect("merged config should be parseable without duplicate-field error");
         assert!(!parsed.get_flags().disable_p2p);
         assert!(!parsed.get_flags().enable_encryption);
-        assert_eq!(parsed.get_flags().foreign_relay_bps_limit, 1234);
+        assert_eq!(parsed.get_flags().foreign_relay_limit, "10MB");
 
         let merged_table: toml::Table = toml::from_str(&merged).unwrap();
         let flags = merged_table["flags"].as_table().unwrap();
@@ -1328,9 +1355,9 @@ foreignRelayBpsLimit = 1234
         assert!(flags.get("enableEncryption").is_none());
         assert_eq!(
             flags
-                .get("foreign_relay_bps_limit")
-                .and_then(toml::Value::as_integer),
-            Some(1234)
+                .get("foreign_relay_limit")
+                .and_then(toml::Value::as_str),
+            Some("10MB")
         );
         assert!(flags.get("foreignRelayBpsLimit").is_none());
     }

@@ -230,7 +230,17 @@ impl PortablePeerManagerConfig {
             latency_first: policy.latency_first,
             compression_algorithm: CompressionAlgorithm::None.to_string(),
             mtu: traffic.mtu.map(u32::from).unwrap_or_default(),
+            instance_recv_limit: traffic
+                .instance_recv_bps_limit
+                .map(crate::config::format_bandwidth_limit)
+                .unwrap_or_default(),
+            foreign_relay_limit: traffic
+                .foreign_relay_bps_limit
+                .map(crate::config::format_bandwidth_limit)
+                .unwrap_or_default(),
+            #[allow(deprecated)]
             instance_recv_bps_limit: traffic.instance_recv_bps_limit.unwrap_or_default(),
+            #[allow(deprecated)]
             foreign_relay_bps_limit: traffic.foreign_relay_bps_limit.unwrap_or_default(),
             ..Default::default()
         };
@@ -4549,6 +4559,7 @@ mod tests {
         core.clear_resources().await;
     }
 
+    #[allow(deprecated)]
     #[tokio::test]
     async fn portable_peer_manager_accepts_legacy_unlimited_limits() {
         let runtime = portable_runtime_config("portable-net");

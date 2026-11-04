@@ -1505,7 +1505,8 @@ socket_mark = 66
             r#"[flags]
 enableEncryption = false
 mtu = 1420
-foreignRelayBpsLimit = "18446744073709551615"
+foreignRelayBpsLimit = "10MB"
+instanceRecvBpsLimit = "50MB"
 dataCompressAlgo = "Zstd"
 socketMark = 0
 "#,
@@ -1514,7 +1515,8 @@ socketMark = 0
         let flags = config.get_flags();
         assert!(!flags.enable_encryption);
         assert_eq!(flags.mtu, 1420);
-        assert_eq!(flags.foreign_relay_bps_limit, u64::MAX);
+        assert_eq!(flags.foreign_relay_limit, "10MB");
+        assert_eq!(flags.instance_recv_limit, "50MB");
         assert_eq!(flags.compression_algorithm, "Zstd");
         assert_eq!(flags.socket_mark, Some(0));
         for fields in [
@@ -1560,8 +1562,8 @@ socketMark = 0
         flags.relay_network_whitelist = "".to_string();
         flags.prefer_peer_relay = true;
         flags.mtu = 0;
-        flags.foreign_relay_bps_limit = u64::MAX - 1;
-        flags.instance_recv_bps_limit = u64::MAX - 2;
+        flags.foreign_relay_limit = "10MB".to_owned();
+        flags.instance_recv_limit = "50MB".to_owned();
         flags.compression_algorithm = "zstd".to_owned();
         flags.socket_mark = Some(0);
         cfg.set_flags(flags);
@@ -1577,8 +1579,10 @@ socketMark = 0
         assert!(dumped.contains("enable_ipv6 = false"));
         assert!(dumped.contains("relay_network_whitelist = \"\""));
         assert!(dumped.contains("mtu = 0"));
-        assert!(dumped.contains("foreign_relay_bps_limit = \"18446744073709551614\""));
-        assert!(dumped.contains("instance_recv_bps_limit = \"18446744073709551613\""));
+        assert!(dumped.contains("foreign_relay_limit = \"10MB\""));
+        assert!(dumped.contains("instance_recv_limit = \"50MB\""));
+        assert!(!dumped.contains("foreign_relay_bps_limit"));
+        assert!(!dumped.contains("instance_recv_bps_limit"));
         assert!(dumped.contains("compression_algorithm = \"zstd\""));
         assert!(!dumped.contains("data_compress_algo"));
         assert!(dumped.contains("socket_mark = 0"));
@@ -1595,8 +1599,8 @@ socketMark = 0
         assert_eq!(reloaded_flags.relay_network_whitelist, "");
         assert!(reloaded_flags.prefer_peer_relay);
         assert_eq!(reloaded_flags.mtu, 0);
-        assert_eq!(reloaded_flags.foreign_relay_bps_limit, u64::MAX - 1);
-        assert_eq!(reloaded_flags.instance_recv_bps_limit, u64::MAX - 2);
+        assert_eq!(reloaded_flags.foreign_relay_limit, "10MB");
+        assert_eq!(reloaded_flags.instance_recv_limit, "50MB");
         assert_eq!(reloaded_flags.compression_algorithm, "zstd");
         assert_eq!(reloaded_flags.socket_mark, Some(0));
     }

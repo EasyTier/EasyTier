@@ -15,6 +15,7 @@ mod dhcp;
 mod encryption;
 pub mod gateway;
 pub mod peers;
+pub mod rate_limit;
 pub mod runtime;
 pub mod toml;
 
@@ -22,6 +23,7 @@ pub use compression::CompressionAlgorithm;
 pub use dhcp::DhcpConfig;
 pub(crate) use dhcp::valid_ipv6_subnet;
 pub use encryption::EncryptionAlgorithm;
+pub use rate_limit::{format_bandwidth_limit, parse_bandwidth_limit};
 
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",

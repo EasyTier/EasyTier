@@ -653,7 +653,10 @@ mod tests {
         assert_eq!(patch.latency_first, Some(false));
         assert_eq!(patch.dev_name.as_deref(), Some(""));
         assert_eq!(patch.mtu, Some(0));
-        assert_eq!(patch.foreign_relay_bps_limit, Some(u64::MAX));
+        assert_eq!(
+            patch.foreign_relay_limit.as_deref(),
+            Some("18446744073709551615")
+        );
         assert_eq!(patch.compression_algorithm.as_deref(), Some("Zstd"));
         let json = serde_json::to_value(&patch).unwrap();
         assert_eq!(
@@ -663,7 +666,7 @@ mod tests {
                 "latency_first": false,
                 "dev_name": "",
                 "mtu": 0,
-                "foreign_relay_bps_limit": "18446744073709551615",
+                "foreign_relay_limit": "18446744073709551615",
                 "compression_algorithm": "Zstd",
             })
         );
@@ -675,7 +678,8 @@ mod tests {
             r#"{"mtu":-1}"#,
             r#"{"mtu":4294967296}"#,
             r#"{"socket_mark":4294967296}"#,
-            r#"{"foreign_relay_bps_limit":"18446744073709551616"}"#,
+            r#"{"foreign_relay_limit":1234}"#,
+            r#"{"foreign_relay_bps_limit":1234}"#,
             r#"{"data_compress_algo":0}"#,
             r#"{"data_compress_algo":1}"#,
             r#"{"dataCompressAlgo":2}"#,
@@ -744,6 +748,52 @@ mod tests {
                 Flags::aliases().get(alias),
                 Some(&"relay_network_whitelist")
             );
+        }
+    }
+
+    #[test]
+    fn rate_limit_config_aliases_migrate_to_the_string_fields() {
+        for (input, expected_foreign, expected_recv) in [
+            (
+                r#"{"foreign_relay_limit":"10MB","instance_recv_limit":"50MB"}"#,
+                "10MB",
+                "50MB",
+            ),
+            (
+                r#"{"foreign_relay_bps_limit":"10MB","instance_recv_bps_limit":"50MB"}"#,
+                "10MB",
+                "50MB",
+            ),
+            (
+                r#"{"foreignRelayBpsLimit":"10MB","instanceRecvBpsLimit":"50MB"}"#,
+                "10MB",
+                "50MB",
+            ),
+        ] {
+            let patch: FlagsPatch = serde_json::from_str(input).unwrap();
+            assert_eq!(patch.foreign_relay_limit.as_deref(), Some(expected_foreign));
+            assert_eq!(patch.instance_recv_limit.as_deref(), Some(expected_recv));
+            let flags = Flags::resolve(patch.clone());
+            assert_eq!(flags.foreign_relay_limit, expected_foreign);
+            assert_eq!(flags.instance_recv_limit, expected_recv);
+        }
+        assert!(Flags::form().contains(&"instance_recv_limit"));
+        assert!(!Flags::form().contains(&"instance_recv_bps_limit"));
+        assert!(
+            !Flags::flags()
+                .iter()
+                .any(|field| field.name() == "foreign_relay_bps_limit")
+        );
+        assert!(
+            !Flags::flags()
+                .iter()
+                .any(|field| field.name() == "instance_recv_bps_limit")
+        );
+        for alias in ["foreign_relay_bps_limit", "foreignRelayBpsLimit"] {
+            assert_eq!(Flags::aliases().get(alias), Some(&"foreign_relay_limit"));
+        }
+        for alias in ["instance_recv_bps_limit", "instanceRecvBpsLimit"] {
+            assert_eq!(Flags::aliases().get(alias), Some(&"instance_recv_limit"));
         }
     }
 

@@ -57,10 +57,10 @@ message Flags {
     default: "4294967295", deprecated: true
   }];
 
-  // a global relay limit, only work for foreign network
-  uint64 foreign_relay_bps_limit = 26 [(easytier.flag) = {
-    default: "18446744073709551615"
-    attributes: 'optionize(attrs(serde_as(as = "Option<serde_with::PickFirst<(serde_with::DisplayFromStr, _)>>")))'
+  // Deprecated: use `foreign_relay_limit` instead.
+  uint64 foreign_relay_bps_limit = 26 [deprecated = true, (easytier.flag) = {
+    default: "18446744073709551615", deprecated: true
+    attributes: 'optionize(attrs(serde(skip)))'
   }];
 
   uint32 multi_thread_count = 27 [(easytier.flag) = { default: "2" }];
@@ -86,9 +86,10 @@ message Flags {
 
   bool lazy_p2p = 37 [(easytier.flag) = { default: "false" }];
   bool need_p2p = 38 [(easytier.flag) = { default: "false" }];
-  uint64 instance_recv_bps_limit = 39 [(easytier.flag) = {
-    default: "18446744073709551615", form: true
-    attributes: 'optionize(attrs(serde_as(as = "Option<serde_with::PickFirst<(serde_with::DisplayFromStr, _)>>")))'
+  // Deprecated: use `instance_recv_limit` instead.
+  uint64 instance_recv_bps_limit = 39 [deprecated = true, (easytier.flag) = {
+    default: "18446744073709551615", deprecated: true
+    attributes: 'optionize(attrs(serde(skip)))'
   }];
   bool disable_upnp = 40 [(easytier.flag) = { default: "false" }];
   bool disable_relay_data = 41 [(easytier.flag) = { default: "false" }];
@@ -109,6 +110,18 @@ message Flags {
   string compression_algorithm = 45 [(easytier.flag) = {
     default: "none", form: true, api: { field: "data_compress_algo" }
     alias: "data_compress_algo"
+  }];
+
+  // Foreign network relay rate limit, e.g. "10MB", "1.5GiB". Empty means unlimited.
+  string foreign_relay_limit = 46 [(easytier.flag) = {
+    default: ""
+    alias: "foreign_relay_bps_limit"
+  }];
+
+  // Instance total receive rate limit, e.g. "50MB", "100Mbps". Empty means unlimited.
+  string instance_recv_limit = 47 [(easytier.flag) = {
+    default: "", form: true, api: { field: "instance_recv_bps_limit" }
+    alias: "instance_recv_bps_limit"
   }];
 }
 

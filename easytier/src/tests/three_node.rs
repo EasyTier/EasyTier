@@ -3417,7 +3417,11 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
                     "public".to_string(),
                 ));
                 let mut f = cfg.get_flags();
-                f.foreign_relay_bps_limit = bps_limit * 1024;
+                f.foreign_relay_limit = format!("{}KiB", bps_limit);
+                #[allow(deprecated)]
+                {
+                    f.foreign_relay_bps_limit = bps_limit * 1024;
+                }
                 cfg.set_flags(f);
             }
             cfg
@@ -3465,7 +3469,11 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
         |cfg| {
             if cfg.get_inst_name() == "inst2" {
                 let mut f = cfg.get_flags();
-                f.instance_recv_bps_limit = bps_limit * 1024;
+                f.instance_recv_limit = format!("{}KiB", bps_limit);
+                #[allow(deprecated)]
+                {
+                    f.instance_recv_bps_limit = bps_limit * 1024;
+                }
                 cfg.set_flags(f);
             }
             cfg
