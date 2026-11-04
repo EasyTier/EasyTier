@@ -1940,9 +1940,12 @@ mod tests {
                 loop {
                     // Do not race an updater's OS change and dispatcher publication.
                     let guard = shared_nic.lock().await;
-                    let sent = netns.run(|| {
-                        UdpSocket::bind((source, 0))?.send_to(b"mobile-ipv6", (destination, 12345))
-                    });
+                    let sent = netns
+                        .run(|| {
+                            UdpSocket::bind((source, 0))?
+                                .send_to(b"mobile-ipv6", (destination, 12345))
+                        })
+                        .and_then(|sent| sent);
                     drop(guard);
                     if sent.is_ok() {
                         break;
