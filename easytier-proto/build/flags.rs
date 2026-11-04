@@ -1,20 +1,21 @@
-//! Reads the `(easytier.flag)` annotations off `common.Flags` and writes them
-//! out as Rust the crate compiles in.
+//! Reads the `(easytier.flag)` annotations off `common.Flags` to configure
+//! FlagsPatch generation and write schema defaults and form keys.
 //!
 //! Each annotation carries what the core runs for a flag a configuration does
 //! not state, the name the management API spells it with, and whether a config
 //! form offers it. Nothing here is a second list: the field, its type and its
 //! presence are the schema's, and an unannotated field fails the build.
 
-use std::{
-    fmt::Write as _,
-    path::{Path, PathBuf},
-};
+use std::{fmt::Write as _, path::Path};
 
 use anyhow::{Context as _, bail, ensure};
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, Value};
 
-pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
+pub fn generate(
+    descriptor_set: &[u8],
+    config: &mut prost_build::Config,
+    out: &Path,
+) -> anyhow::Result<()> {
     let pool = DescriptorPool::decode(descriptor_set)?;
     let message = pool
         .get_message_by_name("common.Flags")
@@ -29,6 +30,16 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
         .context("the compiled schema declares no api.manage.NetworkConfig")?;
     let api_carries = |name: &str| api.get_field_by_name(name).is_some();
 
+    config
+        .type_attribute(".common.Flags", "#[optionize::optionized]")
+        .type_attribute(
+            ".common.Flags",
+            "#[optionize(name = \"{}Patch\", attrs(\
+                serde_with::serde_as, \
+                derive(Clone, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize), \
+                serde(deny_unknown_fields)))]",
+        );
+
     let mut defaults: Vec<String> = Vec::new();
     let mut form = String::new();
 
@@ -42,6 +53,37 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
         let Value::Message(meta) = options.get_extension(&extension).into_owned() else {
             bail!("easytier.flag on common.Flags.{name} is not a message");
         };
+
+        // Configure FlagsPatch field attributes
+        let nullable = field.supports_presence();
+        let mut serde = "default, skip_serializing_if = \"Option::is_none\"".to_owned();
+        if field.json_name() != field.name() {
+            write!(serde, ", alias = {:?}", field.json_name())?;
+        }
+        if nullable {
+            write!(serde, ", with = \"serde_with::rust::double_option\"")?;
+        }
+        let adapter = match field.kind() {
+            Kind::Bool | Kind::String | Kind::Uint32 => None,
+            Kind::Uint64 => {
+                Some("serde_with::PickFirst<(serde_with::DisplayFromStr, _)>".to_owned())
+            }
+            Kind::Enum(enumeration) => {
+                Some(format!("serde_with::TryFromInto<{}>", enumeration.name()))
+            }
+            kind => bail!(
+                "common.Flags.{} has unsupported kind {kind:?}",
+                field.name()
+            ),
+        };
+        let mut attrs = format!("serde({serde})");
+        if let Some(adapter) = adapter {
+            write!(attrs, ", serde_as(as = \"Option<{adapter}>\")")?;
+        }
+        config.field_attribute(
+            format!(".common.Flags.{name}"),
+            format!("#[optionize(attrs(.., -prost, {attrs}))]"),
+        );
 
         // The value the flag runs with, written the way its type reads; JSON
         // needs quotes around text, and an optional flag that states nothing
@@ -124,9 +166,8 @@ pub const FORM: &[&str] = &[
 "
     );
 
-    let path = out.join("flags.rs");
-    std::fs::write(&path, generated)?;
-    Ok(path)
+    std::fs::write(out.join("flags.rs"), generated)?;
+    Ok(())
 }
 
 /// A text field of the annotation, absent when the annotation leaves it out.
