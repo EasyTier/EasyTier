@@ -169,7 +169,9 @@ mod tests {
                     let mut request = vec![8, 0, 0, 0, identifier[0], identifier[1], 0, sequence];
                     request.extend_from_slice(b"async ICMP");
                     let mut checksum: u32 = request
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
                         .sum();
                     while checksum >> 16 != 0 {

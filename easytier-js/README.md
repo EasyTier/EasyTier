@@ -13,7 +13,7 @@ runtimes while keeping application-facing APIs small:
 A complete browser and Cloudflare Worker walkthrough is available in
 [`examples/web`](./examples/web).
 
-Source builds require Node.js 22, pnpm 10 or newer, Rust 1.95 with the
+Source builds require Node.js 22, pnpm 10 or newer, Rust 1.99.1 with the
 `wasm32-wasip1` target, and Protocol Buffers 35.1. Install the Rust target with:
 
 ```sh

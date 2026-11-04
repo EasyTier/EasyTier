@@ -724,7 +724,7 @@ async fn load_intent(
 
 #[cfg(test)]
 mod tests {
-    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use easytier_core::management::remote_client::{ListNetworkProps, Storage as _};
     use uuid::Uuid;
 

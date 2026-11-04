@@ -4039,7 +4039,9 @@ mod tests {
                 packet[16..20].copy_from_slice(&destination.octets());
                 packet[10..12].fill(0);
                 let mut checksum: u32 = packet[..20]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
                     .sum();
                 while checksum >> 16 != 0 {
