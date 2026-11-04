@@ -4,6 +4,7 @@ use optionize::Optionizable as _;
 use prost::Message as _;
 use std::time::SystemTime;
 use std::{
+    collections::BTreeMap,
     fmt::{self, Display},
     str::FromStr,
     sync::OnceLock,
@@ -75,6 +76,12 @@ impl Flags {
     /// a merge drops a key the form produces nothing for.
     pub fn form() -> &'static [&'static str] {
         flags::FORM
+    }
+
+    /// Maps alternate input names, including camelCase, to canonical flag
+    /// names. Generated from the same schema declarations as Serde.
+    pub fn aliases() -> &'static BTreeMap<&'static str, &'static str> {
+        &flags::ALIASES
     }
 }
 
@@ -679,6 +686,21 @@ mod tests {
             assert!(
                 serde_json::from_str::<FlagsPatch>(invalid).is_err(),
                 "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_flag_aliases_match_the_serde_input_names() {
+        let defaults = serde_json::to_value(Flags::defaults().downgrade()).unwrap();
+        for (&alias, &canonical) in Flags::aliases() {
+            let value = &defaults[canonical];
+            let patch: FlagsPatch =
+                serde_json::from_value(serde_json::json!({alias: value})).unwrap();
+            assert_eq!(
+                serde_json::to_value(patch).unwrap(),
+                serde_json::json!({canonical: value}),
+                "{alias} should name {canonical}"
             );
         }
     }

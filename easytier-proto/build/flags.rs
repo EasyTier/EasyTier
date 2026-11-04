@@ -1,15 +1,16 @@
 //! Reads the `(easytier.flag)` annotations off `common.Flags` to configure
-//! FlagsPatch generation and write schema defaults and form keys.
+//! FlagsPatch generation and write schema defaults, form keys and aliases.
 //!
 //! Each annotation carries what the core runs for a flag a configuration does
 //! not state, the name the management API spells it with, and whether a config
 //! form offers it. Nothing here is a second list: the field, its type and its
 //! presence are the schema's, and an unannotated field fails the build.
 
-use std::{fmt::Write as _, path::Path};
+use std::{collections::BTreeMap, fmt::Write as _, path::Path};
 
 use anyhow::{Context as _, bail, ensure};
-use prost_reflect::{DescriptorPool, DynamicMessage, Kind, Value};
+use heck::ToLowerCamelCase as _;
+use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, Kind, Value};
 
 pub fn generate(
     descriptor_set: &[u8],
@@ -42,6 +43,7 @@ pub fn generate(
 
     let mut defaults: Vec<String> = Vec::new();
     let mut form = String::new();
+    let mut owners = BTreeMap::<String, String>::new();
 
     for field in message.fields() {
         let name = field.name();
@@ -54,36 +56,82 @@ pub fn generate(
             bail!("easytier.flag on common.Flags.{name} is not a message");
         };
 
-        // Configure FlagsPatch field attributes
-        let nullable = field.supports_presence();
-        let mut serde = "default, skip_serializing_if = \"Option::is_none\"".to_owned();
-        if field.json_name() != field.name() {
-            write!(serde, ", alias = {:?}", field.json_name())?;
+        let deprecated = is_set(&meta, "deprecated");
+        ensure!(
+            deprecated
+                == matches!(
+                    options.get_field_by_name("deprecated").as_deref(),
+                    Some(Value::Bool(true))
+                ),
+            "common.Flags.{name}: the annotation says deprecated = {deprecated}, \
+             but the field says the contrary"
+        );
+
+        let names = names(&field, &meta)?;
+        // Deprecated fields can retain their wire slot while a live field
+        // accepts their old name. The old field explicitly skips configuration
+        // input in its optionize annotation.
+        if !deprecated {
+            for spelling in &names {
+                if let Some(owner) = owners.insert(spelling.clone(), name.to_owned()) {
+                    ensure!(
+                        owner == name,
+                        "flag name {spelling} refers to both {owner} and {name}"
+                    );
+                }
+            }
         }
-        if nullable {
+
+        // Common Serde rules and aliases use the same names as the alias map.
+        // Field-specific optionize and Serde rules live in the schema.
+        let mut serde = "default, skip_serializing_if = \"Option::is_none\"".to_owned();
+        for alias in names.iter().filter(|alias| *alias != name) {
+            write!(serde, ", alias = {alias:?}")?;
+        }
+        if field.supports_presence() {
             write!(serde, ", with = \"serde_with::rust::double_option\"")?;
         }
-        let adapter = match field.kind() {
-            Kind::Bool | Kind::String | Kind::Uint32 => None,
-            Kind::Uint64 => {
-                Some("serde_with::PickFirst<(serde_with::DisplayFromStr, _)>".to_owned())
-            }
-            Kind::Enum(enumeration) => {
-                Some(format!("serde_with::TryFromInto<{}>", enumeration.name()))
-            }
-            kind => bail!(
-                "common.Flags.{} has unsupported kind {kind:?}",
-                field.name()
-            ),
-        };
-        let mut attrs = format!("serde({serde})");
-        if let Some(adapter) = adapter {
-            write!(attrs, ", serde_as(as = \"Option<{adapter}>\")")?;
-        }
+        let path = format!(".common.Flags.{name}");
         config.field_attribute(
-            format!(".common.Flags.{name}"),
-            format!("#[optionize(attrs(.., -prost, {attrs}))]"),
+            &path,
+            format!("#[optionize(attrs(.., -prost, serde({serde})))]"),
         );
+        let adapter = if let Some(Value::List(attributes)) =
+            meta.get_field_by_name("attributes").as_deref()
+        {
+            for attr in attributes {
+                let Value::String(attr) = attr else {
+                    bail!("common.Flags.{name}: attribute is not text");
+                };
+                let attr = if attr.starts_with("optionize(") {
+                    format!("#[{attr}]")
+                } else {
+                    format!("#[optionize({attr})]")
+                };
+                config.field_attribute(&path, attr);
+            }
+            None
+        } else {
+            match field.kind() {
+                Kind::Bool | Kind::String | Kind::Uint32 => None,
+                Kind::Uint64 => {
+                    Some("serde_with::PickFirst<(serde_with::DisplayFromStr, _)>".to_owned())
+                }
+                Kind::Enum(enumeration) => {
+                    Some(format!("serde_with::TryFromInto<{}>", enumeration.name()))
+                }
+                kind => bail!(
+                    "common.Flags.{} has unsupported kind {kind:?}",
+                    field.name()
+                ),
+            }
+        };
+        if let Some(adapter) = adapter {
+            config.field_attribute(
+                &path,
+                format!("#[optionize(attrs(serde_as(as = \"Option<{adapter}>\")))]"),
+            );
+        }
 
         // The value the flag runs with, written the way its type reads; JSON
         // needs quotes around text, and an optional flag that states nothing
@@ -116,18 +164,6 @@ pub fn generate(
             );
         }
 
-        let deprecated = is_set(&meta, "deprecated");
-
-        ensure!(
-            deprecated
-                == matches!(
-                    options.get_field_by_name("deprecated").as_deref(),
-                    Some(Value::Bool(true))
-                ),
-            "common.Flags.{name}: the annotation says deprecated = {deprecated}, \
-             but the field says the contrary"
-        );
-
         // The schema field names a config form owns, used as TOML keys.
         //
         // Only what the API carries can be a key here: the merge drops a key
@@ -149,6 +185,12 @@ pub fn generate(
         }
     }
 
+    let mut aliases = String::new();
+    for (alias, name) in owners {
+        if alias != name {
+            writeln!(aliases, "    ({alias:?}, {name:?}),")?;
+        }
+    }
     let defaults = defaults.join(",\n");
     let generated = format!(
         "\
@@ -163,11 +205,42 @@ pub const DEFAULTS: &str = r##\"{{
 /// The schema field names of flags managed by the config form.
 pub const FORM: &[&str] = &[
 {form}];
+
+/// Maps alternate input names to their canonical schema field names.
+pub static ALIASES: std::sync::LazyLock<std::collections::BTreeMap<&'static str, &'static str>> =
+    std::sync::LazyLock::new(|| std::collections::BTreeMap::from([
+{aliases}]));
 "
     );
 
     std::fs::write(out.join("flags.rs"), generated)?;
     Ok(())
+}
+
+/// Collect each field's name, JSON name and declared aliases, including the
+/// camelCase spelling of every name. Aliases need not be protobuf fields.
+fn names(field: &FieldDescriptor, meta: &DynamicMessage) -> anyhow::Result<Vec<String>> {
+    let name = field.name();
+    let mut declared = vec![name.to_owned(), field.json_name().to_owned()];
+    if let Some(Value::List(aliases)) = meta.get_field_by_name("alias").as_deref() {
+        for alias in aliases {
+            let Value::String(alias) = alias else {
+                bail!("common.Flags.{name}: alias is not text");
+            };
+            ensure!(!alias.is_empty(), "common.Flags.{name}: alias is empty");
+            declared.push(alias.clone());
+        }
+    }
+    let mut names = Vec::new();
+    for spelling in declared
+        .iter()
+        .flat_map(|name| [name.clone(), name.to_lower_camel_case()])
+    {
+        if !names.contains(&spelling) {
+            names.push(spelling);
+        }
+    }
+    Ok(names)
 }
 
 /// A text field of the annotation, absent when the annotation leaves it out.
