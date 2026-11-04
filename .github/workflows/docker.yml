@@ -97,7 +97,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./docker_context
-          platforms: linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/riscv64
+          platforms: linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/riscv64,linux/ppc64le
           push: true
           file: .github/workflows/Dockerfile
           tags: ${{ steps.tags.outputs.tags }}
