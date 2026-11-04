@@ -12,7 +12,7 @@ use crate::{
         log,
     },
     instance::factory::native_cli_instance_manager,
-    proto::common::{CompressionAlgoPb, Flags, FlagsPatch, SecureModeConfig},
+    proto::common::{Flags, FlagsPatch, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
     web_client,
@@ -22,7 +22,9 @@ use cidr::IpCidr;
 use clap::{
     Arg, ArgMatches, CommandFactory, FromArgMatches, Parser, builder::TypedValueParser as _,
 };
-use easytier_core::config::{DhcpConfig, EncryptionAlgorithm, normalize_secure_mode_config};
+use easytier_core::config::{
+    CompressionAlgorithm, DhcpConfig, EncryptionAlgorithm, normalize_secure_mode_config,
+};
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
 use rust_i18n::t;
@@ -1150,10 +1152,8 @@ fn cli_command() -> clap::Command {
                 .num_args(0..=1)
                 .default_missing_value("true")
                 .value_parser(negated.clone()),
-            // The command line names the algorithm instead of spelling the field.
-            // The values are the schema's own, which the patch reads.
-            "data_compress_algo" => {
-                arg(name, "compression").value_parser(parsed::<CompressionAlgoPb>)
+            "compression_algorithm" => {
+                arg(name, "compression").value_parser(parsed::<CompressionAlgorithm>)
             }
             "encryption_algorithm" => arg(name, name).value_parser(parsed::<EncryptionAlgorithm>),
             "mtu" => arg(name, name).value_parser(parsed::<u16>),
@@ -1567,7 +1567,6 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::common::CompressionAlgoPb;
 
     /// Parses the flags the way the binary does.
     fn parse_flags(argv: &[&str]) -> Result<FlagsPatch, clap::Error> {
@@ -1862,10 +1861,7 @@ enabled = true
         assert_eq!(patch.enable_encryption, Some(true));
         assert_eq!(patch.latency_first, Some(false));
         assert_eq!(patch.mtu, Some(0));
-        assert_eq!(
-            patch.data_compress_algo,
-            Some(CompressionAlgoPb::Zstd as i32)
-        );
+        assert_eq!(patch.compression_algorithm.as_deref(), Some("zstd"));
         assert_eq!(patch.socket_mark, Some(Some(42)));
         assert_eq!(patch.disable_relay_data, Some(true));
         assert_eq!(patch.enable_ipv6, None);
@@ -1914,22 +1910,14 @@ enabled = true
 
         // Compression tests: case-insensitive, accepts None/none/zstd/Zstd/ZSTD, rejects invalid
         let patch = parse_flags(&["easytier", "--compression", "none"]).unwrap();
-        assert_eq!(
-            patch.data_compress_algo,
-            Some(CompressionAlgoPb::None as i32)
-        );
+        assert_eq!(patch.compression_algorithm.as_deref(), Some("none"));
         let patch = parse_flags(&["easytier", "--compression", "zstd"]).unwrap();
-        assert_eq!(
-            patch.data_compress_algo,
-            Some(CompressionAlgoPb::Zstd as i32)
-        );
+        assert_eq!(patch.compression_algorithm.as_deref(), Some("zstd"));
         let patch = parse_flags(&["easytier", "--compression", "ZSTD"]).unwrap();
-        assert_eq!(
-            patch.data_compress_algo,
-            Some(CompressionAlgoPb::Zstd as i32)
-        );
+        assert_eq!(patch.compression_algorithm.as_deref(), Some("zstd"));
         assert!(parse_flags(&["easytier", "--compression", "invalid"]).is_err());
         assert!(parse_flags(&["easytier", "--compression", "lz4"]).is_err());
+        assert!(parse_flags(&["easytier", "--compression", "2"]).is_err());
 
         // Encryption algorithm tests: case-insensitive, aliases, rejects invalid
         let patch = parse_flags(&["easytier", "--encryption-algorithm", "aes-gcm"]).unwrap();
@@ -2000,7 +1988,7 @@ socket_mark = 42
                 mtu: Some(0),
                 relay_network_whitelist: Some(String::new()),
                 enable_encryption: Some(false),
-                data_compress_algo: Some(CompressionAlgoPb::Zstd.into()),
+                compression_algorithm: Some(CompressionAlgorithm::Zstd.to_string()),
                 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
                 socket_mark: Some(Some(0)),
                 ..Default::default()
@@ -2016,7 +2004,7 @@ socket_mark = 42
         assert_eq!(flags.mtu, 0);
         assert_eq!(flags.relay_network_whitelist, "");
         assert!(!flags.enable_encryption);
-        assert_eq!(flags.data_compress_algo, CompressionAlgoPb::Zstd as i32);
+        assert_eq!(flags.compression_algorithm, "zstd");
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         assert_eq!(flags.socket_mark, Some(0));
         #[cfg(not(feature = "tun"))]

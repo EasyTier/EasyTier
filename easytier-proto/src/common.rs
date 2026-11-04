@@ -16,8 +16,7 @@ include!(concat!(env!("OUT_DIR"), "/common.rs"));
 include!(concat!(env!("OUT_DIR"), "/common.serde.rs"));
 
 impl Flags {
-    /// The flags the message declares, in declaration order, less the ones it
-    /// has deprecated: what a user can still set.
+    /// Canonical flags in declaration order, excluding deprecated fields.
     ///
     /// Read back from the descriptor set this crate embeds, so a flag added to
     /// the message shows up here without a second list to keep in step.
@@ -605,7 +604,7 @@ impl SecureModeConfig {
 mod tests {
     use optionize::{Optionizable, PartialOptionized};
 
-    use super::{CompressionAlgoPb, Flags, FlagsPatch, TunnelInfo, Url, normalize_tunnel_url};
+    use super::{Flags, FlagsPatch, TunnelInfo, Url, normalize_tunnel_url};
 
     #[test]
     fn flags_patch_preserves_omitted_cleared_and_set_values() {
@@ -655,10 +654,7 @@ mod tests {
         assert_eq!(patch.dev_name.as_deref(), Some(""));
         assert_eq!(patch.mtu, Some(0));
         assert_eq!(patch.foreign_relay_bps_limit, Some(u64::MAX));
-        assert_eq!(
-            patch.data_compress_algo,
-            Some(CompressionAlgoPb::Zstd as i32)
-        );
+        assert_eq!(patch.compression_algorithm.as_deref(), Some("Zstd"));
         let json = serde_json::to_value(&patch).unwrap();
         assert_eq!(
             json,
@@ -668,7 +664,7 @@ mod tests {
                 "dev_name": "",
                 "mtu": 0,
                 "foreign_relay_bps_limit": "18446744073709551615",
-                "data_compress_algo": "Zstd",
+                "compression_algorithm": "Zstd",
             })
         );
         assert_eq!(serde_json::from_value::<FlagsPatch>(json).unwrap(), patch);
@@ -680,7 +676,12 @@ mod tests {
             r#"{"mtu":4294967296}"#,
             r#"{"socket_mark":4294967296}"#,
             r#"{"foreign_relay_bps_limit":"18446744073709551616"}"#,
+            r#"{"data_compress_algo":0}"#,
+            r#"{"data_compress_algo":1}"#,
+            r#"{"dataCompressAlgo":2}"#,
+            r#"{"compression_algorithm":2}"#,
             r#"{"data_compress_algo":99}"#,
+            r#"{"compression_algorithm":"none","data_compress_algo":"Zstd"}"#,
             r#"{"unknown_flag":true}"#,
         ] {
             assert!(
@@ -688,6 +689,34 @@ mod tests {
                 "{invalid}"
             );
         }
+    }
+
+    #[test]
+    fn compression_config_aliases_migrate_to_the_string_field() {
+        for (input, expected) in [
+            (r#"{"compression_algorithm":"zstd"}"#, "zstd"),
+            (r#"{"compressionAlgorithm":"ZSTD"}"#, "ZSTD"),
+            (r#"{"data_compress_algo":"Zstd"}"#, "Zstd"),
+            (r#"{"dataCompressAlgo":"none"}"#, "none"),
+        ] {
+            let patch: FlagsPatch = serde_json::from_str(input).unwrap();
+            assert_eq!(patch.compression_algorithm.as_deref(), Some(expected));
+            assert_eq!(
+                Flags::resolve(patch.clone()).compression_algorithm,
+                expected
+            );
+            assert_eq!(
+                serde_json::to_value(patch).unwrap(),
+                serde_json::json!({"compression_algorithm": expected})
+            );
+        }
+        assert!(Flags::form().contains(&"compression_algorithm"));
+        assert!(!Flags::form().contains(&"data_compress_algo"));
+        assert!(
+            !Flags::flags()
+                .iter()
+                .any(|field| field.name() == "data_compress_algo")
+        );
     }
 
     #[test]
@@ -701,6 +730,19 @@ mod tests {
                 serde_json::to_value(patch).unwrap(),
                 serde_json::json!({canonical: value}),
                 "{alias} should name {canonical}"
+            );
+        }
+        for alias in [
+            "compressionAlgorithm",
+            "data_compress_algo",
+            "dataCompressAlgo",
+        ] {
+            assert_eq!(Flags::aliases().get(alias), Some(&"compression_algorithm"));
+        }
+        for alias in ["foreign_network_whitelist", "foreignNetworkWhitelist"] {
+            assert_eq!(
+                Flags::aliases().get(alias),
+                Some(&"relay_network_whitelist")
             );
         }
     }
