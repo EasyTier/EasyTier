@@ -46,7 +46,7 @@ use crate::{
     peers::error::Error,
     proto::{
         common::{SecureModeConfig, TunnelInfo},
-        core_peer::peer::{PeerConnInfo, PeerConnStats},
+        core::peer::{PeerConnInfo, PeerConnStats},
         peer_rpc::{
             HandshakeRequest, PeerConnNoiseMsg1Pb, PeerConnNoiseMsg2Pb, PeerConnNoiseMsg3Pb,
             PeerConnSessionActionPb, PeerIdentityType, SecureAuthLevel,

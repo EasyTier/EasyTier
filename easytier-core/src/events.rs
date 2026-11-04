@@ -13,8 +13,8 @@ use crate::{
 pub enum CoreEvent {
     PeerAdded(PeerId),
     PeerRemoved(PeerId),
-    PeerConnAdded(easytier_proto::core_peer::peer::PeerConnInfo),
-    PeerConnRemoved(easytier_proto::core_peer::peer::PeerConnInfo),
+    PeerConnAdded(easytier_proto::core::peer::PeerConnInfo),
+    PeerConnRemoved(easytier_proto::core::peer::PeerConnInfo),
     CredentialChanged,
 
     ManualConnecting {

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 import "common.proto";
 
-package core_config;
+package core.config;
 
 message CoreConfig {
   NodeConfig node = 1;

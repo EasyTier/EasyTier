@@ -50,7 +50,7 @@ use crate::{
     },
     proto::{
         common::{NatType, RuntimeTimestamp as Timestamp, TimestampExt},
-        core_peer::peer::{
+        core::peer::{
             ListPublicIpv6InfoResponse as CoreListPublicIpv6InfoResponse,
             PublicIpv6LeaseInfo as CorePublicIpv6LeaseInfo, Route as CoreRouteInfo,
         },

@@ -2784,14 +2784,14 @@ mod tests {
             .unwrap();
         let public = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(private));
         *observation.lock().unwrap() = crate::central_network::gateway::GatewayNetworkObservation {
-            connections: vec![easytier_proto::core_peer::peer::PeerConnInfo {
+            connections: vec![easytier_proto::core::peer::PeerConnInfo {
                 peer_id: 42,
                 network_name: intent.network_name,
                 peer_identity_type: easytier_proto::peer_rpc::PeerIdentityType::Credential as i32,
                 noise_remote_static_pubkey: public.as_bytes().to_vec(),
                 ..Default::default()
             }],
-            routes: vec![easytier_proto::core_peer::peer::Route {
+            routes: vec![easytier_proto::core::peer::Route {
                 peer_id: 42,
                 hostname: "registered-temporary-device".to_owned(),
                 version: "2.7.0".to_owned(),
