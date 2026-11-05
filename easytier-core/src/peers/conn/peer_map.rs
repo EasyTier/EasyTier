@@ -184,6 +184,17 @@ impl PeerMap {
         Ok(())
     }
 
+    /// 复制一份 route 列表快照，**立即释放 `routes` 读锁**。
+    ///
+    /// 为什么必须这样：`routes.read()` 的 guard 如果跨 `.await` 持有，一旦别的任务
+    /// 正在等 `routes.write()`（比如增删 route），而写锁持有者又在等本任务持有的资源，
+    /// 就会形成环，读任务永久挂起。数据面转发链路（tun → send_msg_by_ip → 这里）一旦
+    /// 卡住，tun 内核队列很快写满，表现为「peer/route 全正常但整网 ping 不通」。
+    /// 本方法把锁持有时间压到一次 Vec clone，之后所有 `route.xxx().await` 都在无锁状态下进行。
+    async fn route_snapshot(&self) -> Vec<ArcRoute> {
+        self.routes.read().await.clone()
+    }
+
     pub async fn get_gateway_peer_id(
         &self,
         dst_peer_id: PeerId,
@@ -202,7 +213,7 @@ impl PeerMap {
         }
 
         // get route info
-        for route in self.routes.read().await.iter() {
+        for route in self.route_snapshot().await.iter() {
             if let Some(gateway_peer_id) = route
                 .get_next_hop_with_policy(dst_peer_id, policy.clone())
                 .await
@@ -220,7 +231,7 @@ impl PeerMap {
         network_identity: &NetworkIdentity,
     ) -> Vec<PeerId> {
         let mut ret = Vec::new();
-        for route in self.routes.read().await.iter() {
+        for route in self.route_snapshot().await.iter() {
             let peers = route.list_peers_own_foreign_network(network_identity).await;
             ret.extend(peers);
         }
@@ -245,7 +256,7 @@ impl PeerMap {
     }
 
     pub async fn get_peer_id_by_ipv4(&self, ipv4: &Ipv4Addr) -> Option<PeerId> {
-        for route in self.routes.read().await.iter() {
+        for route in self.route_snapshot().await.iter() {
             let peer_id = route.get_peer_id_by_ipv4(ipv4).await;
             if peer_id.is_some() {
                 return peer_id;
@@ -255,7 +266,7 @@ impl PeerMap {
     }
 
     pub async fn get_peer_id_by_ipv6(&self, ipv6: &Ipv6Addr) -> Option<PeerId> {
-        for route in self.routes.read().await.iter() {
+        for route in self.route_snapshot().await.iter() {
             let peer_id = route.get_peer_id_by_ipv6(ipv6).await;
             if peer_id.is_some() {
                 return peer_id;
@@ -265,7 +276,7 @@ impl PeerMap {
     }
 
     pub async fn get_route_peer_info(&self, peer_id: PeerId) -> Option<RoutePeerInfo> {
-        for route in self.routes.read().await.iter() {
+        for route in self.route_snapshot().await.iter() {
             if let Some(info) = route.get_peer_info(peer_id).await {
                 return Some(info);
             }
@@ -278,7 +289,7 @@ impl PeerMap {
         network_name: &str,
         foreign_my_peer_id: PeerId,
     ) -> Option<PeerId> {
-        for route in self.routes.read().await.iter() {
+        for route in self.route_snapshot().await.iter() {
             let origin_peer_id = route
                 .get_origin_my_peer_id(network_name, foreign_my_peer_id)
                 .await;
@@ -397,7 +408,7 @@ impl PeerMap {
 
     pub async fn list_routes(&self) -> DashMap<PeerId, PeerId> {
         let route_map = DashMap::new();
-        for route in self.routes.read().await.iter() {
+        for route in self.route_snapshot().await.iter() {
             for item in route.list_routes().await.iter() {
                 route_map.insert(item.peer_id, item.next_hop_peer_id);
             }
@@ -406,7 +417,7 @@ impl PeerMap {
     }
 
     pub async fn list_route_infos(&self) -> Vec<CoreRoute> {
-        if let Some(route) = self.routes.read().await.iter().next() {
+        if let Some(route) = self.route_snapshot().await.first() {
             return route.list_routes().await;
         }
         vec![]
