@@ -3,33 +3,37 @@ use std::{
     sync::Arc,
 };
 
-use easytier_core::{
-    gateway::proxy::icmp_host::{IcmpProxyHost, IcmpProxySocket, ProxyRuntimeError},
-    socket::SocketContext,
-};
+use crate::common::netns::{NetNS, NetNSImpl};
+use easytier_core::gateway::proxy::icmp_host::{IcmpProxyHost, IcmpProxySocket, ProxyRuntimeError};
+use easytier_core::socket::SocketContext;
 use socket2::Socket;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
-use crate::common::netns::NetNS;
-
-#[derive(Debug, Default)]
-pub(crate) struct RuntimeIcmpProxyHost;
+#[derive(Debug)]
+pub(crate) struct RuntimeIcmpProxyHost {
+    netns: NetNS,
+}
 
 impl RuntimeIcmpProxyHost {
-    fn create_raw_socket(context: &SocketContext) -> Result<Socket, std::io::Error> {
-        let _guard = NetNS::from_socket_context(context).guard();
-        let socket = Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::RAW,
-            Some(socket2::Protocol::ICMPV4),
-        )?;
-        socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
-            Ipv4Addr::UNSPECIFIED,
-            0,
-        )))?;
-        socket.set_nonblocking(true)?;
-        Ok(socket)
+    pub(crate) fn new(netns: NetNS) -> Self {
+        Self { netns }
+    }
+
+    fn create_raw_socket(&self) -> Result<Socket, std::io::Error> {
+        self.netns.run(|| {
+            let socket = Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::RAW,
+                Some(socket2::Protocol::ICMPV4),
+            )?;
+            socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
+                Ipv4Addr::UNSPECIFIED,
+                0,
+            )))?;
+            socket.set_nonblocking(true)?;
+            Ok(socket)
+        })?
     }
 }
 
@@ -72,9 +76,9 @@ impl IcmpProxySocket for RuntimeIcmpSocket {
 impl IcmpProxyHost for RuntimeIcmpProxyHost {
     async fn open_icmp_v4(
         &self,
-        context: SocketContext,
+        _context: SocketContext,
     ) -> Result<Arc<dyn IcmpProxySocket>, ProxyRuntimeError> {
-        let socket = Self::create_raw_socket(&context).inspect_err(|error| {
+        let socket = self.create_raw_socket().inspect_err(|error| {
             tracing::warn!(?error, "create ICMP socket failed");
         })?;
         // Tokio only supplies readiness and recvfrom/sendto here; the underlying
@@ -88,6 +92,7 @@ impl IcmpProxyHost for RuntimeIcmpProxyHost {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::netns::{NetNS, NetNSImpl};
     use std::time::Duration;
 
     use super::*;
@@ -158,7 +163,7 @@ mod tests {
                 let mut sockets = Vec::new();
                 for _ in 0..30 {
                     sockets.push(
-                        RuntimeIcmpProxyHost
+                        RuntimeIcmpProxyHost::new(NetNS::current().unwrap())
                             .open_icmp_v4(SocketContext::default())
                             .await
                             .unwrap(),

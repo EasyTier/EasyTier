@@ -31,7 +31,7 @@ pub(crate) use session::{
 };
 pub use virtual_socket::{
     MAX_UDP_DATAGRAM_SIZE, MAX_UDP_SESSION_DATAGRAM_SIZE, NoopUdpSessionStunResponder,
-    PreferredIpv6Source, UdpBindOptions, UdpSessionStunResponder, UdpSocketDatagram,
-    UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
-    VirtualUdpSocketFactory, send_v4_hole_punch_control_packet, send_v6_hole_punch_control_packet,
+    PreferredIpv6Source, UdpSessionStunResponder, UdpSocketDatagram, UdpSocketRecvMeta,
+    UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+    send_v4_hole_punch_control_packet, send_v6_hole_punch_control_packet,
 };

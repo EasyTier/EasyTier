@@ -7,7 +7,7 @@ use crate::common::ifcfg::{
     RouteMessage, RouteType, add_ipv6_ndp_proxy, get_interface_index, list_ipv6_ndp_proxy,
     list_ipv6_route_messages, remove_ipv6_ndp_proxy,
 };
-use crate::common::netns::NetNS;
+use crate::common::netns::{NetNS, NetNSImpl};
 use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
@@ -379,44 +379,54 @@ impl NdpProxyRuntime {
             return self.cleanup_pending();
         };
 
-        let _g = global_ctx.net_ns.guard();
+        global_ctx
+            .netns
+            .run(|| {
+                if self.wan_iface.as_deref() != Some(desired.target.wan_interface.as_str()) {
+                    if !self.clear_current_locked() {
+                        tracing::warn!(
+                            old_wan_iface = ?self.wan_iface,
+                            new_wan_iface = %desired.target.wan_interface,
+                            remaining_entries = self.applied.len(),
+                            "waiting to remove old NDP proxy entries before switching WAN interface"
+                        );
+                        return true;
+                    }
+                    self.wan_iface = Some(desired.target.wan_interface.clone());
+                }
 
-        if self.wan_iface.as_deref() != Some(desired.target.wan_interface.as_str()) {
-            if !self.clear_current_locked() {
-                tracing::warn!(
-                    old_wan_iface = ?self.wan_iface,
-                    new_wan_iface = %desired.target.wan_interface,
-                    remaining_entries = self.applied.len(),
-                    "waiting to remove old NDP proxy entries before switching WAN interface"
-                );
-                return true;
-            }
-            self.wan_iface = Some(desired.target.wan_interface.clone());
-        }
-
-        if let Err(err) = sync_ndp_proxy_entries(
-            desired.target.wan_interface.as_str(),
-            tun_iface.as_str(),
-            desired.prefix,
-            &mut self.applied,
-        ) {
-            tracing::warn!(
-                wan_iface = %desired.target.wan_interface,
-                tun_iface = %tun_iface,
-                ?err,
-                "failed to sync NDP proxy entries"
-            );
-        }
-        self.cleanup_pending()
+                if let Err(err) = sync_ndp_proxy_entries(
+                    desired.target.wan_interface.as_str(),
+                    tun_iface.as_str(),
+                    desired.prefix,
+                    &mut self.applied,
+                ) {
+                    tracing::warn!(
+                        wan_iface = %desired.target.wan_interface,
+                        tun_iface = %tun_iface,
+                        ?err,
+                        "failed to sync NDP proxy entries"
+                    );
+                }
+                self.cleanup_pending()
+            })
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "cannot enter namespace for NDP synchronization");
+                true
+            })
     }
 
     fn clear_current(&mut self, global_ctx: &ArcGlobalCtx) -> bool {
-        self.clear_current_in_netns(&global_ctx.net_ns)
+        self.clear_current_in_netns(&global_ctx.netns)
     }
 
-    fn clear_current_in_netns(&mut self, net_ns: &NetNS) -> bool {
-        let _g = net_ns.guard();
-        self.clear_current_locked()
+    fn clear_current_in_netns(&mut self, netns: &NetNS) -> bool {
+        netns
+            .run(|| self.clear_current_locked())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "cannot enter namespace for NDP cleanup");
+                false
+            })
     }
 
     fn clear_current_locked(&mut self) -> bool {
@@ -587,8 +597,8 @@ fn sync_ndp_proxy_entries(
     Ok(())
 }
 
-fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) -> bool {
-    let complete = runtime.clear_current_in_netns(net_ns);
+fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, netns: &NetNS) -> bool {
+    let complete = runtime.clear_current_in_netns(netns);
     if !complete {
         tracing::warn!(
             remaining_entries = runtime.applied.len(),
@@ -601,7 +611,7 @@ fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) -> b
 
 pub(super) struct RuntimePublicIpv6ProviderPlatform {
     global_ctx: std::sync::Weak<crate::common::global_ctx::GlobalCtx>,
-    net_ns: NetNS,
+    netns: NetNS,
     event_receiver: tokio::sync::Mutex<tokio::sync::broadcast::Receiver<GlobalCtxEvent>>,
     ndp_proxy: std::sync::Mutex<NdpProxyRuntime>,
 }
@@ -610,7 +620,7 @@ impl RuntimePublicIpv6ProviderPlatform {
     pub(super) fn new(global_ctx: &ArcGlobalCtx) -> Arc<Self> {
         Arc::new(Self {
             global_ctx: Arc::downgrade(global_ctx),
-            net_ns: global_ctx.net_ns.clone(),
+            netns: global_ctx.netns.clone(),
             event_receiver: tokio::sync::Mutex::new(global_ctx.subscribe()),
             ndp_proxy: std::sync::Mutex::new(NdpProxyRuntime::default()),
         })
@@ -627,7 +637,7 @@ impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
             return Err(PublicIpv6PlatformError::Unavailable);
         };
 
-        let _guard = global_ctx.net_ns.guard();
+        global_ctx.netns.run(|| {
         ensure_linux_ipv6_forwarding()
             .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))?;
 
@@ -655,6 +665,7 @@ impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
                 ndp_target: detected.and_then(|detected| detected.ndp_target),
             })
             .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))
+        }).map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))?
     }
 
     fn sync_ndp(
@@ -673,7 +684,7 @@ impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
             return Ok(());
         }
         if desired.is_none() {
-            return cleanup_ndp_proxy_runtime(&mut runtime, &self.net_ns)
+            return cleanup_ndp_proxy_runtime(&mut runtime, &self.netns)
                 .then_some(())
                 .ok_or_else(|| {
                     PublicIpv6PlatformError::Failed(format!(
@@ -1297,7 +1308,7 @@ mod tests {
 
         assert!(super::cleanup_ndp_proxy_runtime(
             &mut runtime,
-            &crate::common::netns::NetNS::new(None)
+            &<crate::common::netns::NetNS as crate::common::netns::NetNSImpl>::current().unwrap()
         ));
         assert!(
             !crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)

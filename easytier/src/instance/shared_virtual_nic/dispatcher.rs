@@ -2002,7 +2002,10 @@ mod tests {
         SharedVirtualNicDispatcher,
         mpsc::UnboundedSender<SharedVirtualNicControl>,
     ) {
-        use crate::{common::netns::NetNS, instance::virtual_nic::VirtualNicConfig};
+        use crate::{
+            common::netns::{NetNS, NetNSImpl as _},
+            instance::virtual_nic::VirtualNicConfig,
+        };
 
         let (tun_stream, tun_sink) = tunnel.split();
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
@@ -2012,7 +2015,7 @@ mod tests {
                 nic: Arc::new(Mutex::new(VirtualNic::new(VirtualNicConfig::new(
                     String::new(),
                     1300,
-                    NetNS::new(None),
+                    NetNS::current().unwrap(),
                 )))),
                 tun_fd: -1,
             }),
@@ -3112,7 +3115,10 @@ mod tests {
     async fn cancelled_member_updates_finish_before_registration_cleanup() {
         use super::super::{SharedVirtualNic, SharedVirtualNicMember};
         use crate::{
-            common::{ifcfg::IfConfiguerTrait, netns::NetNS},
+            common::{
+                ifcfg::IfConfiguerTrait,
+                netns::{NetNS, NetNSImpl as _},
+            },
             instance::virtual_nic::VirtualNicConfig,
         };
 
@@ -3215,7 +3221,7 @@ mod tests {
                 let mut shared_nic = SharedVirtualNic::new(VirtualNicConfig::new(
                     String::new(),
                     1500,
-                    NetNS::new(None),
+                    NetNS::current().unwrap(),
                 ));
                 {
                     let mut nic = shared_nic.nic.lock().await;

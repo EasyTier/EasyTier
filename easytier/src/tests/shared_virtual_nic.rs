@@ -8,13 +8,13 @@ use super::{
 use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, TomlConfigLoader},
-        netns::{NetNS, ROOT_NETNS_NAME},
+        netns::{NetNS, NetNSImpl as _, ROOT_NETNS_NAME},
     },
     instance::{
         shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedIpv4Route},
         test_instance::TestInstance as Instance,
     },
-    tunnel::common::tests::wait_for_condition,
+    tunnel::tests::wait_for_condition,
 };
 
 const PROXY_CIDR: &str = "10.1.2.0/24";
@@ -162,10 +162,14 @@ async fn wait_proxy_route_absent(instance: &Instance, peer_id: PeerId, proxy_cid
 }
 
 fn ipv4_route_exists_in_ns(ns: &str, needle: &str) -> bool {
-    let _root = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
-    let output = Command::new("ip")
-        .args(["netns", "exec", ns, "ip", "route", "show"])
-        .output()
+    let output = NetNS::open(Some(ROOT_NETNS_NAME))
+        .unwrap()
+        .run(|| {
+            Command::new("ip")
+                .args(["netns", "exec", ns, "ip", "route", "show"])
+                .output()
+        })
+        .unwrap()
         .unwrap();
     assert!(
         output.status.success(),
@@ -178,14 +182,18 @@ fn ipv4_route_exists_in_ns(ns: &str, needle: &str) -> bool {
 }
 
 fn tun_ifindex(ns: &str, dev_name: &str) -> Option<u64> {
-    let _root = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let mut command = Command::new("ip");
     if ns != ROOT_NETNS_NAME {
         command.args(["-n", ns]);
     }
-    let output = command
-        .args(["-j", "link", "show", "dev", dev_name])
-        .output()
+    let output = NetNS::open(Some(ROOT_NETNS_NAME))
+        .unwrap()
+        .run(|| {
+            command
+                .args(["-j", "link", "show", "dev", dev_name])
+                .output()
+        })
+        .unwrap()
         .unwrap();
     if !output.status.success() {
         return None;
@@ -240,8 +248,13 @@ async fn failed_claim_update_closes_all_members_and_allows_recreation() {
 
     let netns = TestNetnsGuard::new(short_name("svf"), "10.233.1.2/24", "fd43::2/64");
     let dev_name = test_dev_name();
-    let config =
-        || VirtualNicConfig::new(dev_name.clone(), 1400, NetNS::new(Some(netns.name.clone())));
+    let config = || {
+        VirtualNicConfig::new(
+            dev_name.clone(),
+            1400,
+            NetNS::open(Some(&netns.name)).unwrap(),
+        )
+    };
     let mut registry = SharedVirtualNicRegistry::new();
     let first_closed = Arc::new(Notify::new());
     let second_closed = Arc::new(Notify::new());
@@ -412,8 +425,10 @@ async fn shared_tun_survives_creator_executor_shutdown() {
     .await;
 
     let bind = |ns: &str, address: &str| {
-        let socket =
-            NetNS::new(Some(ns.to_owned())).run(|| std::net::UdpSocket::bind(address).unwrap());
+        let socket = NetNS::open(Some(ns))
+            .unwrap()
+            .run(|| std::net::UdpSocket::bind(address).unwrap())
+            .unwrap();
         socket.set_nonblocking(true).unwrap();
         tokio::net::UdpSocket::from_std(socket).unwrap()
     };
@@ -479,8 +494,13 @@ fn shared_tun_claim_cleanup_outlives_member_runtime() {
 
     let netns = TestNetnsGuard::new(short_name("svc"), "10.235.1.2/24", "fd46::2/64");
     let dev_name = test_dev_name();
-    let config =
-        || VirtualNicConfig::new(dev_name.clone(), 1400, NetNS::new(Some(netns.name.clone())));
+    let config = || {
+        VirtualNicConfig::new(
+            dev_name.clone(),
+            1400,
+            NetNS::open(Some(&netns.name)).unwrap(),
+        )
+    };
     let mut registry = SharedVirtualNicRegistry::new();
     let first = registry.create_member(
         dev_name.clone(),
@@ -805,7 +825,7 @@ async fn wait_shared_magic_dns_record(
         || async {
             // Let the kernel select the source from the shared route, rather
             // than binding to the server and hiding a client-owned route.
-            let Ok(socket) = NetNS::new(Some(ns.to_owned())).run(|| {
+            let Ok(Ok(socket)) = NetNS::open(Some(ns)).unwrap().run(|| {
                 let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
                 socket.connect((MAGIC_DNS_FAKE_IP, 53))?;
                 socket.set_nonblocking(true)?;

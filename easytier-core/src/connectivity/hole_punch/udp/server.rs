@@ -1033,10 +1033,11 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
+    use crate::socket::BindConfig;
     use crate::{
         connectivity::hole_punch::udp::{UdpPunchAcceptor, UdpPunchSocket, UdpResolvedPublicAddr},
         proto::common::StunInfo,
-        socket::udp::{UdpBindOptions, UdpSession, UdpSessionKind},
+        socket::udp::{UdpSession, UdpSessionKind},
     };
 
     struct MockSocket {
@@ -1116,7 +1117,7 @@ mod tests {
     impl UdpHolePunchRuntime for MockRuntime {
         type Socket = MockSocket;
 
-        async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, _options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             Ok(Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 sent: tokio::sync::Mutex::new(Vec::new()),

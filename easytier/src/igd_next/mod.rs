@@ -13,10 +13,12 @@ use std::{collections::HashMap, fmt, net::SocketAddr, time::Duration};
 use std::net::IpAddr;
 
 use bytes::Bytes;
+use easytier_core::socket::BindConfig;
 use easytier_core::socket::{
     tcp::TcpConnectOptions,
-    udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+    udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
 };
+use easytier_core::tunnel::TunnelError;
 use http_body_util::{BodyExt as _, Full, Limited};
 use hyper::{
     Method, Request,
@@ -34,7 +36,10 @@ use errors::GetExternalIpError;
 pub(crate) use errors::GetGenericPortMappingEntryError;
 use errors::{AddPortError, HttpTransportError, RemovePortError, RequestError, SearchError};
 
-use crate::socket::{tcp::connect_tcp, udp::RuntimeUdpSocketFactory};
+use crate::{
+    common::netns::{NetNS, NetNSImpl},
+    socket::{tcp::connect_tcp, udp::RuntimeUdpSocketFactory},
+};
 
 const DEFAULT_SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -102,8 +107,14 @@ pub(crate) async fn search_gateway(options: SearchOptions) -> Result<Gateway, Se
 }
 
 async fn search_gateway_inner(options: SearchOptions) -> Result<Gateway, SearchError> {
-    let bind_options = UdpBindOptions::direct_connect().with_local_addr(Some(options.bind_addr));
-    let socket = RuntimeUdpSocketFactory::new()
+    let bind_options = BindConfig {
+        reuse_addr: Some(false),
+        local_addr: Some(options.bind_addr),
+        ..BindConfig::default()
+    };
+    // Port mapping calls this on a thread already inside the target namespace.
+    let netns = NetNS::current().map_err(SearchError::Io)?;
+    let socket = RuntimeUdpSocketFactory::new(netns)
         .bind_udp(bind_options)
         .await
         .map_err(|error| SearchError::Io(std::io::Error::other(error.to_string())))?;
@@ -206,7 +217,8 @@ async fn send_http_request_inner(
     soap_action: Option<&str>,
     body: String,
 ) -> Result<Bytes, HttpTransportError> {
-    let stream = connect_tcp(TcpConnectOptions::direct_connect(addr)).await?;
+    let netns = NetNS::current().map_err(TunnelError::from)?;
+    let stream = connect_tcp(&netns, TcpConnectOptions::direct_connect(addr)).await?;
     let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
     let body = Bytes::from(body);
     let mut request = Request::builder()

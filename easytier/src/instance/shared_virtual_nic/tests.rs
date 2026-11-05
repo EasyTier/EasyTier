@@ -1,6 +1,9 @@
 use std::sync::Mutex as StdMutex;
 
-use crate::common::{ifcfg::IfConfiguerTrait, netns::NetNS};
+use crate::common::{
+    ifcfg::IfConfiguerTrait,
+    netns::{NetNS, NetNSImpl as _},
+};
 
 use super::*;
 
@@ -82,7 +85,7 @@ async fn idle_shared_nic_releases_name_while_registry_remains_alive() {
 }
 
 fn virtual_nic_config(mtu: u32, netns: Option<&str>) -> VirtualNicConfig {
-    VirtualNicConfig::new("et0".to_owned(), mtu, NetNS::new(netns.map(str::to_owned)))
+    VirtualNicConfig::new("et0".to_owned(), mtu, NetNS::open(netns).unwrap())
 }
 
 fn address_claims(ip: &str) -> SharedIfConfigClaims {
@@ -348,44 +351,71 @@ fn create_member(
     registry: &mut SharedVirtualNicRegistry,
     dev_name: &str,
     mtu: u32,
-    netns: Option<&str>,
+    netns: &NetNS,
 ) -> SharedVirtualNicMember {
     registry.create_member(
         dev_name.to_owned(),
-        virtual_nic_config(mtu, netns),
+        VirtualNicConfig::new("et0".to_owned(), mtu, netns.clone()),
         uuid::Uuid::new_v4(),
         Arc::new(Notify::new()),
     )
 }
 
-#[test]
-fn registry_shares_devices_only_within_the_same_name_and_namespace() {
+/// Creates the first member in `first_netns` and checks whether each
+/// later member shares its device.
+fn assert_registry_sharing(first_netns: &NetNS, cases: &[(&str, &NetNS, bool)]) {
     let mut registry = SharedVirtualNicRegistry::new();
-    let first = create_member(&mut registry, "et0", 1400, Some("net-a"));
-    for (name, netns, shared) in [
-        ("et0", Some("net-a"), true),
-        ("et0", Some("net-b"), false),
-        ("et1", Some("net-a"), false),
-        ("et0", None, false),
-    ] {
+    let first = create_member(&mut registry, "et0", 1400, first_netns);
+    for &(name, netns, shared) in cases {
         let next = create_member(&mut registry, name, 1300, netns);
-        assert_eq!(Arc::ptr_eq(&first.shared_nic, &next.shared_nic), shared);
+        assert_eq!(
+            Arc::ptr_eq(&first.shared_nic, &next.shared_nic),
+            shared,
+            "dev_name={name}"
+        );
         assert_eq!(next.configured_mtu, 1300);
     }
     assert_eq!(first.configured_mtu, 1400);
 }
 
 #[test]
+fn registry_shares_devices_only_within_the_same_name() {
+    let netns = NetNS::open(None).unwrap();
+    assert_registry_sharing(&netns, &[("et0", &netns, true), ("et1", &netns, false)]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "run inside an isolated user+network namespace"]
+fn registry_shares_devices_only_within_the_same_namespace() {
+    use crate::common::netns::tests::isolated_netns_for_test;
+
+    let process = NetNS::open(None).unwrap();
+    let a = isolated_netns_for_test().unwrap();
+    let b = isolated_netns_for_test().unwrap();
+    assert_registry_sharing(
+        &a,
+        &[
+            ("et0", &a, true),
+            ("et0", &b, false),
+            ("et1", &a, false),
+            ("et0", &process, false),
+        ],
+    );
+}
+
+#[test]
 fn registry_replaces_invalid_devices() {
     let mut registry = SharedVirtualNicRegistry::new();
-    let first = create_member(&mut registry, "et0", 1500, None);
+    let netns = NetNS::open(None).unwrap();
+    let first = create_member(&mut registry, "et0", 1500, &netns);
     first.shared_nic.try_lock().unwrap().mark_invalid();
     assert!(
         registry
             .get("et0", &virtual_nic_config(1500, None))
             .is_none()
     );
-    let next = create_member(&mut registry, "et0", 1500, None);
+    let next = create_member(&mut registry, "et0", 1500, &netns);
     assert!(!Arc::ptr_eq(&first.shared_nic, &next.shared_nic));
     assert!(Arc::ptr_eq(
         &registry

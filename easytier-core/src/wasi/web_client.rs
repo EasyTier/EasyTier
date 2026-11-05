@@ -315,11 +315,11 @@ impl WasiWebClientRuntime {
                 socket_runtime.clone(),
                 Arc::new(WasiHostSocketBackend::default()),
                 config.environment,
-                Arc::new(WasiHostConnectorEnvironmentIo),
+                Arc::new(WasiHostConnectorEnvironmentIo::default()),
             ));
             let dns = Arc::new(HostDnsResolver::new(
                 socket_runtime.clone(),
-                Arc::new(WasiHostDnsIo),
+                Arc::new(WasiHostDnsIo::default()),
             ));
             let connector = process_runtime.manual_connector(
                 host,

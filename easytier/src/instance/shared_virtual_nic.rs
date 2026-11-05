@@ -787,14 +787,15 @@ pub struct SharedVirtualNicRegistry {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SharedVirtualNicRegistryKey {
-    net_ns: Option<String>,
+    /// Held open so the namespace identity cannot be reused while keyed.
+    netns: crate::common::netns::NetNS,
     dev_name: String,
 }
 
 impl SharedVirtualNicRegistryKey {
     fn new(dev_name: String, config: &VirtualNicConfig) -> Self {
         Self {
-            net_ns: config.net_ns_name(),
+            netns: config.netns().clone(),
             dev_name,
         }
     }

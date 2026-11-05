@@ -144,7 +144,7 @@ func (reactor *Reactor) TakeTCPConnect(operation uint64) (StreamResult, error) {
 
 func (reactor *Reactor) StartUDPBind(
 	operation uint64,
-	options platform.UDPBindOptions,
+	options platform.BindConfig,
 ) error {
 	if reactor.services.Sockets == nil {
 		return fmt.Errorf("UDP bind: no socket factory configured")

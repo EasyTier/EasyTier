@@ -14,27 +14,28 @@ use std::{
     sync::{Arc, Mutex as StdMutex, RwLock, Weak},
 };
 
+use crate::{
+    common::global_ctx::ArcGlobalCtx, host_runtime::NativeHostRuntime,
+    socket::udp::RuntimeUdpSocket,
+};
 use anyhow::Context as _;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use boringtun::x25519::{PublicKey, StaticSecret};
+use easytier_core::socket::BindConfig;
+use easytier_core::socket::SocketContext;
 use easytier_core::{
     config::toml::VpnPortalConfig,
     gateway::vpn_portal::{
         PortalClientConfig, PortalClientConfigPlan, PortalHost, PortalListener, PortalSession,
     },
     socket::{
-        ListenerConnectionCounter, NetNamespace, SocketContext, SocketListener,
-        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+        ListenerConnectionCounter, SocketListener,
+        udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
     },
 };
 use hkdf::Hkdf;
 use sha2::Sha256;
 use tokio::{sync::mpsc, task::JoinSet};
-
-use crate::{
-    common::global_ctx::ArcGlobalCtx, host_runtime::native_host_runtime,
-    socket::udp::RuntimeUdpSocket,
-};
 
 use self::engine::{DerivedClient, PortalEngine};
 
@@ -42,7 +43,8 @@ use self::engine::{DerivedClient, PortalEngine};
 // the read guard during send lets the reader release the old binding on failure.
 struct PortalSocket {
     socket: tokio::sync::RwLock<Option<Arc<RuntimeUdpSocket>>>,
-    options: UdpBindOptions,
+    options: BindConfig,
+    runtime: Arc<NativeHostRuntime>,
 }
 
 impl PortalSocket {
@@ -61,7 +63,7 @@ impl PortalSocket {
         self.socket.write().await.take();
         loop {
             easytier_core::socket::retry::wait().await;
-            match native_host_runtime().bind_udp(self.options.clone()).await {
+            match self.runtime.bind_udp(self.options.clone()).await {
                 Ok(socket) => {
                     *self.socket.write().await = Some(socket);
                     return;
@@ -238,17 +240,23 @@ impl WireGuardPortalHost {
         address: SocketAddr,
         only_v6: bool,
     ) -> anyhow::Result<Arc<PortalSocket>> {
-        let context = SocketContext::default()
-            .with_socket_mark(self.global_ctx.get_flags().socket_mark)
-            .with_netns(self.global_ctx.net_ns.name().map(NetNamespace::new));
-        let mut options = UdpBindOptions::port_bound_listener(address)
-            .with_context(context)
-            .with_only_v6(only_v6);
-        let socket = native_host_runtime().bind_udp(options.clone()).await?;
+        let context = SocketContext {
+            socket_mark: self.global_ctx.get_flags().socket_mark,
+            ..SocketContext::default()
+        };
+        let mut options = BindConfig {
+            local_addr: Some(address),
+            context,
+            only_v6,
+            ..BindConfig::default()
+        };
+        let runtime = Arc::new(NativeHostRuntime::new(self.global_ctx.netns.clone()));
+        let socket = runtime.bind_udp(options.clone()).await?;
         options.local_addr = Some(socket.local_addr()?);
         Ok(Arc::new(PortalSocket {
             socket: tokio::sync::RwLock::new(Some(socket)),
             options,
+            runtime,
         }))
     }
 
@@ -438,18 +446,20 @@ mod tests {
     #[tokio::test]
     async fn portal_socket_rebinds_while_endpoints_keep_their_reference() {
         let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let mut options = UdpBindOptions::port_bound_listener("127.0.0.1:0".parse().unwrap())
-            .with_need_protect(false);
-        let initial = native_host_runtime()
-            .bind_udp(options.clone())
-            .await
-            .unwrap();
+        let mut options = BindConfig {
+            local_addr: Some("127.0.0.1:0".parse().unwrap()),
+            need_protect: false,
+            ..BindConfig::default()
+        };
+        let runtime = crate::host_runtime::native_host_runtime();
+        let initial = runtime.bind_udp(options.clone()).await.unwrap();
         let local = initial.local_addr().unwrap();
         options.local_addr = Some(local);
         let old_socket = Arc::downgrade(&initial);
         let socket = Arc::new(PortalSocket {
             socket: tokio::sync::RwLock::new(Some(initial)),
             options,
+            runtime,
         });
         let endpoint = socket.clone();
         let mut rebind = Box::pin(socket.rebind());

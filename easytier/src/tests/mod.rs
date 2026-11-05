@@ -55,12 +55,12 @@ pub fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
     unsafe { std::env::remove_var(key) }
 }
 
-pub fn get_guest_veth_name(net_ns: &str) -> &str {
-    Box::leak(format!("veth_{}_g", net_ns).into_boxed_str())
+pub fn get_guest_veth_name(netns: &str) -> &str {
+    Box::leak(format!("veth_{}_g", netns).into_boxed_str())
 }
 
-pub fn get_host_veth_name(net_ns: &str) -> &str {
-    Box::leak(format!("veth_{}_h", net_ns).into_boxed_str())
+pub fn get_host_veth_name(netns: &str) -> &str {
+    Box::leak(format!("veth_{}_h", netns).into_boxed_str())
 }
 
 pub fn del_netns(name: &str) {
@@ -217,21 +217,21 @@ async fn wait_proxy_route_appear(
     }
 }
 
-fn set_link_status(net_ns: &str, up: bool) {
+fn set_link_status(netns: &str, up: bool) {
     let ret = std::process::Command::new("ip")
         .args([
             "netns",
             "exec",
-            net_ns,
+            netns,
             "ip",
             "link",
             "set",
-            get_guest_veth_name(net_ns),
+            get_guest_veth_name(netns),
             if up { "up" } else { "down" },
         ])
         .output()
         .unwrap();
-    tracing::info!("set link status: {:?}, net_ns: {}, up: {}", ret, net_ns, up);
+    tracing::info!("set link status: {:?}, netns: {}, up: {}", ret, netns, up);
 }
 
 pub async fn drop_insts(insts: Vec<Instance>) {
@@ -252,26 +252,30 @@ pub async fn drop_insts(insts: Vec<Instance>) {
 }
 
 pub async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
-    use crate::common::netns::{NetNS, ROOT_NETNS_NAME};
-    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
-    let code = tokio::process::Command::new("ip")
-        .args([
-            "netns",
-            "exec",
-            from_netns,
-            "ping",
-            "-c",
-            "1",
-            "-s",
-            payload_size.unwrap_or(56).to_string().as_str(),
-            "-W",
-            "1",
-            target_ip.to_string().as_str(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
+    use crate::common::netns::{NetNS, NetNSImpl as _, ROOT_NETNS_NAME};
+    let mut child = NetNS::open(Some(ROOT_NETNS_NAME))
+        .unwrap()
+        .run(|| {
+            tokio::process::Command::new("ip")
+                .args([
+                    "netns",
+                    "exec",
+                    from_netns,
+                    "ping",
+                    "-c",
+                    "1",
+                    "-s",
+                    payload_size.unwrap_or(56).to_string().as_str(),
+                    "-W",
+                    "1",
+                    target_ip.to_string().as_str(),
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        })
+        .unwrap()
         .unwrap();
+    let code = child.wait().await.unwrap();
     code.code().unwrap() == 0
 }

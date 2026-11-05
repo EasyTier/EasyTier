@@ -27,7 +27,7 @@ use cidr::{Ipv4Inet, Ipv6Inet};
 ))]
 use tokio::process::Command;
 
-use super::error::Error;
+use super::{error::Error, netns::NetNS};
 
 #[async_trait]
 pub trait IfConfiguerTrait: Send + Sync {
@@ -211,6 +211,13 @@ fn ignore_removed_shell_cmd_not_found(result: Result<(), Error>) -> Result<(), E
 
 #[derive(Default)]
 pub struct DummyIfConfiger {}
+
+impl DummyIfConfiger {
+    #[allow(dead_code)]
+    pub fn new(_netns: NetNS) -> Self {
+        Self::default()
+    }
+}
 #[async_trait]
 impl IfConfiguerTrait for DummyIfConfiger {}
 

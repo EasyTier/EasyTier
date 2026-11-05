@@ -14,17 +14,18 @@ use tokio_rustls::TlsConnector;
 use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
+use super::super::{ManualEndpointResolver, resolve_url_addrs};
+use super::ManualEndpointDiscoveryConfig;
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     connectivity::transport,
     host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
     socket::{
-        IpVersion, SocketContext,
-        tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
+        IpVersion,
+        tcp::{TcpSocketPurpose, VirtualTcpSocketFactory},
     },
 };
-
-use super::super::{ManualEndpointResolver, resolve_url_addrs};
-use super::ManualEndpointDiscoveryConfig;
 
 const HTTP_DEFAULT_PORT: u16 = 80;
 const HTTPS_DEFAULT_PORT: u16 = 443;
@@ -36,7 +37,7 @@ pub(crate) struct HttpDiscoveryRequest {
     pub network_name: String,
     pub timeout: Duration,
     pub ip_version: IpVersion,
-    pub tcp_bind: TcpBindOptions,
+    pub tcp_bind: BindConfig,
 }
 
 pub(crate) struct CoreManualEndpointResolver<H>
@@ -152,11 +153,10 @@ where
     let addrs = resolve_url_addrs(
         &request.url,
         default_port,
-        request
-            .tcp_bind
-            .context
-            .clone()
-            .with_ip_version(request.ip_version),
+        SocketContext {
+            ip_version: request.ip_version,
+            ..request.tcp_bind.context.clone()
+        },
         dns,
     )
     .await?;
@@ -613,7 +613,13 @@ mod tests {
                 network_name: "test-network".to_owned(),
                 timeout: Duration::from_secs(1),
                 ip_version: IpVersion::V4,
-                tcp_bind: TcpBindOptions::default().with_socket_mark(Some(9)),
+                tcp_bind: BindConfig {
+                    context: crate::socket::SocketContext {
+                        socket_mark: Some(9),
+                        ..SocketContext::default()
+                    },
+                    ..BindConfig::default()
+                },
             },
         )
         .await
@@ -633,7 +639,6 @@ mod tests {
                 SocketContext {
                     ip_version: IpVersion::V4,
                     socket_mark: Some(9),
-                    netns: None,
                 }
             )]
         );
@@ -673,7 +678,7 @@ mod tests {
                 network_name: "test-network".to_owned(),
                 timeout: Duration::from_secs(5),
                 ip_version: IpVersion::V4,
-                tcp_bind: TcpBindOptions::default(),
+                tcp_bind: BindConfig::default(),
             },
         )
         .await
@@ -791,7 +796,6 @@ mod tests {
         let record_context = SocketContext {
             ip_version: IpVersion::V6,
             socket_mark: Some(17),
-            netns: None,
         };
         let resolver = CoreManualEndpointResolver::new(
             host,
@@ -802,7 +806,7 @@ mod tests {
                 network_name: "test-network".to_owned(),
                 http_timeout: Duration::from_secs(1),
                 http_ip_version: IpVersion::Both,
-                http_tcp_bind: TcpBindOptions::default(),
+                http_tcp_bind: BindConfig::default(),
                 dns_record_context: record_context.clone(),
                 srv_protocols: vec!["quic".to_owned()],
             },
@@ -874,7 +878,13 @@ mod tests {
                 network_name: "facade-network".to_owned(),
                 http_timeout: Duration::from_secs(1),
                 http_ip_version: IpVersion::V4,
-                http_tcp_bind: TcpBindOptions::default().with_socket_mark(Some(23)),
+                http_tcp_bind: BindConfig {
+                    context: crate::socket::SocketContext {
+                        socket_mark: Some(23),
+                        ..SocketContext::default()
+                    },
+                    ..BindConfig::default()
+                },
                 dns_record_context: SocketContext::default(),
                 srv_protocols: Vec::new(),
             },
@@ -897,7 +907,6 @@ mod tests {
                 SocketContext {
                     ip_version: IpVersion::V4,
                     socket_mark: Some(23),
-                    netns: None,
                 }
             )]
         );

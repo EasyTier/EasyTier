@@ -6,11 +6,19 @@ use easytier_core::listener::{
 };
 use easytier_core::socket::SocketListener;
 
-#[cfg(feature = "faketcp")]
 use crate::common::netns::NetNS;
 use crate::socket::tcp::RuntimeTcpSocket;
 
-pub(crate) struct RuntimeExternalListenerFactory;
+pub(crate) struct RuntimeExternalListenerFactory {
+    #[cfg_attr(not(feature = "faketcp"), allow(dead_code))]
+    netns: NetNS,
+}
+
+impl RuntimeExternalListenerFactory {
+    pub(crate) fn new(netns: NetNS) -> Self {
+        Self { netns }
+    }
+}
 
 impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
     for RuntimeExternalListenerFactory
@@ -32,7 +40,7 @@ impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
             #[cfg(feature = "faketcp")]
             "faketcp" => Box::new(RuntimeFakeTcpSocketListener::new(
                 request.url,
-                NetNS::from_socket_context(&request.socket_context),
+                self.netns.clone(),
             )),
             #[cfg(unix)]
             "unix" => Box::new(RuntimeUnixStreamListener::new(request.url)),
@@ -114,16 +122,14 @@ impl Drop for RuntimeUnixStreamListener {
 
 #[cfg(feature = "faketcp")]
 struct RuntimeFakeTcpSocketListener {
-    net_ns: NetNS,
     inner: crate::socket::fake_tcp::FakeTcpSocketListener,
 }
 
 #[cfg(feature = "faketcp")]
 impl RuntimeFakeTcpSocketListener {
-    fn new(url: url::Url, net_ns: NetNS) -> Self {
+    fn new(url: url::Url, netns: NetNS) -> Self {
         Self {
-            net_ns,
-            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url),
+            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url, netns),
         }
     }
 }
@@ -144,7 +150,6 @@ impl SocketListener for RuntimeFakeTcpSocketListener {
     type Accepted = AcceptedTransport<RuntimeTcpSocket>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
-        let _guard = self.net_ns.guard();
         SocketListener::listen(&mut self.inner).await?;
         Ok(())
     }
@@ -167,10 +172,11 @@ impl SocketListener for RuntimeFakeTcpSocketListener {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::netns::{NetNS, NetNSImpl};
 
     #[test]
     fn external_listener_capabilities_follow_native_build() {
-        let factory = RuntimeExternalListenerFactory;
+        let factory = RuntimeExternalListenerFactory::new(NetNS::current().unwrap());
 
         assert_eq!(
             factory.supports_scheme("faketcp"),

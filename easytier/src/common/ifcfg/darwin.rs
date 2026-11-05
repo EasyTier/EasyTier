@@ -7,12 +7,19 @@ use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
 use tokio::sync::Mutex;
 
+use crate::common::netns::NetNS;
+
 #[derive(Default)]
 pub struct MacIfConfiger {
     configured_ipv4: Mutex<BTreeSet<Ipv4Inet>>,
 }
 
 impl MacIfConfiger {
+    /// This platform has a single network namespace.
+    pub fn new(_netns: NetNS) -> Self {
+        Self::default()
+    }
+
     fn build_add_ipv4_cmd(name: &str, addr: Ipv4Inet, has_configured_ipv4: bool) -> String {
         let address = addr.address();
         if has_configured_ipv4 {

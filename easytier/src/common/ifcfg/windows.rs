@@ -22,6 +22,7 @@ use winreg::{
 };
 
 use super::{Error, IfConfiguerTrait};
+use crate::common::netns::NetNS;
 #[derive(Default)]
 pub struct WindowsIfConfiger {}
 
@@ -58,6 +59,11 @@ fn format_win_error(error: u32) -> String {
 }
 
 impl WindowsIfConfiger {
+    /// This platform has a single network namespace.
+    pub fn new(_netns: NetNS) -> Self {
+        Self::default()
+    }
+
     pub fn get_interface_index(name: &str) -> Option<u32> {
         crate::arch::windows::find_interface_index(name).ok()
     }

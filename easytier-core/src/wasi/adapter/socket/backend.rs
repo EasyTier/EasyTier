@@ -6,9 +6,10 @@ use crate::host::socket::{
     listener::{HostTcpBindResult, HostTcpListenerIo},
     udp::{HostUdpDatagram, HostUdpIo},
 };
+use crate::socket::BindConfig;
 use crate::socket::{
     tcp::{TcpConnectOptions, TcpListenOptions},
-    udp::{UdpBindOptions, UdpSocketSendMeta},
+    udp::UdpSocketSendMeta,
 };
 
 use crate::wasi::{
@@ -32,9 +33,17 @@ use super::{WasiHostTcpIo, udp::WasiHostUdpIo};
 pub struct WasiHostSocketBackend {
     tcp: WasiHostTcpIo,
     udp: WasiHostUdpIo,
+    netns: Option<String>,
 }
 
 impl WasiHostSocketBackend {
+    pub fn new(netns: Option<String>) -> Self {
+        Self {
+            netns,
+            ..Self::default()
+        }
+    }
+
     fn decode_transferred<T>(&self, encoded: &[u8], decoded: io::Result<T>) -> io::Result<T> {
         match decoded {
             Ok(result) => Ok(result),
@@ -137,7 +146,7 @@ impl HostSocketFactoryIo for WasiHostSocketBackend {
         operation: HostOperationId,
         options: &TcpConnectOptions,
     ) -> io::Result<()> {
-        let encoded = encode_tcp_connect_options(options)?;
+        let encoded = encode_tcp_connect_options(options, self.netns.as_deref())?;
         status("start_tcp_connect", unsafe {
             start_tcp_connect(
                 operation.0,
@@ -165,12 +174,8 @@ impl HostSocketFactoryIo for WasiHostSocketBackend {
         }
     }
 
-    fn submit_udp_bind(
-        &self,
-        operation: HostOperationId,
-        options: &UdpBindOptions,
-    ) -> io::Result<()> {
-        let encoded = encode_udp_bind_options(options)?;
+    fn submit_udp_bind(&self, operation: HostOperationId, options: &BindConfig) -> io::Result<()> {
+        let encoded = encode_udp_bind_options(options, self.netns.as_deref())?;
         status("start_udp_bind", unsafe {
             start_udp_bind(
                 operation.0,
@@ -202,7 +207,7 @@ impl HostTcpListenerIo for WasiHostSocketBackend {
         operation: HostOperationId,
         options: &TcpListenOptions,
     ) -> io::Result<()> {
-        let encoded = encode_tcp_listen_options(options)?;
+        let encoded = encode_tcp_listen_options(options, self.netns.as_deref())?;
         status("start_tcp_bind", unsafe {
             start_tcp_bind(
                 operation.0,

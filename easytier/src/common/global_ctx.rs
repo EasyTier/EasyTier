@@ -6,9 +6,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use easytier_core::connectivity::composite::ConnectorRuntime as _;
 use easytier_core::peers::public_ipv6::PublicIpv6Host;
-use easytier_core::socket::{NetNamespace, SocketContext};
 use easytier_core::tunnel::effective_encryption_uses_xor;
 use easytier_core::{
     config::{PeerId, peers::PeerRuntimeSnapshot, runtime::CoreInstanceRuntimeConfig},
@@ -17,7 +15,7 @@ use easytier_core::{
 
 use super::{
     config::{ConfigLoader, Flags, NetworkIdentity},
-    netns::NetNS,
+    netns::{NetNS, NetNSImpl},
 };
 #[cfg(feature = "management")]
 use crate::proto::api::config::InstanceConfigPatch;
@@ -83,7 +81,7 @@ pub struct GlobalCtx {
     pub inst_name: String,
     pub id: uuid::Uuid,
     pub config: Box<dyn ConfigLoader>,
-    pub net_ns: NetNS,
+    pub netns: NetNS,
     pub network: NetworkIdentity,
 
     event_bus: EventBus,
@@ -103,7 +101,7 @@ impl std::fmt::Debug for GlobalCtx {
         f.debug_struct("GlobalCtx")
             .field("inst_name", &self.inst_name)
             .field("id", &self.id)
-            .field("net_ns", &self.net_ns.name())
+            .field("netns", &self.netns)
             .field("event_bus", &"EventBus")
             .field("ipv4", &self.cached_ipv4)
             .finish()
@@ -118,12 +116,7 @@ impl PublicIpv6Host for GlobalCtx {
         &self,
         prefix: cidr::Ipv6Cidr,
     ) -> HashSet<Ipv6Addr> {
-        let context = SocketContext::default()
-            .with_socket_mark(self.get_flags().socket_mark)
-            .with_netns(self.net_ns.name().map(NetNamespace::new));
-        let ip_list = crate::host_runtime::native_host_runtime()
-            .collect_ip_addrs(&context)
-            .await;
+        let ip_list = crate::common::network::collect_local_ip_addrs(self.netns.clone()).await;
         let mut reserved = HashSet::new();
         reserved.extend(
             ip_list
@@ -145,13 +138,16 @@ impl PublicIpv6Host for GlobalCtx {
 
 impl GlobalCtx {
     pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
-        Self::new_inner(config_fs, None, None)
+        let netns = NetNS::open(config_fs.get_netns().as_deref())
+            .expect("open the configured network namespace");
+        Self::new_inner(config_fs, None, None, netns)
     }
 
     pub(crate) fn new_with_runtime_config(
         config_fs: impl ConfigLoader + 'static,
         runtime: &CoreInstanceConfig,
         host: &CoreInstanceHostConfig,
+        netns: NetNS,
     ) -> Self {
         let runtime = CoreInstanceRuntimeConfig {
             services: runtime.connectivity.runtime.clone(),
@@ -163,17 +159,17 @@ impl GlobalCtx {
                 .map(|protocol| protocol.to_ascii_lowercase())
                 .collect()
         });
-        Self::new_inner(config_fs, Some(&runtime), protocols)
+        Self::new_inner(config_fs, Some(&runtime), protocols, netns)
     }
 
     fn new_inner(
         config_fs: impl ConfigLoader + 'static,
         runtime: Option<&CoreInstanceRuntimeConfig>,
         runtime_endpoint_protocols: Option<HashSet<String>>,
+        netns: NetNS,
     ) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
-        let net_ns = NetNS::new(config_fs.get_netns());
         let hostname = runtime
             .and_then(|runtime| runtime.peer.runtime.core.node.hostname.clone())
             .unwrap_or_else(|| match config_fs.get_hostname() {
@@ -198,7 +194,7 @@ impl GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
             config: Box::new(config_fs),
-            net_ns: net_ns.clone(),
+            netns: netns.clone(),
             network,
 
             event_bus,
@@ -504,7 +500,12 @@ pub mod tests {
             easytier_core::instance::CoreInstanceConfig::from_toml_with_host(&config, &host)
                 .unwrap();
 
-        let global_ctx = GlobalCtx::new_with_runtime_config(config.clone(), &normalized, &host);
+        let global_ctx = GlobalCtx::new_with_runtime_config(
+            config.clone(),
+            &normalized,
+            &host,
+            <NetNS as NetNSImpl>::current().unwrap(),
+        );
 
         assert_eq!(config.get_mapped_listeners().len(), 2);
         assert_eq!(global_ctx.runtime_mapped_listeners().len(), 1);

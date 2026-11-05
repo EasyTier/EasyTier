@@ -1,31 +1,34 @@
 use std::io;
 
+use super::socket::{SOCKET_ADDRESS_LEN, decode_socket_address, encode_socket_address};
 use crate::host::socket::{
     HostSocketHandle,
     factory::{HostTcpConnectResult, HostUdpBindResult},
     listener::HostTcpBindResult,
 };
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::socket::{
-    IpVersion, SocketContext,
+    IpVersion,
     tcp::{TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose},
-    udp::{UdpBindOptions, UdpSocketPurpose},
 };
 
-use super::socket::{SOCKET_ADDRESS_LEN, decode_socket_address, encode_socket_address};
-
 const OPTIONS_VERSION: u8 = 3;
+const UDP_OPTIONS_VERSION: u8 = 4;
 pub(crate) const TCP_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN * 2;
 pub(crate) const BOUND_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN;
 
-pub(crate) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_tcp_connect_options(
+    options: &TcpConnectOptions,
+    netns: Option<&str>,
+) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(
-        76 + context_variable_len(&options.bind.context)
-            + bind_device_len(&options.bind.bind_device),
+        76 + context_variable_len(netns) + bind_device_len(&options.bind.bind_device),
     );
     encoded.push(OPTIONS_VERSION);
     encoded.extend_from_slice(&encode_socket_address(options.remote_addr));
     encode_optional_address(&mut encoded, options.bind.local_addr);
-    encode_context(&mut encoded, &options.bind.context)?;
+    encode_context(&mut encoded, &options.bind.context, netns)?;
     encoded.push(match options.bind.reuse_addr {
         None => 0,
         Some(false) => 1,
@@ -49,40 +52,38 @@ pub(crate) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Res
     Ok(encoded)
 }
 
-pub(crate) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_udp_bind_options(
+    options: &BindConfig,
+    netns: Option<&str>,
+) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(
-        49 + context_variable_len(&options.context) + bind_device_len(&options.bind_device),
+        48 + context_variable_len(netns) + bind_device_len(&options.bind_device),
     );
-    encoded.push(OPTIONS_VERSION);
+    encoded.push(UDP_OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.local_addr);
-    encode_context(&mut encoded, &options.context)?;
-    encoded.push(u8::from(options.reuse_addr));
+    encode_context(&mut encoded, &options.context, netns)?;
+    encoded.push(match options.reuse_addr {
+        None => 0,
+        Some(false) => 1,
+        Some(true) => 2,
+    });
     encoded.push(u8::from(options.reuse_port));
     encoded.push(u8::from(options.only_v6));
-    encoded.push(match options.purpose {
-        UdpSocketPurpose::HolePunchControl => 0,
-        UdpSocketPurpose::HolePunchCandidate => 1,
-        UdpSocketPurpose::DirectConnect => 2,
-        UdpSocketPurpose::PortBoundListener => 3,
-        UdpSocketPurpose::ProxyNat => 4,
-        UdpSocketPurpose::StunProbe => 5,
-        UdpSocketPurpose::Socks5 => 6,
-        UdpSocketPurpose::PortForward => 7,
-        UdpSocketPurpose::PortLease => 8,
-    });
     encoded.push(u8::from(options.need_protect));
     encode_bind_device(&mut encoded, &options.bind_device)?;
     Ok(encoded)
 }
 
-pub(crate) fn encode_tcp_listen_options(options: &TcpListenOptions) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_tcp_listen_options(
+    options: &TcpListenOptions,
+    netns: Option<&str>,
+) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(
-        49 + context_variable_len(&options.bind.context)
-            + bind_device_len(&options.bind.bind_device),
+        49 + context_variable_len(netns) + bind_device_len(&options.bind.bind_device),
     );
     encoded.push(OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.bind.local_addr);
-    encode_context(&mut encoded, &options.bind.context)?;
+    encode_context(&mut encoded, &options.bind.context, netns)?;
     encoded.push(match options.bind.reuse_addr {
         None => 0,
         Some(false) => 1,
@@ -159,14 +160,18 @@ fn encode_mark(encoded: &mut Vec<u8>, mark: Option<u32>) {
     encoded.extend_from_slice(&mark.unwrap_or_default().to_be_bytes());
 }
 
-fn encode_context(encoded: &mut Vec<u8>, context: &SocketContext) -> io::Result<()> {
+fn encode_context(
+    encoded: &mut Vec<u8>,
+    context: &SocketContext,
+    netns: Option<&str>,
+) -> io::Result<()> {
     encoded.push(match context.ip_version {
         IpVersion::V4 => 0,
         IpVersion::V6 => 1,
         IpVersion::Both => 2,
     });
     encode_mark(encoded, context.socket_mark);
-    let netns = context.netns.as_ref().map(|netns| netns.token().as_bytes());
+    let netns = netns.map(str::as_bytes);
     encoded.push(u8::from(netns.is_some()));
     let length = u32::try_from(netns.map_or(0, <[u8]>::len))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "netns token is too long"))?;
@@ -177,9 +182,12 @@ fn encode_context(encoded: &mut Vec<u8>, context: &SocketContext) -> io::Result<
     Ok(())
 }
 
-pub(crate) fn encode_socket_context(context: &SocketContext) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(11 + context_variable_len(context));
-    encode_context(&mut encoded, context)?;
+pub(crate) fn encode_socket_context(
+    context: &SocketContext,
+    netns: Option<&str>,
+) -> io::Result<Vec<u8>> {
+    let mut encoded = Vec::with_capacity(11 + context_variable_len(netns));
+    encode_context(&mut encoded, context, netns)?;
     Ok(encoded)
 }
 
@@ -197,16 +205,13 @@ fn bind_device_len(device: &Option<String>) -> usize {
     device.as_ref().map_or(0, String::len)
 }
 
-fn context_variable_len(context: &SocketContext) -> usize {
-    context
-        .netns
-        .as_ref()
-        .map_or(0, |netns| netns.token().len())
+fn context_variable_len(netns: Option<&str>) -> usize {
+    netns.map_or(0, str::len)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::socket::{NetNamespace, tcp::TcpBindOptions};
+    use crate::socket::BindConfig;
 
     use super::*;
 
@@ -214,16 +219,21 @@ mod tests {
     fn encodes_tcp_connect_options_with_stable_offsets() {
         let options = TcpConnectOptions {
             remote_addr: "192.0.2.2:11013".parse().unwrap(),
-            bind: TcpBindOptions::default()
-                .with_local_addr(Some("[2001:db8::1]:22026".parse().unwrap()))
-                .with_socket_mark(Some(0x01020304))
-                .with_bind_device(Some("device0".to_owned()))
-                .with_reuse_addr(true)
-                .with_reuse_port(true)
-                .with_only_v6(true),
+            bind: BindConfig {
+                local_addr: Some("[2001:db8::1]:22026".parse().unwrap()),
+                context: crate::socket::SocketContext {
+                    socket_mark: Some(0x01020304),
+                    ..SocketContext::default()
+                },
+                bind_device: Some("device0".to_owned()),
+                reuse_addr: Some(true),
+                reuse_port: true,
+                only_v6: true,
+                ..BindConfig::default()
+            },
             purpose: TcpSocketPurpose::ManualConnect,
         };
-        let encoded = encode_tcp_connect_options(&options).unwrap();
+        let encoded = encode_tcp_connect_options(&options, None).unwrap();
         assert_eq!(encoded.len(), 83);
         assert_eq!(encoded[0], OPTIONS_VERSION);
         assert_eq!(&encoded[55..66], &[2, 1, 1, 2, 3, 4, 0, 0, 0, 0, 0]);
@@ -234,32 +244,72 @@ mod tests {
     }
 
     #[test]
+    fn udp_v4_preserves_reuse_and_protection_without_a_purpose_tag() {
+        for (reuse, encoded_mode) in [(None, 0), (Some(false), 1), (Some(true), 2)] {
+            for protect in [false, true] {
+                let options = BindConfig {
+                    reuse_addr: reuse,
+                    need_protect: protect,
+                    ..BindConfig::default()
+                };
+                let encoded = encode_udp_bind_options(&options, None).unwrap();
+                assert_eq!(encoded.len(), 48);
+                assert_eq!(encoded[0], UDP_OPTIONS_VERSION);
+                assert_eq!(&encoded[39..43], &[encoded_mode, 0, 0, u8::from(protect)]);
+                assert_eq!(&encoded[43..], &[0; 5]);
+            }
+        }
+    }
+
+    #[test]
     fn bind_device_presence_distinguishes_none_empty_and_named() {
         let remote = "192.0.2.2:11013".parse().unwrap();
-        let none = encode_tcp_connect_options(&TcpConnectOptions::direct_connect(remote)).unwrap();
+        let none =
+            encode_tcp_connect_options(&TcpConnectOptions::direct_connect(remote), None).unwrap();
         let empty = encode_tcp_connect_options(
-            &TcpConnectOptions::direct_connect(remote)
-                .with_bind(TcpBindOptions::default().with_bind_device(Some(String::new()))),
+            &TcpConnectOptions::direct_connect(remote).with_bind(BindConfig {
+                bind_device: Some(String::new()),
+                ..BindConfig::default()
+            }),
+            None,
         )
         .unwrap();
         assert_eq!(&none[71..76], &[0, 0, 0, 0, 0]);
         assert_eq!(&empty[71..76], &[1, 0, 0, 0, 0]);
 
-        let udp_none = encode_udp_bind_options(&UdpBindOptions::direct_connect()).unwrap();
-        let udp_empty = encode_udp_bind_options(
-            &UdpBindOptions::direct_connect().with_bind_device(Some(String::new())),
+        let udp_none = encode_udp_bind_options(
+            &BindConfig {
+                reuse_addr: Some(false),
+                ..BindConfig::default()
+            },
+            None,
         )
         .unwrap();
-        assert_eq!(&udp_none[44..49], &[0, 0, 0, 0, 0]);
-        assert_eq!(&udp_empty[44..49], &[1, 0, 0, 0, 0]);
+        let udp_empty = encode_udp_bind_options(
+            &BindConfig {
+                reuse_addr: Some(false),
+                bind_device: Some(String::new()),
+                ..BindConfig::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(&udp_none[43..48], &[0, 0, 0, 0, 0]);
+        assert_eq!(&udp_empty[43..48], &[1, 0, 0, 0, 0]);
 
-        let listen_none = encode_tcp_listen_options(&TcpListenOptions::direct_connect(
-            "192.0.2.1:11013".parse().unwrap(),
-        ))
+        let listen_none = encode_tcp_listen_options(
+            &TcpListenOptions::direct_connect("192.0.2.1:11013".parse().unwrap()),
+            None,
+        )
         .unwrap();
         let listen_empty = encode_tcp_listen_options(
-            &TcpListenOptions::direct_connect("192.0.2.1:11013".parse().unwrap())
-                .with_bind(TcpBindOptions::default().with_bind_device(Some(String::new()))),
+            &TcpListenOptions::direct_connect("192.0.2.1:11013".parse().unwrap()).with_bind(
+                BindConfig {
+                    bind_device: Some(String::new()),
+                    ..BindConfig::default()
+                },
+            ),
+            None,
         )
         .unwrap();
         assert_eq!(&listen_none[44..49], &[0, 0, 0, 0, 0]);
@@ -268,15 +318,17 @@ mod tests {
 
     #[test]
     fn encodes_socket_context_netns_and_zero_mark() {
-        let bind = TcpBindOptions::default().with_context(
-            SocketContext::default()
-                .with_ip_version(IpVersion::V6)
-                .with_socket_mark(Some(0))
-                .with_netns(Some(NetNamespace::new("instance-a"))),
-        );
+        let bind = BindConfig {
+            context: SocketContext {
+                ip_version: IpVersion::V6,
+                socket_mark: Some(0),
+            },
+            ..BindConfig::default()
+        };
         let encoded = encode_tcp_connect_options(
             &TcpConnectOptions::direct_connect("[2001:db8::2]:11013".parse().unwrap())
                 .with_bind(bind),
+            Some("instance-a"),
         )
         .unwrap();
 
@@ -289,47 +341,36 @@ mod tests {
 
     #[test]
     fn encodes_standalone_socket_context() {
-        let context = SocketContext::default().with_ip_version(IpVersion::V6);
+        let context = SocketContext {
+            ip_version: IpVersion::V6,
+            ..SocketContext::default()
+        };
 
         assert_eq!(
-            encode_socket_context(&context).unwrap(),
+            encode_socket_context(&context, None).unwrap(),
             vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         );
     }
 
     #[test]
-    fn encodes_udp_proxy_nat_purpose() {
-        let encoded = encode_udp_bind_options(&UdpBindOptions::proxy_nat()).unwrap();
-        assert_eq!(encoded[42], 4);
-    }
-
-    #[test]
-    fn encodes_udp_socks5_purpose() {
-        let encoded = encode_udp_bind_options(&UdpBindOptions::socks5()).unwrap();
-        assert_eq!(encoded[42], 6);
-    }
-
-    #[test]
     fn encodes_tcp_proxy_nat_purposes() {
         let remote = "192.0.2.2:11013".parse().unwrap();
-        let connect = encode_tcp_connect_options(&TcpConnectOptions::proxy_nat(remote)).unwrap();
+        let connect =
+            encode_tcp_connect_options(&TcpConnectOptions::proxy_nat(remote), None).unwrap();
         assert_eq!(connect[69], 4);
 
         let local = "0.0.0.0:0".parse().unwrap();
-        let listen = encode_tcp_listen_options(&TcpListenOptions::proxy_nat(local)).unwrap();
+        let listen = encode_tcp_listen_options(&TcpListenOptions::proxy_nat(local), None).unwrap();
         assert_eq!(listen[42], 3);
     }
 
     #[test]
-    fn encodes_stun_probe_purposes() {
+    fn encodes_tcp_stun_probe_purpose() {
         let remote = "192.0.2.2:3478".parse().unwrap();
         let local = "0.0.0.0:0".parse().unwrap();
-        let tcp =
-            encode_tcp_connect_options(&TcpConnectOptions::stun_probe(remote, local)).unwrap();
+        let tcp = encode_tcp_connect_options(&TcpConnectOptions::stun_probe(remote, local), None)
+            .unwrap();
         assert_eq!(tcp[69], 5);
-
-        let udp = encode_udp_bind_options(&UdpBindOptions::stun_probe()).unwrap();
-        assert_eq!(udp[42], 5);
     }
 
     #[test]
@@ -338,64 +379,75 @@ mod tests {
         let local = "0.0.0.0:11013".parse().unwrap();
 
         let tcp_true =
-            encode_tcp_connect_options(&TcpConnectOptions::direct_connect(remote)).unwrap();
+            encode_tcp_connect_options(&TcpConnectOptions::direct_connect(remote), None).unwrap();
         let tcp_false = encode_tcp_connect_options(
-            &TcpConnectOptions::direct_connect(remote)
-                .with_bind(TcpBindOptions::default().with_need_protect(false)),
+            &TcpConnectOptions::direct_connect(remote).with_bind(BindConfig {
+                need_protect: false,
+                ..BindConfig::default()
+            }),
+            None,
         )
         .unwrap();
         assert_eq!(tcp_true[70], 1);
         assert_eq!(tcp_false[70], 0);
 
         let listen_true =
-            encode_tcp_listen_options(&TcpListenOptions::direct_connect(local)).unwrap();
-        let listen_false = encode_tcp_listen_options(&TcpListenOptions::proxy_nat(local)).unwrap();
+            encode_tcp_listen_options(&TcpListenOptions::direct_connect(local), None).unwrap();
+        let listen_false =
+            encode_tcp_listen_options(&TcpListenOptions::proxy_nat(local), None).unwrap();
         assert_eq!(listen_true[43], 1);
         assert_eq!(listen_false[43], 0);
 
-        let udp_true = encode_udp_bind_options(&UdpBindOptions::direct_connect()).unwrap();
-        let udp_false =
-            encode_udp_bind_options(&UdpBindOptions::socks5().with_need_protect(false)).unwrap();
-        assert_eq!(udp_true[43], 1);
-        assert_eq!(udp_false[43], 0);
+        let udp_true = encode_udp_bind_options(
+            &BindConfig {
+                reuse_addr: Some(false),
+                ..BindConfig::default()
+            },
+            None,
+        )
+        .unwrap();
+        let udp_false = encode_udp_bind_options(
+            &BindConfig {
+                bind_device: Some("".into()),
+                reuse_addr: Some(false),
+                need_protect: false,
+                ..BindConfig::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(udp_true[42], 1);
+        assert_eq!(udp_false[42], 0);
     }
 
     #[test]
     fn encodes_gateway_purposes_with_stable_values() {
         let remote = "192.0.2.2:443".parse().unwrap();
         assert_eq!(
-            encode_tcp_connect_options(&TcpConnectOptions::socks5(remote)).unwrap()[69],
+            encode_tcp_connect_options(&TcpConnectOptions::socks5(remote), None).unwrap()[69],
             6
         );
         assert_eq!(
-            encode_tcp_connect_options(&TcpConnectOptions::port_forward(remote)).unwrap()[69],
+            encode_tcp_connect_options(&TcpConnectOptions::port_forward(remote), None).unwrap()[69],
             7
         );
         assert_eq!(
-            encode_tcp_connect_options(&TcpConnectOptions::data_plane(remote)).unwrap()[69],
+            encode_tcp_connect_options(&TcpConnectOptions::data_plane(remote), None).unwrap()[69],
             8
         );
 
         let local = "0.0.0.0:0".parse().unwrap();
         assert_eq!(
-            encode_tcp_listen_options(&TcpListenOptions::socks5(local)).unwrap()[42],
+            encode_tcp_listen_options(&TcpListenOptions::socks5(local), None).unwrap()[42],
             4
         );
         assert_eq!(
-            encode_tcp_listen_options(&TcpListenOptions::port_forward(local)).unwrap()[42],
+            encode_tcp_listen_options(&TcpListenOptions::port_forward(local), None).unwrap()[42],
             5
         );
         assert_eq!(
-            encode_tcp_listen_options(&TcpListenOptions::port_lease(local)).unwrap()[42],
+            encode_tcp_listen_options(&TcpListenOptions::port_lease(local), None).unwrap()[42],
             6
-        );
-        assert_eq!(
-            encode_udp_bind_options(&UdpBindOptions::port_forward(local)).unwrap()[42],
-            7
-        );
-        assert_eq!(
-            encode_udp_bind_options(&UdpBindOptions::port_lease(local)).unwrap()[42],
-            8
         );
     }
 
