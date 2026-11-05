@@ -492,6 +492,14 @@ bin-dir = "{ name }-linux-riscv64/{ bin }{ binary-ext }"
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-riscv64-v{ version }.zip"
 bin-dir = "{ name }-linux-riscv64/{ bin }{ binary-ext }"
 
+[package.metadata.binstall.overrides.powerpc64le-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-ppc64le-v{ version }.zip"
+bin-dir = "{ name }-linux-ppc64le/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.powerpc64le-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-ppc64le-v{ version }.zip"
+bin-dir = "{ name }-linux-ppc64le/{ bin }{ binary-ext }"
+
 [package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-windows-arm64-v{ version }.zip"
 bin-dir = "{ name }-windows-arm64/{ bin }{ binary-ext }"
