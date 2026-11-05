@@ -1224,12 +1224,48 @@ impl NicCtx {
         let packet_plane = self.packet_plane.clone();
         let close_notifier = self.close_notifier.clone();
         self.tasks.spawn(async move {
+            // 单包转发超时阈值。正常路径是微秒级（一次内存路由查询 + 加密 + 写入
+            // 已建立的 tunnel），2 秒已经宽松到只可能由「卡住」触发。
+            const FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+            // 连续超时计数：偶发一两次只丢包，持续超时说明路由/锁层面出了问题。
+            let mut consecutive_timeouts: u32 = 0;
             while let Some(ret) = stream.next().await {
                 if ret.is_err() {
                     tracing::error!("read from nic failed: {:?}", ret);
                     break;
                 }
-                Self::do_forward_nic_to_peers(ret.unwrap(), packet_plane.as_ref()).await;
+                // 关键：给单包转发加上限。若不设超时，转发链路里任何一处 `.await`
+                // 永久挂起（典型是持锁跨 await 的锁环），整个 tun 读循环就停摆：
+                // 内核侧看到的只是「包写不进网卡」，tx_dropped 一路飙升，而对端
+                // peer/route 状态、控制面 RPC 全部正常，极难从外部定位。
+                // 这里宁可丢单个包也要保住读循环，让数据面不至于整体瘫痪。
+                match tokio::time::timeout(
+                    FORWARD_TIMEOUT,
+                    Self::do_forward_nic_to_peers(ret.unwrap(), packet_plane.as_ref()),
+                )
+                .await
+                {
+                    Ok(()) => {
+                        if consecutive_timeouts > 0 {
+                            tracing::info!(
+                                consecutive_timeouts,
+                                "nic forward recovered after previous timeouts"
+                            );
+                            consecutive_timeouts = 0;
+                        }
+                    }
+                    Err(_) => {
+                        consecutive_timeouts += 1;
+                        // 前几次和每 100 次打点，避免日志被刷爆的同时保留可判断性。
+                        if consecutive_timeouts <= 10 || consecutive_timeouts % 100 == 0 {
+                            tracing::warn!(
+                                consecutive_timeouts,
+                                timeout_ms = FORWARD_TIMEOUT.as_millis(),
+                                "forward packet from nic timed out, dropping packet"
+                            );
+                        }
+                    }
+                }
             }
             close_notifier.notify_one();
             tracing::error!("nic closed when recving from it");
