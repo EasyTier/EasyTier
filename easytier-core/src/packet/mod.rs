@@ -975,6 +975,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn converts_lzo_compression_algo_in_every_profile() {
+        assert_eq!(
+            CompressorAlgo::Lzo,
+            CompressorAlgo::try_from(CompressionAlgoPb::Lzo).unwrap()
+        );
+        assert_eq!(
+            CompressionAlgoPb::Lzo,
+            CompressionAlgoPb::try_from(CompressorAlgo::Lzo).unwrap()
+        );
+        assert_eq!(Some(CompressorAlgo::Lzo), CompressorTail { algo: 2 }.get_algo());
+        assert_eq!(CompressorAlgo::Lzo.is_available(), cfg!(feature = "lzo"));
+    }
+
     #[cfg(not(feature = "zstd"))]
     #[test]
     fn reports_zstd_as_unavailable_without_changing_vocabulary() {

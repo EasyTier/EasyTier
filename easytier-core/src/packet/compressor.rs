@@ -2,8 +2,8 @@ use zerocopy::{AsBytes as _, FromBytes as _};
 
 use super::{COMPRESSOR_TAIL_SIZE, CompressorAlgo, CompressorTail, ZCPacket};
 
-mod zstd;
 mod lzo;
+mod zstd;
 
 type Error = anyhow::Error;
 
@@ -234,6 +234,25 @@ pub mod tests {
             error.to_string(),
             "compression algorithm is unavailable in this build: ZstdDefault"
         );
+    }
+
+    #[cfg(not(feature = "lzo"))]
+    #[tokio::test]
+    async fn unavailable_lzo_returns_an_explicit_error() {
+        let compressor = DefaultCompressor::new();
+        for result in [
+            compressor
+                .compress_raw(b"payload", CompressorAlgo::Lzo)
+                .await,
+            compressor
+                .decompress_raw(b"payload", CompressorAlgo::Lzo)
+                .await,
+        ] {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "compression algorithm is unavailable in this build: Lzo"
+            );
+        }
     }
 
     #[cfg(feature = "lzo")]
