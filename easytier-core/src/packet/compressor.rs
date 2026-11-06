@@ -235,4 +235,30 @@ pub mod tests {
             "compression algorithm is unavailable in this build: ZstdDefault"
         );
     }
+
+    #[cfg(feature = "lzo")]
+    #[tokio::test]
+    async fn test_lzo_decompress_output_limit() {
+        let compressor = DefaultCompressor::new();
+        for size in [64 * 1024, 64 * 1024 + 1] {
+            let text = vec![b'a'; size];
+            let compressed = compressor
+                .compress_raw(&text, CompressorAlgo::Lzo)
+                .await
+                .unwrap();
+            assert!(compressed.len() * 32 < 64 * 1024);
+
+            let result = compressor
+                .decompress_raw(&compressed, CompressorAlgo::Lzo)
+                .await;
+            if size == 64 * 1024 {
+                assert_eq!(result.unwrap(), text);
+            } else {
+                assert!(matches!(
+                    result.unwrap_err().downcast_ref::<lzokay_native::Error>(),
+                    Some(lzokay_native::Error::OutputOverrun)
+                ));
+            }
+        }
+    }
 }
