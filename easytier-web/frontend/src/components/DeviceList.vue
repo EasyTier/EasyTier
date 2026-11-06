@@ -7,6 +7,7 @@ import { Utils } from 'easytier-frontend-lib';
 import DeviceDetails from './DeviceDetails.vue';
 import { useI18n } from 'vue-i18n'
 import ApiClient from '../modules/api';
+import { enrollCommand as buildEnrollCommand } from '../modules/enroll';
 
 const { t } = useI18n()
 
@@ -42,12 +43,7 @@ watch(viewMode, (mode) => localStorage.setItem('deviceList.viewMode', mode));
 // Zero-device state is where users look for "how do I add one": surface
 // the enrollment command right there.
 const enrollInfo = ref<Awaited<ReturnType<ApiClient['get_console_info']>> | null>(null);
-const enrollCommand = computed(() => {
-    if (!enrollInfo.value) return '';
-    const host = window.location.hostname;
-    const { config_server_protocol: proto, config_server_port: port, username } = enrollInfo.value;
-    return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;
-});
+const enrollCommand = computed(() => enrollInfo.value ? buildEnrollCommand(enrollInfo.value) : '');
 
 const copyEnrollCommand = async () => {
     try {

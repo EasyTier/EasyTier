@@ -175,6 +175,9 @@ export interface ConsoleInfo {
     username: string;
     config_server_protocol: string;
     config_server_port: number;
+    /// Operator-configured address for the enrollment command; absent when the
+    /// dashboard should use the browser origin.
+    config_server_host?: string | null;
     webhook_auth: boolean;
 }
 
