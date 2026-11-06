@@ -155,7 +155,7 @@ fn detect_public_ipv6_prefix_from_routes(
             }
 
             let delegated = routes.iter().any(|candidate| {
-                candidate.dst == Some(prefix)
+                candidate.dst.is_some_and(|dst| ipv6_cidr_contains_cidr(prefix, dst))
                     && candidate.ifindex.is_some()
                     && candidate.ifindex != Some(wan_ifindex)
                     && candidate.ifindex != Some(loopback_ifindex)
