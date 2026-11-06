@@ -6,7 +6,7 @@ use bytes::BytesMut;
 use network_interface::NetworkInterfaceConfig;
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     pin::Pin,
     sync::Arc,
     task::{Context as TaskContext, Poll},
@@ -426,6 +426,20 @@ fn get_local_ip_for_destination(destination: IpAddr) -> Option<IpAddr> {
     socket.local_addr().map(|addr| addr.ip()).ok()
 }
 
+fn bind_addr_for_remote(remote_addr: &SocketAddr) -> SocketAddr {
+    match remote_addr {
+        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    }
+}
+
+fn new_os_socket_for_remote(remote_addr: &SocketAddr) -> io::Result<tokio::net::TcpSocket> {
+    match remote_addr {
+        SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4(),
+        SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6(),
+    }
+}
+
 async fn connect_socket_with_cache(
     remote_addr: SocketAddr,
     socket_mark: Option<u32>,
@@ -436,14 +450,14 @@ async fn connect_socket_with_cache(
         let local_ip = get_local_ip_for_destination(remote_addr.ip())
             .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
 
-        let os_socket = tokio::net::TcpSocket::new_v4()?;
+        let os_socket = new_os_socket_for_remote(&remote_addr)?;
         // SO_MARK applies only to the kernel-visible "decoy" socket below.
         // The actual FakeTCP payload travels via crafted segments written
         // straight to the TUN device, which the kernel doesn't tag with
         // SO_MARK. Operators relying on fwmark for FakeTCP must mark the
         // TUN device's traffic with a separate nftables/iptables rule.
         crate::tunnel::common::apply_socket_mark(&socket2::SockRef::from(&os_socket), socket_mark)?;
-        os_socket.bind("0.0.0.0:0".parse().unwrap())?;
+        os_socket.bind(bind_addr_for_remote(&remote_addr))?;
         let local_addr = SocketAddr::new(local_ip, os_socket.local_addr()?.port());
 
         let (interface_name, mac) =
@@ -500,6 +514,34 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    #[test]
+    fn connector_uses_ipv4_socket_bind_addr_for_ipv4_remote() {
+        let remote_addr: SocketAddr = "192.0.2.1:443".parse().unwrap();
+
+        assert_eq!(
+            bind_addr_for_remote(&remote_addr),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+        );
+
+        let os_socket = new_os_socket_for_remote(&remote_addr).unwrap();
+        os_socket.bind(bind_addr_for_remote(&remote_addr)).unwrap();
+        assert!(os_socket.local_addr().unwrap().is_ipv4());
+    }
+
+    #[test]
+    fn connector_uses_ipv6_socket_bind_addr_for_ipv6_remote() {
+        let remote_addr: SocketAddr = "[2001:db8::1]:443".parse().unwrap();
+
+        assert_eq!(
+            bind_addr_for_remote(&remote_addr),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+        );
+
+        let os_socket = new_os_socket_for_remote(&remote_addr).unwrap();
+        os_socket.bind(bind_addr_for_remote(&remote_addr)).unwrap();
+        assert!(os_socket.local_addr().unwrap().is_ipv6());
+    }
 
     #[tokio::test]
     async fn faketcp_socket_pingpong() {
