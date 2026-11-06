@@ -17,13 +17,13 @@ const cycleThemeMode = () => {
 
 import { I18nUtils } from 'easytier-frontend-lib'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Button, Drawer, Menu, OverlayBadge, Popover, TieredMenu, useToast } from 'primevue';
+import { Button, Drawer, InputText, Menu, OverlayBadge, Popover, Select, TieredMenu, useToast } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDialog } from 'primevue/usedialog';
 import ChangePassword from './ChangePassword.vue';
 import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
-import ApiClient, { type BlockedDevice, type CentralNetworkSummary } from '../modules/api';
+import ApiClient, { type BlockedDevice, type CentralNetworkSummary, type DeviceToken } from '../modules/api';
 import { getApiBase } from '../modules/api-host';
 
 const { t } = useI18n()
@@ -107,15 +107,61 @@ watch([() => enrollInfo.value?.webhook_auth, () => route.name], ([external, name
     }
 });
 
+const deviceTokens = ref<import('../modules/api').DeviceToken[]>([]);
+const selectedTokenId = ref<number | null>(null);
+const newTokenName = ref('');
+const creatingToken = ref(false);
+const createdSecret = ref('');
+
+const activeTokens = computed(() => deviceTokens.value.filter(token => !token.revoked_at));
+
 const enrollCommand = computed(() => {
     if (!enrollInfo.value) return '';
+    const selected = activeTokens.value.find(token => token.id === selectedTokenId.value);
+    if (!selected) return '';
     const host = new URL(getApiBase(), window.location.href).hostname;
-    const { config_server_protocol: proto, config_server_port: port, username } = enrollInfo.value;
-    return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;
+    const { config_server_protocol: proto, config_server_port: port } = enrollInfo.value;
+    return `easytier-core --config-server ${proto}://${host}:${port}/${selected.token}`;
 });
+
+const loadDeviceTokens = async () => {
+    try {
+        deviceTokens.value = await api.list_device_tokens();
+        if (!selectedTokenId.value || !activeTokens.value.some(token => token.id === selectedTokenId.value)) {
+            selectedTokenId.value = activeTokens.value[0]?.id ?? null;
+        }
+    } catch (e) {
+        console.error(e);
+    }
+};
+
+const createDeviceToken = async () => {
+    creatingToken.value = true;
+    try {
+        const created = await api.create_device_token(newTokenName.value.trim() || t('web.console.device_token_default_name'));
+        createdSecret.value = created.token;
+        newTokenName.value = '';
+        await loadDeviceTokens();
+        selectedTokenId.value = created.id;
+    } catch (e: any) {
+        toast.add({ severity: 'error', summary: t('web.console.device_tokens'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
+    } finally {
+        creatingToken.value = false;
+    }
+};
+
+const revokeDeviceToken = async (token: DeviceToken) => {
+    try {
+        await api.revoke_device_token(token.id);
+        await loadDeviceTokens();
+    } catch (e: any) {
+        toast.add({ severity: 'error', summary: t('web.console.device_tokens'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
+    }
+};
 
 const toggleEnrollBell = async (event: Event) => {
     enrollBell.value.toggle(event);
+    loadDeviceTokens();
     if (!enrollInfo.value && !enrollLoading.value) {
         enrollLoading.value = true;
         try {
@@ -288,6 +334,36 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                                 <p class="text-xs muted m-0">
                                     {{ enrollInfo.webhook_auth ? t('web.console.enroll_webhook_note') : t('web.console.enroll_token_note') }}
                                 </p>
+                                <div v-if="centralEnabled" class="flex flex-col gap-2 border-t border-surface pt-2">
+                                    <span class="text-sm font-semibold">{{ t('web.console.device_tokens') }}</span>
+                                    <div class="flex items-center gap-2">
+                                        <Select v-model="selectedTokenId" :options="activeTokens" optionLabel="name"
+                                            optionValue="id" :placeholder="t('web.console.device_token_select')"
+                                            class="flex-1" size="small" />
+                                        <InputText v-model="newTokenName" size="small" class="w-36"
+                                            :placeholder="t('web.console.device_token_name')"
+                                            :aria-label="t('web.console.device_token_name')" />
+                                        <Button icon="pi pi-plus" :loading="creatingToken" size="small" outlined
+                                            :aria-label="t('web.console.device_token_create')"
+                                            @click="createDeviceToken" />
+                                    </div>
+                                    <code v-if="createdSecret" class="mono-value p-2 rounded text-xs"
+                                        style="background: var(--console-ground); word-break: break-all">{{ createdSecret }}</code>
+                                    <div v-if="deviceTokens.length" class="flex flex-col gap-1">
+                                        <div v-for="token in deviceTokens" :key="token.id"
+                                            class="flex items-center justify-between gap-2 text-xs">
+                                            <span class="truncate" :class="{ muted: !!token.revoked_at }">
+                                                {{ token.name || token.token.slice(0, 8) }}
+                                                <span v-if="token.machine_id" class="muted">· {{ t('web.console.device_token_bound') }}</span>
+                                                <span v-if="token.revoked_at" class="muted">· {{ t('web.console.device_token_revoked') }}</span>
+                                            </span>
+                                            <Button v-if="!token.revoked_at" icon="pi pi-trash" severity="danger"
+                                                text rounded class="w-7 h-7" :aria-label="t('web.console.device_token_revoke')"
+                                                @click="revokeDeviceToken(token)" />
+                                        </div>
+                                    </div>
+                                    <p class="text-xs muted m-0">{{ t('web.console.device_token_hint') }}</p>
+                                </div>
                             </template>
                         </div>
                     </Popover>

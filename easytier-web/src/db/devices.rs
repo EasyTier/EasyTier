@@ -17,7 +17,178 @@ pub struct DeviceHeartbeatRecord {
     pub client_url: String,
 }
 
+/// An enrollment token a device presents on the config-server URL. Tokens are
+/// resolved before falling back to the username-as-token legacy path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceTokenRecord {
+    pub id: i32,
+    pub user_id: UserIdInDb,
+    pub name: String,
+    pub token: String,
+    pub machine_id: Option<Uuid>,
+    pub created_time: chrono::DateTime<chrono::FixedOffset>,
+    pub last_used_time: Option<chrono::DateTime<chrono::FixedOffset>>,
+    pub revoked_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DeviceTokenRow {
+    id: i32,
+    user_id: i32,
+    name: String,
+    token: String,
+    machine_id: Option<String>,
+    created_time: chrono::DateTime<chrono::FixedOffset>,
+    last_used_time: Option<chrono::DateTime<chrono::FixedOffset>>,
+    revoked_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+}
+
+impl From<DeviceTokenRow> for DeviceTokenRecord {
+    fn from(row: DeviceTokenRow) -> Self {
+        Self {
+            id: row.id,
+            user_id: row.user_id,
+            name: row.name,
+            token: row.token,
+            machine_id: row.machine_id.and_then(|id| Uuid::parse_str(&id).ok()),
+            created_time: row.created_time,
+            last_used_time: row.last_used_time,
+            revoked_at: row.revoked_at,
+        }
+    }
+}
+
 impl Db {
+    /// Creates an enrollment token. The secret is returned in the record and
+    /// never again: the REST layer surfaces it once, the list endpoint does not.
+    pub async fn create_device_token(
+        &self,
+        user_id: UserIdInDb,
+        name: &str,
+    ) -> Result<DeviceTokenRecord, DbErr> {
+        let record = DeviceTokenRecord {
+            id: 0,
+            user_id,
+            name: name.trim().to_owned(),
+            token: Uuid::new_v4().simple().to_string(),
+            machine_id: None,
+            created_time: chrono::Local::now().fixed_offset(),
+            last_used_time: None,
+            revoked_at: None,
+        };
+        let result = sqlx::query(
+            r#"
+            INSERT INTO device_tokens (user_id, name, token, created_time)
+            VALUES (?, ?, ?, ?)
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.name)
+        .bind(&record.token)
+        .bind(record.created_time)
+        .execute(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(DeviceTokenRecord {
+            id: result.last_insert_rowid() as i32,
+            ..record
+        })
+    }
+
+    pub async fn list_device_tokens(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<DeviceTokenRecord>, DbErr> {
+        let rows = sqlx::query_as::<_, DeviceTokenRow>(
+            r#"
+            SELECT id, user_id, name, token, machine_id, created_time,
+                   last_used_time, revoked_at
+            FROM device_tokens
+            WHERE user_id = ?
+            ORDER BY id DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn revoke_device_token(
+        &self,
+        user_id: UserIdInDb,
+        token_id: i32,
+    ) -> Result<bool, DbErr> {
+        let result = sqlx::query(
+            r#"
+            UPDATE device_tokens
+            SET revoked_at = ?
+            WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(chrono::Local::now().fixed_offset())
+        .bind(token_id)
+        .bind(user_id)
+        .execute(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Resolves an enrollment token presented by a device. Returns the row
+    /// regardless of revocation so the caller can reject revoked tokens
+    /// explicitly instead of silently falling through to username matching.
+    pub async fn find_device_token(&self, token: &str) -> Result<Option<DeviceTokenRecord>, DbErr> {
+        let row = sqlx::query_as::<_, DeviceTokenRow>(
+            r#"
+            SELECT id, user_id, name, token, machine_id, created_time,
+                   last_used_time, revoked_at
+            FROM device_tokens
+            WHERE token = ?
+            "#,
+        )
+        .bind(token)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(row.map(Into::into))
+    }
+
+    /// Binds an enrollment token to the first machine that used it. Later
+    /// connections from a different machine are rejected; the binding itself
+    /// can only be cleared by revoking the token.
+    pub async fn bind_device_token_machine(
+        &self,
+        token_id: i32,
+        machine_id: Uuid,
+    ) -> Result<(), DbErr> {
+        sqlx::query(
+            r#"
+            UPDATE device_tokens
+            SET machine_id = ?, last_used_time = ?
+            WHERE id = ? AND machine_id IS NULL
+            "#,
+        )
+        .bind(machine_id.to_string())
+        .bind(chrono::Local::now().fixed_offset())
+        .bind(token_id)
+        .execute(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
+    pub async fn touch_device_token(&self, token_id: i32) -> Result<(), DbErr> {
+        sqlx::query("UPDATE device_tokens SET last_used_time = ? WHERE id = ?")
+            .bind(chrono::Local::now().fixed_offset())
+            .bind(token_id)
+            .execute(&self.db)
+            .await
+            .map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
     pub async fn upsert_device_heartbeat(
         &self,
         record: DeviceHeartbeatRecord,

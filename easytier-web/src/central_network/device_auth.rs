@@ -4,7 +4,7 @@ use easytier::proto::web::DeviceOsInfo;
 use uuid::Uuid;
 
 use crate::{
-    db::{Db, DeviceHeartbeatRecord},
+    db::{Db, DeviceHeartbeatRecord, UserIdInDb},
     webhook::{ValidateTokenRequest, ValidateTokenResponse, WebhookHandler},
 };
 
@@ -12,6 +12,7 @@ use crate::{
 pub struct DeviceAuth {
     db: Db,
     allow_auto_create_user: bool,
+    disallow_username_tokens: bool,
 }
 
 impl DeviceAuth {
@@ -19,7 +20,15 @@ impl DeviceAuth {
         Self {
             db,
             allow_auto_create_user,
+            disallow_username_tokens: false,
         }
+    }
+
+    /// Rejects the legacy username-as-token path so only issued device tokens
+    /// can enroll. Existing tokens keep working; see `validate_token`.
+    pub fn with_disallow_username_tokens(mut self, disallow: bool) -> Self {
+        self.disallow_username_tokens = disallow;
+        self
     }
 }
 
@@ -38,11 +47,8 @@ impl WebhookHandler for DeviceAuth {
         let Ok(machine_id) = Uuid::parse_str(&request.machine_id) else {
             return Ok(response);
         };
-        let user_id = match self.db.get_user_id_by_token(&request.token).await? {
+        let user_id = match self.resolve_user(request, machine_id).await? {
             Some(user_id) => user_id,
-            None if self.allow_auto_create_user => {
-                self.db.auto_create_user(&request.token).await?.id
-            }
             None => return Ok(response),
         };
         let device = (user_id, machine_id);
@@ -84,6 +90,46 @@ impl WebhookHandler for DeviceAuth {
             .await?
             .unwrap_or_default();
         Ok(response)
+    }
+}
+
+impl DeviceAuth {
+    /// Resolves the presenting token to a user. An issued device token wins
+    /// over the legacy username path and binds to the first machine that used
+    /// it; a token already bound to another machine is rejected. Username
+    /// fallback stays available for existing deployments unless
+    /// `disallow_username_tokens` is set.
+    async fn resolve_user(
+        &self,
+        request: &ValidateTokenRequest,
+        machine_id: Uuid,
+    ) -> anyhow::Result<Option<UserIdInDb>> {
+        if let Some(record) = self.db.find_device_token(&request.token).await? {
+            if record.revoked_at.is_some() {
+                return Ok(None);
+            }
+            match record.machine_id {
+                Some(bound) if bound != machine_id => return Ok(None),
+                Some(_) => self.db.touch_device_token(record.id).await?,
+                None => {
+                    self.db
+                        .bind_device_token_machine(record.id, machine_id)
+                        .await?;
+                }
+            }
+            return Ok(Some(record.user_id));
+        }
+
+        if self.disallow_username_tokens {
+            return Ok(None);
+        }
+        match self.db.get_user_id_by_token(&request.token).await? {
+            Some(user_id) => Ok(Some(user_id)),
+            None if self.allow_auto_create_user => {
+                Ok(Some(self.db.auto_create_user(&request.token).await?.id))
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -247,6 +293,82 @@ mod tests {
                 .is_none()
         );
         core.delete_network_instances([instance_id]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn issued_device_tokens_bind_to_one_machine_and_revoke_cuts_off() {
+        let db = Db::memory_db().await;
+        let user_id = db.auto_create_user("owner").await.unwrap().id;
+        let record = db.create_device_token(user_id, "office").await.unwrap();
+        let auth = DeviceAuth::new(db.clone(), false);
+        let machine_a = Uuid::new_v4();
+        let machine_b = Uuid::new_v4();
+
+        // First use binds the token to the presenting machine.
+        let mut req = request(&record.token, machine_a);
+        assert!(auth.validate_token(&req).await.unwrap().valid);
+        let bound = db.find_device_token(&record.token).await.unwrap().unwrap();
+        assert_eq!(bound.machine_id, Some(machine_a));
+        assert!(bound.last_used_time.is_some());
+        assert_eq!(
+            db.get_device((user_id, machine_a))
+                .await
+                .unwrap()
+                .unwrap()
+                .hostname,
+            "device"
+        );
+
+        // The same token presented by another machine is rejected.
+        req.machine_id = machine_b.to_string();
+        assert!(!auth.validate_token(&req).await.unwrap().valid);
+        assert!(db.get_device((user_id, machine_b)).await.unwrap().is_none());
+
+        // Revoking cuts off the bound machine too.
+        assert!(db.revoke_device_token(user_id, record.id).await.unwrap());
+        req.machine_id = machine_a.to_string();
+        assert!(!auth.validate_token(&req).await.unwrap().valid);
+    }
+
+    #[tokio::test]
+    async fn username_fallback_stays_available_until_disallowed() {
+        let db = Db::memory_db().await;
+        let user_id = db.auto_create_user("owner").await.unwrap().id;
+        let record = db.create_device_token(user_id, "office").await.unwrap();
+        let machine_id = Uuid::new_v4();
+
+        // An issued token wins over an identical username and works even when
+        // the username fallback is disabled.
+        let strict = DeviceAuth::new(db.clone(), false).with_disallow_username_tokens(true);
+        assert!(
+            strict
+                .validate_token(&request(&record.token, machine_id))
+                .await
+                .unwrap()
+                .valid
+        );
+
+        // The username path keeps working for existing deployments by default
+        // and is refused once the fallback is disallowed.
+        let relaxed = DeviceAuth::new(db.clone(), false);
+        assert!(
+            relaxed
+                .validate_token(&request("owner", machine_id))
+                .await
+                .unwrap()
+                .valid
+        );
+        assert!(
+            !strict
+                .validate_token(&request("owner", machine_id))
+                .await
+                .unwrap()
+                .valid
+        );
+        assert_eq!(
+            user_id,
+            db.get_user_id_by_token("owner").await.unwrap().unwrap()
+        );
     }
 
     fn request(token: &str, machine_id: Uuid) -> ValidateTokenRequest {
