@@ -114,8 +114,18 @@ const enrollCommand = computed(() => {
     return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;
 });
 
+const latestKnown = ref('');
+const loadLatestKnown = async () => {
+    try {
+        latestKnown.value = (await api.get_latest_version()).latest ?? '';
+    } catch (e) {
+        console.error(e);
+    }
+};
+
 const toggleEnrollBell = async (event: Event) => {
     enrollBell.value.toggle(event);
+    loadLatestKnown();
     if (!enrollInfo.value && !enrollLoading.value) {
         enrollLoading.value = true;
         try {
@@ -288,6 +298,7 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                                 <p class="text-xs muted m-0">
                                     {{ enrollInfo.webhook_auth ? t('web.console.enroll_webhook_note') : t('web.console.enroll_token_note') }}
                                 </p>
+                                <p v-if="latestKnown" class="text-xs muted m-0">{{ t('web.console.latest_version_note', { latest: latestKnown }) }}</p>
                             </template>
                         </div>
                     </Popover>
