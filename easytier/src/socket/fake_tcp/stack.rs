@@ -56,10 +56,17 @@ use tokio_util::task::AbortOnDropHandle;
 use tracing::{error, info, trace, warn};
 
 const TIMEOUT: time::Duration = time::Duration::from_secs(1);
+const INITIAL_TCP_STATE_TTL: time::Duration = time::Duration::from_secs(60);
+const INITIAL_TCP_STATE_CLEANUP_INTERVAL: time::Duration = time::Duration::from_secs(10);
 const MPMC_BUFFER_LEN: usize = 512;
 const TCP_OPTION_END: u8 = 0;
 const TCP_OPTION_NOP: u8 = 1;
 const TCP_OPTION_SACK: u8 = 5;
+
+fn tcp_seq_forward_distance(from: u32, to: u32) -> Option<u32> {
+    let distance = to.wrapping_sub(from);
+    (distance != 0 && distance < (1 << 31)).then_some(distance)
+}
 
 struct TcpOptionIter<'a> {
     remaining: &'a [u8],
@@ -124,6 +131,7 @@ impl AddrTuple {
 #[derive(Default)]
 struct StackState {
     tuples: HashMap<AddrTuple, flume::Sender<Bytes>>,
+    initial_tcp_state: HashMap<AddrTuple, TcpInitialState>,
     closed: bool,
 }
 
@@ -143,8 +151,84 @@ impl Shared {
         state.closed = true;
         let len = state.tuples.len();
         state.tuples.clear();
+        state.initial_tcp_state.clear();
         len
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TcpInitialState {
+    // Captured from kernel handshake packets before the fake socket is accepted.
+    seq: Option<u32>,
+    ack: u32,
+    created_at: time::Instant,
+}
+
+fn record_initial_tcp_state(
+    state: &RwLock<StackState>,
+    tuple: AddrTuple,
+    tcp_packet: &smoltcp::wire::TcpPacket<&[u8]>,
+    now: time::Instant,
+) {
+    if tcp_packet.rst() {
+        state.write().unwrap().initial_tcp_state.remove(&tuple);
+        return;
+    }
+
+    if tcp_packet.syn() && !tcp_packet.ack() {
+        let ack = (tcp_packet.seq_number().0 as u32).wrapping_add(1);
+        let mut state = state.write().unwrap();
+        let should_replace = match state.initial_tcp_state.get_mut(&tuple) {
+            Some(initial) if initial.ack == ack && initial_tcp_state_is_fresh(initial, now) => {
+                // A retransmitted SYN refreshes the pending handshake without
+                // discarding a final ACK that may already have been captured.
+                initial.created_at = now;
+                false
+            }
+            _ => true,
+        };
+        if should_replace {
+            state.initial_tcp_state.insert(
+                tuple,
+                TcpInitialState {
+                    seq: None,
+                    ack,
+                    created_at: now,
+                },
+            );
+        }
+        return;
+    }
+
+    if tcp_packet.ack() && !tcp_packet.syn() && tcp_packet.payload().is_empty() {
+        let mut state = state.write().unwrap();
+        let Some(initial) = state.initial_tcp_state.get_mut(&tuple) else {
+            return;
+        };
+        if !initial_tcp_state_is_fresh(initial, now) {
+            state.initial_tcp_state.remove(&tuple);
+            return;
+        }
+
+        // A final handshake ACK must use the sequence immediately after the
+        // peer SYN. Ignore unrelated or stale ACK-only packets for this tuple.
+        if initial.seq.is_none() && tcp_packet.seq_number().0 as u32 == initial.ack {
+            initial.seq = Some(tcp_packet.ack_number().0 as u32);
+        }
+    }
+}
+
+fn initial_tcp_state_is_fresh(initial: &TcpInitialState, now: time::Instant) -> bool {
+    now.saturating_duration_since(initial.created_at) < INITIAL_TCP_STATE_TTL
+}
+
+fn prune_expired_initial_tcp_state(state: &RwLock<StackState>, now: time::Instant) -> usize {
+    let mut state = state.write().unwrap();
+    let before = state.initial_tcp_state.len();
+    state
+        .initial_tcp_state
+        .retain(|_, initial| initial_tcp_state_is_fresh(initial, now));
+    before - state.initial_tcp_state.len()
 }
 
 pub struct Stack {
@@ -306,10 +390,6 @@ impl Socket {
 
                     let payload = tcp_packet.payload();
 
-                    let new_ack =
-                        (tcp_packet.seq_number().0 as u32).wrapping_add(payload.len() as u32);
-                    self.ack.store(new_ack, Ordering::Relaxed);
-
                     for (kind, option_payload) in TcpOptionIter::new(tcp_packet.options()) {
                         if kind == TCP_OPTION_SACK {
                             // SACK 选项类型为 5
@@ -318,11 +398,13 @@ impl Socket {
                                     continue;
                                 }
                                 let left = tcp_packet.ack_number().0 as u32;
-                                let right = u32::from_be_bytes(chunk[0..4].try_into().unwrap());
-                                let len = right.wrapping_sub(left);
-
+                                let sack_start =
+                                    u32::from_be_bytes(chunk[0..4].try_into().unwrap());
                                 let sack_end = u32::from_be_bytes(chunk[4..8].try_into().unwrap());
-                                if len == 0 || sack_end <= left {
+                                let Some(len) = tcp_seq_forward_distance(left, sack_start) else {
+                                    continue;
+                                };
+                                if tcp_seq_forward_distance(sack_start, sack_end).is_none() {
                                     continue;
                                 }
 
@@ -349,6 +431,13 @@ impl Socket {
                     }
 
                     if payload.is_empty() {
+                        continue;
+                    }
+
+                    // Zero-fill packets only pacify the TCP stack. Production
+                    // data contains a complete framed EasyTier packet, whose
+                    // length and protocol headers make it non-zero.
+                    if payload.iter().all(|&b| b == 0) {
                         continue;
                     }
 
@@ -501,6 +590,14 @@ impl Stack {
             );
             return None;
         }
+        let initial_tcp_state = if state == State::Established {
+            stack_state
+                .initial_tcp_state
+                .remove(&tuple)
+                .filter(|initial| initial_tcp_state_is_fresh(initial, time::Instant::now()))
+        } else {
+            None
+        };
         let (sock, incoming) = Socket::new(
             self.shared.clone(),
             // self.shared.tun.choose(&mut rng).unwrap().clone(),
@@ -509,9 +606,12 @@ impl Stack {
             remote_addr,
             self.local_mac,
             None,
-            Some(0), // Initial ACK
+            initial_tcp_state.map(|state| state.ack),
             state,
         );
+        if let Some(initial_seq) = initial_tcp_state.and_then(|state| state.seq) {
+            sock.seq.store(initial_seq, Ordering::Relaxed);
+        }
         assert!(stack_state.tuples.insert(tuple, incoming).is_none());
         Some(sock)
     }
@@ -522,6 +622,8 @@ impl Stack {
         mut tuples_purge: broadcast::Receiver<AddrTuple>,
     ) {
         let mut tuples: HashMap<AddrTuple, flume::Sender<Bytes>> = HashMap::new();
+        let mut initial_state_cleanup = time::interval(INITIAL_TCP_STATE_CLEANUP_INTERVAL);
+        initial_state_cleanup.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
         loop {
             let mut buf = BytesMut::new();
@@ -585,6 +687,13 @@ impl Stack {
                                 }
                             }
 
+                            record_initial_tcp_state(
+                                &shared.state,
+                                tuple.clone(),
+                                &tcp_packet,
+                                time::Instant::now(),
+                            );
+
                             if tcp_packet.rst() {
                                 info!("Unknown RST TCP packet from {}, ignoring", remote_addr);
                                 continue;
@@ -603,6 +712,12 @@ impl Stack {
                     match tuple {
                         Ok(tuple) => {
                             tuples.remove(&tuple);
+                            shared
+                                .state
+                                .write()
+                                .unwrap()
+                                .initial_tcp_state
+                                .remove(&tuple);
                             trace!("Removed cached tuple: {:?}", tuple);
                         }
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -626,6 +741,15 @@ impl Stack {
                             break;
                         }
                     }
+                },
+                _ = initial_state_cleanup.tick() => {
+                    let removed = prune_expired_initial_tcp_state(
+                        &shared.state,
+                        time::Instant::now(),
+                    );
+                    if removed != 0 {
+                        trace!(removed, "Removed expired fake TCP handshake state");
+                    }
                 }
             }
         }
@@ -636,6 +760,7 @@ impl Stack {
 mod tests {
     use super::*;
     use std::io;
+    use std::sync::Mutex;
     use tokio::{
         sync::Notify,
         time::{Duration, timeout},
@@ -678,6 +803,15 @@ mod tests {
         assert_eq!(TcpOptionIter::new(&[TCP_OPTION_SACK, 10, 0, 0]).count(), 0);
     }
 
+    #[test]
+    fn tcp_sequence_forward_distance_handles_wraparound() {
+        assert_eq!(tcp_seq_forward_distance(u32::MAX - 15, 16), Some(32));
+        assert_eq!(tcp_seq_forward_distance(100, 101), Some(1));
+        assert_eq!(tcp_seq_forward_distance(100, 100), None);
+        assert_eq!(tcp_seq_forward_distance(101, 100), None);
+        assert_eq!(tcp_seq_forward_distance(0, 1 << 31), None);
+    }
+
     #[derive(Default)]
     struct FailingTun {
         fail: Notify,
@@ -703,6 +837,516 @@ mod tests {
         fn driver_type(&self) -> &'static str {
             "test"
         }
+    }
+
+    struct MockTun {
+        sent: Mutex<Vec<Bytes>>,
+    }
+
+    impl MockTun {
+        fn new() -> Self {
+            Self {
+                sent: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn sent_packets(&self) -> Vec<Bytes> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tun for MockTun {
+        async fn recv(&self, _packet: &mut BytesMut) -> Result<usize, io::Error> {
+            std::future::pending::<Result<usize, io::Error>>().await
+        }
+
+        fn try_send(&self, packet: &Bytes) -> Result<(), io::Error> {
+            self.sent.lock().unwrap().push(packet.clone());
+            Ok(())
+        }
+
+        fn driver_type(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    fn test_mac(id: u8) -> MacAddr {
+        MacAddr::from_bytes(&[0, 1, 2, 3, 4, id])
+    }
+
+    fn socket_with_state(
+        ack: Option<u32>,
+        state: State,
+    ) -> (Socket, flume::Sender<Bytes>, Arc<MockTun>) {
+        let tun = Arc::new(MockTun::new());
+        let tun_trait: Arc<dyn Tun> = tun.clone();
+        let (tuples_purge, _) = broadcast::channel(16);
+        let shared = Arc::new(Shared {
+            state: RwLock::new(StackState::default()),
+            tun: tun_trait.clone(),
+            tuples_purge,
+        });
+        let local_addr = "10.0.0.1:10000".parse().unwrap();
+        let remote_addr = "10.0.0.2:20000".parse().unwrap();
+        let (socket, incoming) = Socket::new(
+            shared.clone(),
+            tun_trait,
+            local_addr,
+            remote_addr,
+            test_mac(1),
+            Some(test_mac(2)),
+            ack,
+            state,
+        );
+        shared
+            .state
+            .write()
+            .unwrap()
+            .tuples
+            .insert(AddrTuple::new(local_addr, remote_addr), incoming.clone());
+
+        (socket, incoming, tun)
+    }
+
+    fn inbound_packet(
+        socket: &Socket,
+        seq: u32,
+        ack: u32,
+        flags: u8,
+        payload: Option<&[u8]>,
+    ) -> Bytes {
+        build_tcp_packet(
+            test_mac(2),
+            test_mac(1),
+            socket.remote_addr,
+            socket.local_addr,
+            seq,
+            ack,
+            flags,
+            payload,
+        )
+    }
+
+    fn packet_for_tuple(
+        tuple: &AddrTuple,
+        seq: u32,
+        ack: u32,
+        flags: u8,
+        payload: Option<&[u8]>,
+    ) -> Bytes {
+        build_tcp_packet(
+            test_mac(2),
+            test_mac(1),
+            tuple.remote_addr,
+            tuple.local_addr,
+            seq,
+            ack,
+            flags,
+            payload,
+        )
+    }
+
+    fn record_packet(
+        state: &RwLock<StackState>,
+        tuple: AddrTuple,
+        packet: &Bytes,
+        now: time::Instant,
+    ) {
+        let (_, _, _, tcp_packet) = parse_ip_packet(packet).unwrap();
+        record_initial_tcp_state(state, tuple, &tcp_packet, now);
+    }
+
+    fn inbound_sack_packet(
+        socket: &Socket,
+        seq: u32,
+        ack: u32,
+        first_sack_left: u32,
+        first_sack_right: u32,
+        payload: &[u8],
+    ) -> Bytes {
+        use smoltcp::wire::{ETHERNET_HEADER_LEN, IPV4_HEADER_LEN, TCP_HEADER_LEN};
+
+        let mut tcp_payload = vec![0u8; 12];
+        tcp_payload[0] = TCP_OPTION_SACK;
+        tcp_payload[1] = 10;
+        tcp_payload[2..6].copy_from_slice(&first_sack_left.to_be_bytes());
+        tcp_payload[6..10].copy_from_slice(&first_sack_right.to_be_bytes());
+        tcp_payload[10] = TCP_OPTION_NOP;
+        tcp_payload[11] = TCP_OPTION_NOP;
+        tcp_payload.extend_from_slice(payload);
+
+        let mut packet =
+            inbound_packet(socket, seq, ack, TCP_FLAG_ACK, Some(&tcp_payload)).to_vec();
+        let tcp_start = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN;
+        packet[tcp_start + 12] = (((TCP_HEADER_LEN + 12) / 4) as u8) << 4;
+        Bytes::from(packet)
+    }
+
+    #[tokio::test]
+    async fn fake_payload_does_not_advance_header_ack() {
+        let (socket, incoming, tun) = socket_with_state(Some(777), State::Established);
+
+        incoming
+            .send(inbound_packet(
+                &socket,
+                1001,
+                0,
+                TCP_FLAG_ACK,
+                Some(b"data"),
+            ))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+        assert_eq!(&buf[..], b"data");
+        assert_eq!(socket.ack.load(Ordering::Relaxed), 777);
+
+        socket.try_send(b"reply").unwrap();
+        let sent = tun.sent_packets();
+        assert_eq!(sent.len(), 1);
+        let (_, _, _, tcp_packet) = parse_ip_packet(&sent[0]).unwrap();
+        assert_eq!(tcp_packet.ack_number().0 as u32, 777);
+        assert_eq!(tcp_packet.payload(), b"reply");
+    }
+
+    #[test]
+    fn orphan_ack_does_not_create_initial_tcp_state() {
+        let state = RwLock::new(StackState::default());
+        let tuple = AddrTuple::new(
+            "10.0.0.1:10000".parse().unwrap(),
+            "10.0.0.2:20000".parse().unwrap(),
+        );
+        let ack = packet_for_tuple(&tuple, 1001, 6000, TCP_FLAG_ACK, None);
+
+        record_packet(&state, tuple, &ack, time::Instant::now());
+
+        assert!(state.read().unwrap().initial_tcp_state.is_empty());
+    }
+
+    #[test]
+    fn final_ack_must_match_recorded_syn_sequence() {
+        let state = RwLock::new(StackState::default());
+        let tuple = AddrTuple::new(
+            "10.0.0.1:10000".parse().unwrap(),
+            "10.0.0.2:20000".parse().unwrap(),
+        );
+        let now = time::Instant::now();
+        let syn = packet_for_tuple(&tuple, 1000, 0, TCP_FLAG_SYN, None);
+        let wrong_ack = packet_for_tuple(&tuple, 1002, 6000, TCP_FLAG_ACK, None);
+        let final_ack = packet_for_tuple(&tuple, 1001, 6000, TCP_FLAG_ACK, None);
+
+        record_packet(&state, tuple.clone(), &syn, now);
+        record_packet(&state, tuple.clone(), &wrong_ack, now);
+        assert_eq!(
+            state
+                .read()
+                .unwrap()
+                .initial_tcp_state
+                .get(&tuple)
+                .unwrap()
+                .seq,
+            None
+        );
+
+        record_packet(&state, tuple.clone(), &final_ack, now);
+        assert_eq!(
+            state
+                .read()
+                .unwrap()
+                .initial_tcp_state
+                .get(&tuple)
+                .unwrap()
+                .seq,
+            Some(6000)
+        );
+
+        let later_ack = packet_for_tuple(&tuple, 1001, 7000, TCP_FLAG_ACK, None);
+        record_packet(&state, tuple.clone(), &later_ack, now);
+        assert_eq!(
+            state
+                .read()
+                .unwrap()
+                .initial_tcp_state
+                .get(&tuple)
+                .unwrap()
+                .seq,
+            Some(6000)
+        );
+    }
+
+    #[test]
+    fn retransmitted_syn_preserves_recorded_final_ack() {
+        let state = RwLock::new(StackState::default());
+        let tuple = AddrTuple::new(
+            "10.0.0.1:10000".parse().unwrap(),
+            "10.0.0.2:20000".parse().unwrap(),
+        );
+        let now = time::Instant::now();
+        let syn = packet_for_tuple(&tuple, 1000, 0, TCP_FLAG_SYN, None);
+        let final_ack = packet_for_tuple(&tuple, 1001, 6000, TCP_FLAG_ACK, None);
+
+        record_packet(&state, tuple.clone(), &syn, now);
+        record_packet(&state, tuple.clone(), &final_ack, now);
+        record_packet(
+            &state,
+            tuple.clone(),
+            &syn,
+            now + time::Duration::from_secs(1),
+        );
+
+        let state = state.read().unwrap();
+        let initial = state.initial_tcp_state.get(&tuple).unwrap();
+        assert_eq!(initial.seq, Some(6000));
+        assert_eq!(initial.created_at, now + time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn syn_replaces_expired_initial_tcp_state() {
+        let state = RwLock::new(StackState::default());
+        let tuple = AddrTuple::new(
+            "10.0.0.1:10000".parse().unwrap(),
+            "10.0.0.2:20000".parse().unwrap(),
+        );
+        let now = time::Instant::now();
+        let syn = packet_for_tuple(&tuple, 1000, 0, TCP_FLAG_SYN, None);
+        let final_ack = packet_for_tuple(&tuple, 1001, 6000, TCP_FLAG_ACK, None);
+
+        record_packet(&state, tuple.clone(), &syn, now - INITIAL_TCP_STATE_TTL);
+        record_packet(
+            &state,
+            tuple.clone(),
+            &final_ack,
+            now - INITIAL_TCP_STATE_TTL,
+        );
+        record_packet(&state, tuple.clone(), &syn, now);
+
+        let state = state.read().unwrap();
+        let initial = state.initial_tcp_state.get(&tuple).unwrap();
+        assert_eq!(initial.seq, None);
+        assert_eq!(initial.created_at, now);
+    }
+
+    #[test]
+    fn rst_removes_initial_tcp_state() {
+        let state = RwLock::new(StackState::default());
+        let tuple = AddrTuple::new(
+            "10.0.0.1:10000".parse().unwrap(),
+            "10.0.0.2:20000".parse().unwrap(),
+        );
+        let now = time::Instant::now();
+        let syn = packet_for_tuple(&tuple, 1000, 0, TCP_FLAG_SYN, None);
+        let rst = packet_for_tuple(&tuple, 1001, 0, TCP_FLAG_RST, None);
+
+        record_packet(&state, tuple.clone(), &syn, now);
+        assert!(state.read().unwrap().initial_tcp_state.contains_key(&tuple));
+
+        record_packet(&state, tuple, &rst, now);
+        assert!(state.read().unwrap().initial_tcp_state.is_empty());
+    }
+
+    #[test]
+    fn expired_initial_tcp_state_is_pruned() {
+        let state = RwLock::new(StackState::default());
+        let expired_tuple = AddrTuple::new(
+            "10.0.0.1:10000".parse().unwrap(),
+            "10.0.0.2:20000".parse().unwrap(),
+        );
+        let fresh_tuple = AddrTuple::new(
+            "10.0.0.1:10000".parse().unwrap(),
+            "10.0.0.2:20001".parse().unwrap(),
+        );
+        let now = time::Instant::now();
+        let expired_syn = packet_for_tuple(&expired_tuple, 1000, 0, TCP_FLAG_SYN, None);
+        let fresh_syn = packet_for_tuple(&fresh_tuple, 2000, 0, TCP_FLAG_SYN, None);
+
+        record_packet(
+            &state,
+            expired_tuple.clone(),
+            &expired_syn,
+            now - INITIAL_TCP_STATE_TTL,
+        );
+        record_packet(&state, fresh_tuple.clone(), &fresh_syn, now);
+
+        assert_eq!(prune_expired_initial_tcp_state(&state, now), 1);
+        let state = state.read().unwrap();
+        assert!(!state.initial_tcp_state.contains_key(&expired_tuple));
+        assert!(state.initial_tcp_state.contains_key(&fresh_tuple));
+    }
+
+    #[test]
+    fn expired_initial_tcp_state_ignores_final_ack() {
+        let state = RwLock::new(StackState::default());
+        let tuple = AddrTuple::new(
+            "10.0.0.1:10000".parse().unwrap(),
+            "10.0.0.2:20000".parse().unwrap(),
+        );
+        let now = time::Instant::now();
+        let syn = packet_for_tuple(&tuple, 1000, 0, TCP_FLAG_SYN, None);
+        let final_ack = packet_for_tuple(&tuple, 1001, 6000, TCP_FLAG_ACK, None);
+
+        record_packet(&state, tuple.clone(), &syn, now - INITIAL_TCP_STATE_TTL);
+        record_packet(&state, tuple, &final_ack, now);
+
+        assert!(state.read().unwrap().initial_tcp_state.is_empty());
+    }
+
+    #[tokio::test]
+    async fn server_established_socket_initializes_seq_from_recorded_syn_ack() {
+        let tun = Arc::new(MockTun::new());
+        let tun_trait: Arc<dyn Tun> = tun.clone();
+        let stack = Stack::new(tun_trait, Some(test_mac(1)));
+        let local_addr: SocketAddr = "10.0.0.1:10000".parse().unwrap();
+        let remote_addr: SocketAddr = "10.0.0.2:20000".parse().unwrap();
+        let tuple = AddrTuple::new(local_addr, remote_addr);
+
+        let syn = build_tcp_packet(
+            test_mac(2),
+            test_mac(1),
+            remote_addr,
+            local_addr,
+            1000,
+            0,
+            TCP_FLAG_SYN,
+            None,
+        );
+        let (_, _, _, syn_packet) = parse_ip_packet(&syn).unwrap();
+        record_initial_tcp_state(
+            &stack.shared.state,
+            tuple.clone(),
+            &syn_packet,
+            time::Instant::now(),
+        );
+
+        let final_ack = build_tcp_packet(
+            test_mac(2),
+            test_mac(1),
+            remote_addr,
+            local_addr,
+            1001,
+            6000,
+            TCP_FLAG_ACK,
+            None,
+        );
+        let (_, _, _, ack_packet) = parse_ip_packet(&final_ack).unwrap();
+        record_initial_tcp_state(
+            &stack.shared.state,
+            tuple.clone(),
+            &ack_packet,
+            time::Instant::now(),
+        );
+
+        let socket = stack
+            .try_alloc_established_socket(local_addr, remote_addr, State::Established)
+            .unwrap();
+
+        assert_eq!(socket.seq.load(Ordering::Relaxed), 6000);
+        assert_eq!(socket.ack.load(Ordering::Relaxed), 1001);
+        assert!(
+            !stack
+                .shared
+                .state
+                .read()
+                .unwrap()
+                .initial_tcp_state
+                .contains_key(&tuple)
+        );
+
+        socket.try_send(b"first").unwrap();
+        let sent = tun.sent_packets();
+        assert_eq!(sent.len(), 1);
+        let (_, _, _, tcp_packet) = parse_ip_packet(&sent[0]).unwrap();
+        assert_eq!(tcp_packet.seq_number().0 as u32, 6000);
+        assert_eq!(tcp_packet.ack_number().0 as u32, 1001);
+        assert_eq!(tcp_packet.payload(), b"first");
+    }
+
+    #[tokio::test]
+    async fn sack_zero_fill_still_sends_filler() {
+        let (socket, incoming, tun) = socket_with_state(Some(1001), State::Established);
+
+        incoming
+            .send(inbound_sack_packet(
+                &socket, 1001, 5000, 5120, 5300, b"data",
+            ))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+        assert_eq!(&buf[..], b"data");
+        assert_eq!(socket.ack.load(Ordering::Relaxed), 1001);
+
+        let sent = tun.sent_packets();
+        assert_eq!(sent.len(), 1);
+        let (_, _, _, tcp_packet) = parse_ip_packet(&sent[0]).unwrap();
+        assert_eq!(tcp_packet.seq_number().0 as u32, 5000);
+        assert_eq!(tcp_packet.ack_number().0 as u32, 1001);
+        assert_eq!(tcp_flags(&tcp_packet), TCP_FLAG_ACK);
+        assert_eq!(tcp_packet.payload().len(), 120);
+        assert!(tcp_packet.payload().iter().all(|&b| b == 0));
+    }
+
+    #[tokio::test]
+    async fn sack_zero_fill_handles_sequence_wraparound() {
+        let (socket, incoming, tun) = socket_with_state(Some(1001), State::Established);
+        let ack = u32::MAX - 15;
+
+        incoming
+            .send(inbound_sack_packet(&socket, 1001, ack, 16, 32, b"data"))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+
+        let sent = tun.sent_packets();
+        assert_eq!(sent.len(), 1);
+        let (_, _, _, tcp_packet) = parse_ip_packet(&sent[0]).unwrap();
+        assert_eq!(tcp_packet.seq_number().0 as u32, ack);
+        assert_eq!(tcp_packet.payload().len(), 32);
+    }
+
+    #[tokio::test]
+    async fn sack_zero_fill_rejects_backward_block() {
+        let (socket, incoming, tun) = socket_with_state(Some(1001), State::Established);
+
+        incoming
+            .send(inbound_sack_packet(
+                &socket, 1001, 5000, 4900, 5100, b"data",
+            ))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+        assert!(tun.sent_packets().is_empty());
+    }
+
+    #[tokio::test]
+    async fn zero_filler_payload_is_dropped_before_upper_layer() {
+        let (socket, incoming, _tun) = socket_with_state(Some(1001), State::Established);
+
+        incoming
+            .send(inbound_packet(
+                &socket,
+                4000,
+                0,
+                TCP_FLAG_ACK,
+                Some(&[0, 0, 0, 0]),
+            ))
+            .unwrap();
+        incoming
+            .send(inbound_packet(
+                &socket,
+                1001,
+                0,
+                TCP_FLAG_ACK,
+                Some(b"real"),
+            ))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+        assert_eq!(&buf[..], b"real");
+        assert_eq!(socket.ack.load(Ordering::Relaxed), 1001);
     }
 
     #[tokio::test]
