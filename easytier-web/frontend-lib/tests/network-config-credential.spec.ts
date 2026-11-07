@@ -42,6 +42,7 @@ describe('network config credential mode', () => {
   it('preserves the credential when normalizing a form again', () => {
     const backend = {
       ...DEFAULT_NETWORK_CONFIG(),
+      network_secret: undefined,
       secure_mode: { enabled: true, local_private_key: 'EWAhomework/' },
     }
 
@@ -80,10 +81,11 @@ describe('network config credential mode', () => {
       .toBe(credential || undefined)
   })
 
-  it('keeps admin instances with a secret untouched', () => {
+  it.each(['', 's3cret'])('keeps admin instances with the shared secret %j untouched', (secret) => {
     const backend: any = {
+      ...DEFAULT_NETWORK_CONFIG(),
       network_name: 'mesh',
-      network_secret: 's3cret',
+      network_secret: secret,
       secure_mode: { enabled: true, local_private_key: 'node-key' },
     }
 
@@ -92,7 +94,7 @@ describe('network config credential mode', () => {
     expect(form.secure_mode?.local_private_key).toBe('node-key')
 
     const saved: any = toBackendNetworkConfig(form)
-    expect(saved.network_secret).toBe('s3cret')
+    expect(saved.network_secret).toBe(secret)
     expect(saved.secure_mode?.local_private_key).toBe('node-key')
   })
 

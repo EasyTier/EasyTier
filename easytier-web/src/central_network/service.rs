@@ -396,12 +396,16 @@ impl CentralNetworkService {
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| generated_network_name(&settings.display_name));
         let mode = mode_from_settings(&settings, self.gateway_config())?;
+        let network_secret = network_secret
+            .map(normalize_network_secret)
+            .transpose()?
+            .unwrap_or_else(random_secret);
         let intent = CentralNetworkIntent {
             id: Uuid::new_v4(),
             user_id,
             display_name: settings.display_name,
             network_name,
-            network_secret: network_secret.unwrap_or_else(random_secret),
+            network_secret,
             mode,
             virtual_cidr: settings.virtual_cidr,
             secure_mode: settings.secure_mode,
@@ -457,7 +461,11 @@ impl CentralNetworkService {
         }
         intent.virtual_cidr = request.settings.virtual_cidr;
         intent.secure_mode = request.settings.secure_mode;
-        if let Some(secret) = request.network_secret {
+        if let Some(secret) = request
+            .network_secret
+            .map(normalize_network_secret)
+            .transpose()?
+        {
             intent.network_secret = secret;
         }
         self.persist(intent).await?;
@@ -1260,6 +1268,19 @@ fn generated_network_name(display_name: &str) -> String {
     format!("{}-{suffix:08x}", base.chars().take(24).collect::<String>())
 }
 
+/// Trims a requested network secret. Only an exact empty string selects a
+/// passwordless network; a whitespace-only secret is rejected so that a
+/// mistyped password never silently removes the network's protection.
+fn normalize_network_secret(secret: String) -> Result<String, CentralNetworkServiceError> {
+    let trimmed = secret.trim();
+    if trimmed.is_empty() && !secret.is_empty() {
+        return Err(CentralNetworkServiceError::Invalid(
+            "network secret must not consist only of whitespace".to_owned(),
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
 fn random_secret() -> String {
     let mut secret = [0u8; 32];
     OsRng.fill_bytes(&mut secret);
@@ -1573,6 +1594,140 @@ mod tests {
             networking_method: "Gateway".to_owned(),
             peer_urls,
             ..standalone_settings()
+        }
+    }
+
+    #[tokio::test]
+    async fn whitespace_only_secrets_are_rejected_and_custom_secrets_trimmed() {
+        let (service, user_id, _) = service().await;
+        let error = service
+            .create_network(user_id, standalone_settings(), Some(" \t ".to_owned()))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CentralNetworkServiceError::Invalid(_)));
+
+        let network = service
+            .create_network(
+                user_id,
+                standalone_settings(),
+                Some("  custom  ".to_owned()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(network.network_secret, "custom");
+        let network_id = Uuid::parse_str(&network.network_id).unwrap();
+
+        let error = service
+            .update_network(
+                user_id,
+                network_id,
+                UpdateNetworkReq {
+                    settings: standalone_settings(),
+                    network_secret: Some("   ".to_owned()),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CentralNetworkServiceError::Invalid(_)));
+        let unchanged = service.get_network(user_id, network_id).await.unwrap();
+        assert_eq!(unchanged.network_secret, "custom");
+    }
+
+    #[tokio::test]
+    async fn passwordless_secure_networks_publish_restartable_member_configs() {
+        use easytier::common::config::NetworkConfigExt as _;
+        use easytier_core::management::remote_client::{PersistentConfig as _, Storage as _};
+
+        for create_without_password in [true, false] {
+            let (service, user_id, _) = service().await;
+            let permanent_device = Uuid::new_v4();
+            let temporary_device = Uuid::new_v4();
+            for device_id in [permanent_device, temporary_device] {
+                register_device(&service, user_id, device_id).await;
+            }
+            let network = service
+                .create_network(
+                    user_id,
+                    standalone_settings(),
+                    create_without_password.then(String::new),
+                )
+                .await
+                .unwrap();
+            let network_id = Uuid::parse_str(&network.network_id).unwrap();
+            for (device_id, temporary) in [(permanent_device, false), (temporary_device, true)] {
+                service
+                    .add_members(
+                        user_id,
+                        network_id,
+                        AddMembersReq {
+                            device_ids: vec![device_id.to_string()],
+                            temporary,
+                            ttl_seconds: Some(300),
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            if !create_without_password {
+                service
+                    .update_network(
+                        user_id,
+                        network_id,
+                        UpdateNetworkReq {
+                            settings: standalone_settings(),
+                            network_secret: Some(String::new()),
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            let saved_network = service.get_network(user_id, network_id).await.unwrap();
+            assert!(saved_network.secure_mode);
+            assert!(saved_network.network_secret.is_empty());
+
+            let saved_config = service
+                .db
+                .get_network_config((user_id, permanent_device), &network_id.to_string())
+                .await
+                .unwrap()
+                .unwrap();
+            let config = saved_config
+                .get_network_config()
+                .unwrap()
+                .gen_config()
+                .unwrap();
+            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            assert_eq!(
+                restored.get_network_identity().network_secret.as_deref(),
+                Some("")
+            );
+            assert_eq!(restored.get_secure_mode(), config.get_secure_mode());
+            assert_eq!(
+                restored.get_managed_credentials(),
+                config.get_managed_credentials()
+            );
+            assert_eq!(restored.get_managed_credentials().len(), 1);
+            easytier_core::instance::CoreInstanceConfig::from_toml(&restored).unwrap();
+
+            let saved_temporary = service
+                .db
+                .get_network_config((user_id, temporary_device), &network_id.to_string())
+                .await
+                .unwrap()
+                .unwrap();
+            let temporary_config = saved_temporary
+                .get_network_config()
+                .unwrap()
+                .gen_config()
+                .unwrap();
+            let restored_temporary =
+                TomlConfigLoader::new_from_str(&temporary_config.dump()).unwrap();
+            assert_eq!(
+                restored_temporary.get_network_identity().network_secret,
+                None
+            );
+            assert!(restored_temporary.get_managed_credentials().is_empty());
+            easytier_core::instance::CoreInstanceConfig::from_toml(&restored_temporary).unwrap();
         }
     }
 
