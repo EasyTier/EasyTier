@@ -3,6 +3,7 @@
 import { type } from '@tauri-apps/plugin-os'
 
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { open } from '@tauri-apps/plugin-shell'
 import { exit } from '@tauri-apps/plugin-process'
@@ -17,6 +18,7 @@ import {
   syncMobileVpnService,
 } from '~/composables/mobile_vpn'
 import { executeVpnTileAction } from '~/composables/mobile_vpn_tile'
+import { bootstrapAndroidManagement } from '~/composables/android_management'
 import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
@@ -28,7 +30,8 @@ import {
   saveVpnTileStoppedInstanceIds,
 } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus, getManagementStatus } from '~/composables/backend'
+import { managementWarningDetails, type OperationOutcome } from '~/composables/management_status'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
@@ -38,6 +41,7 @@ const currentMode = ref<Mode>({ mode: 'normal' })
 const editingMode = ref<Mode>({ mode: 'normal' })
 const isModeSaving = ref(false)
 const manualDisconnect = ref(false)
+const managementReady = ref(type() !== 'android')
 
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
@@ -225,7 +229,7 @@ async function initWithMode(mode: Mode) {
     initWebClient(mode.config_server_url)
   }
   currentMode.value = mode
-  saveMode(mode)
+  await saveMode(mode)
   clientRunning.value = await isClientRunning()
 }
 
@@ -236,6 +240,13 @@ onMounted(async () => {
     setMobileVpnErrorHandler(error => toast.add({ severity: 'error', summary: t('error'), detail: error, life: 10000 }))
     cleanupFns.push(() => setMobileVpnErrorHandler())
     try {
+      await bootstrapAndroidManagement()
+      managementReady.value = true
+    } catch (error) {
+      toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 10000 })
+      return
+    }
+    try {
       await initMobileVpnService()
     } catch (e: any) {
       console.error("easytier init vpn service failed", e)
@@ -243,8 +254,14 @@ onMounted(async () => {
   }
 
   cleanupFns.push(await listenGlobalEvents())
+  cleanupFns.push(await listen<OperationOutcome>('management_warning', event => reportManagementWarning(event.payload)))
   currentMode.value = loadMode()
-  await initWithMode(currentMode.value);
+  try {
+    await initWithMode(currentMode.value);
+  } catch (error) {
+    toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 10000 })
+    return
+  }
 
   if (type() === 'android') {
     setMobileVpnTileActionHandler(handleMobileVpnTileAction)
@@ -264,6 +281,14 @@ onMounted(async () => {
 
 useTray(true)
 let toast = useToast();
+let lastManagementWarning = ''
+function reportManagementWarning(outcome: OperationOutcome) {
+  const detail = managementWarningDetails(outcome, key => t(key))
+  if (detail && detail !== lastManagementWarning) {
+    toast.add({ severity: 'warn', summary: t('management_warning'), detail, life: 10000 })
+  }
+  lastManagementWarning = detail
+}
 
 const remoteClient = computed(() => new GUIRemoteClient());
 const instanceId = ref<string | undefined>(undefined);
@@ -289,7 +314,7 @@ async function handleMobileVpnTileAction(action: 'start' | 'stop') {
     }
 
     instanceId.value = result.instanceId
-    saveLastNetworkInstanceId(result.instanceId)
+    await saveLastNetworkInstanceId(result.instanceId)
     toast.add({
       severity: action === 'start' ? 'success' : 'secondary',
       summary: t(action === 'start' ? 'vpn_tile_started' : 'vpn_tile_stopped'),
@@ -307,13 +332,18 @@ async function handleMobileVpnTileAction(action: 'start' | 'stop') {
   }
 }
 
-watch(instanceId, (newVal) => {
+watch(instanceId, async (newVal) => {
   if (newVal) {
-    saveLastNetworkInstanceId(newVal);
+    try {
+      await saveLastNetworkInstanceId(newVal);
+    } catch (error) {
+      toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 8000 })
+    }
   }
 });
 
 watch(clientRunning, async (newVal, oldVal) => {
+  if (!managementReady.value) return
   if (!newVal && oldVal) {
     if (manualDisconnect.value) {
       manualDisconnect.value = false
@@ -329,10 +359,18 @@ watch(clientRunning, async (newVal, oldVal) => {
 })
 
 onMounted(async () => {
-  clientRunning.value = await isClientRunning().catch(() => false)
+  if (managementReady.value) {
+    clientRunning.value = await isClientRunning().catch(() => false)
+  }
   const timer = setInterval(async () => {
+    if (!managementReady.value) return
     try {
       clientRunning.value = await isClientRunning()
+      if (clientRunning.value) {
+        // Recover warnings even if a lifecycle event was missed during UI attachment.
+        const status = await getManagementStatus().catch(() => undefined)
+        if (status) reportManagementWarning(status.last_outcome)
+      }
     } catch (e) {
       clientRunning.value = false
       console.error("Error checking client running status", e)
