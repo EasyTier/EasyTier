@@ -266,6 +266,19 @@ impl CoreInstanceConfig {
                 max_direct_conns_per_peer_in_foreign_network:
                     MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK,
                 hmac_secret_digest: false,
+                private_groups: {
+                    let groups = config.get_private_groups();
+                    for group in &groups {
+                        if group.network_secret.is_none() {
+                            tracing::warn!(
+                                network_name = %group.network_name,
+                                "private_group entry has no network_secret; \
+                                 matching networks are admitted by name alone"
+                            );
+                        }
+                    }
+                    groups
+                },
             });
         let peer = PortablePeerManagerConfig {
             snapshot: peer_snapshot,

@@ -183,6 +183,30 @@ impl NetworkIdentity {
     }
 }
 
+/// One allow-list entry for private mode: a foreign network is admitted when
+/// its name matches and — when a secret is configured — it proves knowledge of
+/// that secret. An entry without a secret admits the network by name alone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrivateGroupConfig {
+    pub network_name: String,
+    #[serde(default)]
+    pub network_secret: Option<String>,
+}
+
+impl PrivateGroupConfig {
+    /// Digest the configured pair the same way `NetworkIdentity` does, so a
+    /// connecting peer's advertised secret digest can be verified without ever
+    /// comparing raw secrets. `None` when no secret is configured, in which
+    /// case the entry matches by name only.
+    pub fn secret_digest(&self) -> Option<NetworkSecretDigest> {
+        self.network_secret.as_ref().map(|secret| {
+            NetworkIdentity::new(self.network_name.clone(), secret.clone())
+                .secret_digest()
+                .expect("NetworkIdentity::new always yields a digest")
+        })
+    }
+}
+
 #[derive(Eq, PartialEq, Hash)]
 struct NetworkIdentityWithOnlyDigest {
     network_name: String,
