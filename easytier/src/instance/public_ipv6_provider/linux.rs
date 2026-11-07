@@ -154,9 +154,12 @@ fn detect_public_ipv6_prefix_from_routes(
                 return None;
             }
 
+            // Preserve exact matches, but host routes inside a broader prefix may be overlay leases.
             let delegated = routes.iter().any(|candidate| {
-                candidate.dst == Some(prefix)
-                    && candidate.ifindex.is_some()
+                candidate.dst.is_some_and(|dst| {
+                    dst == prefix
+                        || (dst.network_length() < 128 && ipv6_cidr_contains_cidr(prefix, dst))
+                }) && candidate.ifindex.is_some()
                     && candidate.ifindex != Some(wan_ifindex)
                     && candidate.ifindex != Some(loopback_ifindex)
                     && candidate.kind == RouteType::Unicast
@@ -811,15 +814,42 @@ mod tests {
 
     #[test]
     fn test_detect_public_ipv6_prefix_from_routes_selects_delegated_prefix() {
+        for (prefix, dst) in [
+            ("2001:db8:1::/60", "2001:db8:1:1::/64"),
+            ("2001:db8:1::/64", "2001:db8:1::/64"),
+            ("2001:db8:1::123/128", "2001:db8:1::123/128"),
+        ] {
+            let routes = vec![
+                route(None, Some(prefix), Some(2), RouteType::Unicast),
+                route(Some(dst), None, Some(3), RouteType::Unicast),
+            ];
+
+            assert_eq!(
+                detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
+                Some(prefix.parse().unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_rejects_host_routes_as_delegation() {
         let routes = vec![
-            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
-            route(Some("2001:db8:1::/56"), None, Some(3), RouteType::Unicast),
+            route(None, Some("2001:db8:1::/64"), Some(2), RouteType::Unicast),
+            route(
+                Some("2001:db8:1::123/128"),
+                None,
+                Some(3),
+                RouteType::Unicast,
+            ),
+            route(
+                Some("2001:db8:1::456/128"),
+                None,
+                Some(4),
+                RouteType::Unicast,
+            ),
         ];
 
-        assert_eq!(
-            detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
-            Some("2001:db8:1::/56".parse().unwrap())
-        );
+        assert_eq!(detect_public_ipv6_prefix_from_routes(&routes, 1), None);
     }
 
     #[test]
@@ -1318,6 +1348,94 @@ mod tests {
 
         let current = crate::common::ifcfg::list_ipv6_ndp_proxy(wan_if).unwrap();
         assert_eq!(current.contains(&addr), present);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_reconcile_keeps_ndp_proxy_after_tun_route_changes() {
+        let wan_if = test_iface_name("rw");
+        let tun_if = test_iface_name("rt");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let mut tun = ScopedDummyLink::new(&tun_if);
+        let leased_addr = "2001:db8:fade::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let global_ctx = test_global_ctx();
+
+        run_ip(&["-6", "addr", "add", "2001:db8:fade::1/64", "dev", &wan_if]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:fade::/64",
+            "dev",
+            &wan_if,
+        ]);
+
+        global_ctx.config.set_ipv6_public_addr_provider(true);
+        global_ctx.set_tun_device_ready(tun_if.clone());
+
+        let platform = super::RuntimePublicIpv6ProviderPlatform::new(&global_ctx);
+        let runtime_config = easytier_core::config::runtime::CoreRuntimeConfigStore::new(
+            easytier_core::config::runtime::CoreRuntimeConfig {
+                public_ipv6_provider: test_core_instance_config(&global_ctx)
+                    .connectivity
+                    .runtime
+                    .public_ipv6_provider,
+                ..Default::default()
+            },
+            Arc::new(easytier_core::config::peers::PeerRuntimeSnapshot::default()),
+        );
+        let runtime = easytier_core::peers::public_ipv6::CorePublicIpv6Runtime::new(
+            runtime_config.clone(),
+            global_ctx.clone(),
+            global_ctx.clone(),
+        );
+        let service = easytier_core::peers::public_ipv6::provider::PublicIpv6ProviderService::new(
+            platform,
+            runtime_config,
+            runtime,
+        );
+        assert!(service.reconcile_now().await);
+
+        for recreate in [false, true] {
+            if recreate {
+                let old_ifindex = crate::common::ifcfg::get_interface_index(&tun_if).unwrap();
+                drop(tun);
+                tun = ScopedDummyLink::new(&tun_if);
+                assert_ne!(
+                    old_ifindex,
+                    crate::common::ifcfg::get_interface_index(&tun_if).unwrap()
+                );
+            }
+            run_ip(&[
+                "-6",
+                "route",
+                "add",
+                &format!("{leased_addr}/128"),
+                "dev",
+                &tun_if,
+            ]);
+
+            assert!(service.reconcile_now().await);
+            wait_for_ndp_proxy_entry(&wan_if, leased_addr, true).await;
+        }
+
+        let other_if = test_iface_name("ro");
+        let _other = ScopedDummyLink::new(&other_if);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "2001:db8:fade::456/128",
+            "dev",
+            &other_if,
+        ]);
+        assert!(service.reconcile_now().await);
+        wait_for_ndp_proxy_entry(&wan_if, leased_addr, true).await;
+
+        service.stop().await;
+        wait_for_ndp_proxy_entry(&wan_if, leased_addr, false).await;
     }
 
     #[serial_test::serial]
