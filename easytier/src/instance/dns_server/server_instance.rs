@@ -782,15 +782,33 @@ mod tests {
 
     #[tokio::test]
     async fn custom_records_survive_route_refresh_and_support_common_types() {
-        let dns = config(&[(
-            "ET.NET",
-            &[
-                "nas IN A 10.0.0.8",
-                "nas IN AAAA fd00::8",
-                "alias IN CNAME nas",
-                "info IN TXT \"local record\"",
-            ],
-        )]);
+        let dns = config(&[
+            (
+                "ET.NET",
+                &[
+                    "nas IN A 10.0.0.8",
+                    "nas IN A 10.0.0.18",
+                    "nas IN AAAA fd00::8",
+                    "nas IN AAAA fd00::18",
+                    "alias 45 IN CNAME nas",
+                    "chain 30 IN CNAME alias",
+                    "node-alias IN CNAME node",
+                    "nas.sub IN A 10.0.0.98",
+                    "specific IN CNAME nas.sub",
+                    "missing IN CNAME absent",
+                    "cycle IN CNAME cycle.example.test.",
+                    "info IN TXT \"local record\"",
+                ],
+            ),
+            (
+                "example.test.",
+                &[
+                    "cross 20 IN CNAME chain.et.net.",
+                    "cycle IN CNAME cycle.et.net.",
+                ],
+            ),
+            ("sub.et.net.", &["nas IN A 10.0.0.99"]),
+        ]);
         let data = data_with(Some(&dns)).await;
         for ip in ["10.0.0.1/24", "10.0.0.2/24"] {
             data.update_dns_record(controller(54001), request(ip))
@@ -798,13 +816,85 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 a(&data, "nas.et.net.").await,
-                vec![Ipv4Addr::new(10, 0, 0, 8)]
+                vec![Ipv4Addr::new(10, 0, 0, 8), Ipv4Addr::new(10, 0, 0, 18)]
             );
-            assert!(query(&data, "alias.et.net.", RecordType::A).await.answers().iter()
-                .any(|record| matches!(record.data(), RData::CNAME(name) if name.0.to_string() == "nas.et.net.")));
+            for (record_type, addresses) in [
+                (RecordType::A, ["10.0.0.8", "10.0.0.18"]),
+                (RecordType::AAAA, ["fd00::8", "fd00::18"]),
+            ] {
+                for (name, cnames) in [
+                    ("alias.et.net.", vec![("alias.et.net.", 45, "nas.et.net.")]),
+                    (
+                        "chain.et.net.",
+                        vec![
+                            ("chain.et.net.", 30, "alias.et.net."),
+                            ("alias.et.net.", 45, "nas.et.net."),
+                        ],
+                    ),
+                    (
+                        "cross.example.test.",
+                        vec![
+                            ("cross.example.test.", 20, "chain.et.net."),
+                            ("chain.et.net.", 30, "alias.et.net."),
+                            ("alias.et.net.", 45, "nas.et.net."),
+                        ],
+                    ),
+                ] {
+                    let mut expected = cnames
+                        .into_iter()
+                        .map(|(owner, ttl, target)| {
+                            (owner.to_owned(), ttl, RecordType::CNAME, target.to_owned())
+                        })
+                        .collect::<Vec<_>>();
+                    expected.extend(addresses.map(|address| {
+                        (
+                            "nas.et.net.".to_owned(),
+                            60,
+                            record_type,
+                            address.to_owned(),
+                        )
+                    }));
+                    let response = query(&data, name, record_type).await;
+                    let actual = response
+                        .answers()
+                        .iter()
+                        .map(|record| {
+                            (
+                                record.name().to_string(),
+                                record.ttl(),
+                                record.record_type(),
+                                record.data().to_string(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(actual, expected, "{name} {record_type}");
+                }
+            }
+            assert_eq!(
+                a(&data, "specific.et.net.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 99)]
+            );
+            assert_eq!(
+                a(&data, "node-alias.et.net.").await,
+                vec![Ipv4Inet::from_str(ip).unwrap().address()]
+            );
             assert_eq!(
                 a(&data, "node.et.net.").await,
                 vec![Ipv4Inet::from_str(ip).unwrap().address()]
+            );
+        }
+        let cname = query(&data, "chain.et.net.", RecordType::CNAME).await;
+        assert_eq!(cname.answers().len(), 1);
+        assert!(matches!(
+            cname.answers()[0].data(),
+            RData::CNAME(name) if name.0.to_string() == "alias.et.net."
+        ));
+        for name in ["missing.et.net.", "cycle.et.net."] {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), a(&data, name))
+                    .await
+                    .unwrap()
+                    .is_empty()
             );
         }
         assert!(matches!(
@@ -837,8 +927,13 @@ mod tests {
         );
         assert_eq!(
             a(&data, "nas.et.net.").await,
-            vec![Ipv4Addr::new(10, 0, 0, 8)]
+            vec![Ipv4Addr::new(10, 0, 0, 8), Ipv4Addr::new(10, 0, 0, 18)]
         );
+        assert_eq!(
+            a(&data, "cross.example.test.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 8), Ipv4Addr::new(10, 0, 0, 18)]
+        );
+        assert!(a(&data, "node-alias.et.net.").await.is_empty());
         assert!(
             data.dns_server
                 .read_catalog()
