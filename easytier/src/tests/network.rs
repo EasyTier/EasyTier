@@ -1,6 +1,6 @@
 use crate::common::netns::{NetNS, ROOT_NETNS_NAME};
 
-use super::{add_ns_to_bridge, create_netns, del_netns, run_network_command};
+use super::{add_ns_to_bridge, create_netns, del_netns, get_guest_veth_name, run_network_command};
 
 /// Owns one test's host links and namespaces. Keep this alive until its
 /// instances and background tasks have stopped, including on setup failures.
@@ -147,4 +147,68 @@ async fn async_namespace_restores_between_polls() {
     drop(cancelled);
     assert_eq!(current(), original);
     assert_eq!(*dropped_in.borrow(), Some(expected));
+}
+
+#[cfg(all(feature = "linux-netlink", feature = "tun"))]
+#[tokio::test]
+async fn filtered_enumeration_excludes_target_namespace_tun_without_sysfs_remount() {
+    use crate::common::network::{collect_interfaces, collect_local_ip_addrs};
+    use std::net::Ipv4Addr;
+
+    let mut network = TestNetwork::new();
+    let veth_ip = "10.0.1.1";
+    let tap_ip = "10.0.2.1";
+    network.create_namespace("target", &format!("{veth_ip}/24"), "fd00:1::1/64");
+    network.add_link("tap");
+
+    let target_ns = network.namespace("target");
+    let net_ns = NetNS::new(Some(target_ns.to_owned()));
+    let tap_name = network.link("tap").to_string();
+
+    let mut config = tun::Configuration::default();
+    config.layer(tun::Layer::L2);
+    config.tun_name(&tap_name);
+    config.address(tap_ip);
+    config.netmask("255.255.255.0");
+    config.up();
+
+    // Create the TAP device inside the target network namespace while keeping
+    // /sys mounted from the host namespace. Keeping the descriptor open preserves
+    // carrier (IFF_LOWER_UP) so the link passes all interface filters except
+    // for TUN/TAP detection.
+    let _tap = net_ns.run(|| tun::create(&config).unwrap());
+
+    let guest_veth = get_guest_veth_name(target_ns);
+
+    let unfiltered = collect_interfaces(net_ns.clone(), false).await;
+    assert!(
+        unfiltered.iter().any(|iface| iface.name == tap_name),
+        "unfiltered enumeration should include tap link {tap_name}: {unfiltered:?}"
+    );
+    assert!(
+        unfiltered.iter().any(|iface| iface.name == guest_veth),
+        "unfiltered enumeration should include non-TUN veth link {guest_veth}: {unfiltered:?}"
+    );
+
+    let filtered = collect_interfaces(net_ns.clone(), true).await;
+    assert!(
+        !filtered.iter().any(|iface| iface.name == tap_name),
+        "filtered enumeration should exclude tap link {tap_name}: {filtered:?}"
+    );
+    assert!(
+        filtered.iter().any(|iface| iface.name == guest_veth),
+        "filtered enumeration should retain non-TUN veth link {guest_veth}: {filtered:?}"
+    );
+
+    let addrs = collect_local_ip_addrs(net_ns).await;
+    let veth_v4: Ipv4Addr = veth_ip.parse().unwrap();
+    let tap_v4: Ipv4Addr = tap_ip.parse().unwrap();
+    assert!(
+        addrs.interface_ipv4s.contains(&veth_v4.into()),
+        "collected local IP addresses should include veth IPv4 {veth_ip}: {addrs:?}"
+    );
+    assert!(
+        !addrs.interface_ipv4s.contains(&tap_v4.into()),
+        "collected local IP addresses should exclude tap IPv4 {tap_ip}: {addrs:?}"
+    );
 }
