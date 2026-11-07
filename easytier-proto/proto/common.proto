@@ -22,7 +22,10 @@ message Flags {
   // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345
   // instead
   bool multi_thread = 15 [(easytier.flag) = { default: "true" }];
-  CompressionAlgoPb data_compress_algo = 16 [(easytier.flag) = { default: "None", form: true }];
+  CompressionAlgoPb data_compress_algo = 16 [(easytier.flag) = {
+    default: "None", form: true
+    attributes: 'optionize(attrs(serde_as(as = "Option<serde_with::TryFromInto<CompressionAlgoPb>>")))'
+  }];
   bool bind_device = 17 [(easytier.flag) = { default: "true" }];
 
   // should we convert all tcp streams into kcp streams
@@ -46,10 +49,15 @@ message Flags {
   bool disable_relay_quic = 35 [(easytier.flag) = { default: "false" }];
 
   // quic listen port
-  uint32 quic_listen_port = 33 [deprecated = true, (easytier.flag) = { default: "4294967295", deprecated: true }];
+  uint32 quic_listen_port = 33 [deprecated = true, (easytier.flag) = {
+    default: "4294967295", deprecated: true
+  }];
 
   // a global relay limit, only work for foreign network
-  uint64 foreign_relay_bps_limit = 26 [(easytier.flag) = { default: "18446744073709551615" }];
+  uint64 foreign_relay_bps_limit = 26 [(easytier.flag) = {
+    default: "18446744073709551615"
+    attributes: 'optionize(attrs(serde_as(as = "Option<serde_with::PickFirst<(serde_with::DisplayFromStr, _)>>")))'
+  }];
 
   uint32 multi_thread_count = 27 [(easytier.flag) = { default: "2" }];
 
@@ -74,7 +82,10 @@ message Flags {
 
   bool lazy_p2p = 37 [(easytier.flag) = { default: "false" }];
   bool need_p2p = 38 [(easytier.flag) = { default: "false" }];
-  uint64 instance_recv_bps_limit = 39 [(easytier.flag) = { default: "18446744073709551615", form: true }];
+  uint64 instance_recv_bps_limit = 39 [(easytier.flag) = {
+    default: "18446744073709551615", form: true
+    attributes: 'optionize(attrs(serde_as(as = "Option<serde_with::PickFirst<(serde_with::DisplayFromStr, _)>>")))'
+  }];
   bool disable_upnp = 40 [(easytier.flag) = { default: "false" }];
   bool disable_relay_data = 41 [(easytier.flag) = { default: "false" }];
   bool enable_udp_broadcast_relay = 42 [(easytier.flag) = { default: "false" }];
