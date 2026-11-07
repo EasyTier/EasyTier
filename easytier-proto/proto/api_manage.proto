@@ -4,6 +4,7 @@ import "common.proto";
 import "peer_rpc.proto";
 import "api_instance.proto";
 import "acl.proto";
+import "core_config.proto";
 
 package api.manage;
 
@@ -50,7 +51,7 @@ message NetworkConfig {
 
   optional bool use_smoltcp = 21;
   optional bool disable_ipv6 = 47;
-  optional string tld_dns_zone = 73;
+  optional string tld_dns_zone = 73 [deprecated = true];
   optional bool enable_kcp_proxy = 22;
   optional bool disable_kcp_input = 23;
   optional bool disable_p2p = 24;
@@ -111,6 +112,7 @@ message NetworkConfig {
   optional string dhcp_ipv4_cidr = 74;
   optional bool dhcpv6 = 75;
   optional string dhcp_ipv6_cidr = 76;
+  core_config.DnsConfigRaw dns = 77;
 }
 
 message ManagedCredentialConfig {
