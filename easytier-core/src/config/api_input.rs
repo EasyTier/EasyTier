@@ -85,6 +85,9 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.disable_relay_data = flags.disable_relay_data;
     result.prefer_peer_relay = flags.prefer_peer_relay;
     result.enable_udp_broadcast_relay = flags.enable_udp_broadcast_relay;
+    result.enable_udp_fec = flags.enable_udp_fec;
+    result.enable_udp_fec_kcp = flags.enable_udp_fec_kcp;
+    result.enable_udp_fec_quic = flags.enable_udp_fec_quic;
     result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
     result.enable_magic_dns = flags.accept_dns;
     result.tld_dns_zone = flags.tld_dns_zone;
@@ -545,6 +548,9 @@ impl NetworkConfigExt for NetworkConfig {
             disable_relay_data: self.disable_relay_data,
             prefer_peer_relay: self.prefer_peer_relay,
             enable_udp_broadcast_relay: self.enable_udp_broadcast_relay,
+            enable_udp_fec: self.enable_udp_fec,
+            enable_udp_fec_kcp: self.enable_udp_fec_kcp,
+            enable_udp_fec_quic: self.enable_udp_fec_quic,
             disable_sym_hole_punching: self.disable_sym_hole_punching,
             instance_recv_bps_limit: self.instance_recv_bps_limit,
             ..Default::default()
@@ -715,6 +721,62 @@ mod tests {
         NetworkConfig {
             networking_method: Some(NetworkingMethod::Standalone as i32),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn udp_fec_flags_preserve_presence_through_api_and_toml() {
+        let values = |config: &NetworkConfig| {
+            [
+                config.enable_udp_fec,
+                config.enable_udp_fec_kcp,
+                config.enable_udp_fec_quic,
+            ]
+        };
+        for enabled in [
+            [None; 3],
+            [Some(false); 3],
+            [Some(true); 3],
+            [Some(true), None, None],
+            [None, Some(true), None],
+            [None, None, Some(true)],
+            [Some(true), Some(false), Some(true)],
+        ] {
+            let input = NetworkConfig {
+                enable_udp_fec: enabled[0],
+                enable_udp_fec_kcp: enabled[1],
+                enable_udp_fec_quic: enabled[2],
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            let patch = config.get_flags_patch();
+            assert_eq!(
+                [
+                    patch.enable_udp_fec,
+                    patch.enable_udp_fec_kcp,
+                    patch.enable_udp_fec_quic,
+                ],
+                enabled
+            );
+            let flags = config.get_flags();
+            assert_eq!(
+                [
+                    flags.enable_udp_fec,
+                    flags.enable_udp_fec_kcp,
+                    flags.enable_udp_fec_quic,
+                ],
+                enabled.map(|value| value.unwrap_or(false))
+            );
+            #[cfg(feature = "config-write")]
+            {
+                let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+                assert_eq!(
+                    values(&NetworkConfig::new_from_config(restored).unwrap()),
+                    enabled
+                );
+            }
+            let output = NetworkConfig::new_from_config(config).unwrap();
+            assert_eq!(values(&output), enabled);
         }
     }
 

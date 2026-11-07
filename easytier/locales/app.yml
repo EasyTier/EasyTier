@@ -203,6 +203,15 @@ core_clap:
   enable_udp_broadcast_relay:
     en: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."
     zh-CN: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"
+  enable_udp_fec:
+    en: "request bidirectional forward error correction on UDP connections with supporting peers; only one peer needs to enable it"
+    zh-CN: "请求在支持前向纠错的 UDP 对等连接上双向启用纠错，仅需一端开启"
+  enable_udp_fec_kcp:
+    en: "include KCP proxy traffic in UDP forward error correction when either peer enables UDP FEC"
+    zh-CN: "任一端启用 UDP 前向纠错时，将 KCP 代理流量纳入纠错"
+  enable_udp_fec_quic:
+    en: "include QUIC proxy traffic in UDP forward error correction when either peer enables UDP FEC"
+    zh-CN: "任一端启用 UDP 前向纠错时，将 QUIC 代理流量纳入纠错"
   relay_all_peer_rpc:
     en: "relay all peer rpc packets, even if the peer is not in the relay network whitelist. this can help peers not in relay network whitelist to establish p2p connection."
     zh-CN: "转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。这可以帮助白名单外网络中的对等节点建立P2P连接。"

@@ -259,9 +259,12 @@ type Flags struct {
 	SocketMark *uint32 `protobuf:"varint,43,opt,name=socket_mark,json=socketMark,proto3,oneof" json:"socket_mark,omitempty"`
 	// Prefer direct credential peers that already relay to a destination over
 	// advertising another direct edge to the same destination.
-	PreferPeerRelay bool `protobuf:"varint,44,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3" json:"prefer_peer_relay,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	PreferPeerRelay  bool `protobuf:"varint,44,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3" json:"prefer_peer_relay,omitempty"`
+	EnableUdpFec     bool `protobuf:"varint,45,opt,name=enable_udp_fec,json=enableUdpFec,proto3" json:"enable_udp_fec,omitempty"`
+	EnableUdpFecKcp  bool `protobuf:"varint,46,opt,name=enable_udp_fec_kcp,json=enableUdpFecKcp,proto3" json:"enable_udp_fec_kcp,omitempty"`
+	EnableUdpFecQuic bool `protobuf:"varint,47,opt,name=enable_udp_fec_quic,json=enableUdpFecQuic,proto3" json:"enable_udp_fec_quic,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Flags) Reset() {
@@ -592,6 +595,27 @@ func (x *Flags) GetSocketMark() uint32 {
 func (x *Flags) GetPreferPeerRelay() bool {
 	if x != nil {
 		return x.PreferPeerRelay
+	}
+	return false
+}
+
+func (x *Flags) GetEnableUdpFec() bool {
+	if x != nil {
+		return x.EnableUdpFec
+	}
+	return false
+}
+
+func (x *Flags) GetEnableUdpFecKcp() bool {
+	if x != nil {
+		return x.EnableUdpFecKcp
+	}
+	return false
+}
+
+func (x *Flags) GetEnableUdpFecQuic() bool {
+	if x != nil {
+		return x.EnableUdpFecQuic
 	}
 	return false
 }
@@ -2148,7 +2172,7 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\x8a\x14\n" +
+	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\xb5\x15\n" +
 	"\x05Flags\x124\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\t\x8a\xb5\x18\x05\n" +
 	"\x03tcpR\x0fdefaultProtocol\x12#\n" +
@@ -2226,9 +2250,9 @@ const file_common_proto_rawDesc = "" +
 	"\x14encryption_algorithm\x18\x1d \x01(\tB\x0f\x8a\xb5\x18\v\n" +
 	"\aaes-gcm\x18\x01R\x13encryptionAlgorithm\x12F\n" +
 	"\x19disable_sym_hole_punching\x18\x1e \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x16disableSymHolePunching\x12/\n" +
-	"\ftld_dns_zone\x18\x1f \x01(\tB\r\x8a\xb5\x18\t\n" +
-	"\aet.net.R\n" +
+	"\x05falseR\x16disableSymHolePunching\x121\n" +
+	"\ftld_dns_zone\x18\x1f \x01(\tB\x0f\x8a\xb5\x18\v\n" +
+	"\aet.net.\x18\x01R\n" +
 	"tldDnsZone\x12&\n" +
 	"\bp2p_only\x18  \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\ap2pOnly\x12F\n" +
@@ -2249,7 +2273,13 @@ const file_common_proto_rawDesc = "" +
 	"\vsocket_mark\x18+ \x01(\rB\x06\x8a\xb5\x18\x02\x18\x01H\x00R\n" +
 	"socketMark\x88\x01\x01\x127\n" +
 	"\x11prefer_peer_relay\x18, \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x0fpreferPeerRelayB\x0e\n" +
+	"\x05falseR\x0fpreferPeerRelay\x121\n" +
+	"\x0eenable_udp_fec\x18- \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\fenableUdpFec\x128\n" +
+	"\x12enable_udp_fec_kcp\x18. \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fenableUdpFecKcp\x12:\n" +
+	"\x13enable_udp_fec_quic\x18/ \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x10enableUdpFecQuicB\x0e\n" +
 	"\f_socket_mark\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +

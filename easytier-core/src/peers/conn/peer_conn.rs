@@ -29,6 +29,7 @@ use snow::{HandshakeState, params::NoiseParams};
 use crate::foundation::time::{Duration, timeout};
 
 use super::{
+    fec::{PeerConnFec, PeerConnFecIo},
     peer_conn_liveness::{FEATURE as LIVENESS_ECHO_FEATURE, PeerConnLiveness},
     peer_conn_ping::PeerConnPinger,
     peer_session::{PeerSession, PeerSessionAction},
@@ -302,6 +303,7 @@ pub struct PeerConn {
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
     liveness: PeerConnLiveness,
+    fec: Option<Arc<PeerConnFec>>,
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
@@ -361,10 +363,22 @@ impl PeerConn {
         let liveness = PeerConnLiveness::new();
         let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter)
             .chain(liveness.clone());
-        let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
-        let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
-
-        let (recv, sink) = (mpsc_tunnel.get_stream(), mpsc_tunnel.get_sink());
+        let fec = tunnel_info
+            .as_ref()
+            .is_some_and(|info| info.tunnel_type == "udp")
+            .then(|| Arc::new(PeerConnFec::new(&flags)));
+        let (recv, sink, tunnel_owner): (_, _, Box<dyn Any + Send>) = if let Some(fec) = &fec {
+            let mut io = PeerConnFecIo::new(tunnel, filter_chain, fec.clone());
+            (io.get_stream(), io.get_sink(), Box::new(io))
+        } else {
+            let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
+            let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
+            (
+                mpsc_tunnel.get_stream(),
+                mpsc_tunnel.get_sink(),
+                Box::new(guard!([mut mpsc_tunnel] mpsc_tunnel.close())),
+            )
+        };
 
         let conn_id = PeerConnId::new_v4();
         let my_encrypt_algo = flags.encryption_algorithm;
@@ -381,10 +395,7 @@ impl PeerConn {
             session_filter,
             noise_handshake_result: None,
 
-            tunnel: Arc::new(Mutex::new(
-                Box::new(guard!([mut mpsc_tunnel] mpsc_tunnel.close()))
-                    as Box<dyn Any + Send + 'static>,
-            )),
+            tunnel: Arc::new(Mutex::new(tunnel_owner)),
             sink,
             recv: Mutex::new(Some(recv)),
             tunnel_info,
@@ -403,10 +414,19 @@ impl PeerConn {
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
             liveness,
+            fec,
 
             peer_session_store,
             my_encrypt_algo,
         }
+    }
+
+    fn local_features(&self) -> Vec<String> {
+        let mut features = vec![LIVENESS_ECHO_FEATURE.to_owned()];
+        if let Some(fec) = &self.fec {
+            features.extend_from_slice(fec.local_features());
+        }
+        features
     }
 
     fn get_peer_session_store(&self) -> &Arc<PeerSessionStore> {
@@ -544,7 +564,7 @@ impl PeerConn {
             magic: MAGIC,
             my_peer_id: self.my_peer_id,
             version: VERSION,
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.local_features(),
             network_name: network.network_name.clone(),
             ..Default::default()
         };
@@ -815,7 +835,7 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.my_encrypt_algo.clone(),
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.local_features(),
         };
 
         let mut hs = builder
@@ -1088,7 +1108,7 @@ impl PeerConn {
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
             server_encryption_algorithm: algo,
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.local_features(),
         };
         self.send_noise_msg(
             msg2_pb,
@@ -1242,6 +1262,9 @@ impl PeerConn {
 
         self.liveness
             .set_remote_features(&self.info.as_ref().unwrap().features);
+        if let Some(fec) = &self.fec {
+            fec.set_remote_features(&self.info.as_ref().unwrap().features);
+        }
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
@@ -1273,6 +1296,9 @@ impl PeerConn {
 
         self.liveness
             .set_remote_features(&self.info.as_ref().unwrap().features);
+        if let Some(fec) = &self.fec {
+            fec.set_remote_features(&self.info.as_ref().unwrap().features);
+        }
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError(
@@ -1496,6 +1522,7 @@ impl PeerConn {
             features: info.features.clone(),
             tunnel: self.tunnel_info.clone(),
             stats: Some(self.get_stats()),
+            fec: self.fec.as_ref().map(|fec| fec.stats()),
             loss_rate: (f64::from(self.loss_rate_stats.load(Ordering::Relaxed)) / 100.0) as f32,
             is_client: self.is_client.unwrap_or_default(),
             network_name: info.network_name.clone(),
@@ -1549,6 +1576,10 @@ impl Drop for PeerConn {
         self.close_event_notifier.notify_close();
     }
 }
+
+#[cfg(test)]
+#[path = "peer_conn_fec_tests.rs"]
+mod fec_tests;
 
 #[cfg(test)]
 mod tests {
