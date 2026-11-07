@@ -31,7 +31,7 @@ use crate::{
     },
     instance::test_instance::TestInstance as Instance,
     proto::common::{NatType, StunInfo},
-    tunnel::common::tests::wait_for_condition,
+    tunnel::tests::wait_for_condition,
 };
 
 const TEST_IGD_DESCRIPTION: &str = "EasyTier udp hole punch";

@@ -21,12 +21,12 @@ func (SocketFactory) ConnectTCP(
 	if options.Purpose == platform.TCPConnectFake {
 		return nil, fmt.Errorf("FakeTCP is not supported by netstd")
 	}
-	if err := validateTCPBindOptions(options.Bind); err != nil {
+	if err := validateBindConfig(options.Bind); err != nil {
 		return nil, err
 	}
 	dialer := net.Dialer{
-		LocalAddr: options.Bind.LocalAddr,
-		Control:   tcpControl(options.Bind),
+		LocalAddr: tcpLocalAddr(options.Bind.LocalAddr),
+		Control:   socketControl(options.Bind),
 	}
 	connection, err := dialer.DialContext(ctx, "tcp", options.RemoteAddr.String())
 	if err != nil {
@@ -41,59 +41,73 @@ func (SocketFactory) ConnectTCP(
 	return connection, nil
 }
 
-func (SocketFactory) BindUDP(
-	_ context.Context,
-	options platform.UDPBindOptions,
-) (net.PacketConn, error) {
-	if options.Context.SocketMark != nil || options.Context.NetNS != nil ||
-		options.BindDevice != nil || options.ReuseAddr || options.ReusePort {
-		return nil, fmt.Errorf("non-default UDP bind policy is not supported by netstd")
+func (SocketFactory) BindUDP(ctx context.Context, options platform.BindConfig) (net.PacketConn, error) {
+	if err := validateBindConfig(options); err != nil {
+		return nil, err
 	}
-	return net.ListenUDP(udpNetwork(options), options.LocalAddr)
+	config := net.ListenConfig{Control: socketControl(options)}
+	address := ":0"
+	if options.LocalAddr != nil {
+		address = options.LocalAddr.String()
+	}
+	return config.ListenPacket(ctx, udpNetwork(options), address)
+}
+
+func tcpLocalAddr(address *netip.AddrPort) *net.TCPAddr {
+	if address == nil {
+		return nil
+	}
+	return net.TCPAddrFromAddrPort(*address)
 }
 
 func (SocketFactory) ListenTCP(
 	ctx context.Context,
 	options platform.TCPListenOptions,
 ) (net.Listener, error) {
-	if err := validateTCPBindOptions(options.Bind); err != nil {
+	if options.Bind.LocalAddr == nil {
+		return nil, fmt.Errorf("TCP listener requires a local bind address")
+	}
+	if err := validateBindConfig(options.Bind); err != nil {
 		return nil, err
 	}
-	config := net.ListenConfig{Control: tcpControl(options.Bind)}
+	config := net.ListenConfig{Control: socketControl(options.Bind)}
 	return config.Listen(ctx, "tcp", options.Bind.LocalAddr.String())
 }
 
-func udpNetwork(options platform.UDPBindOptions) string {
-	if options.LocalAddr != nil && options.LocalAddr.IP.To4() != nil {
+func udpNetwork(options platform.BindConfig) string {
+	if options.LocalAddr != nil && options.LocalAddr.Addr().Is4() {
 		return "udp4"
 	}
 	if options.OnlyV6 {
 		return "udp6"
 	}
-	if options.LocalAddr != nil && len(options.LocalAddr.IP) != 0 {
+	if options.LocalAddr != nil && options.LocalAddr.Addr().IsValid() {
 		return "udp"
 	}
 	if options.Context.IPVersion == platform.IPVersionV4 {
 		return "udp4"
 	}
+	if options.Context.IPVersion == platform.IPVersionV6 {
+		return "udp6"
+	}
 	return "udp"
 }
 
-func validateTCPBindOptions(options platform.TCPBindOptions) error {
+func validateBindConfig(options platform.BindConfig) error {
 	if options.Context.SocketMark != nil || options.Context.NetNS != nil ||
-		options.BindDevice != nil {
-		return fmt.Errorf("non-default TCP bind policy is not supported by netstd")
+		(options.BindDevice != nil && *options.BindDevice != "") {
+		return fmt.Errorf("non-default socket bind policy is not supported by netstd")
 	}
 	return nil
 }
 
-func tcpControl(
-	options platform.TCPBindOptions,
+func socketControl(
+	options platform.BindConfig,
 ) func(string, string, syscall.RawConn) error {
 	return func(network, _ string, connection syscall.RawConn) error {
 		var socketErr error
 		if err := connection.Control(func(descriptor uintptr) {
-			socketErr = applyTCPSocketOptions(descriptor, network, options)
+			socketErr = applySocketOptions(descriptor, network, options)
 		}); err != nil {
 			return err
 		}

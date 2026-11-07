@@ -21,6 +21,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     connectivity::{
         composite::{ConnectorEnvironment, ConnectorHostAdapter, ConnectorRuntime},
@@ -36,11 +38,10 @@ use crate::{
     },
     proto::peer_rpc::GetIpListResponse,
     socket::{
-        SocketContext,
         tcp::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
         },
-        udp::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocketFactory},
+        udp::{PreferredIpv6Source, VirtualUdpSocketFactory},
     },
 };
 
@@ -168,7 +169,7 @@ where
 {
     type Socket = HostUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         self.sockets.bind_udp(options).await
     }
 }
@@ -485,7 +486,7 @@ mod tests {
         fn submit_udp_bind(
             &self,
             _operation: HostOperationId,
-            _options: &UdpBindOptions,
+            _options: &BindConfig,
         ) -> io::Result<()> {
             unsupported()
         }
@@ -607,7 +608,10 @@ mod tests {
             environment_io.clone(),
         );
         let remote = "203.0.113.1:11010".parse().unwrap();
-        let context = SocketContext::default().with_socket_mark(Some(7));
+        let context = SocketContext {
+            socket_mark: Some(7),
+            ..SocketContext::default()
+        };
         let local = ManualConnectorHost::local_addr_for_remote(&host, remote, context.clone())
             .await
             .unwrap();
@@ -678,7 +682,10 @@ mod tests {
         ));
         let handler = DirectConnectorRpcHandler::new_with_stun(
             host,
-            SocketContext::default().with_socket_mark(Some(7)),
+            SocketContext {
+                socket_mark: Some(7),
+                ..SocketContext::default()
+            },
             Some(Arc::new(FixedStunProvider)),
         );
 
@@ -724,7 +731,10 @@ mod tests {
         let handler = DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
             host,
             Arc::new(crate::connectivity::NoLocalListeners),
-            SocketContext::default().with_socket_mark(Some(7)),
+            SocketContext {
+                socket_mark: Some(7),
+                ..SocketContext::default()
+            },
             Some(Arc::new(FixedStunProvider)),
         );
 

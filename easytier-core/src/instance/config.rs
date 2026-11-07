@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::socket::BindConfig;
 use crate::{
     config::{
         EncryptionAlgorithm, IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig,
@@ -22,7 +23,7 @@ use crate::{
         context::PeerRuntimeSnapshotInput,
         peer_manager::{PortablePeerManagerConfig, RouteAlgoType},
     },
-    socket::{NetNamespace, SocketContext, tcp::TcpBindOptions, udp::UdpBindOptions},
+    socket::{NetNamespace, SocketContext},
     tunnel::encrypt::algorithm_is_available,
 };
 
@@ -192,9 +193,11 @@ impl CoreInstanceConfig {
             );
         }
         let network_name = identity.network_name.clone();
-        let socket_context = SocketContext::default()
-            .with_socket_mark(flags.socket_mark)
-            .with_netns(config.get_netns().map(NetNamespace::new));
+        let socket_context = SocketContext {
+            socket_mark: flags.socket_mark,
+            netns: config.get_netns().map(NetNamespace::new),
+            ..SocketContext::default()
+        };
         let hostname = match config.get_hostname() {
             hostname if !hostname.is_empty() => hostname,
             _ => host.hostname_fallback.clone().unwrap_or_default(),
@@ -278,8 +281,15 @@ impl CoreInstanceConfig {
             foreign_context_default_flags: host.runtime_flags(TomlConfig::default().get_flags()),
         };
 
-        let tcp_bind = TcpBindOptions::default().with_context(socket_context.clone());
-        let udp_bind = UdpBindOptions::direct_connect().with_context(socket_context.clone());
+        let tcp_bind = BindConfig {
+            context: socket_context.clone(),
+            ..BindConfig::default()
+        };
+        let udp_bind = BindConfig {
+            reuse_addr: Some(false),
+            context: socket_context.clone(),
+            ..BindConfig::default()
+        };
         let listeners = Some(ListenerRuntimeConfig::new(
             config
                 .get_listener_uris()

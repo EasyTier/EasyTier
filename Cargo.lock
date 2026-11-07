@@ -2526,7 +2526,6 @@ dependencies = [
  "atomic-write-file",
  "atomic_refcell",
  "base64 0.22.1",
- "bon",
  "boringtun-easytier",
  "bytecodec",
  "byteorder",
@@ -2671,6 +2670,7 @@ dependencies = [
  "crossbeam-utils",
  "dashmap",
  "easytier-proto",
+ "educe",
  "futures",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -5324,6 +5324,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "lzma-rust2"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca93e534d1142d1d0dcca6d25fe302508a5dfb40b302802904577725ea0b695b"
+dependencies = [
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "lzokay-native"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5331,15 +5340,6 @@ checksum = "ae83dc0af9b591a1c6a5d5ff799a27668710e8866f7d6239fe6f3c7f30282752"
 dependencies = [
  "byteorder",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "lzma-rust2"
-version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca93e534d1142d1d0dcca6d25fe302508a5dfb40b302802904577725ea0b695b"
-dependencies = [
- "sha2 0.11.0",
 ]
 
 [[package]]
