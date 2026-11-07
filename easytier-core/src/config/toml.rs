@@ -1508,7 +1508,7 @@ enableEncryption = false
 mtu = 1420
 foreignRelayBpsLimit = "18446744073709551615"
 dataCompressAlgo = "Zstd"
-socketMark = "0"
+socketMark = 0
 "#,
         )
         .unwrap();
@@ -1521,6 +1521,7 @@ socketMark = "0"
         for fields in [
             "enableEncryption = true\nenable_encryption = false",
             "mtu = \"1420\"",
+            "socketMark = \"0\"",
             "mtu = -1",
             "mtu = 4294967296",
             "unknown_flag = true",
