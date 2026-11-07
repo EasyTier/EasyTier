@@ -12,6 +12,7 @@ anyhow.workspace = true
 easytier = { workspace = true, features = [
     "aes-gcm",
     "dhcp-ipv4",
+    "icmp-proxy",
     "logging",
     "proxy-cidr-monitor",
     "smoltcp",
