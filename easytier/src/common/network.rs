@@ -22,6 +22,8 @@ struct InterfaceState {
     is_up: bool,
     #[cfg(target_os = "linux")]
     is_lower_up: bool,
+    #[cfg(target_os = "linux")]
+    is_tun: bool,
 }
 
 #[cfg(any(
@@ -31,6 +33,8 @@ struct InterfaceState {
 ))]
 fn collect_interface_states() -> HashMap<String, InterfaceState> {
     let mut states = HashMap::new();
+    #[cfg(target_os = "linux")]
+    let tun_links = linux_tun_links();
     if let Ok(interfaces) = nix::ifaddrs::getifaddrs() {
         use nix::net::if_::InterfaceFlags;
 
@@ -38,6 +42,16 @@ fn collect_interface_states() -> HashMap<String, InterfaceState> {
             let flags = interface.flags;
             #[cfg(target_os = "linux")]
             let is_lower_up = flags.contains(InterfaceFlags::IFF_LOWER_UP);
+            #[cfg(target_os = "linux")]
+            let is_tun = match &tun_links {
+                Some(links) => links.contains(&interface.interface_name),
+                // sysfs follows the mount namespace, so this fallback only sees
+                // the interfaces of the namespace /sys was mounted from.
+                None => std::path::Path::new("/sys/class/net")
+                    .join(&interface.interface_name)
+                    .join("tun_flags")
+                    .exists(),
+            };
             states.insert(
                 interface.interface_name,
                 InterfaceState {
@@ -46,11 +60,24 @@ fn collect_interface_states() -> HashMap<String, InterfaceState> {
                     is_up: flags.contains(InterfaceFlags::IFF_UP),
                     #[cfg(target_os = "linux")]
                     is_lower_up,
+                    #[cfg(target_os = "linux")]
+                    is_tun,
                 },
             );
         }
     }
     states
+}
+
+/// TUN/TAP links of the calling thread's namespace, or `None` if netlink is unavailable.
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+fn linux_tun_links() -> Option<std::collections::BTreeSet<String>> {
+    #[cfg(feature = "linux-netlink")]
+    match super::ifcfg::list_tun_links() {
+        Ok(links) => return Some(links),
+        Err(error) => tracing::warn!(?error, "failed to list tun links via netlink"),
+    }
+    None
 }
 
 #[cfg(not(mobile))]
@@ -130,8 +157,7 @@ fn interface_state(
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 impl InterfaceFilter {
     async fn is_tun_tap_device(&self) -> bool {
-        let path = format!("/sys/class/net/{}/tun_flags", self.iface.name);
-        tokio::fs::metadata(&path).await.is_ok()
+        self.state.is_tun
     }
 
     async fn has_valid_ip(&self) -> bool {

@@ -16,6 +16,8 @@ pub(crate) const NLM_F_CREATE: u16 = 0x400;
 
 pub(crate) const NLMSG_ERROR: u16 = 2;
 pub(crate) const NLMSG_DONE: u16 = 3;
+pub(crate) const RTM_NEWLINK: u16 = 16;
+pub(crate) const RTM_GETLINK: u16 = 18;
 pub(crate) const RTM_NEWADDR: u16 = 20;
 pub(crate) const RTM_DELADDR: u16 = 21;
 pub(crate) const RTM_NEWROUTE: u16 = 24;
@@ -28,6 +30,12 @@ pub(crate) const RTM_GETNEIGH: u16 = 30;
 const NLMSG_HEADER_LEN: usize = 16;
 const ATTRIBUTE_HEADER_LEN: usize = 4;
 const NLA_TYPE_MASK: u16 = 0x3fff;
+
+const IFLA_IFNAME: u16 = 3;
+const IFLA_LINKINFO: u16 = 18;
+const IFLA_INFO_KIND: u16 = 1;
+/// `struct ifinfomsg`.
+pub(crate) const IFINFOMSG_LEN: usize = 16;
 
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
@@ -262,6 +270,47 @@ pub(crate) trait NetlinkDecode: Sized {
     const MESSAGE_TYPE: u16;
 
     fn from_bytes(bytes: &[u8]) -> io::Result<Self>;
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LinkMessage {
+    pub(crate) name: String,
+    /// Driver kind from `IFLA_LINKINFO/IFLA_INFO_KIND`, e.g. `tun` for TUN/TAP.
+    pub(crate) kind: Option<String>,
+}
+
+impl NetlinkDecode for LinkMessage {
+    const MESSAGE_TYPE: u16 = RTM_NEWLINK;
+
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() < IFINFOMSG_LEN {
+            return Err(invalid_data("truncated link header"));
+        }
+        let string = |bytes: &[u8]| -> io::Result<String> {
+            let value = std::ffi::CStr::from_bytes_until_nul(bytes)
+                .map_err(|_| invalid_data("invalid link string attribute"))?;
+            Ok(value.to_string_lossy().into_owned())
+        };
+        let attributes = parse_attributes(&bytes[IFINFOMSG_LEN..])?;
+        let find = |attributes: &[Attribute], kind: u16| {
+            attributes
+                .iter()
+                .find(|attribute| attribute.kind & NLA_TYPE_MASK == kind)
+                .map(|attribute| attribute.value.clone())
+        };
+        let name =
+            find(&attributes, IFLA_IFNAME).ok_or_else(|| invalid_data("link has no name"))?;
+        let kind = match find(&attributes, IFLA_LINKINFO) {
+            Some(info) => find(&parse_attributes(&info)?, IFLA_INFO_KIND)
+                .map(|kind| string(&kind))
+                .transpose()?,
+            None => None,
+        };
+        Ok(Self {
+            name: string(&name)?,
+            kind,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -610,6 +659,31 @@ impl NetlinkEncode for NeighborMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_decode_reads_nested_driver_kind() {
+        let mut bytes = vec![0; IFINFOMSG_LEN];
+        Attribute::new(IFLA_IFNAME, b"et0\0")
+            .write_to(&mut bytes)
+            .unwrap();
+        let mut info = Vec::new();
+        Attribute::new(IFLA_INFO_KIND, b"tun\0")
+            .write_to(&mut info)
+            .unwrap();
+        Attribute::new(IFLA_LINKINFO, info)
+            .write_to(&mut bytes)
+            .unwrap();
+        let link = LinkMessage::from_bytes(&bytes).unwrap();
+        assert_eq!(link.name, "et0");
+        assert_eq!(link.kind.as_deref(), Some("tun"));
+
+        let mut plain = vec![0; IFINFOMSG_LEN];
+        Attribute::new(IFLA_IFNAME, b"eth0\0")
+            .write_to(&mut plain)
+            .unwrap();
+        assert_eq!(LinkMessage::from_bytes(&plain).unwrap().kind, None);
+        assert!(LinkMessage::from_bytes(&[0; IFINFOMSG_LEN]).is_err());
+    }
 
     fn encode<T: NetlinkEncode>(message: &T) -> Vec<u8> {
         let mut bytes = Vec::new();
