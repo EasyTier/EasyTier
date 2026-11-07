@@ -10,6 +10,7 @@ use crate::{
         },
         constants::EASYTIER_VERSION,
         log,
+        stun::default_stun_server_config,
     },
     instance::factory::native_cli_instance_manager,
     proto::common::{CompressionAlgoPb, Flags, FlagsPatch, SecureModeConfig},
@@ -23,6 +24,7 @@ use clap::{
     Arg, ArgMatches, CommandFactory, FromArgMatches, Parser, builder::TypedValueParser as _,
 };
 use easytier_core::config::{DhcpConfig, EncryptionAlgorithm, normalize_secure_mode_config};
+use easytier_core::connectivity::stun::StunServerConfig;
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
 use rust_i18n::t;
@@ -1237,6 +1239,26 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
     win_service_event_loop(stop_notify_recv, cli, status_handle);
 }
 
+/// STUN servers for the web client's public IP lookup, resolved from the CLI
+/// the same way instance configs resolve them (empty lists disable STUN).
+fn web_client_stun_servers(options: &NetworkOptions) -> StunServerConfig {
+    let defaults = default_stun_server_config();
+    let udp_servers = options.stun_servers.clone();
+    StunServerConfig {
+        tcp_servers: options
+            .tcp_stun_servers
+            .clone()
+            .or_else(|| udp_servers.clone())
+            .unwrap_or(defaults.tcp_servers),
+        udp_v6_servers: options
+            .stun_servers_v6
+            .clone()
+            .or_else(|| udp_servers.as_ref().map(|_| Vec::new()))
+            .unwrap_or(defaults.udp_v6_servers),
+        udp_servers: udp_servers.unwrap_or(defaults.udp_servers),
+    }
+}
+
 async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init_with_default_console_targets(
@@ -1259,7 +1281,7 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
     .await?;
 
     let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
-        let wc = web_client::run_web_client(
+        let wc = web_client::run_web_client_with_stun_servers(
             config_server_url_s,
             crate::common::MachineIdOptions {
                 explicit_machine_id: cli.machine_id.clone(),
@@ -1267,6 +1289,7 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
             },
             cli.network_options.hostname.clone(),
             cli.network_options.secure_mode.unwrap_or(false),
+            web_client_stun_servers(&cli.network_options),
             manager.clone(),
             None,
         )

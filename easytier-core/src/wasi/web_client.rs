@@ -355,6 +355,7 @@ impl WasiWebClientRuntime {
                     },
                     easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
                     secure_mode: config.secure_mode,
+                    public_ip: Default::default(),
                 },
                 backend,
             )
