@@ -333,6 +333,7 @@ default = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "lzo",
     "upnp",
     "icmp-proxy",
     "management",
@@ -355,6 +356,7 @@ full = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "lzo",
     "upnp",
     "icmp-proxy",
     "management",
@@ -414,6 +416,7 @@ faketcp = [
     "easytier-proto/faketcp",
 ]
 zstd = ["easytier-core/zstd", "easytier-proto/zstd"]
+lzo = ["easytier-core/lzo", "easytier-proto/lzo"]
 upnp = [
     "dep:http-body-util",
     "dep:hyper",

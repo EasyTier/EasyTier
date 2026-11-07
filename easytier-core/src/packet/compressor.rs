@@ -2,6 +2,7 @@ use zerocopy::{AsBytes as _, FromBytes as _};
 
 use super::{COMPRESSOR_TAIL_SIZE, CompressorAlgo, CompressorTail, ZCPacket};
 
+mod lzo;
 mod zstd;
 
 type Error = anyhow::Error;
@@ -36,6 +37,7 @@ impl DefaultCompressor {
     ) -> Result<Vec<u8>, Error> {
         match compress_algo {
             CompressorAlgo::ZstdDefault => zstd::compress(data, compress_algo),
+            CompressorAlgo::Lzo => lzo::compress(data, compress_algo),
             CompressorAlgo::None => Ok(data.to_vec()),
         }
     }
@@ -47,6 +49,7 @@ impl DefaultCompressor {
     ) -> Result<Vec<u8>, Error> {
         match compress_algo {
             CompressorAlgo::ZstdDefault => zstd::decompress(data, compress_algo),
+            CompressorAlgo::Lzo => lzo::decompress(data, compress_algo),
             CompressorAlgo::None => Ok(data.to_vec()),
         }
     }
@@ -145,11 +148,10 @@ pub(super) fn zstd_available() -> bool {
 pub mod tests {
     use super::*;
 
-    #[cfg(feature = "zstd")]
-    #[tokio::test]
-    async fn test_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
+    #[cfg(any(feature = "zstd", feature = "lzo"))]
+    async fn test_compress_algo(compress_algo: CompressorAlgo) {
+        let text = vec![b'a'; 4096];
+        let mut packet = ZCPacket::new_with_payload(&text);
         packet.fill_peer_manager_hdr(0, 0, 0);
 
         let compressor = DefaultCompressor {};
@@ -161,7 +163,7 @@ pub mod tests {
         );
 
         compressor
-            .compress(&mut packet, CompressorAlgo::ZstdDefault)
+            .compress(&mut packet, compress_algo)
             .await
             .unwrap();
         println!(
@@ -176,9 +178,8 @@ pub mod tests {
         assert!(!packet.peer_manager_header().unwrap().is_compressed());
     }
 
-    #[cfg(feature = "zstd")]
-    #[tokio::test]
-    async fn test_short_text_compress() {
+    #[cfg(any(feature = "zstd", feature = "lzo"))]
+    async fn test_short_text_compress_algo(compress_algo: CompressorAlgo) {
         let text = b"1234";
         let mut packet = ZCPacket::new_with_payload(text);
         packet.fill_peer_manager_hdr(0, 0, 0);
@@ -187,7 +188,7 @@ pub mod tests {
 
         // short text can't be compressed
         compressor
-            .compress(&mut packet, CompressorAlgo::ZstdDefault)
+            .compress(&mut packet, compress_algo)
             .await
             .unwrap();
         assert!(!packet.peer_manager_header().unwrap().is_compressed());
@@ -195,6 +196,30 @@ pub mod tests {
         compressor.decompress(&mut packet).await.unwrap();
         assert_eq!(packet.payload(), text);
         assert!(!packet.peer_manager_header().unwrap().is_compressed());
+    }
+
+    #[cfg(feature = "zstd")]
+    #[tokio::test]
+    async fn test_zstd_compress() {
+        test_compress_algo(CompressorAlgo::ZstdDefault).await;
+    }
+
+    #[cfg(feature = "zstd")]
+    #[tokio::test]
+    async fn test_zstd_short_text_compress() {
+        test_short_text_compress_algo(CompressorAlgo::ZstdDefault).await;
+    }
+
+    #[cfg(feature = "lzo")]
+    #[tokio::test]
+    async fn test_lzo_compress() {
+        test_compress_algo(CompressorAlgo::Lzo).await;
+    }
+
+    #[cfg(feature = "lzo")]
+    #[tokio::test]
+    async fn test_lzo_short_text_compress() {
+        test_short_text_compress_algo(CompressorAlgo::Lzo).await;
     }
 
     #[cfg(not(feature = "zstd"))]
@@ -209,5 +234,50 @@ pub mod tests {
             error.to_string(),
             "compression algorithm is unavailable in this build: ZstdDefault"
         );
+    }
+
+    #[cfg(not(feature = "lzo"))]
+    #[tokio::test]
+    async fn unavailable_lzo_returns_an_explicit_error() {
+        let compressor = DefaultCompressor::new();
+        for result in [
+            compressor
+                .compress_raw(b"payload", CompressorAlgo::Lzo)
+                .await,
+            compressor
+                .decompress_raw(b"payload", CompressorAlgo::Lzo)
+                .await,
+        ] {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "compression algorithm is unavailable in this build: Lzo"
+            );
+        }
+    }
+
+    #[cfg(feature = "lzo")]
+    #[tokio::test]
+    async fn test_lzo_decompress_output_limit() {
+        let compressor = DefaultCompressor::new();
+        for size in [64 * 1024, 64 * 1024 + 1] {
+            let text = vec![b'a'; size];
+            let compressed = compressor
+                .compress_raw(&text, CompressorAlgo::Lzo)
+                .await
+                .unwrap();
+            assert!(compressed.len() * 32 < 64 * 1024);
+
+            let result = compressor
+                .decompress_raw(&compressed, CompressorAlgo::Lzo)
+                .await;
+            if size == 64 * 1024 {
+                assert_eq!(result.unwrap(), text);
+            } else {
+                assert!(matches!(
+                    result.unwrap_err().downcast_ref::<lzokay_native::Error>(),
+                    Some(lzokay_native::Error::OutputOverrun)
+                ));
+            }
+        }
     }
 }
