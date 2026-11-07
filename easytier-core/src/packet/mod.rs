@@ -985,7 +985,10 @@ mod tests {
             CompressionAlgoPb::Lzo,
             CompressionAlgoPb::try_from(CompressorAlgo::Lzo).unwrap()
         );
-        assert_eq!(Some(CompressorAlgo::Lzo), CompressorTail { algo: 2 }.get_algo());
+        assert_eq!(
+            Some(CompressorAlgo::Lzo),
+            CompressorTail { algo: 2 }.get_algo()
+        );
         assert_eq!(CompressorAlgo::Lzo.is_available(), cfg!(feature = "lzo"));
     }
 
