@@ -207,8 +207,8 @@ struct State {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct GatewayNetworkObservation {
-    pub connections: Vec<easytier_proto::core_peer::peer::PeerConnInfo>,
-    pub routes: Vec<easytier_proto::core_peer::peer::Route>,
+    pub connections: Vec<easytier_proto::core::peer::PeerConnInfo>,
+    pub routes: Vec<easytier_proto::core::peer::Route>,
 }
 
 pub struct NetworkInstanceManager {

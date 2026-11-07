@@ -124,7 +124,7 @@ async fn wait_tun_ready(instance: &Instance, expected: &str) {
 }
 
 fn proxy_route_exists(
-    routes: &[easytier_proto::core_peer::peer::Route],
+    routes: &[easytier_proto::core::peer::Route],
     peer_id: PeerId,
     proxy_cidr: &str,
 ) -> bool {

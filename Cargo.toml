@@ -19,10 +19,9 @@ exclude = []
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.99.1"
 
 [workspace.dependencies]
-optionize = "0.5"
 # Shared versions and sources; members select features and optional dependencies.
 anyhow = "1.0"
 arc-swap = "1.9"
@@ -52,7 +51,7 @@ easytier-ohos-features = { version = "0.1.0", path = "easytier-contrib/easytier-
 easytier-proto = { version = "2.7.0", path = "easytier-proto", default-features = false }
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1"
-guarden = "0.3"
+guarden = "0.4"
 # Keep HMAC/SHA2 on digest 0.10, shared by stun_codec 0.4 and snow 0.10.
 # Upgrade this crypto family together when those upstream constraints move.
 hmac = "0.12.1"
@@ -63,16 +62,17 @@ indoc = "2.0.7"
 log = "0.4"
 mimalloc = "*"
 once_cell = "1.21"
-parking_lot = "0.12.5"
+optionize = "0.6"
+parking_lot = "0.13.0"
 percent-encoding = "2.3.2"
 pin-project-lite = "0.2.17"
 prost = "0.14.4"
 prost-types = "0.14.4"
-quanta = "0.12"
+quanta = "0.13.0"
 # rand 0.10 / x25519-dalek 3 require a coordinated RNG trait migration.
 rand = "0.8.8"
 reqwest = { version = "0.13.5", default-features = false }
-rust-i18n = "4"
+rust-i18n = "4.2"
 rustls = { version = "0.23.45", default-features = false }
 # tower-sessions-sqlx-store 0.15 requires SQLx 0.8; SeaORM 2 requires SQLx 0.9.
 sea-orm = "1.1.20"
@@ -120,3 +120,4 @@ strip = true
 inherits = "release"
 opt-level = "z"
 strip = "symbols"
+

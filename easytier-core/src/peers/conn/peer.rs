@@ -29,7 +29,7 @@ use crate::{
     foundation::small_map_shard_amount,
     packet::{FlowKey, ZCPacket},
     peers::error::Error,
-    proto::{core_peer::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
+    proto::{core::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
 };
 use tokio_util::task::AbortOnDropHandle;
 

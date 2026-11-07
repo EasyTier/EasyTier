@@ -38,7 +38,7 @@ use crate::{
         compressor::{Compressor as _, DefaultCompressor},
     },
     proto::common::{Flags, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
-    proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
+    proto::core::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     tunnel::{
         Tunnel,
         encrypt::{
@@ -4039,7 +4039,9 @@ mod tests {
                 packet[16..20].copy_from_slice(&destination.octets());
                 packet[10..12].fill(0);
                 let mut checksum: u32 = packet[..20]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
                     .sum();
                 while checksum >> 16 != 0 {
@@ -4831,8 +4833,8 @@ mod tests {
     fn route_with_ipv4(
         peer_id: u32,
         ipv4_addr: Option<std::net::Ipv4Addr>,
-    ) -> crate::proto::core_peer::peer::Route {
-        crate::proto::core_peer::peer::Route {
+    ) -> crate::proto::core::peer::Route {
+        crate::proto::core::peer::Route {
             peer_id,
             ipv4_addr: ipv4_addr.map(|addr| cidr::Ipv4Inet::new(addr, 24).unwrap().into()),
             ..Default::default()

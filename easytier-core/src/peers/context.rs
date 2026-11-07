@@ -46,8 +46,8 @@ const PEER_EVENT_CAPACITY: usize = 100;
 pub(crate) enum PeerEvent {
     PeerAdded(PeerId),
     PeerRemoved(PeerId),
-    PeerConnAdded(easytier_proto::core_peer::peer::PeerConnInfo),
-    PeerConnRemoved(easytier_proto::core_peer::peer::PeerConnInfo),
+    PeerConnAdded(easytier_proto::core::peer::PeerConnInfo),
+    PeerConnRemoved(easytier_proto::core::peer::PeerConnInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

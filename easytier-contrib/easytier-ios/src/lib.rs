@@ -740,6 +740,20 @@ mod tests {
         let instance = unique_instance("patch");
         let _instance = InstanceGuard::run(&instance);
 
+        // A running snapshot includes my_node_info only after the instance is ready.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let infos: serde_json::Value = serde_json::from_str(&collect_infos_json()).unwrap();
+            if infos[&instance]["my_node_info"].is_object() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "instance never became ready: {infos}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
         // ADD a loopback TCP forward to an unreachable virtual target; the
         // patch itself only installs the listener and must succeed.
         call_json_rpc(

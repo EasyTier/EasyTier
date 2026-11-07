@@ -1,3 +1,65 @@
+# Shared developer and CI commands. Append compiler/linter flags after `--`.
+[alias]
+lock = ["generate-lockfile"]
+lock-check = ["metadata", "--format-version", "1", "--locked"]
+fmt-check = ["fmt", "--all", "--check"]
+lint = [
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--features",
+    "full",
+]
+lint-fix = ["lint", "--fix", "--allow-dirty", "--allow-staged"]
+check-all = [
+    "check",
+    "--workspace",
+    "--all-targets",
+    "--features",
+    "full",
+]
+# Check the Core/Web default members; pass target and features from the CI matrix.
+check-core = ["check", "--locked", "--all-targets"]
+check-features = [
+    "hack",
+    "check",
+    "--package",
+    "easytier",
+    "--each-feature",
+    "--exclude-features",
+    "macos-ne",
+]
+check-wasi = [
+    "check",
+    "--package",
+    "easytier-core",
+    "--lib",
+    "--target",
+    "wasm32-wasip1",
+    "--features",
+    "management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload",
+]
+check-gui = [
+    "check",
+    "--locked",
+    "--all-targets",
+    "--package",
+    "easytier-gui",
+    "--features",
+    "custom-protocol",
+]
+# Pass --target when checking Android or OHOS SDK targets.
+check-android = [
+    "check",
+    "--locked",
+    "--lib",
+    "--package",
+    "easytier-gui",
+    "--features",
+    "custom-protocol",
+]
+check-ohos = ["check", "--locked", "--package", "easytier-ohrs", "--tests"]
+
 # region Native
 
 [target.x86_64-unknown-linux-gnu]

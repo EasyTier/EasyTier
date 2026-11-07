@@ -1,9 +1,16 @@
-#![allow(clippy::module_inception)]
-
 use super::rpc_types;
 
-include!(concat!(env!("OUT_DIR"), "/error.rs"));
-include!(concat!(env!("OUT_DIR"), "/error.serde.rs"));
+#[allow(clippy::all)]
+mod generated {
+    #[allow(unused_imports)]
+    pub use crate::*;
+
+    pub mod error {
+        include!(concat!(env!("OUT_DIR"), "/error.rs"));
+        include!(concat!(env!("OUT_DIR"), "/error.serde.rs"));
+    }
+}
+pub use generated::error::*;
 
 impl From<&rpc_types::error::Error> for Error {
     fn from(e: &rpc_types::error::Error) -> Self {
