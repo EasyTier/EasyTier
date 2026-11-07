@@ -1857,6 +1857,9 @@ enabled = true
             "--socket-mark",
             "42",
             "--disable-relay-data",
+            "--enable-udp-fec",
+            "--enable-udp-fec-kcp",
+            "--enable-udp-fec-quic",
         ])
         .unwrap();
         assert_eq!(patch.enable_encryption, Some(true));
@@ -1868,7 +1871,24 @@ enabled = true
         );
         assert_eq!(patch.socket_mark, Some(42));
         assert_eq!(patch.disable_relay_data, Some(true));
+        assert_eq!(patch.enable_udp_fec, Some(true));
+        assert_eq!(patch.enable_udp_fec_kcp, Some(true));
+        assert_eq!(patch.enable_udp_fec_quic, Some(true));
         assert_eq!(patch.enable_ipv6, None);
+
+        let patch = parse_flags(&[
+            "easytier",
+            "--enable-udp-fec",
+            "false",
+            "--enable-udp-fec-kcp",
+            "false",
+            "--enable-udp-fec-quic",
+            "false",
+        ])
+        .unwrap();
+        assert_eq!(patch.enable_udp_fec, Some(false));
+        assert_eq!(patch.enable_udp_fec_kcp, Some(false));
+        assert_eq!(patch.enable_udp_fec_quic, Some(false));
 
         // A negated flag can be given bare, and bare means the value it states.
         let patch = parse_flags(&["easytier", "--disable-ipv6"]).unwrap();

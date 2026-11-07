@@ -111,6 +111,9 @@ message NetworkConfig {
   optional string dhcp_ipv4_cidr = 74;
   optional bool dhcpv6 = 75;
   optional string dhcp_ipv6_cidr = 76;
+  optional bool enable_udp_fec = 77;
+  optional bool enable_udp_fec_kcp = 78;
+  optional bool enable_udp_fec_quic = 79;
 }
 
 message ManagedCredentialConfig {

@@ -151,6 +151,7 @@ type NetworkConfig struct {
 	DevName                     *string  `protobuf:"bytes,20,opt,name=dev_name,json=devName,proto3,oneof" json:"dev_name,omitempty"`
 	UseSmoltcp                  *bool    `protobuf:"varint,21,opt,name=use_smoltcp,json=useSmoltcp,proto3,oneof" json:"use_smoltcp,omitempty"`
 	DisableIpv6                 *bool    `protobuf:"varint,47,opt,name=disable_ipv6,json=disableIpv6,proto3,oneof" json:"disable_ipv6,omitempty"`
+	TldDnsZone                  *string  `protobuf:"bytes,73,opt,name=tld_dns_zone,json=tldDnsZone,proto3,oneof" json:"tld_dns_zone,omitempty"`
 	EnableKcpProxy              *bool    `protobuf:"varint,22,opt,name=enable_kcp_proxy,json=enableKcpProxy,proto3,oneof" json:"enable_kcp_proxy,omitempty"`
 	DisableKcpInput             *bool    `protobuf:"varint,23,opt,name=disable_kcp_input,json=disableKcpInput,proto3,oneof" json:"disable_kcp_input,omitempty"`
 	DisableP2P                  *bool    `protobuf:"varint,24,opt,name=disable_p2p,json=disableP2p,proto3,oneof" json:"disable_p2p,omitempty"`
@@ -201,11 +202,14 @@ type NetworkConfig struct {
 	ManagedCredentials      []*ManagedCredentialConfig `protobuf:"bytes,71,rep,name=managed_credentials,json=managedCredentials,proto3" json:"managed_credentials,omitempty"`
 	PreferPeerRelay         *bool                      `protobuf:"varint,72,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
 	// Bootstrap subnet used when DHCP has not learned a subnet from peers.
-	DhcpIpv4Cidr  *string `protobuf:"bytes,74,opt,name=dhcp_ipv4_cidr,json=dhcpIpv4Cidr,proto3,oneof" json:"dhcp_ipv4_cidr,omitempty"`
-	Dhcpv6        *bool   `protobuf:"varint,75,opt,name=dhcpv6,proto3,oneof" json:"dhcpv6,omitempty"`
-	DhcpIpv6Cidr  *string `protobuf:"bytes,76,opt,name=dhcp_ipv6_cidr,json=dhcpIpv6Cidr,proto3,oneof" json:"dhcp_ipv6_cidr,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	DhcpIpv4Cidr     *string `protobuf:"bytes,74,opt,name=dhcp_ipv4_cidr,json=dhcpIpv4Cidr,proto3,oneof" json:"dhcp_ipv4_cidr,omitempty"`
+	Dhcpv6           *bool   `protobuf:"varint,75,opt,name=dhcpv6,proto3,oneof" json:"dhcpv6,omitempty"`
+	DhcpIpv6Cidr     *string `protobuf:"bytes,76,opt,name=dhcp_ipv6_cidr,json=dhcpIpv6Cidr,proto3,oneof" json:"dhcp_ipv6_cidr,omitempty"`
+	EnableUdpFec     *bool   `protobuf:"varint,77,opt,name=enable_udp_fec,json=enableUdpFec,proto3,oneof" json:"enable_udp_fec,omitempty"`
+	EnableUdpFecKcp  *bool   `protobuf:"varint,78,opt,name=enable_udp_fec_kcp,json=enableUdpFecKcp,proto3,oneof" json:"enable_udp_fec_kcp,omitempty"`
+	EnableUdpFecQuic *bool   `protobuf:"varint,79,opt,name=enable_udp_fec_quic,json=enableUdpFecQuic,proto3,oneof" json:"enable_udp_fec_quic,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *NetworkConfig) Reset() {
@@ -387,6 +391,13 @@ func (x *NetworkConfig) GetDisableIpv6() bool {
 		return *x.DisableIpv6
 	}
 	return false
+}
+
+func (x *NetworkConfig) GetTldDnsZone() string {
+	if x != nil && x.TldDnsZone != nil {
+		return *x.TldDnsZone
+	}
+	return ""
 }
 
 func (x *NetworkConfig) GetEnableKcpProxy() bool {
@@ -745,6 +756,27 @@ func (x *NetworkConfig) GetDhcpIpv6Cidr() string {
 		return *x.DhcpIpv6Cidr
 	}
 	return ""
+}
+
+func (x *NetworkConfig) GetEnableUdpFec() bool {
+	if x != nil && x.EnableUdpFec != nil {
+		return *x.EnableUdpFec
+	}
+	return false
+}
+
+func (x *NetworkConfig) GetEnableUdpFecKcp() bool {
+	if x != nil && x.EnableUdpFecKcp != nil {
+		return *x.EnableUdpFecKcp
+	}
+	return false
+}
+
+func (x *NetworkConfig) GetEnableUdpFecQuic() bool {
+	if x != nil && x.EnableUdpFecQuic != nil {
+		return *x.EnableUdpFecQuic
+	}
+	return false
 }
 
 type ManagedCredentialConfig struct {
@@ -2211,7 +2243,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xa4%\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xaf'\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -2238,64 +2270,69 @@ const file_api_manage_proto_rawDesc = "" +
 	"\bdev_name\x18\x14 \x01(\tH\x0fR\adevName\x88\x01\x01\x12$\n" +
 	"\vuse_smoltcp\x18\x15 \x01(\bH\x10R\n" +
 	"useSmoltcp\x88\x01\x01\x12&\n" +
-	"\fdisable_ipv6\x18/ \x01(\bH\x11R\vdisableIpv6\x88\x01\x01\x12-\n" +
-	"\x10enable_kcp_proxy\x18\x16 \x01(\bH\x12R\x0eenableKcpProxy\x88\x01\x01\x12/\n" +
-	"\x11disable_kcp_input\x18\x17 \x01(\bH\x13R\x0fdisableKcpInput\x88\x01\x01\x12$\n" +
-	"\vdisable_p2p\x18\x18 \x01(\bH\x14R\n" +
+	"\fdisable_ipv6\x18/ \x01(\bH\x11R\vdisableIpv6\x88\x01\x01\x12%\n" +
+	"\ftld_dns_zone\x18I \x01(\tH\x12R\n" +
+	"tldDnsZone\x88\x01\x01\x12-\n" +
+	"\x10enable_kcp_proxy\x18\x16 \x01(\bH\x13R\x0eenableKcpProxy\x88\x01\x01\x12/\n" +
+	"\x11disable_kcp_input\x18\x17 \x01(\bH\x14R\x0fdisableKcpInput\x88\x01\x01\x12$\n" +
+	"\vdisable_p2p\x18\x18 \x01(\bH\x15R\n" +
 	"disableP2p\x88\x01\x01\x12$\n" +
-	"\vbind_device\x18\x19 \x01(\bH\x15R\n" +
+	"\vbind_device\x18\x19 \x01(\bH\x16R\n" +
 	"bindDevice\x88\x01\x01\x12\x1a\n" +
-	"\x06no_tun\x18\x1a \x01(\bH\x16R\x05noTun\x88\x01\x01\x12-\n" +
-	"\x10enable_exit_node\x18\x1b \x01(\bH\x17R\x0eenableExitNode\x88\x01\x01\x120\n" +
-	"\x12relay_all_peer_rpc\x18\x1c \x01(\bH\x18R\x0frelayAllPeerRpc\x88\x01\x01\x12&\n" +
-	"\fmulti_thread\x18\x1d \x01(\bH\x19R\vmultiThread\x88\x01\x01\x12H\n" +
-	"\x1eenable_relay_network_whitelist\x18\x1e \x01(\bH\x1aR\x1benableRelayNetworkWhitelist\x88\x01\x01\x126\n" +
+	"\x06no_tun\x18\x1a \x01(\bH\x17R\x05noTun\x88\x01\x01\x12-\n" +
+	"\x10enable_exit_node\x18\x1b \x01(\bH\x18R\x0eenableExitNode\x88\x01\x01\x120\n" +
+	"\x12relay_all_peer_rpc\x18\x1c \x01(\bH\x19R\x0frelayAllPeerRpc\x88\x01\x01\x12&\n" +
+	"\fmulti_thread\x18\x1d \x01(\bH\x1aR\vmultiThread\x88\x01\x01\x12H\n" +
+	"\x1eenable_relay_network_whitelist\x18\x1e \x01(\bH\x1bR\x1benableRelayNetworkWhitelist\x88\x01\x01\x126\n" +
 	"\x17relay_network_whitelist\x18\x1f \x03(\tR\x15relayNetworkWhitelist\x125\n" +
-	"\x14enable_manual_routes\x18  \x01(\bH\x1bR\x12enableManualRoutes\x88\x01\x01\x12\x16\n" +
+	"\x14enable_manual_routes\x18  \x01(\bH\x1cR\x12enableManualRoutes\x88\x01\x01\x12\x16\n" +
 	"\x06routes\x18! \x03(\tR\x06routes\x12\x1d\n" +
 	"\n" +
 	"exit_nodes\x18\" \x03(\tR\texitNodes\x12:\n" +
-	"\x17proxy_forward_by_system\x18# \x01(\bH\x1cR\x14proxyForwardBySystem\x88\x01\x01\x122\n" +
-	"\x12disable_encryption\x18$ \x01(\bH\x1dR\x11disableEncryption\x88\x01\x01\x12(\n" +
-	"\renable_socks5\x18% \x01(\bH\x1eR\fenableSocks5\x88\x01\x01\x12$\n" +
-	"\vsocks5_port\x18& \x01(\x05H\x1fR\n" +
+	"\x17proxy_forward_by_system\x18# \x01(\bH\x1dR\x14proxyForwardBySystem\x88\x01\x01\x122\n" +
+	"\x12disable_encryption\x18$ \x01(\bH\x1eR\x11disableEncryption\x88\x01\x01\x12(\n" +
+	"\renable_socks5\x18% \x01(\bH\x1fR\fenableSocks5\x88\x01\x01\x12$\n" +
+	"\vsocks5_port\x18& \x01(\x05H R\n" +
 	"socks5Port\x88\x01\x01\x12>\n" +
-	"\x19disable_udp_hole_punching\x18' \x01(\bH R\x16disableUdpHolePunching\x88\x01\x01\x12\x15\n" +
-	"\x03mtu\x18( \x01(\x05H!R\x03mtu\x88\x01\x01\x12)\n" +
+	"\x19disable_udp_hole_punching\x18' \x01(\bH!R\x16disableUdpHolePunching\x88\x01\x01\x12\x15\n" +
+	"\x03mtu\x18( \x01(\x05H\"R\x03mtu\x88\x01\x01\x12)\n" +
 	"\x10mapped_listeners\x18) \x03(\tR\x0fmappedListeners\x12-\n" +
-	"\x10enable_magic_dns\x18* \x01(\bH\"R\x0eenableMagicDns\x88\x01\x01\x123\n" +
-	"\x13enable_private_mode\x18+ \x01(\bH#R\x11enablePrivateMode\x88\x01\x01\x12/\n" +
-	"\x11enable_quic_proxy\x18- \x01(\bH$R\x0fenableQuicProxy\x88\x01\x01\x121\n" +
-	"\x12disable_quic_input\x18. \x01(\bH%R\x10disableQuicInput\x88\x01\x01\x121\n" +
-	"\x10quic_listen_port\x182 \x01(\x05B\x02\x18\x01H&R\x0equicListenPort\x88\x01\x01\x12B\n" +
+	"\x10enable_magic_dns\x18* \x01(\bH#R\x0eenableMagicDns\x88\x01\x01\x123\n" +
+	"\x13enable_private_mode\x18+ \x01(\bH$R\x11enablePrivateMode\x88\x01\x01\x12/\n" +
+	"\x11enable_quic_proxy\x18- \x01(\bH%R\x0fenableQuicProxy\x88\x01\x01\x121\n" +
+	"\x12disable_quic_input\x18. \x01(\bH&R\x10disableQuicInput\x88\x01\x01\x121\n" +
+	"\x10quic_listen_port\x182 \x01(\x05B\x02\x18\x01H'R\x0equicListenPort\x88\x01\x01\x12B\n" +
 	"\rport_forwards\x180 \x03(\v2\x1d.api.manage.PortForwardConfigR\fportForwards\x12>\n" +
-	"\x19disable_sym_hole_punching\x181 \x01(\bH'R\x16disableSymHolePunching\x88\x01\x01\x12\x1e\n" +
-	"\bp2p_only\x183 \x01(\bH(R\ap2pOnly\x88\x01\x01\x12L\n" +
-	"\x12data_compress_algo\x184 \x01(\x0e2\x19.common.CompressionAlgoPbH)R\x10dataCompressAlgo\x88\x01\x01\x126\n" +
-	"\x14encryption_algorithm\x185 \x01(\tH*R\x13encryptionAlgorithm\x88\x01\x01\x12>\n" +
-	"\x19disable_tcp_hole_punching\x186 \x01(\bH+R\x16disableTcpHolePunching\x88\x01\x01\x129\n" +
+	"\x19disable_sym_hole_punching\x181 \x01(\bH(R\x16disableSymHolePunching\x88\x01\x01\x12\x1e\n" +
+	"\bp2p_only\x183 \x01(\bH)R\ap2pOnly\x88\x01\x01\x12L\n" +
+	"\x12data_compress_algo\x184 \x01(\x0e2\x19.common.CompressionAlgoPbH*R\x10dataCompressAlgo\x88\x01\x01\x126\n" +
+	"\x14encryption_algorithm\x185 \x01(\tH+R\x13encryptionAlgorithm\x88\x01\x01\x12>\n" +
+	"\x19disable_tcp_hole_punching\x186 \x01(\bH,R\x16disableTcpHolePunching\x88\x01\x01\x129\n" +
 	"\vsecure_mode\x187 \x01(\v2\x18.common.SecureModeConfigR\n" +
 	"secureMode\x12\x1f\n" +
-	"\x03acl\x188 \x01(\v2\b.acl.AclH,R\x03acl\x88\x01\x01\x12,\n" +
-	"\x0fcredential_file\x189 \x01(\tH-R\x0ecredentialFile\x88\x01\x01\x12\x1e\n" +
-	"\blazy_p2p\x18: \x01(\bH.R\alazyP2p\x88\x01\x01\x12\x1e\n" +
-	"\bneed_p2p\x18; \x01(\bH/R\aneedP2p\x88\x01\x01\x12:\n" +
-	"\x17instance_recv_bps_limit\x18< \x01(\x04H0R\x14instanceRecvBpsLimit\x88\x01\x01\x12&\n" +
-	"\fdisable_upnp\x18= \x01(\bH1R\vdisableUpnp\x88\x01\x01\x12>\n" +
-	"\x19ipv6_public_addr_provider\x18> \x01(\bH2R\x16ipv6PublicAddrProvider\x88\x01\x01\x126\n" +
-	"\x15ipv6_public_addr_auto\x18? \x01(\bH3R\x12ipv6PublicAddrAuto\x88\x01\x01\x12:\n" +
-	"\x17ipv6_public_addr_prefix\x18@ \x01(\tH4R\x14ipv6PublicAddrPrefix\x88\x01\x01\x121\n" +
-	"\x12disable_relay_data\x18A \x01(\bH5R\x10disableRelayData\x88\x01\x01\x12@\n" +
-	"\x1aenable_udp_broadcast_relay\x18B \x01(\bH6R\x17enableUdpBroadcastRelay\x88\x01\x01\x12$\n" +
-	"\vsocket_mark\x18C \x01(\rH7R\n" +
+	"\x03acl\x188 \x01(\v2\b.acl.AclH-R\x03acl\x88\x01\x01\x12,\n" +
+	"\x0fcredential_file\x189 \x01(\tH.R\x0ecredentialFile\x88\x01\x01\x12\x1e\n" +
+	"\blazy_p2p\x18: \x01(\bH/R\alazyP2p\x88\x01\x01\x12\x1e\n" +
+	"\bneed_p2p\x18; \x01(\bH0R\aneedP2p\x88\x01\x01\x12:\n" +
+	"\x17instance_recv_bps_limit\x18< \x01(\x04H1R\x14instanceRecvBpsLimit\x88\x01\x01\x12&\n" +
+	"\fdisable_upnp\x18= \x01(\bH2R\vdisableUpnp\x88\x01\x01\x12>\n" +
+	"\x19ipv6_public_addr_provider\x18> \x01(\bH3R\x16ipv6PublicAddrProvider\x88\x01\x01\x126\n" +
+	"\x15ipv6_public_addr_auto\x18? \x01(\bH4R\x12ipv6PublicAddrAuto\x88\x01\x01\x12:\n" +
+	"\x17ipv6_public_addr_prefix\x18@ \x01(\tH5R\x14ipv6PublicAddrPrefix\x88\x01\x01\x121\n" +
+	"\x12disable_relay_data\x18A \x01(\bH6R\x10disableRelayData\x88\x01\x01\x12@\n" +
+	"\x1aenable_udp_broadcast_relay\x18B \x01(\bH7R\x17enableUdpBroadcastRelay\x88\x01\x01\x12$\n" +
+	"\vsocket_mark\x18C \x01(\rH8R\n" +
 	"socketMark\x88\x01\x01\x123\n" +
 	"\x05peers\x18D \x03(\v2\x1d.api.manage.NetworkPeerConfigR\x05peers\x12L\n" +
-	"\x11vpn_portal_config\x18E \x01(\v2\x1b.api.manage.VpnPortalConfigH8R\x0fvpnPortalConfig\x88\x01\x01\x12T\n" +
+	"\x11vpn_portal_config\x18E \x01(\v2\x1b.api.manage.VpnPortalConfigH9R\x0fvpnPortalConfig\x88\x01\x01\x12T\n" +
 	"\x13managed_credentials\x18G \x03(\v2#.api.manage.ManagedCredentialConfigR\x12managedCredentials\x12/\n" +
-	"\x11prefer_peer_relay\x18H \x01(\bH9R\x0fpreferPeerRelay\x88\x01\x01\x12)\n" +
-	"\x0edhcp_ipv4_cidr\x18J \x01(\tH:R\fdhcpIpv4Cidr\x88\x01\x01\x12\x1b\n" +
-	"\x06dhcpv6\x18K \x01(\bH;R\x06dhcpv6\x88\x01\x01\x12)\n" +
-	"\x0edhcp_ipv6_cidr\x18L \x01(\tH<R\fdhcpIpv6Cidr\x88\x01\x01B\x0e\n" +
+	"\x11prefer_peer_relay\x18H \x01(\bH:R\x0fpreferPeerRelay\x88\x01\x01\x12)\n" +
+	"\x0edhcp_ipv4_cidr\x18J \x01(\tH;R\fdhcpIpv4Cidr\x88\x01\x01\x12\x1b\n" +
+	"\x06dhcpv6\x18K \x01(\bH<R\x06dhcpv6\x88\x01\x01\x12)\n" +
+	"\x0edhcp_ipv6_cidr\x18L \x01(\tH=R\fdhcpIpv6Cidr\x88\x01\x01\x12)\n" +
+	"\x0eenable_udp_fec\x18M \x01(\bH>R\fenableUdpFec\x88\x01\x01\x120\n" +
+	"\x12enable_udp_fec_kcp\x18N \x01(\bH?R\x0fenableUdpFecKcp\x88\x01\x01\x122\n" +
+	"\x13enable_udp_fec_quic\x18O \x01(\bH@R\x10enableUdpFecQuic\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -2313,7 +2350,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x0e_latency_firstB\v\n" +
 	"\t_dev_nameB\x0e\n" +
 	"\f_use_smoltcpB\x0f\n" +
-	"\r_disable_ipv6B\x13\n" +
+	"\r_disable_ipv6B\x0f\n" +
+	"\r_tld_dns_zoneB\x13\n" +
 	"\x11_enable_kcp_proxyB\x14\n" +
 	"\x12_disable_kcp_inputB\x0e\n" +
 	"\f_disable_p2pB\x0e\n" +
@@ -2356,7 +2394,10 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x12_prefer_peer_relayB\x11\n" +
 	"\x0f_dhcp_ipv4_cidrB\t\n" +
 	"\a_dhcpv6B\x11\n" +
-	"\x0f_dhcp_ipv6_cidr\"\xa3\x02\n" +
+	"\x0f_dhcp_ipv6_cidrB\x11\n" +
+	"\x0f_enable_udp_fecB\x15\n" +
+	"\x13_enable_udp_fec_kcpB\x16\n" +
+	"\x14_enable_udp_fec_quic\"\xa3\x02\n" +
 	"\x17ManagedCredentialConfig\x12#\n" +
 	"\rcredential_id\x18\x01 \x01(\tR\fcredentialId\x12+\n" +
 	"\x11credential_secret\x18\x02 \x01(\tR\x10credentialSecret\x12\x16\n" +
