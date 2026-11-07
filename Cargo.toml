@@ -41,6 +41,9 @@ clap = "4.6.7"
 crossbeam = "0.8.5"
 crossbeam-utils = "0.8.23"
 dashmap = "6.2.1"
+delegate = "0.13.5"
+derive_more = { version = "2.1.1", features = ["full"] }
+educe = "0.8.1"
 easytier = { version = "2.7.0", path = "easytier", default-features = false }
 easytier-core = { version = "2.7.0", path = "easytier-core", default-features = false }
 easytier-ffi = { version = "0.1.0", path = "easytier-contrib/easytier-ffi", default-features = false }
