@@ -528,10 +528,11 @@ func (x *TrafficConfig) GetForeignRelayBpsLimit() uint64 {
 
 // Raw file/management input. Domain parsing and defaults belong to Raw -> Parsed.
 // Future generators may rename these messages, preserving field numbers, types
-// and collection wrapper nesting. Tag 1 remains available for DNS activation.
+// and collection wrapper nesting.
 type DnsConfigRaw struct {
 	state         protoimpl.MessageState    `protogen:"open.v1"`
-	Zone          *RepeatedDnsZoneConfigRaw `protobuf:"bytes,2,opt,name=zone,proto3" json:"zone,omitempty"`
+	Zone          *RepeatedDnsZoneConfigRaw `protobuf:"bytes,1,opt,name=zone,proto3" json:"zone,omitempty"`
+	Domain        *string                   `protobuf:"bytes,2,opt,name=domain,proto3,oneof" json:"domain,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -571,6 +572,13 @@ func (x *DnsConfigRaw) GetZone() *RepeatedDnsZoneConfigRaw {
 		return x.Zone
 	}
 	return nil
+}
+
+func (x *DnsConfigRaw) GetDomain() string {
+	if x != nil && x.Domain != nil {
+		return *x.Domain
+	}
+	return ""
 }
 
 type RepeatedDnsZoneConfigRaw struct {
@@ -738,9 +746,11 @@ const file_core_config_proto_rawDesc = "" +
 	"\x17foreign_relay_bps_limit\x18\x03 \x01(\x04H\x02R\x14foreignRelayBpsLimit\x88\x01\x01B\x06\n" +
 	"\x04_mtuB\x1a\n" +
 	"\x18_instance_recv_bps_limitB\x1a\n" +
-	"\x18_foreign_relay_bps_limit\"I\n" +
+	"\x18_foreign_relay_bps_limit\"q\n" +
 	"\fDnsConfigRaw\x129\n" +
-	"\x04zone\x18\x02 \x01(\v2%.core_config.RepeatedDnsZoneConfigRawR\x04zone\"O\n" +
+	"\x04zone\x18\x01 \x01(\v2%.core_config.RepeatedDnsZoneConfigRawR\x04zone\x12\x1b\n" +
+	"\x06domain\x18\x02 \x01(\tH\x00R\x06domain\x88\x01\x01B\t\n" +
+	"\a_domain\"O\n" +
 	"\x18RepeatedDnsZoneConfigRaw\x123\n" +
 	"\x05items\x18\x01 \x03(\v2\x1d.core_config.DnsZoneConfigRawR\x05items\"{\n" +
 	"\x10DnsZoneConfigRaw\x12\x16\n" +
@@ -813,6 +823,7 @@ func file_core_config_proto_init() {
 	file_core_config_proto_msgTypes[4].OneofWrappers = []any{}
 	file_core_config_proto_msgTypes[6].OneofWrappers = []any{}
 	file_core_config_proto_msgTypes[7].OneofWrappers = []any{}
+	file_core_config_proto_msgTypes[8].OneofWrappers = []any{}
 	file_core_config_proto_msgTypes[10].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

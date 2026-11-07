@@ -57,8 +57,11 @@ message TrafficConfig {
 
 // Raw file/management input. Domain parsing and defaults belong to Raw -> Parsed.
 // Future generators may rename these messages, preserving field numbers, types
-// and collection wrapper nesting. Tag 1 remains available for DNS activation.
-message DnsConfigRaw { RepeatedDnsZoneConfigRaw zone = 2; }
+// and collection wrapper nesting.
+message DnsConfigRaw {
+  RepeatedDnsZoneConfigRaw zone = 1;
+  optional string domain = 2;
+}
 
 message RepeatedDnsZoneConfigRaw { repeated DnsZoneConfigRaw items = 1; }
 

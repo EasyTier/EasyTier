@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use cidr::Ipv4Inet;
 use easytier_core::{
+    config::toml::{DnsConfig, DnsZoneConfig},
     gateway::magic_dns::MagicDnsRoute,
     host::packet::{HostPacket, HostPacketChannelSink, HostPacketReceiver},
     process_runtime::CoreProcessRuntime,
@@ -58,13 +59,13 @@ pub async fn prepare_env_with_tld_dns_zone(
     ctx.set_hostname(dns_name.to_owned());
     ctx.set_ipv4(Some(tun_ip));
 
-    if tld_dns_zone.is_some() {
+    if let Some(zone) = tld_dns_zone {
         let mut flags = ctx.config.get_flags();
         flags.accept_dns = true; // Enable DNS
-        if let Some(zone) = tld_dns_zone {
-            flags.tld_dns_zone = zone.to_string();
-        }
         ctx.set_flags(flags);
+        let mut dns = ctx.config.get_dns().unwrap_or_default();
+        dns.domain = Some(zone.to_string());
+        ctx.config.set_dns(Some(dns));
     }
 
     let (core_instance, host_packet_rx) = build_test_core(ctx.clone()).await;
@@ -119,6 +120,18 @@ async fn test_magic_dns_server_instance() {
     let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
     let tun_name = virtual_nic.ifname().await.unwrap();
     let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
+
+    let mut dns = global_ctx.config.get_dns().unwrap_or_default();
+    dns.zone = Some(
+        vec![DnsZoneConfig {
+            origin: "example.test.".to_owned(),
+            ttl: Some(60),
+            records: Some(vec!["svc IN A 10.0.0.9".to_owned()].into()),
+        }]
+        .into(),
+    );
+    global_ctx.config.set_dns(Some(dns));
+
     let dns_server_inst = MagicDnsServerInstance::new(
         core_instance.packet_plane(),
         global_ctx,
@@ -128,6 +141,8 @@ async fn test_magic_dns_server_instance() {
     )
     .await
     .unwrap();
+
+    check_dns_record(&fake_ip, "svc.example.test", "10.0.0.9").await;
 
     let routes = [
         MagicDnsRoute {
@@ -145,7 +160,10 @@ async fn test_magic_dns_server_instance() {
     ];
     dns_server_inst
         .data
-        .update_dns_records(routes.iter(), DEFAULT_ET_DNS_ZONE)
+        .update_dns_records(
+            routes.iter(),
+            &super::zone::parse_origin(DEFAULT_ET_DNS_ZONE).unwrap(),
+        )
         .await
         .unwrap();
 
@@ -224,6 +242,17 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
     let ctx = get_mock_global_ctx();
     ctx.set_hostname("test1".to_string());
     ctx.set_ipv4(Some(tun_ip));
+    ctx.config.set_dns(Some(DnsConfig {
+        domain: None,
+        zone: Some(
+            vec![DnsZoneConfig {
+                origin: "example.test.".to_owned(),
+                ttl: Some(60),
+                records: Some(vec!["svc IN A 10.0.0.9".to_owned()].into()),
+            }]
+            .into(),
+        ),
+    }));
 
     let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;
 
@@ -232,6 +261,14 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
         MagicDnsServerInstance::new(core_instance.packet_plane(), ctx, None, tun_ip, fake_ip)
             .await
             .unwrap();
+    assert!(
+        dns_server_inst
+            .data
+            .dns_server
+            .read_catalog()
+            .await
+            .contains(&"example.test.".parse().unwrap())
+    );
 
     let mut ctrl = BaseController::default();
     ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {

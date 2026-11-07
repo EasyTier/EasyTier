@@ -1,6 +1,6 @@
 use crate::proto::utils::RepeatedMessageModel;
 use anyhow::{Context, ensure};
-use easytier_core::config::toml::{DnsConfig, DnsZoneConfig};
+use easytier_core::config::toml::{ConfigLoader, DEFAULT_ET_DNS_ZONE, DnsConfig, DnsZoneConfig};
 use hickory_proto::rr::{DNSClass, LowerName, Name, Record, RecordSet, RrKey};
 use hickory_proto::serialize::txt::Parser;
 use hickory_server::store::in_memory::InMemoryAuthority;
@@ -15,6 +15,23 @@ pub(crate) fn parse_origin(origin: &str) -> anyhow::Result<LowerName> {
     ensure!(!name.is_root(), "DNS zone origin must not be root");
     name.set_fqdn(true);
     Ok(LowerName::new(&name))
+}
+
+/// Resolves the default Magic DNS zone origin from `dns.domain`, falling back
+/// to the deprecated `flags.tld_dns_zone` patch when `dns.domain` is unset, and
+/// finally to [`DEFAULT_ET_DNS_ZONE`].
+#[allow(deprecated)]
+pub(crate) fn dns_domain(config: &impl ConfigLoader) -> anyhow::Result<LowerName> {
+    let dns = config.get_dns();
+    if let Some(domain) = dns.as_ref().and_then(|dns| dns.domain.as_deref()) {
+        return parse_origin(domain).context("invalid dns.domain");
+    }
+    if let Some(legacy) = config.get_flags_patch().tld_dns_zone.as_deref()
+        && !legacy.is_empty()
+    {
+        return parse_origin(legacy).context("invalid flags.tld_dns_zone");
+    }
+    parse_origin(DEFAULT_ET_DNS_ZONE)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -128,7 +145,7 @@ pub(crate) fn configured_zones(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use easytier_core::config::toml::DnsConfig;
+    use easytier_core::config::toml::{DnsConfig, TomlConfigLoader};
     use hickory_proto::rr::RecordType;
 
     fn zones(config: &DnsConfig) -> anyhow::Result<ZoneGroup> {
@@ -142,6 +159,7 @@ mod tests {
 
     fn config(records: &[&str]) -> DnsConfig {
         DnsConfig {
+            domain: None,
             zone: Some(
                 vec![DnsZoneConfig {
                     origin: "EXAMPLE.test".to_owned(),
@@ -207,7 +225,14 @@ mod tests {
             config.zone.as_mut().unwrap().items[0].origin = origin.to_owned();
             assert!(zones(&config).is_err(), "accepted origin {origin}");
         }
-        assert!(zones(&DnsConfig { zone: None }).unwrap().is_empty());
+        assert!(
+            zones(&DnsConfig {
+                domain: None,
+                zone: None
+            })
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]
@@ -222,5 +247,39 @@ mod tests {
             groups[&"example.test.".parse::<LowerName>().unwrap()].len(),
             2
         );
+    }
+
+    #[test]
+    fn dns_domain_prefers_dns_domain_and_falls_back_to_legacy_flag() {
+        let loader = TomlConfigLoader::new_from_str("").unwrap();
+        assert_eq!(dns_domain(&loader).unwrap().to_string(), "et.net.");
+
+        let loader = TomlConfigLoader::new_from_str("[dns]\ndomain = 'MESH.Example'\n").unwrap();
+        assert_eq!(dns_domain(&loader).unwrap().to_string(), "mesh.example.");
+
+        let loader =
+            TomlConfigLoader::new_from_str("[flags]\ntld_dns_zone = 'LEGACY.Example'\n").unwrap();
+        assert_eq!(dns_domain(&loader).unwrap().to_string(), "legacy.example.");
+
+        let loader = TomlConfigLoader::new_from_str(
+            "[dns]\ndomain = 'mesh.example'\n[flags]\ntld_dns_zone = 'legacy.example'\n",
+        )
+        .unwrap();
+        assert_eq!(dns_domain(&loader).unwrap().to_string(), "mesh.example.");
+
+        let loader = TomlConfigLoader::new_from_str(
+            "[dns]\ndomain = ''\n[flags]\ntld_dns_zone = 'legacy.example'\n",
+        )
+        .unwrap();
+        assert!(dns_domain(&loader).is_err());
+
+        let loader = TomlConfigLoader::new_from_str(
+            "[dns]\ndomain = '.'\n[flags]\ntld_dns_zone = 'legacy.example'\n",
+        )
+        .unwrap();
+        assert!(dns_domain(&loader).is_err());
+
+        let loader = TomlConfigLoader::new_from_str("[flags]\ntld_dns_zone = '.'\n").unwrap();
+        assert!(dns_domain(&loader).is_err());
     }
 }

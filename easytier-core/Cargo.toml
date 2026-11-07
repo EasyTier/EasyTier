@@ -34,6 +34,7 @@ cidr = { workspace = true, features = ["serde"] }
 crossbeam-utils.workspace = true
 dashmap.workspace = true
 bon.workspace = true
+hickory-proto = { version = "0.25.2", default-features = false }
 easytier-proto = { workspace = true, features = ["core"] }
 futures = { workspace = true, features = ["std", "async-await"] }
 guarden.workspace = true

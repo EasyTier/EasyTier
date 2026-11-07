@@ -1493,14 +1493,8 @@ impl PeerManagerCore {
         &self.network_name
     }
 
-    pub(crate) fn dns_route_identity(
-        &self,
-    ) -> (String, Option<crate::proto::common::Ipv4Inet>, String) {
-        (
-            self.context.hostname(),
-            self.context.ipv4().map(Into::into),
-            self.context.flags().tld_dns_zone,
-        )
+    pub(crate) fn dns_route_identity(&self) -> (String, Option<crate::proto::common::Ipv4Inet>) {
+        (self.context.hostname(), self.context.ipv4().map(Into::into))
     }
 
     pub fn p2p_policy_flags(&self) -> P2pPolicyFlags {
@@ -4390,7 +4384,6 @@ mod tests {
             (
                 "portable-node".to_owned(),
                 Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
-                String::new(),
             )
         );
     }

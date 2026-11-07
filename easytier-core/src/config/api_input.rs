@@ -710,6 +710,7 @@ mod tests {
         for dns in [
             "",
             "[dns]\n",
+            "[dns]\ndomain = 'mesh.test.'\n",
             "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = ['nas IN A 10.0.0.8', 'nas IN AAAA fd00::8']\n",
         ] {
             let config = TomlConfigLoader::new_from_str(dns).unwrap();
@@ -740,6 +741,7 @@ mod tests {
         for input in [
             "",
             "[dns]\n",
+            "[dns]\ndomain = 'mesh.test.'\n",
             "[dns]\nzone = []\n",
             "[[dns.zone]]\norigin = 'example.test.'\n",
             "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = []\n",
@@ -755,6 +757,9 @@ mod tests {
                     json["dns"]["zone"].as_array().unwrap().len(),
                     records.items.len()
                 );
+            }
+            if let Some(domain) = expected.as_ref().and_then(|dns| dns.domain.as_deref()) {
+                assert_eq!(json["dns"]["domain"].as_str(), Some(domain));
             }
             let network: NetworkConfig = serde_json::from_value(json).unwrap();
             let restored = network.gen_config().unwrap();

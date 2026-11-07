@@ -7,6 +7,9 @@ static records using DNS zone file syntax:
 [flags]
 accept_dns = true
 
+[dns]
+domain = "et.net."
+
 [[dns.zone]]
 origin = "et.net."
 ttl = 60
@@ -21,6 +24,9 @@ records = [
 origin = "example.test."
 records = ["service 120 IN A 10.0.0.9"]
 ```
+
+`domain` under `[dns]` sets the default Magic DNS domain, defaulting to `"et.net."`
+when omitted, and supersedes the deprecated `flags.tld_dns_zone`.
 
 `origin` must be a non-root DNS name. Record names are relative to it;
 absolute names must belong to that zone.
@@ -66,11 +72,10 @@ field renaming:
 ```
 
 The protobuf field numbers, field types and wrapper nesting define the binary
-contract. The DNS root uses zone at tag 2; each zone uses origin 1, ttl 2 and
-records 3; collection wrappers use items at tag 1. This leaves the root's tag 1
-available for activation in dns-policy. A future configuration generator can rename
-helper messages while preserving this layout. Existing TOML and JSON field names
-remain part of their respective formats.
+contract. The DNS root uses zone at tag 1 and domain at tag 2; each zone uses
+origin 1, ttl 2 and records 3; collection wrappers use items at tag 1. A future
+configuration generator can rename helper messages while preserving this layout.
+Existing TOML and JSON field names remain part of their respective formats.
 
 `ConfigLoader::get_dns` and `set_dns` now use this Raw message directly. Native
 DNS input is parsed directly into runtime records. Defaults, collection unwrapping,

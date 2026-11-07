@@ -242,6 +242,8 @@ type Flags struct {
 	// disable symmetric nat hole punching, treat symmetric as cone when enabled
 	DisableSymHolePunching bool `protobuf:"varint,30,opt,name=disable_sym_hole_punching,json=disableSymHolePunching,proto3" json:"disable_sym_hole_punching,omitempty"`
 	// tld dns zone for magic dns
+	//
+	// Deprecated: Marked as deprecated in common.proto.
 	TldDnsZone              string `protobuf:"bytes,31,opt,name=tld_dns_zone,json=tldDnsZone,proto3" json:"tld_dns_zone,omitempty"`
 	P2POnly                 bool   `protobuf:"varint,32,opt,name=p2p_only,json=p2pOnly,proto3" json:"p2p_only,omitempty"`
 	DisableTcpHolePunching  bool   `protobuf:"varint,34,opt,name=disable_tcp_hole_punching,json=disableTcpHolePunching,proto3" json:"disable_tcp_hole_punching,omitempty"`
@@ -519,6 +521,7 @@ func (x *Flags) GetDisableSymHolePunching() bool {
 	return false
 }
 
+// Deprecated: Marked as deprecated in common.proto.
 func (x *Flags) GetTldDnsZone() string {
 	if x != nil {
 		return x.TldDnsZone
@@ -2194,7 +2197,7 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\x8a\x14\n" +
+	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\x87\x14\n" +
 	"\x05Flags\x124\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\t\x8a\xb5\x18\x05\n" +
 	"\x03tcpR\x0fdefaultProtocol\x12#\n" +
@@ -2272,9 +2275,10 @@ const file_common_proto_rawDesc = "" +
 	"\x14encryption_algorithm\x18\x1d \x01(\tB\x0f\x8a\xb5\x18\v\n" +
 	"\aaes-gcm\x18\x01R\x13encryptionAlgorithm\x12F\n" +
 	"\x19disable_sym_hole_punching\x18\x1e \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x16disableSymHolePunching\x12/\n" +
-	"\ftld_dns_zone\x18\x1f \x01(\tB\r\x8a\xb5\x18\t\n" +
-	"\aet.net.R\n" +
+	"\x05falseR\x16disableSymHolePunching\x12,\n" +
+	"\ftld_dns_zone\x18\x1f \x01(\tB\n" +
+	"\x8a\xb5\x18\x04\n" +
+	"\x00 \x01\x18\x01R\n" +
 	"tldDnsZone\x12&\n" +
 	"\bp2p_only\x18  \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\ap2pOnly\x12F\n" +

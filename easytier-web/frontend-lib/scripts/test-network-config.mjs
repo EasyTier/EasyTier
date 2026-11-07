@@ -616,8 +616,9 @@ for (const test of tests) {
 for (const dns of [
   undefined,
   {},
+  { domain: 'mesh.test.' },
   { zone: [] },
-  { zone: [{ origin: 'example.test.' }] },
+  { domain: 'mesh.test.', zone: [{ origin: 'example.test.' }] },
   { zone: [{ origin: 'example.test.', ttl: 0, records: [] }] },
 ]) {
   const normalized = normalizeNetworkConfig({ ...DEFAULT_NETWORK_CONFIG(), dns });
@@ -625,6 +626,7 @@ for (const dns of [
   const restored = normalizeNetworkConfig(backend);
   assert.deepEqual(restored.dns, normalized.dns);
   assert.equal(restored.dns !== undefined, dns !== undefined);
+  assert.equal(restored.dns?.domain, dns?.domain);
   assert.equal(restored.dns?.zone !== undefined, dns?.zone !== undefined);
   const before = dns?.zone?.[0];
   const after = restored.dns?.zone?.[0];

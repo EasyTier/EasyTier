@@ -60,8 +60,8 @@ impl RequestHandler for CatalogRequestHandler {
     }
 }
 
-pub fn build_authority(domain: &str, records: &[Record]) -> Result<InMemoryAuthority> {
-    let zone = rr::Name::from_str(domain)?;
+pub fn build_authority(origin: &rr::LowerName, records: &[Record]) -> Result<InMemoryAuthority> {
+    let zone = rr::Name::from(origin);
     let mut authority = InMemoryAuthority::empty(zone, ZoneType::Primary, false);
     for record in records.iter() {
         let r = record.try_into()?;
@@ -79,8 +79,9 @@ impl Server {
         let mut catalog = Catalog::new();
         for (domain, records) in config.zones().iter() {
             let zone = rr::Name::from_str(domain.as_str())?;
-            let authroty = build_authority(domain, records)?;
-            catalog.upsert(zone.clone().into(), vec![Arc::new(authroty)]);
+            let lower = zone.clone().into();
+            let authroty = build_authority(&lower, records)?;
+            catalog.upsert(lower, vec![Arc::new(authroty)]);
         }
 
         // use forwarder authority for the root zone
