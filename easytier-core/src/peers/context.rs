@@ -95,21 +95,32 @@ impl PeerTrafficLimits {
         Self {
             instance_recv_bps: Self::normalize(
                 traffic.instance_recv_bps_limit,
+                &flags.instance_recv_limit,
+                #[allow(deprecated)]
                 flags.instance_recv_bps_limit,
             ),
             foreign_relay_bps: Self::normalize(
                 traffic.foreign_relay_bps_limit,
+                &flags.foreign_relay_limit,
+                #[allow(deprecated)]
                 flags.foreign_relay_bps_limit,
             ),
         }
     }
 
-    fn normalize(explicit: Option<u64>, legacy: u64) -> Option<u64> {
+    fn normalize(explicit: Option<u64>, flag_limit: &str, legacy: u64) -> Option<u64> {
         match explicit {
             Some(u64::MAX) => None,
             Some(limit) => Some(limit),
-            None if !matches!(legacy, 0 | u64::MAX) => Some(legacy),
-            None => None,
+            None => {
+                if let Ok(Some(limit)) = crate::config::parse_bandwidth_limit(flag_limit) {
+                    Some(limit)
+                } else if !matches!(legacy, 0 | u64::MAX) {
+                    Some(legacy)
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -153,10 +164,24 @@ impl PeerRuntimeSnapshot {
             mtu: u16::try_from(flags.mtu)
                 .ok()
                 .filter(|configured| *configured != 0),
-            instance_recv_bps_limit: (flags.instance_recv_bps_limit != u64::MAX)
-                .then_some(flags.instance_recv_bps_limit),
-            foreign_relay_bps_limit: (flags.foreign_relay_bps_limit != u64::MAX)
-                .then_some(flags.foreign_relay_bps_limit),
+            instance_recv_bps_limit: crate::config::parse_bandwidth_limit(
+                &flags.instance_recv_limit,
+            )
+            .ok()
+            .flatten()
+            .or_else(|| {
+                #[allow(deprecated)]
+                (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit)
+            }),
+            foreign_relay_bps_limit: crate::config::parse_bandwidth_limit(
+                &flags.foreign_relay_limit,
+            )
+            .ok()
+            .flatten()
+            .or_else(|| {
+                #[allow(deprecated)]
+                (flags.foreign_relay_bps_limit != u64::MAX).then_some(flags.foreign_relay_bps_limit)
+            }),
         };
         let avoid_relay_data_preference = check_network_in_relay_whitelist(
             &flags.relay_network_whitelist,
@@ -1135,6 +1160,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[allow(deprecated)]
     #[test]
     fn host_input_derives_peer_policy_features_and_traffic() {
         let mut flags = Flags::default();
@@ -1270,6 +1296,7 @@ pub(crate) mod tests {
         );
     }
 
+    #[allow(deprecated)]
     #[test]
     fn explicit_traffic_limits_preserve_zero_and_override_flags() {
         let mut runtime = PeerRuntimeSnapshot::default().runtime;
@@ -1285,6 +1312,7 @@ pub(crate) mod tests {
         assert_eq!(snapshot.traffic_limits().foreign_relay_bps, Some(2048));
     }
 
+    #[allow(deprecated)]
     #[test]
     fn legacy_traffic_limits_ignore_unlimited_sentinels() {
         let runtime = PeerRuntimeSnapshot::default().runtime;
@@ -1298,6 +1326,7 @@ pub(crate) mod tests {
         assert_eq!(snapshot.traffic_limits().foreign_relay_bps, None);
     }
 
+    #[allow(deprecated)]
     #[test]
     fn explicit_unlimited_limits_override_legacy_values() {
         let mut runtime = PeerRuntimeSnapshot::default().runtime;

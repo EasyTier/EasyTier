@@ -34,7 +34,7 @@ use super::{
     Transport,
     dispatch::dispatch_request,
     packet::{
-        PacketMerger, accepted_compression_algo, build_rpc_packet, compress_packet,
+        PacketMerger, accepted_compression_algorithm, build_rpc_packet, compress_packet,
         decompress_packet,
     },
     service_registry::ServiceRegistry,
@@ -298,7 +298,7 @@ impl Server {
             trace_id,
             compression_info: RpcCompressionInfo {
                 algo: algo.into(),
-                accepted_algo: accepted_compression_algo().into(),
+                accepted_algo: accepted_compression_algorithm().into(),
             },
         });
         for packet in packets {

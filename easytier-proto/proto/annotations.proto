@@ -18,10 +18,17 @@ message ApiSpelling {
 // it out, which is what "unset" means. A form has a non-boolean control for
 // `form`; boolean flags need no marker, since the type says so.
 message FlagMeta {
+  // JSON spelling of the flag's default value. Defaults that parse as text
+  // are strings in JSON.
   optional string default = 1;
   ApiSpelling api = 2;
   bool form = 3;
   bool deprecated = 4;
+  // Rust attributes forwarded to the generated Flags field.
+  repeated string attributes = 5;
+  // Alternate input names for this field. They need not name protobuf fields;
+  // each alias and its camelCase spelling refer to this field.
+  repeated string alias = 6;
 }
 
 extend google.protobuf.FieldOptions {

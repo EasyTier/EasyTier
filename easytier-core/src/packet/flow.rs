@@ -174,7 +174,7 @@ mod tests {
     #[tokio::test]
     async fn compression_and_encryption_preserve_local_flow_metadata() {
         use crate::packet::{
-            CompressorAlgo,
+            CompressionAlgorithm,
             compressor::{Compressor, DefaultCompressor},
         };
         let mut original = ipv4(17, 0, 0);
@@ -188,7 +188,7 @@ mod tests {
         assert!(key.is_some());
         let compressor = DefaultCompressor::new();
         compressor
-            .compress(&mut packet, CompressorAlgo::ZstdDefault)
+            .compress(&mut packet, CompressionAlgorithm::Zstd)
             .await
             .unwrap();
         assert!(packet.peer_manager_header().unwrap().is_compressed());

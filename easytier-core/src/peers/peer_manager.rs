@@ -34,7 +34,7 @@ use crate::{
     foundation::task::ExternalTaskSignal,
     host::packet::{HostPacket, HostPacketSender},
     packet::{
-        CompressorAlgo, PacketType, ZCPacket,
+        CompressionAlgorithm, PacketType, ZCPacket,
         compressor::{Compressor as _, DefaultCompressor},
     },
     proto::common::{Flags, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
@@ -228,9 +228,19 @@ impl PortablePeerManagerConfig {
             relay_all_peer_rpc: policy.relay_peer_rpc,
             disable_relay_data: !policy.relay_data,
             latency_first: policy.latency_first,
-            data_compress_algo: crate::proto::common::CompressionAlgoPb::None.into(),
+            compression_algorithm: CompressionAlgorithm::None.to_string(),
             mtu: traffic.mtu.map(u32::from).unwrap_or_default(),
+            instance_recv_limit: traffic
+                .instance_recv_bps_limit
+                .map(crate::config::format_bandwidth_limit)
+                .unwrap_or_default(),
+            foreign_relay_limit: traffic
+                .foreign_relay_bps_limit
+                .map(crate::config::format_bandwidth_limit)
+                .unwrap_or_default(),
+            #[allow(deprecated)]
             instance_recv_bps_limit: traffic.instance_recv_bps_limit.unwrap_or_default(),
+            #[allow(deprecated)]
             foreign_relay_bps_limit: traffic.foreign_relay_bps_limit.unwrap_or_default(),
             ..Default::default()
         };
@@ -771,7 +781,7 @@ pub struct PeerManagerCore {
     recent_traffic: RecentTrafficTracker,
     peer_session_store: Arc<PeerSessionStore>,
     encryptor: Arc<dyn Encryptor + 'static>,
-    data_compress_algo: CompressorAlgo,
+    compression_algorithm: CompressionAlgorithm,
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
     acl_filter: Arc<AclFilter>,
     context: Arc<CorePeerContext>,
@@ -880,8 +890,11 @@ impl PeerManagerCore {
                 anyhow::bail!("secure mode public key does not match its private key");
             }
         }
-        let data_compress_algo = CompressorAlgo::try_from(flags.data_compress_algo())?;
-        data_compress_algo.ensure_available()?;
+        let compression_algorithm = flags
+            .compression_algorithm
+            .parse::<CompressionAlgorithm>()
+            .context("invalid compression_algorithm")?;
+        compression_algorithm.ensure_available()?;
         if tokio::runtime::Handle::try_current().is_err() {
             anyhow::bail!("portable peer manager construction requires an entered Tokio runtime");
         }
@@ -940,7 +953,7 @@ impl PeerManagerCore {
             nic_channel,
             encryptor,
             is_secure_mode_enabled,
-            data_compress_algo,
+            compression_algorithm,
             config.exit_nodes,
             config.foreign_context_default_flags,
             foreign_rpc_registrar,
@@ -958,7 +971,7 @@ impl PeerManagerCore {
         nic_channel: HostPacketSender,
         encryptor: Arc<dyn Encryptor + 'static>,
         is_secure_mode_enabled: bool,
-        data_compress_algo: CompressorAlgo,
+        compression_algorithm: CompressionAlgorithm,
         exit_nodes: Vec<IpAddr>,
         foreign_context_default_flags: Flags,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
@@ -1113,7 +1126,7 @@ impl PeerManagerCore {
             relay_peer_map.clone(),
             nic_packet_process_pipeline.clone(),
             encryptor.clone(),
-            data_compress_algo,
+            compression_algorithm,
             exit_nodes.clone(),
             recent_traffic.clone(),
             traffic_metrics.clone(),
@@ -1144,7 +1157,7 @@ impl PeerManagerCore {
             recent_traffic,
             peer_session_store,
             encryptor,
-            data_compress_algo,
+            compression_algorithm,
             exit_nodes,
             acl_filter,
             runtime_config: core_context.runtime_config_store(),
@@ -1872,7 +1885,7 @@ impl PeerManagerCore {
             self.relay_peer_map.clone(),
             self.foreign_network_manager.clone(),
             self.encryptor.clone(),
-            self.data_compress_algo,
+            self.compression_algorithm,
             self.acl_filter.clone(),
             self.context.clone(),
             self.is_secure_mode_enabled,
@@ -2444,14 +2457,14 @@ impl PeerMaintenanceTasks {
 }
 
 pub(crate) async fn try_compress_and_encrypt(
-    compress_algo: CompressorAlgo,
+    compression_algorithm: CompressionAlgorithm,
     encryptor: &Arc<dyn Encryptor + 'static>,
     msg: &mut ZCPacket,
     secure_mode_enabled: bool,
 ) -> Result<(), Error> {
     let compressor = DefaultCompressor {};
     compressor
-        .compress(msg, compress_algo)
+        .compress(msg, compression_algorithm)
         .await
         .with_context(|| "compress failed")?;
     if !secure_mode_enabled {
@@ -2477,7 +2490,7 @@ pub(crate) struct PeerOutboundPacketRouter {
     relay_peer_map: Arc<RelayPeerMap>,
     nic_packet_process_pipeline: NicPacketPipeline,
     encryptor: Arc<dyn Encryptor>,
-    data_compress_algo: CompressorAlgo,
+    compression_algorithm: CompressionAlgorithm,
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
     recent_traffic: RecentTrafficTracker,
     traffic_metrics: Arc<TrafficMetricRecorder>,
@@ -2497,7 +2510,7 @@ impl PeerOutboundPacketRouter {
         relay_peer_map: Arc<RelayPeerMap>,
         nic_packet_process_pipeline: NicPacketPipeline,
         encryptor: Arc<dyn Encryptor>,
-        data_compress_algo: CompressorAlgo,
+        compression_algorithm: CompressionAlgorithm,
         exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
         recent_traffic: RecentTrafficTracker,
         traffic_metrics: Arc<TrafficMetricRecorder>,
@@ -2519,7 +2532,7 @@ impl PeerOutboundPacketRouter {
             relay_peer_map,
             nic_packet_process_pipeline,
             encryptor,
-            data_compress_algo,
+            compression_algorithm,
             exit_nodes,
             recent_traffic,
             traffic_metrics,
@@ -2668,7 +2681,7 @@ impl PeerOutboundPacketRouter {
             .add(msg.buf_len() as u64);
 
         try_compress_and_encrypt(
-            self.data_compress_algo,
+            self.compression_algorithm,
             &self.encryptor,
             &mut msg,
             self.is_secure_mode_enabled,
@@ -2870,7 +2883,7 @@ impl PeerOutboundPacketRouter {
             .add(msg.buf_len() as u64);
 
         try_compress_and_encrypt(
-            self.data_compress_algo,
+            self.compression_algorithm,
             &self.encryptor,
             &mut msg,
             self.is_secure_mode_enabled,
@@ -2972,7 +2985,7 @@ pub(crate) struct PeerPacketRouter {
     relay_peer_map: Arc<RelayPeerMap>,
     foreign_network_manager: Arc<ForeignNetworkManager>,
     encryptor: Arc<dyn Encryptor>,
-    compress_algo: CompressorAlgo,
+    compression_algorithm: CompressionAlgorithm,
     acl_filter: Arc<AclFilter>,
     context: ArcPeerContext,
     secure_mode_enabled: bool,
@@ -2994,7 +3007,7 @@ impl PeerPacketRouter {
         relay_peer_map: Arc<RelayPeerMap>,
         foreign_network_manager: Arc<ForeignNetworkManager>,
         encryptor: Arc<dyn Encryptor>,
-        compress_algo: CompressorAlgo,
+        compression_algorithm: CompressionAlgorithm,
         acl_filter: Arc<AclFilter>,
         context: ArcPeerContext,
         secure_mode_enabled: bool,
@@ -3018,7 +3031,7 @@ impl PeerPacketRouter {
             relay_peer_map,
             foreign_network_manager,
             encryptor,
-            compress_algo,
+            compression_algorithm,
             acl_filter,
             context,
             secure_mode_enabled,
@@ -3154,7 +3167,7 @@ impl PeerPacketRouter {
                     || packet_type == PacketType::KcpDst as u8
                 {
                     let _ = try_compress_and_encrypt(
-                        self.compress_algo,
+                        self.compression_algorithm,
                         &self.encryptor,
                         &mut ret,
                         self.secure_mode_enabled,
@@ -3844,7 +3857,7 @@ mod tests {
 
         assert_eq!(core.context.network_name(), "portable-net");
         assert_ne!(core.context.instance_id(), uuid::Uuid::nil());
-        assert_eq!(core.data_compress_algo, CompressorAlgo::None);
+        assert_eq!(core.compression_algorithm, CompressionAlgorithm::None);
         assert!(core.list_foreign_network_infos(false).await.is_empty());
 
         core.run().await.unwrap();
@@ -3898,14 +3911,13 @@ mod tests {
     #[tokio::test]
     async fn portable_peer_manager_rejects_requested_unavailable_zstd() {
         let mut config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));
-        config.snapshot.flags.data_compress_algo =
-            crate::proto::common::CompressionAlgoPb::Zstd.into();
+        config.snapshot.flags.compression_algorithm = CompressionAlgorithm::Zstd.to_string();
 
         let error = build_portable_config_for_test(config).err().unwrap();
 
         assert_eq!(
             error.to_string(),
-            "compression algorithm is unavailable in this build: ZstdDefault"
+            "compression algorithm is unavailable in this build: Zstd"
         );
     }
 
@@ -4547,6 +4559,7 @@ mod tests {
         core.clear_resources().await;
     }
 
+    #[allow(deprecated)]
     #[tokio::test]
     async fn portable_peer_manager_accepts_legacy_unlimited_limits() {
         let runtime = portable_runtime_config("portable-net");

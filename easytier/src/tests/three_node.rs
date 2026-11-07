@@ -34,7 +34,7 @@ use crate::{
     instance::test_instance::TestInstance as Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
-        common::{CompressionAlgoPb, SecureModeConfig},
+        common::SecureModeConfig,
         rpc::standalone::{
             RuntimeRpcDialer, RuntimeRpcListener, runtime_rpc_dialer, runtime_rpc_listener,
             runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener,
@@ -1766,13 +1766,13 @@ pub async fn data_compress(
         |cfg| {
             if cfg.get_inst_name() == "inst1" && inst1_compress {
                 let mut flags = cfg.get_flags();
-                flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+                flags.compression_algorithm = "zstd".to_owned();
                 cfg.set_flags(flags);
             }
 
             if cfg.get_inst_name() == "inst3" && inst2_compress {
                 let mut flags = cfg.get_flags();
-                flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+                flags.compression_algorithm = "zstd".to_owned();
                 cfg.set_flags(flags);
             }
 
@@ -3417,7 +3417,11 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
                     "public".to_string(),
                 ));
                 let mut f = cfg.get_flags();
-                f.foreign_relay_bps_limit = bps_limit * 1024;
+                f.foreign_relay_limit = format!("{}KiB", bps_limit);
+                #[allow(deprecated)]
+                {
+                    f.foreign_relay_bps_limit = bps_limit * 1024;
+                }
                 cfg.set_flags(f);
             }
             cfg
@@ -3465,7 +3469,11 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
         |cfg| {
             if cfg.get_inst_name() == "inst2" {
                 let mut f = cfg.get_flags();
-                f.instance_recv_bps_limit = bps_limit * 1024;
+                f.instance_recv_limit = format!("{}KiB", bps_limit);
+                #[allow(deprecated)]
+                {
+                    f.instance_recv_bps_limit = bps_limit * 1024;
+                }
                 cfg.set_flags(f);
             }
             cfg

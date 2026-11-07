@@ -35,6 +35,7 @@ base64 = "0.22.1"
 bon = "3.10.1"
 bytecodec = "0.5.0"
 bytes = "1.12.1"
+bytesize = { version = "2.7.0", default-features = false, features = ["std", "serde"] }
 chrono = "0.4.45"
 cidr = "0.3.2"
 clap = "4.6.7"
@@ -76,6 +77,7 @@ sea-orm = "1.1.20"
 sea-orm-migration = "1.1.20"
 serde = "1.0.229"
 serde_json = "1.0"
+serde_with = { version = "3.23", default-features = false, features = ["std", "macros"] }
 # See the HMAC constraint above; SHA2 must use the same digest generation.
 sha2 = "0.10.9"
 smoltcp = { version = "0.14.0", default-features = false }
