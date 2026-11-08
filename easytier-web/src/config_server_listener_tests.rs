@@ -62,6 +62,16 @@ fn both_expands_to_tcp_and_udp_on_the_same_port() {
 }
 
 #[test]
+fn both_rejects_independently_assigned_ephemeral_ports() {
+    let error = get_config_server_listeners("both", 0).unwrap_err();
+    assert!(error.to_string().contains("non-zero config server port"));
+    // Preserve the existing ephemeral-port behavior for single protocols.
+    for protocol in ["udp", "tcp", "ws"] {
+        assert!(get_config_server_listeners(protocol, 0).is_ok());
+    }
+}
+
+#[test]
 fn cli_preserves_default_and_accepts_both() {
     use clap::Parser;
     assert_eq!(

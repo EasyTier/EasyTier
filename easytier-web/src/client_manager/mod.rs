@@ -823,38 +823,38 @@ mod tests {
             .auto_create_user(MANAGED_CONFIG_TOKEN)
             .await
             .unwrap();
-        // Allocate TCP first, then bind UDP to the same numeric port.
-        let tcp = mgr
-            .add_listener(easytier::proto::rpc::standalone::runtime_rpc_listener(
-                "127.0.0.1:0".parse().unwrap(),
-            ))
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        // Exercise the real `both` factory using IPv4 so this also runs without IPv6.
+        for listener in crate::get_config_server_listeners("both", port)
+            .unwrap()
+            .into_iter()
+            .filter(|listener| listener.local_url().host_str() == Some("0.0.0.0"))
+        {
+            mgr.add_listener(listener).await.unwrap();
+        }
+        let connect = |protocol: &'static str, machine_id: uuid::Uuid| async move {
+            run_web_client(
+                &format!("{protocol}://127.0.0.1:{port}/{MANAGED_CONFIG_TOKEN}"),
+                MachineIdOptions {
+                    explicit_machine_id: Some(machine_id.to_string()),
+                    state_dir: None,
+                },
+                Some("both-test".to_owned()),
+                false,
+                Arc::new(native_instance_manager()),
+                None,
+            )
             .await
-            .unwrap();
-        let port = tcp.port().unwrap();
-        mgr.add_listener(runtime_udp_tunnel_listener(
-            format!("udp://127.0.0.1:{port}").parse().unwrap(),
-            format!("127.0.0.1:{port}").parse().unwrap(),
-        ))
-        .await
-        .unwrap();
+            .unwrap()
+        };
         let ids = [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
         let mut clients = Vec::new();
         for (protocol, machine_id) in ["udp", "tcp"].into_iter().zip(ids) {
-            clients.push(
-                run_web_client(
-                    &format!("{protocol}://127.0.0.1:{port}/{MANAGED_CONFIG_TOKEN}"),
-                    MachineIdOptions {
-                        explicit_machine_id: Some(machine_id.to_string()),
-                        state_dir: None,
-                    },
-                    Some(protocol.to_owned()),
-                    false,
-                    Arc::new(native_instance_manager()),
-                    None,
-                )
-                .await
-                .unwrap(),
-            );
+            clients.push(connect(protocol, machine_id).await);
         }
         let user = wait_for_validated_user(&mgr, ids[0]).await;
         assert_eq!(wait_for_validated_user(&mgr, ids[1]).await, user);
@@ -863,19 +863,7 @@ mod tests {
         }
         // Switch the UDP device to TCP without changing its machine identity.
         clients.remove(0);
-        let _replacement = run_web_client(
-            &format!("tcp://127.0.0.1:{port}/{MANAGED_CONFIG_TOKEN}"),
-            MachineIdOptions {
-                explicit_machine_id: Some(ids[0].to_string()),
-                state_dir: None,
-            },
-            Some("switched".to_owned()),
-            false,
-            Arc::new(native_instance_manager()),
-            None,
-        )
-        .await
-        .unwrap();
+        let _replacement = connect("tcp", ids[0]).await;
         wait_for_condition(
             || async {
                 mgr.list_sessions().await.iter().any(|session| {

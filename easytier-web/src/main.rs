@@ -27,7 +27,6 @@ use mimalloc::MiMalloc;
 
 mod central_network;
 mod client_manager;
-mod config_server;
 #[cfg(test)]
 mod config_server_listener_tests;
 mod db;
@@ -257,6 +256,9 @@ fn get_config_server_listeners(
     port: u16,
 ) -> Result<Vec<ConfigServerListener>, Error> {
     if protocol == "both" {
+        if port == 0 {
+            return Err(anyhow::anyhow!("both requires a non-zero config server port").into());
+        }
         let mut listeners = get_config_server_listeners("udp", port)?;
         listeners.extend(get_config_server_listeners("tcp", port)?);
         return Ok(listeners);
@@ -297,6 +299,12 @@ async fn main() {
     easytier::utils::init_crypto_provider();
 
     let cli = Cli::parse();
+    let config_server_listeners =
+        get_config_server_listeners(&cli.config_server_protocol, cli.config_server_port)
+            .unwrap_or_else(|error| {
+                eprintln!("Invalid config server configuration: {error}");
+                std::process::exit(2);
+            });
     log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();
     tracing::info!(
         version = EASYTIER_VERSION,
@@ -392,9 +400,7 @@ async fn main() {
         webhook_config.clone(),
     );
     let mut bound_protocols = std::collections::HashSet::new();
-    for listener in
-        get_config_server_listeners(&cli.config_server_protocol, cli.config_server_port).unwrap()
-    {
+    for listener in config_server_listeners {
         let local_url = listener.local_url();
         let result = if let Some(instances) = network_instances.as_ref() {
             mgr.add_listener(gateway::listener::GatewayListener::new(

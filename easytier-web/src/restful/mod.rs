@@ -219,15 +219,15 @@ impl RestfulServer {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
-        let protocols = crate::config_server::protocols(&config.config_server_protocol);
+        let protocols = match config.config_server_protocol.as_str() {
+            "both" => vec!["udp".to_owned(), "tcp".to_owned()],
+            _ => vec![config.config_server_protocol],
+        };
         Ok(GetConsoleInfoJsonResp {
             username: user.db_user.username,
             // Preserve a usable URL scheme for older frontends.
-            config_server_protocol: protocols[0].to_owned(),
-            config_server_protocols: protocols
-                .iter()
-                .map(|protocol| (*protocol).to_owned())
-                .collect(),
+            config_server_protocol: protocols[0].clone(),
+            config_server_protocols: protocols,
             config_server_port: config.config_server_port,
             webhook_auth: config.webhook_auth,
         }

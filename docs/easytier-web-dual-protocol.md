@@ -25,6 +25,9 @@ The default remains UDP. Explicit `udp`, `tcp` and `ws` modes retain their
 existing behavior. In `both` mode each protocol must bind at least one address
 family; unavailable IPv6 does not prevent IPv4 operation. If either protocol
 cannot bind at all, startup fails instead of silently providing only one protocol.
+`both` requires a non-zero port; port `0` would assign independent ephemeral
+ports to each listener and is rejected. Single-protocol modes retain their
+existing port `0` behavior.
 
 The console offers a command for each protocol. `/api/v1/console-info` preserves
 `config_server_protocol` as a concrete scheme (`udp` in `both` mode) for older
