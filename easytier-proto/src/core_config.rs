@@ -6,3 +6,9 @@ impl From<Vec<DnsZoneConfigRaw>> for RepeatedDnsZoneConfigRaw {
         Self { items }
     }
 }
+
+impl From<Vec<DnsRecordRaw>> for RepeatedDnsRecordRaw {
+    fn from(items: Vec<DnsRecordRaw>) -> Self {
+        Self { items }
+    }
+}

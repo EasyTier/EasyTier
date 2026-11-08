@@ -68,5 +68,48 @@ message RepeatedDnsZoneConfigRaw { repeated DnsZoneConfigRaw items = 1; }
 message DnsZoneConfigRaw {
   string origin = 1;
   optional uint32 ttl = 2;
-  common.RepeatedString records = 3;
+  RepeatedDnsRecordRaw records = 3;
+}
+
+message RepeatedDnsRecordRaw { repeated DnsRecordRaw items = 1; }
+
+// The values are DNS RR type codes, restricted to the supported input types.
+enum DnsRecordType {
+  DNS_RECORD_TYPE_UNSPECIFIED = 0;
+  A = 1;
+  NS = 2;
+  CNAME = 5;
+  SOA = 6;
+  PTR = 12;
+  HINFO = 13;
+  MX = 15;
+  TXT = 16;
+  AAAA = 28;
+  SRV = 33;
+  NAPTR = 35;
+  CERT = 37;
+  SSHFP = 44;
+  TLSA = 52;
+  CSYNC = 62;
+  SVCB = 64;
+  HTTPS = 65;
+  OPENPGPKEY = 61;
+  CAA = 257;
+  ANAME = 65305;
+}
+
+message DnsRecordRaw {
+  string name = 1;
+  DnsRecordType type = 2;
+  optional uint32 ttl = 3;
+  oneof data {
+    // One RDATA in presentation format, without an owner, TTL, class or type.
+    string value = 4;
+    DnsTxtData txt = 5;
+  }
+}
+
+message DnsTxtData {
+  // One UTF-8 character-string per segment, without DNS text escaping.
+  repeated string segments = 1;
 }

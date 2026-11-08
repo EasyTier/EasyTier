@@ -11,6 +11,7 @@ pub mod api_input;
 ))]
 mod browser;
 mod dhcp;
+pub mod dns;
 mod encryption;
 pub mod gateway;
 pub mod peers;

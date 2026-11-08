@@ -181,6 +181,7 @@ fn main() -> anyhow::Result<()> {
     let repeated_types = [
         ".common.RepeatedString",
         ".core_config.RepeatedDnsZoneConfigRaw",
+        ".core_config.RepeatedDnsRecordRaw",
     ];
     for ty in repeated_types {
         config

@@ -562,6 +562,9 @@ mod tests {
     use super::*;
     use crate::proto::api::instance::Route;
     use easytier_core::config::toml::{DnsConfig, DnsZoneConfig};
+    use easytier_proto::core_config::{
+        DnsRecordRaw, DnsRecordType, DnsTxtData, dns_record_raw::Data,
+    };
     use hickory_proto::{
         op::{Message, Query},
         rr::{RData, RecordType},
@@ -587,7 +590,22 @@ mod tests {
         }
     }
 
-    fn config(zones: &[(&str, &[&str])]) -> DnsConfig {
+    fn record(name: &str, kind: DnsRecordType, value: &str, ttl: Option<u32>) -> DnsRecordRaw {
+        DnsRecordRaw {
+            name: name.into(),
+            r#type: kind as i32,
+            ttl,
+            data: Some(if kind == DnsRecordType::Txt {
+                Data::Txt(DnsTxtData {
+                    segments: vec![value.into()],
+                })
+            } else {
+                Data::Value(value.into())
+            }),
+        }
+    }
+
+    fn config(zones: &[(&str, &[DnsRecordRaw])]) -> DnsConfig {
         DnsConfig {
             domain: None,
             zone: Some(
@@ -596,13 +614,7 @@ mod tests {
                     .map(|(origin, records)| DnsZoneConfig {
                         origin: (*origin).to_owned(),
                         ttl: Some(60),
-                        records: Some(
-                            records
-                                .iter()
-                                .map(|record| (*record).to_owned())
-                                .collect::<Vec<_>>()
-                                .into(),
-                        ),
+                        records: Some(records.to_vec().into()),
                     })
                     .collect::<Vec<_>>()
                     .into(),
@@ -786,28 +798,31 @@ mod tests {
             (
                 "ET.NET",
                 &[
-                    "nas IN A 10.0.0.8",
-                    "nas IN A 10.0.0.18",
-                    "nas IN AAAA fd00::8",
-                    "nas IN AAAA fd00::18",
-                    "alias 45 IN CNAME nas",
-                    "chain 30 IN CNAME alias",
-                    "node-alias IN CNAME node",
-                    "nas.sub IN A 10.0.0.98",
-                    "specific IN CNAME nas.sub",
-                    "missing IN CNAME absent",
-                    "cycle IN CNAME cycle.example.test.",
-                    "info IN TXT \"local record\"",
+                    record("nas", DnsRecordType::A, "10.0.0.8", None),
+                    record("nas", DnsRecordType::A, "10.0.0.18", None),
+                    record("nas", DnsRecordType::Aaaa, "fd00::8", None),
+                    record("nas", DnsRecordType::Aaaa, "fd00::18", None),
+                    record("alias", DnsRecordType::Cname, "nas", Some(45)),
+                    record("chain", DnsRecordType::Cname, "alias", Some(30)),
+                    record("node-alias", DnsRecordType::Cname, "node", None),
+                    record("nas.sub", DnsRecordType::A, "10.0.0.98", None),
+                    record("specific", DnsRecordType::Cname, "nas.sub", None),
+                    record("missing", DnsRecordType::Cname, "absent", None),
+                    record("cycle", DnsRecordType::Cname, "cycle.example.test.", None),
+                    record("info", DnsRecordType::Txt, "local record", None),
                 ],
             ),
             (
                 "example.test.",
                 &[
-                    "cross 20 IN CNAME chain.et.net.",
-                    "cycle IN CNAME cycle.et.net.",
+                    record("cross", DnsRecordType::Cname, "chain.et.net.", Some(20)),
+                    record("cycle", DnsRecordType::Cname, "cycle.et.net.", None),
                 ],
             ),
-            ("sub.et.net.", &["nas IN A 10.0.0.99"]),
+            (
+                "sub.et.net.",
+                &[record("nas", DnsRecordType::A, "10.0.0.99", None)],
+            ),
         ]);
         let data = data_with(Some(&dns)).await;
         for ip in ["10.0.0.1/24", "10.0.0.2/24"] {
@@ -944,7 +959,13 @@ mod tests {
 
     #[tokio::test]
     async fn configured_zones_with_distinct_origins_are_served() {
-        let dns = config(&[("et.net.", &[]), ("example.test.", &["svc IN A 10.0.0.9"])]);
+        let dns = config(&[
+            ("et.net.", &[]),
+            (
+                "example.test.",
+                &[record("svc", DnsRecordType::A, "10.0.0.9", None)],
+            ),
+        ]);
         let data = data_with(Some(&dns)).await;
         assert_eq!(
             a(&data, "svc.example.test.").await,
@@ -985,7 +1006,10 @@ mod tests {
             );
         }
 
-        let dns = config(&[("et.net", &["nas IN A 10.0.0.8"])]);
+        let dns = config(&[(
+            "et.net",
+            &[record("nas", DnsRecordType::A, "10.0.0.8", None)],
+        )]);
         let data = data_with_default_zone("ET.NET.", Some(&dns)).await;
         let req = UpdateDnsRecordRequest {
             zone: "ET.NET".to_owned(),
@@ -1010,7 +1034,10 @@ mod tests {
 
     #[tokio::test]
     async fn static_zones_are_loaded_during_init_before_any_rpc() {
-        let dns = config(&[("example.test.", &["svc IN A 10.0.0.9"])]);
+        let dns = config(&[(
+            "example.test.",
+            &[record("svc", DnsRecordType::A, "10.0.0.9", None)],
+        )]);
         let data = data_with(Some(&dns)).await;
         assert_eq!(
             a(&data, "svc.example.test.").await,
@@ -1020,7 +1047,13 @@ mod tests {
 
     #[tokio::test]
     async fn system_config_keeps_default_zone_first() {
-        let dns = config(&[("aaa.test.", &["@ IN A 10.0.0.10"]), ("et.net.", &[])]);
+        let dns = config(&[
+            (
+                "aaa.test.",
+                &[record("@", DnsRecordType::A, "10.0.0.10", None)],
+            ),
+            ("et.net.", &[]),
+        ]);
         let mut data = data_with(Some(&dns)).await;
         let calls = Arc::new(Mutex::new(Vec::new()));
         data.system_config = Some(Box::new(SystemConfigSpy(calls.clone())));
@@ -1038,9 +1071,23 @@ mod tests {
     async fn invalid_local_configuration_is_rejected_before_startup() {
         for dns in [
             config(&[("", &[])]),
-            config(&[("example.test.", &["nas IN A invalid"])]),
-            config(&[("example.test.", &["outside.invalid. IN A 10.0.0.8"])]),
-            config(&[("example.test.", &["$INCLUDE /etc/hosts"])]),
+            config(&[(
+                "example.test.",
+                &[record("nas", DnsRecordType::A, "invalid", None)],
+            )]),
+            config(&[(
+                "example.test.",
+                &[record(
+                    "outside.invalid.",
+                    DnsRecordType::A,
+                    "10.0.0.8",
+                    None,
+                )],
+            )]),
+            config(&[(
+                "example.test.",
+                &[record("nas", DnsRecordType::A, "$INCLUDE /etc/hosts", None)],
+            )]),
         ] {
             assert!(zone::configured_zones(Some(&dns)).is_err());
         }
