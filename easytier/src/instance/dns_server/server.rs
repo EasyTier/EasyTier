@@ -1,14 +1,18 @@
 use anyhow::{Context, Result};
 use hickory_proto::rr;
-use hickory_proto::rr::LowerName;
+use hickory_proto::rr::{LowerName, RecordType};
 use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_server::ServerFuture;
-use hickory_server::authority::{AuthorityObject, Catalog, ZoneType};
-use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::authority::{
+    AuthLookup, Authority, Catalog, LookupControlFlow, LookupOptions, LookupRecords,
+    MessageRequest, UpdateResult, ZoneType,
+};
+use hickory_server::server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo};
 use hickory_server::store::forwarder::ForwardConfig;
 use hickory_server::store::{forwarder::ForwardAuthority, in_memory::InMemoryAuthority};
+use std::collections::{BTreeMap, HashSet};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -23,8 +27,134 @@ use super::config::{GeneralConfig, Record, RunConfig};
 pub struct Server {
     server: ServerFuture<CatalogRequestHandler>,
     catalog: Arc<RwLock<Catalog>>,
+    local_zones: LocalZones,
     general_config: GeneralConfig,
     udp_local_addr: Option<SocketAddr>,
+}
+
+type LocalZones = Arc<RwLock<BTreeMap<LowerName, Arc<InMemoryAuthority>>>>;
+
+struct LocalAuthority {
+    inner: Arc<InMemoryAuthority>,
+    zones: LocalZones,
+}
+
+#[async_trait::async_trait]
+impl Authority for LocalAuthority {
+    type Lookup = AuthLookup;
+
+    fn zone_type(&self) -> ZoneType {
+        self.inner.zone_type()
+    }
+
+    fn is_axfr_allowed(&self) -> bool {
+        self.inner.is_axfr_allowed()
+    }
+
+    async fn update(&self, update: &MessageRequest) -> UpdateResult<bool> {
+        self.inner.update(update).await
+    }
+
+    fn origin(&self) -> &LowerName {
+        self.inner.origin()
+    }
+
+    async fn lookup(
+        &self,
+        name: &LowerName,
+        record_type: RecordType,
+        options: LookupOptions,
+    ) -> LookupControlFlow<Self::Lookup> {
+        let result = self.inner.lookup(name, record_type, options).await;
+        if !matches!(record_type, RecordType::A | RecordType::AAAA) {
+            return result;
+        }
+        let LookupControlFlow::Continue(Ok(AuthLookup::Records {
+            answers: LookupRecords::Records { records, .. },
+            ..
+        })) = &result
+        else {
+            return result;
+        };
+        if records.record_type() != RecordType::CNAME {
+            return result;
+        }
+
+        // Hickory puts CNAME targets in ADDITIONAL. Follow only the actual
+        // address chain, selecting the most specific local zone at each hop.
+        let zones = self.zones.read().await;
+        let mut records = records.clone();
+        let mut chain = Vec::new();
+        let mut visited = HashSet::from([name.clone()]);
+        loop {
+            let Some(target) = records
+                .records_without_rrsigs()
+                .next()
+                .and_then(|record| record.data().as_cname())
+                .map(|cname| LowerName::from(&cname.0))
+            else {
+                return result;
+            };
+            if !visited.insert(target.clone()) {
+                return result;
+            }
+            chain.push(records);
+
+            let mut origin = target.clone();
+            let authority = loop {
+                if let Some(authority) = zones.get(&origin) {
+                    break authority;
+                }
+                if origin.is_root() {
+                    return result;
+                }
+                origin = origin.base_name();
+            };
+            let LookupControlFlow::Continue(Ok(AuthLookup::Records {
+                answers:
+                    LookupRecords::Records {
+                        records: answer, ..
+                    },
+                ..
+            })) = authority.lookup(&target, record_type, options).await
+            else {
+                // Preserve the original partial answer for unresolved chains.
+                return result;
+            };
+            records = answer;
+            if records.record_type() == record_type {
+                chain.push(records);
+                return LookupControlFlow::Continue(Ok(AuthLookup::answers(
+                    LookupRecords::many(options, chain),
+                    None,
+                )));
+            }
+            if records.record_type() != RecordType::CNAME {
+                return result;
+            }
+        }
+    }
+
+    async fn search(
+        &self,
+        request: RequestInfo<'_>,
+        options: LookupOptions,
+    ) -> LookupControlFlow<Self::Lookup> {
+        let query = request.query;
+        if matches!(query.query_type(), RecordType::A | RecordType::AAAA) {
+            self.lookup(query.name(), query.query_type(), options).await
+        } else {
+            self.inner.search(request, options).await
+        }
+    }
+
+    async fn get_nsec_records(
+        &self,
+        name: &LowerName,
+        options: LookupOptions,
+    ) -> LookupControlFlow<Self::Lookup> {
+        self.inner.get_nsec_records(name, options).await
+    }
 }
 
 struct CatalogRequestHandler {
@@ -60,8 +190,8 @@ impl RequestHandler for CatalogRequestHandler {
     }
 }
 
-pub fn build_authority(domain: &str, records: &[Record]) -> Result<InMemoryAuthority> {
-    let zone = rr::Name::from_str(domain)?;
+pub fn build_authority(origin: &rr::LowerName, records: &[Record]) -> Result<InMemoryAuthority> {
+    let zone = rr::Name::from(origin);
     let mut authority = InMemoryAuthority::empty(zone, ZoneType::Primary, false);
     for record in records.iter() {
         let r = record.try_into()?;
@@ -77,10 +207,22 @@ impl Server {
 
     fn try_new(config: RunConfig) -> Result<Self> {
         let mut catalog = Catalog::new();
+        let mut authorities = BTreeMap::new();
         for (domain, records) in config.zones().iter() {
             let zone = rr::Name::from_str(domain.as_str())?;
-            let authroty = build_authority(domain, records)?;
-            catalog.upsert(zone.clone().into(), vec![Arc::new(authroty)]);
+            let lower = zone.clone().into();
+            let authority = Arc::new(build_authority(&lower, records)?);
+            authorities.insert(lower, authority);
+        }
+        let local_zones = Arc::new(RwLock::new(authorities.clone()));
+        for (origin, inner) in authorities {
+            catalog.upsert(
+                origin,
+                vec![Arc::new(LocalAuthority {
+                    inner,
+                    zones: local_zones.clone(),
+                })],
+            );
         }
 
         // use forwarder authority for the root zone
@@ -117,6 +259,7 @@ impl Server {
         Ok(Self {
             server,
             catalog,
+            local_zones,
             general_config: config.general().clone(),
             udp_local_addr: None,
         })
@@ -193,8 +336,21 @@ impl Server {
         Ok(())
     }
 
-    pub async fn upsert(&self, name: LowerName, authority: Arc<dyn AuthorityObject>) {
-        self.catalog.write().await.upsert(name, vec![authority]);
+    pub async fn upsert(&self, name: LowerName, authority: Arc<InMemoryAuthority>) {
+        // Requests hold the Catalog read lock. Publish the local lookup index
+        // under the same write lock, without reentering Catalog during lookup.
+        let mut catalog = self.catalog.write().await;
+        self.local_zones
+            .write()
+            .await
+            .insert(name.clone(), authority.clone());
+        catalog.upsert(
+            name,
+            vec![Arc::new(LocalAuthority {
+                inner: authority,
+                zones: self.local_zones.clone(),
+            })],
+        );
     }
 
     pub async fn read_catalog(&self) -> RwLockReadGuard<'_, Catalog> {

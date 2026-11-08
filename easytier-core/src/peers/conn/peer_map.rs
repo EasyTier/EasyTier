@@ -193,7 +193,11 @@ impl PeerMap {
             return Some(dst_peer_id);
         }
 
-        if self.has_peer(dst_peer_id) && matches!(policy, NextHopPolicy::LeastHop) {
+        if matches!(policy, NextHopPolicy::LeastHop)
+            && self
+                .get_peer_by_id(dst_peer_id)
+                .is_some_and(|peer| peer.has_live_conns())
+        {
             return Some(dst_peer_id);
         }
 
@@ -486,7 +490,151 @@ fn min_measured_latency_us(latencies_us: impl IntoIterator<Item = u64>) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::min_measured_latency_us;
+    use super::*;
+    use crate::{
+        packet::{FlowKey, PacketType},
+        peers::{
+            conn::peer_session::PeerSessionStore,
+            create_packet_recv_chan,
+            foreign_network::client::ForeignNetworkClient,
+            peer_manager::send_msg_internal,
+            recv_packet_envelope_from_chan,
+            relay_peer_map::new_relay_peer_map,
+            route::{Route, RouteInterfaceBox},
+            test_support::NoopPeerContext,
+        },
+        tunnel::ring::create_ring_tunnel_pair,
+    };
+    use std::time::Duration;
+
+    struct TestRelayRoute;
+
+    #[async_trait::async_trait]
+    impl Route for TestRelayRoute {
+        async fn open(&self, _interface: RouteInterfaceBox) -> Result<u8, ()> {
+            Ok(0)
+        }
+
+        async fn close(&self) {}
+
+        async fn get_next_hop(&self, peer_id: PeerId) -> Option<PeerId> {
+            (peer_id == 2).then_some(3)
+        }
+
+        async fn list_routes(&self) -> Vec<CoreRoute> {
+            Vec::new()
+        }
+
+        async fn list_proxy_cidrs(&self) -> BTreeSet<cidr::Ipv4Cidr> {
+            BTreeSet::new()
+        }
+
+        async fn list_proxy_cidrs_v6(&self) -> BTreeSet<cidr::Ipv6Cidr> {
+            BTreeSet::new()
+        }
+
+        async fn get_peer_info(&self, _peer_id: PeerId) -> Option<RoutePeerInfo> {
+            None
+        }
+
+        async fn get_peer_info_last_update_time(&self) -> quanta::Instant {
+            quanta::Instant::now()
+        }
+
+        fn get_peer_groups(&self, _peer_id: PeerId) -> Arc<Vec<String>> {
+            Arc::new(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_peer_uses_relay_before_periodic_cleanup() {
+        let context: ArcPeerContext = Arc::new(NoopPeerContext::default());
+        let (sender, _receiver) = create_packet_recv_chan();
+        let peers = Arc::new(PeerMap::new(sender.clone(), context.clone(), 1));
+        let foreign = Arc::new(ForeignNetworkClient::new(context.clone(), sender, 1));
+        let sessions = Arc::new(PeerSessionStore::new());
+        let relay = new_relay_peer_map(
+            peers.clone(),
+            Some(foreign.clone()),
+            context.clone(),
+            1,
+            sessions.clone(),
+        );
+        peers.add_route(Arc::new(TestRelayRoute)).await;
+
+        let (sender, mut receiver) = create_packet_recv_chan();
+        let mut remote_conns = Vec::new();
+        let mut direct_conn_ids = Vec::new();
+        for peer_id in [2, 3] {
+            let (left, right) = create_ring_tunnel_pair();
+            let mut client = PeerConn::new(1, context.clone(), left, sessions.clone());
+            let mut server = PeerConn::new(peer_id, context.clone(), right, sessions.clone());
+            let (left, right) = tokio::join!(
+                client.do_handshake_as_client(),
+                server.do_handshake_as_server_ext(|_, _| Ok(())),
+            );
+            left.unwrap();
+            right.unwrap();
+            server.start_recv_loop(sender.clone()).await;
+            direct_conn_ids.push(client.get_conn_id());
+            peers.add_new_peer_conn(client).await.unwrap();
+            remote_conns.push(server);
+        }
+
+        for (direct, next_hop, remote_index) in [(true, 2, 0), (false, 3, 1)] {
+            if !direct {
+                peers.close_peer_conn(2, &direct_conn_ids[0]).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while peers.get_peer_by_id(2).unwrap().has_live_conns() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                // Keep the empty Peer in the map: no periodic cleanup runs here.
+                assert!(peers.has_peer(2));
+            }
+            assert_eq!(
+                peers.get_gateway_peer_id(2, NextHopPolicy::LeastHop).await,
+                Some(next_hop)
+            );
+            for flow_key in [
+                None,
+                Some(FlowKey {
+                    src: ([10, 0, 0, 1], 1234).into(),
+                    dst: ([10, 0, 0, 2], 5000).into(),
+                    protocol: 6,
+                }),
+            ] {
+                for p2p_only in [true, false] {
+                    let mut packet = ZCPacket::new_with_payload(b"business data");
+                    packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+                    packet.flow_key = flow_key;
+                    let result =
+                        send_msg_internal(&peers, &foreign, &relay, None, packet, 2, p2p_only)
+                            .await;
+                    if !direct && p2p_only {
+                        assert!(matches!(result, Err(Error::PeerNoConnectionError(2))));
+                        continue;
+                    }
+                    result.unwrap();
+                    let envelope = tokio::time::timeout(
+                        Duration::from_secs(1),
+                        recv_packet_envelope_from_chan(&mut receiver),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    let (packet, ingress) = envelope.into_parts();
+                    assert_eq!(packet.payload(), b"business data");
+                    assert_eq!(
+                        ingress.peer_connection().unwrap().1,
+                        remote_conns[remote_index].get_conn_id()
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn unmeasured_connections_are_not_reported_as_fastest() {

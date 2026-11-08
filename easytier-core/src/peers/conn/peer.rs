@@ -289,30 +289,39 @@ impl Peer {
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
+        match self.try_send_msg(msg).await? {
+            None => Ok(()),
+            Some(_) => Err(Error::PeerNoConnectionError(self.peer_node_id)),
+        }
+    }
+
+    /// Returns the unsent packet only when no usable connection can be selected.
+    pub(crate) async fn try_send_msg(&self, msg: ZCPacket) -> Result<Option<ZCPacket>, Error> {
         if crate::peers::traffic_metrics::data_packet_payload_len(&msg).is_some() {
             self.data_active.store(true, Ordering::Relaxed);
         }
         if let Some(key) = msg.flow_key {
-            let conn = self
-                .select_flow_conn(key)
-                .ok_or(Error::PeerNoConnectionError(self.peer_node_id))?;
-            return conn.send_msg(msg).await;
+            let Some(conn) = self.select_flow_conn(key) else {
+                return Ok(Some(msg));
+            };
+            conn.send_msg(msg).await?;
+            return Ok(None);
         }
         let default_conn = self.default_conn.load();
         if let Some(conn) = default_conn.as_ref()
             && !conn.is_closed()
         {
             conn.send_msg(msg).await?;
-            return Ok(());
+            return Ok(None);
         }
         drop(default_conn);
 
         let Some(conn) = self.select_conn() else {
-            return Err(Error::PeerNoConnectionError(self.peer_node_id));
+            return Ok(Some(msg));
         };
         conn.send_msg(msg).await?;
 
-        Ok(())
+        Ok(None)
     }
 
     pub async fn close_peer_conn(&self, conn_id: &PeerConnId) -> Result<(), Error> {
@@ -345,6 +354,14 @@ impl Peer {
     }
 
     pub fn has_live_conns(&self) -> bool {
+        if self
+            .default_conn
+            .load()
+            .as_ref()
+            .is_some_and(|conn| !conn.is_closed())
+        {
+            return true;
+        }
         self.conns.iter().any(|entry| !entry.value().is_closed())
     }
 
@@ -450,6 +467,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cached_live_connection_does_not_scan_connection_map() {
+        let peer = Arc::new(new_peer());
+        assert!(!peer.has_live_conns());
+        let (sender, _receiver) = create_packet_recv_chan();
+        let (conn_id, _server) = add_connection(&peer, sender, Some(1_000)).await;
+        assert!(peer.has_live_conns());
+        peer.select_conn().unwrap();
+
+        // Cached availability must not wait for the connection map's shard lock.
+        let conn_guard = peer.conns.get_mut(&conn_id).unwrap();
+        let check_peer = peer.clone();
+        let check = tokio::task::spawn_blocking(move || check_peer.has_live_conns());
+        let result = crate::foundation::time::timeout(Duration::from_secs(1), check).await;
+        drop(conn_guard);
+        assert!(result.unwrap().unwrap());
+    }
+
+    #[tokio::test]
     async fn send_failure_marks_connection_closed_without_waiting_for_ping() {
         let (left, right) = create_ring_tunnel_pair();
         let (stream, _sink) = right.split();
@@ -501,6 +536,7 @@ mod tests {
         .await
         .unwrap();
         assert!(old_conn.is_closed());
+        assert!(peer.has_live_conns());
         assert_eq!(peer.get_default_conn_id(), old);
 
         let mut packet = ZCPacket::new_with_payload(b"packet after failure");

@@ -113,7 +113,7 @@ rcgen = { version = "0.14.10", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 
 # for tap device
-tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", rev = "ac0c674c900dbdcf0b3fe9f5f6134c11579d1f7c", features = [
+tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", rev = "43621f70b02c47086b40d34fdde997719668a6c0", features = [
     "async",
 ], optional = true }
 # for net ns
@@ -333,6 +333,7 @@ default = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "lzo",
     "upnp",
     "icmp-proxy",
     "management",
@@ -355,6 +356,7 @@ full = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "lzo",
     "upnp",
     "icmp-proxy",
     "management",
@@ -414,6 +416,7 @@ faketcp = [
     "easytier-proto/faketcp",
 ]
 zstd = ["easytier-core/zstd", "easytier-proto/zstd"]
+lzo = ["easytier-core/lzo", "easytier-proto/lzo"]
 upnp = [
     "dep:http-body-util",
     "dep:hyper",
@@ -491,6 +494,14 @@ bin-dir = "{ name }-linux-riscv64/{ bin }{ binary-ext }"
 [package.metadata.binstall.overrides.riscv64gc-unknown-linux-gnu]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-riscv64-v{ version }.zip"
 bin-dir = "{ name }-linux-riscv64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.powerpc64le-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-ppc64le-v{ version }.zip"
+bin-dir = "{ name }-linux-ppc64le/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.powerpc64le-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-ppc64le-v{ version }.zip"
+bin-dir = "{ name }-linux-ppc64le/{ bin }{ binary-ext }"
 
 [package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-windows-arm64-v{ version }.zip"

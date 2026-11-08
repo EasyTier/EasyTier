@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, net::Ipv4Addr, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
+use hickory_proto::rr::LowerName;
 use quanta::Instant;
 
 use crate::peers::peer_manager::PeerManagerCore;
@@ -15,7 +16,6 @@ pub struct MagicDnsRoute {
 pub struct MagicDnsRouteSnapshot {
     pub revision: Instant,
     pub routes: Vec<MagicDnsRouteAdvertisement>,
-    pub zone: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,22 +42,18 @@ fn magic_dns_route_advertisement(
 fn magic_dns_route_snapshot(
     revision: Instant,
     routes: Vec<crate::proto::core_peer::peer::Route>,
-    local_identity: (String, Option<crate::proto::common::Ipv4Inet>, String),
+    local_identity: (String, Option<crate::proto::common::Ipv4Inet>),
 ) -> MagicDnsRouteSnapshot {
     let mut routes = routes
         .into_iter()
         .map(magic_dns_route_advertisement)
         .collect::<Vec<_>>();
-    let (hostname, ipv4_addr, zone) = local_identity;
+    let (hostname, ipv4_addr) = local_identity;
     routes.push(MagicDnsRouteAdvertisement {
         hostname,
         ipv4_addr,
     });
-    MagicDnsRouteSnapshot {
-        revision,
-        routes,
-        zone,
-    }
+    MagicDnsRouteSnapshot { revision, routes }
 }
 
 #[async_trait]
@@ -112,12 +108,12 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagicDnsRecordSnapshot {
-    pub zones: BTreeMap<String, Vec<MagicDnsRoute>>,
+    pub zones: BTreeMap<LowerName, Vec<MagicDnsRoute>>,
 }
 
 #[derive(Debug, Default)]
 pub struct MagicDnsRecordStore {
-    zones: Mutex<BTreeMap<String, BTreeMap<String, Vec<MagicDnsRoute>>>>,
+    zones: Mutex<BTreeMap<LowerName, BTreeMap<String, Vec<MagicDnsRoute>>>>,
 }
 
 impl MagicDnsRecordStore {
@@ -128,7 +124,7 @@ impl MagicDnsRecordStore {
     /// authoritative.
     pub fn replace_client_routes(
         &self,
-        zone: String,
+        zone: LowerName,
         client: String,
         routes: Vec<MagicDnsRoute>,
     ) -> bool {
@@ -153,7 +149,7 @@ impl MagicDnsRecordStore {
 
     /// Removes a disconnected client from every zone and returns the zones
     /// that became empty.
-    pub fn remove_client(&self, client: &str) -> Vec<String> {
+    pub fn remove_client(&self, client: &str) -> Vec<LowerName> {
         let mut zones = self.zones.lock().unwrap();
         let mut removed_zones = Vec::new();
         zones.retain(|zone, routes_by_client| {
@@ -215,14 +211,9 @@ mod tests {
         let snapshot = magic_dns_route_snapshot(
             Instant::now(),
             Vec::new(),
-            (
-                "portable-node".to_owned(),
-                Some(ipv4_addr),
-                "et.net.".to_owned(),
-            ),
+            ("portable-node".to_owned(), Some(ipv4_addr)),
         );
 
-        assert_eq!(snapshot.zone, "et.net.");
         assert_eq!(
             snapshot.routes,
             [MagicDnsRouteAdvertisement {
@@ -245,7 +236,6 @@ mod tests {
                     hostname: "node-a".to_owned(),
                     ipv4_addr: Some("10.1.0.1/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
                 }],
-                zone: "et.net.".to_owned(),
             }
         }
 
@@ -351,24 +341,25 @@ mod tests {
 
     #[test]
     fn replaces_routes_for_the_same_client_without_touching_other_clients() {
+        let zone: LowerName = "et.net.".parse().unwrap();
         let store = MagicDnsRecordStore::default();
         assert!(!store.replace_client_routes(
-            "et.net.".to_owned(),
+            zone.clone(),
             "tcp://client-a".to_owned(),
             vec![route("old-a", [10, 0, 0, 1])],
         ));
         assert!(!store.replace_client_routes(
-            "et.net.".to_owned(),
+            zone.clone(),
             "tcp://client-b".to_owned(),
             vec![route("peer-b", [10, 0, 0, 2])],
         ));
         assert!(!store.replace_client_routes(
-            "et.net.".to_owned(),
+            zone.clone(),
             "tcp://client-a".to_owned(),
             vec![route("new-a", [10, 0, 0, 3])],
         ));
 
-        let routes = &store.snapshot().zones["et.net."];
+        let routes = &store.snapshot().zones[&zone];
         assert_eq!(routes.len(), 2);
         assert!(routes.iter().any(|route| route.hostname == "new-a"));
         assert!(routes.iter().any(|route| route.hostname == "peer-b"));
@@ -377,53 +368,49 @@ mod tests {
 
     #[test]
     fn empty_update_removes_only_the_target_client_and_reports_empty_zone() {
+        let zone: LowerName = "et.net.".parse().unwrap();
         let store = MagicDnsRecordStore::default();
         store.replace_client_routes(
-            "et.net.".to_owned(),
+            zone.clone(),
             "tcp://client-a".to_owned(),
             vec![route("peer-a", [10, 0, 0, 1])],
         );
         store.replace_client_routes(
-            "et.net.".to_owned(),
+            zone.clone(),
             "tcp://client-b".to_owned(),
             vec![route("peer-b", [10, 0, 0, 2])],
         );
 
         assert!(!store.replace_client_routes(
-            "et.net.".to_owned(),
+            zone.clone(),
             "tcp://client-a".to_owned(),
             Vec::new(),
         ));
-        assert!(store.replace_client_routes(
-            "et.net.".to_owned(),
-            "tcp://client-b".to_owned(),
-            Vec::new(),
-        ));
+        assert!(store.replace_client_routes(zone, "tcp://client-b".to_owned(), Vec::new()));
         assert!(store.snapshot().zones.is_empty());
     }
 
     #[test]
     fn disconnect_removes_client_from_all_zones() {
         let store = MagicDnsRecordStore::default();
-        for zone in ["a.et.net.", "b.et.net."] {
+        let zone_a: LowerName = "a.et.net.".parse().unwrap();
+        let zone_b: LowerName = "b.et.net.".parse().unwrap();
+        for zone in [&zone_a, &zone_b] {
             store.replace_client_routes(
-                zone.to_owned(),
+                zone.clone(),
                 "tcp://client-a".to_owned(),
                 vec![route("peer-a", [10, 0, 0, 1])],
             );
         }
         store.replace_client_routes(
-            "b.et.net.".to_owned(),
+            zone_b.clone(),
             "tcp://client-b".to_owned(),
             vec![route("peer-b", [10, 0, 0, 2])],
         );
 
-        assert_eq!(
-            store.remove_client("tcp://client-a"),
-            vec!["a.et.net.".to_owned()]
-        );
+        assert_eq!(store.remove_client("tcp://client-a"), vec![zone_a]);
         let snapshot = store.snapshot();
         assert_eq!(snapshot.zones.len(), 1);
-        assert_eq!(snapshot.zones["b.et.net."][0].hostname, "peer-b");
+        assert_eq!(snapshot.zones[&zone_b][0].hostname, "peer-b");
     }
 }

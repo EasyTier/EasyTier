@@ -8,6 +8,13 @@ UDP FEC is optional, connection-local erasure recovery. Enable it with
 enable_udp_fec = true
 ```
 
+FEC is disabled by default and does not guarantee higher TCP throughput.
+Saturating a link can cause its queues to drop sources and repairs together,
+leaving too little repair information to recover the missing data. The recorded
+low-loss comparison against the earlier FEC implementation includes throughput
+regressions and still fails its original acceptance threshold. This is a known
+limitation of the initial opt-in feature; see the PR's recorded measurements.
+
 Every supporting UDP endpoint advertises `udp-fec-v1` in the existing
 handshake. Enabling the flag also advertises `udp-fec-enabled`, requesting FEC
 in both directions. One endpoint's request is sufficient when both endpoints

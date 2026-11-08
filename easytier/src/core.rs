@@ -453,6 +453,9 @@ struct NetworkOptions {
         help = t!("core_clap.credential_file").to_string()
     )]
     credential_file: Option<PathBuf>,
+
+    #[arg(long, env = "ET_TLD_DNS_ZONE", hide = true)]
+    tld_dns_zone: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -945,7 +948,12 @@ impl NetworkOptions {
             cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
         }
 
-        cfg.patch_flags(self.flags.clone());
+        let mut flags = self.flags.clone();
+        #[allow(deprecated)]
+        if flags.tld_dns_zone.is_none() {
+            flags.tld_dns_zone = self.tld_dns_zone.clone();
+        }
+        cfg.patch_flags(flags);
         #[cfg(not(feature = "tun"))]
         cfg.patch_flags(FlagsPatch {
             no_tun: Some(true),
@@ -1969,6 +1977,26 @@ enabled = true
 
         // Deprecated flag is not accepted.
         assert!(parse_flags(&["easytier", "--quic-listen-port", "1234"]).is_err());
+        assert!(
+            !cli_command()
+                .render_help()
+                .to_string()
+                .contains("tld-dns-zone")
+        );
+        assert!(
+            !cli_command()
+                .render_long_help()
+                .to_string()
+                .contains("tld-dns-zone")
+        );
+        let legacy_cli =
+            Cli::try_parse_from(["easytier-core", "--tld-dns-zone", "custom.local."]).unwrap();
+        let cfg = TomlConfigLoader::default();
+        legacy_cli.network_options.merge_into(&cfg).unwrap();
+        #[allow(deprecated)]
+        {
+            assert_eq!(cfg.get_flags().tld_dns_zone, "custom.local.");
+        }
 
         // MTU tests: u16 range validation
         let patch = parse_flags(&["easytier", "--mtu", "1400"]).unwrap();

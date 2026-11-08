@@ -3340,6 +3340,28 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
         .await;
     }
 
+    // The port forward resolves its destination through the outbound packet
+    // router, which can lag behind the peer route snapshots that
+    // `init_three_node_ex` waits for. Gate on the router itself so the first
+    // forwarded connection is not reset by a transient lookup miss.
+    for dst in ["10.144.144.3", "10.1.2.4"] {
+        let dst: std::net::Ipv4Addr = dst.parse().unwrap();
+        wait_for_condition_named(
+            || async {
+                !insts[0]
+                    .get_core_instance()
+                    .peer_manager()
+                    .get_msg_dst_peer_ipv4(&dst)
+                    .await
+                    .0
+                    .is_empty()
+            },
+            Duration::from_secs(10),
+            "port forward destination route",
+        )
+        .await;
+    }
+
     for (bind_port, server_ns) in [
         (23456, network.namespace("net_c")),
         (23457, network.namespace("net_d")),
