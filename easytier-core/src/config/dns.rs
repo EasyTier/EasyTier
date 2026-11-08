@@ -242,14 +242,21 @@ fn validate_svcb_params(tokens: &[String]) -> anyhow::Result<()> {
         let Some((key, value)) = token.split_once('=') else {
             continue;
         };
-        ensure!(value != "\"", "unclosed SVCB parameter quote");
+        let value = if let Some(value) = value.strip_prefix('"') {
+            let value = value
+                .strip_suffix('"')
+                .context("unclosed SVCB parameter quote")?;
+            ensure!(
+                value.chars().rev().take_while(|&ch| ch == '\\').count() % 2 == 0,
+                "unclosed SVCB parameter quote"
+            );
+            value
+        } else {
+            value
+        };
         if key != "alpn" {
             continue;
         }
-        let value = value
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-            .unwrap_or(value);
         let mut chars = value.chars();
         let mut member = String::new();
         while let Some(ch) = chars.next() {
@@ -561,6 +568,21 @@ mod tests {
             &format!("0 custom \"{}\"", "a".repeat(4094)),
         );
         assert!(compile_zone(&zone(vec![input])).is_err());
+        for target in [r"host\065label.example.test.", r"host\-label.example.test."] {
+            let expected =
+                RData::parse(RecordType::CNAME, [target].into_iter(), Some(&origin)).unwrap();
+            let parsed = compile_zone(&zone(vec![record(DnsRecordType::Cname, target)])).unwrap();
+            let actual = parsed
+                .records
+                .values()
+                .next()
+                .unwrap()
+                .records_without_rrsigs()
+                .next()
+                .unwrap()
+                .data();
+            assert_eq!(actual, &expected);
+        }
     }
 
     #[test]
@@ -579,6 +601,8 @@ mod tests {
             (DnsRecordType::Mx, "65536 target"),
             (DnsRecordType::Hinfo, "\"cpu\" \"os\" extra"),
             (DnsRecordType::Svcb, "1 target port=443 port=444"),
+            (DnsRecordType::Cname, r"host\;label.example.test."),
+            (DnsRecordType::Cname, r"host\)label.example.test."),
         ] {
             let input = DnsConfigRaw {
                 domain: None,

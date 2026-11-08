@@ -850,11 +850,15 @@ records = [
                 (r#"1 . alpn=\"unterminated"#, false),
                 ("1 . alpn=\"", false),
                 ("1 . port=\"", false),
+                (r#"1 target key65400="unterminated"#, false),
+                (r#"1 target key65400="tail\""#, false),
                 ("1 target alpn=h2,h3 port=443", true),
                 (r#"1 target alpn="h2,h3" port=443"#, true),
                 (r#"1 target alpn="f\\\\oo\,bar,h2" port=443"#, true),
                 (r"1 target alpn=\, port=443", true),
                 ("1 target alpn=h2, port=443", true),
+                (r#"1 target key65400="complete""#, true),
+                (r#"1 target key65400="tail\\""#, true),
             ] {
                 let network: NetworkConfig = serde_json::from_value(serde_json::json!({
                     "networking_method": NetworkingMethod::Standalone as i32,
