@@ -11,6 +11,11 @@ use crate::runtime::state::runtime_state::{
 };
 use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER, WEB_CLIENTS};
 
+/// Upper bound for one mobile TUN attachment round-trip. The Native layer
+/// reports the real install result, so a stalled install must fail the call
+/// instead of leaving the caller waiting forever.
+const TUN_ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(crate) fn start_kernel(
     config_id: String,
     start_kernel_with_config_id: impl Fn(&str) -> bool,
@@ -101,9 +106,26 @@ pub(crate) fn set_tun_fd(
         return false;
     };
 
-    INSTANCE_MANAGER
-        .attach_tun_fd(instance_id, fd)
-        .map(|_| {
+    // The mobile runtime installs the interface on its own executor. Wait for
+    // that install to finish before reporting success, so a rejected FD is not
+    // remembered as an attached TUN.
+    let attachment = ASYNC_RUNTIME.block_on(async {
+        match tokio::time::timeout(
+            TUN_ATTACH_TIMEOUT,
+            INSTANCE_MANAGER.attach_tun_fd_confirmed(instance_id, fd),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "timed out after {}s waiting for the TUN attachment",
+                TUN_ATTACH_TIMEOUT.as_secs()
+            )),
+        }
+    });
+
+    match attachment {
+        Ok(()) => {
             mark_tun_attached(&config_id);
             ohrs_log_info!(
                 "[Rust] set_tun_fd success instance={} fd={} marked_attached=true",
@@ -111,11 +133,12 @@ pub(crate) fn set_tun_fd(
                 fd
             );
             true
-        })
-        .unwrap_or_else(|err| {
+        }
+        Err(err) => {
             ohrs_log_error!("[Rust] set_tun_fd failed {}: {}", config_id, err);
             false
-        })
+        }
+    }
 }
 
 pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {

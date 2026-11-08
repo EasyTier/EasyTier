@@ -77,6 +77,12 @@ where
         self.instance_runtime.attach_tun_fd(fd)
     }
 
+    /// Resolves after the Host installed the interface, for platforms whose TUN
+    /// attachment completes asynchronously.
+    pub async fn attach_tun_fd_confirmed(&self, fd: i32) -> anyhow::Result<()> {
+        self.instance_runtime.attach_tun_fd_confirmed(fd).await
+    }
+
     pub fn latest_error(&self) -> Option<String> {
         self.latest_error.read().clone()
     }

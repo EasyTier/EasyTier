@@ -482,6 +482,17 @@ where
             .attach_tun_fd(fd)
     }
 
+    pub async fn attach_tun_fd_confirmed(
+        &self,
+        instance_id: Uuid,
+        fd: i32,
+    ) -> anyhow::Result<()> {
+        let instance = self
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found"))?;
+        instance.attach_tun_fd_confirmed(fd).await
+    }
+
     pub fn data_plane_runtime_handle(&self, instance_id: &Uuid) -> Option<tokio::runtime::Handle> {
         self.instance(*instance_id)?
             .runtime_handle()

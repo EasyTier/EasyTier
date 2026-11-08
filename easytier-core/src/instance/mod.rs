@@ -269,6 +269,14 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
     fn attach_tun_fd(&self, _fd: i32) -> anyhow::Result<()> {
         anyhow::bail!("external TUN attachment is not supported by this Host")
     }
+
+    /// Attaches an externally created packet interface and resolves only after
+    /// the Host installed it. Hosts whose attachment completes asynchronously
+    /// override this so callers never report a tunnel that never came up;
+    /// synchronous Hosts keep the default behavior.
+    async fn attach_tun_fd_confirmed(&self, fd: i32) -> anyhow::Result<()> {
+        self.attach_tun_fd(fd)
+    }
 }
 
 #[async_trait::async_trait]

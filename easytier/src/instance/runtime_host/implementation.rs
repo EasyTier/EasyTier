@@ -53,6 +53,11 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
     fn attach_tun_fd(&self, fd: i32) -> anyhow::Result<()> {
         self.attach_runtime_tun_fd(fd)
     }
+
+    #[cfg(all(feature = "tun", mobile))]
+    async fn attach_tun_fd_confirmed(&self, fd: i32) -> anyhow::Result<()> {
+        self.tun.attach_mobile_fd(fd, true, None).await
+    }
 }
 
 #[async_trait::async_trait]
