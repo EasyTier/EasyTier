@@ -83,7 +83,7 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
         if (state.failures.has(path)) return route.fulfill({ status: 503, json: { message: 'Test unavailable' } });
         let result = {};
         if (path === '/summary') result = { device_count: state.machines.length };
-        else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, webhook_auth: state.externalConsole ?? false };
+        else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_protocols: state.configProtocols, config_server_port: 22020, webhook_auth: state.externalConsole ?? false };
         else if (path === '/machines') result = { machines: state.machines };
         else if (path === '/networks/gateway-info') {
             await delay(state.gatewayDelay);
@@ -165,6 +165,20 @@ test('enrollment command uses the console info response', async t => {
     await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
     await page.getByText('easytier-core --config-server udp://127.0.0.1:22020/test-user').waitFor();
 });
+
+for (const route of ['/h', '/h/deviceList']) {
+    test(`both protocols offer concrete enrollment commands on ${route}`, async t => {
+        const { page } = await open(t, route, {}, state => {
+            state.configProtocols = ['udp', 'tcp'];
+            state.machines = [];
+        });
+        if (route === '/h') await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
+        for (const protocol of ['udp', 'tcp']) {
+            await page.getByText(`easytier-core --config-server ${protocol}://127.0.0.1:22020/test-user`).waitFor();
+        }
+        assert.equal(await page.getByText('both://', { exact: false }).count(), 0);
+    });
+}
 
 for (const [apiHost, hostname] of [
     ['https://api.example.test:8443/', 'api.example.test'],

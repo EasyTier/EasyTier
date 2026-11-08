@@ -27,6 +27,7 @@ use mimalloc::MiMalloc;
 
 mod central_network;
 mod client_manager;
+mod config_server;
 #[cfg(test)]
 mod config_server_listener_tests;
 mod db;
@@ -88,6 +89,7 @@ struct Cli {
         long,
         short='p',
         env = "ET_CONFIG_SERVER_PROTOCOL",
+        value_parser = ["udp", "tcp", "ws", "both"],
         default_value = "udp",
         help = t!("cli.config_server_protocol").to_string(),
     )]
@@ -254,6 +256,11 @@ fn get_config_server_listeners(
     protocol: &str,
     port: u16,
 ) -> Result<Vec<ConfigServerListener>, Error> {
+    if protocol == "both" {
+        let mut listeners = get_config_server_listeners("udp", port)?;
+        listeners.extend(get_config_server_listeners("tcp", port)?);
+        return Ok(listeners);
+    }
     let scheme = protocol
         .parse()
         .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
@@ -384,6 +391,7 @@ async fn main() {
         feature_flags.clone(),
         webhook_config.clone(),
     );
+    let mut bound_protocols = std::collections::HashSet::new();
     for listener in
         get_config_server_listeners(&cli.config_server_protocol, cli.config_server_port).unwrap()
     {
@@ -399,12 +407,22 @@ async fn main() {
         };
         match result {
             Ok(local_url) => {
+                bound_protocols.insert(local_url.scheme().to_owned());
                 tracing::info!(%local_url, "Config server listener bound");
             }
             Err(error) => {
                 tracing::warn!(%local_url, error = %format_args!("{error:#}"), "Failed to bind config server listener");
             }
         }
+    }
+    if cli.config_server_protocol == "both"
+        && !(bound_protocols.contains("tcp") && bound_protocols.contains("udp"))
+    {
+        eprintln!(
+            "Both TCP and UDP must bind on config server port {}",
+            cli.config_server_port
+        );
+        std::process::exit(2);
     }
     if !mgr.is_running() {
         panic!(

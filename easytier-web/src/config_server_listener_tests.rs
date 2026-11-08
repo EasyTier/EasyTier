@@ -42,3 +42,44 @@ async fn ipv4_listeners_bind_even_when_ipv6_is_unavailable() {
         ipv4.listen().await.unwrap();
     }
 }
+
+#[test]
+fn both_expands_to_tcp_and_udp_on_the_same_port() {
+    let listeners = get_config_server_listeners("both", 22020).unwrap();
+    let urls: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_url().to_string())
+        .collect();
+    assert_eq!(
+        urls,
+        vec![
+            "udp://[::]:22020",
+            "udp://0.0.0.0:22020",
+            "tcp://[::]:22020",
+            "tcp://0.0.0.0:22020"
+        ]
+    );
+}
+
+#[test]
+fn cli_preserves_default_and_accepts_both() {
+    use clap::Parser;
+    assert_eq!(
+        super::Cli::try_parse_from(["easytier-web"])
+            .unwrap()
+            .config_server_protocol,
+        "udp"
+    );
+    for protocol in ["udp", "tcp", "ws", "both"] {
+        assert_eq!(
+            super::Cli::try_parse_from(["easytier-web", "--config-server-protocol", protocol])
+                .unwrap()
+                .config_server_protocol,
+            protocol
+        );
+    }
+    assert!(
+        super::Cli::try_parse_from(["easytier-web", "--config-server-protocol", "invalid"])
+            .is_err()
+    );
+}

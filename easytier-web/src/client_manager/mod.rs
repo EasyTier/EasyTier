@@ -810,6 +810,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn both_protocols_share_management_and_preserve_device_identity() {
+        let (webhook_config, webhook_server, _) = test_webhook_config().await;
+        let mut mgr = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            webhook_config,
+        );
+        mgr.db()
+            .auto_create_user(MANAGED_CONFIG_TOKEN)
+            .await
+            .unwrap();
+        // Allocate TCP first, then bind UDP to the same numeric port.
+        let tcp = mgr
+            .add_listener(easytier::proto::rpc::standalone::runtime_rpc_listener(
+                "127.0.0.1:0".parse().unwrap(),
+            ))
+            .await
+            .unwrap();
+        let port = tcp.port().unwrap();
+        mgr.add_listener(runtime_udp_tunnel_listener(
+            format!("udp://127.0.0.1:{port}").parse().unwrap(),
+            format!("127.0.0.1:{port}").parse().unwrap(),
+        ))
+        .await
+        .unwrap();
+        let ids = [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
+        let mut clients = Vec::new();
+        for (protocol, machine_id) in ["udp", "tcp"].into_iter().zip(ids) {
+            clients.push(
+                run_web_client(
+                    &format!("{protocol}://127.0.0.1:{port}/{MANAGED_CONFIG_TOKEN}"),
+                    MachineIdOptions {
+                        explicit_machine_id: Some(machine_id.to_string()),
+                        state_dir: None,
+                    },
+                    Some(protocol.to_owned()),
+                    false,
+                    Arc::new(native_instance_manager()),
+                    None,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        let user = wait_for_validated_user(&mgr, ids[0]).await;
+        assert_eq!(wait_for_validated_user(&mgr, ids[1]).await, user);
+        for id in ids {
+            assert!(mgr.get_session_by_machine_id(user, &id).is_some());
+        }
+        // Switch the UDP device to TCP without changing its machine identity.
+        clients.remove(0);
+        let _replacement = run_web_client(
+            &format!("tcp://127.0.0.1:{port}/{MANAGED_CONFIG_TOKEN}"),
+            MachineIdOptions {
+                explicit_machine_id: Some(ids[0].to_string()),
+                state_dir: None,
+            },
+            Some("switched".to_owned()),
+            false,
+            Arc::new(native_instance_manager()),
+            None,
+        )
+        .await
+        .unwrap();
+        wait_for_condition(
+            || async {
+                mgr.list_sessions().await.iter().any(|session| {
+                    session.machine_id == ids[0] && session.client_url.scheme() == "tcp"
+                })
+            },
+            Duration::from_secs(12),
+        )
+        .await;
+        let sessions = mgr.list_sessions().await;
+        assert_eq!(
+            sessions
+                .iter()
+                .filter(|session| session.machine_id == ids[0])
+                .count(),
+            1
+        );
+        assert!(mgr.get_session_by_machine_id(user, &ids[1]).is_some());
+        webhook_server.abort();
+    }
+
+    #[tokio::test]
     async fn connected_webhook_observes_a_routable_current_session() {
         let webhook_state = TestWebhookState::with_blocked_connected([true]);
         let (webhook_config, webhook_server, webhook_state) =
