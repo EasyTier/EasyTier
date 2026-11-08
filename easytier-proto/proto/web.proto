@@ -27,6 +27,8 @@ message HeartbeatRequest {
   // Supports explicit manual mode patches and typed empty-manual readback.
   // Older peers silently ignore unknown patch fields; missing means false.
   bool support_manual_routes_patch = 12;
+  // Supports dns.domain and static DNS zones. Missing means false.
+  bool support_dns_config = 13;
 }
 
 message HeartbeatResponse {

@@ -1734,6 +1734,140 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires EASYTIER_TEST_LEGACY_CORE and an isolated network environment"]
+    async fn legacy_core_reconciles_ordinary_config_and_rejects_dns() {
+        use easytier::proto::api::instance::PeerManageRpcClientFactory;
+        use easytier::proto::rpc_types::controller::BaseController;
+
+        let _ = easytier::common::log::init_console();
+        let (webhook_config, webhook_server, webhook_state) = test_webhook_config().await;
+        *webhook_state.config_revision.write().await = "legacy-initial".to_owned();
+        let mut mgr = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
+            Arc::new(FeatureFlags::default()),
+            webhook_config,
+        );
+        let addr = add_random_udp_listener(&mut mgr).await;
+        let machine_id = uuid::Uuid::new_v4();
+        let instance_id = uuid::Uuid::new_v4();
+        let config_dir = std::env::temp_dir().join(format!("easytier-legacy-{machine_id}"));
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let mut core = tokio::process::Command::new(
+            std::env::var("EASYTIER_TEST_LEGACY_CORE")
+                .expect("path to a core without DNS configuration"),
+        )
+        .args([
+            "--config-server",
+            &format!("udp://{addr}/{MANAGED_CONFIG_TOKEN}"),
+            "--machine-id",
+            &machine_id.to_string(),
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--console-log-level",
+            "warn",
+        ])
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        let user_id = wait_for_validated_user(&mgr, machine_id).await;
+        let session = mgr.get_session_by_machine_id(user_id, &machine_id).unwrap();
+        let heartbeat = session.get_heartbeat_req().await.unwrap();
+        assert!(!heartbeat.support_dns_config);
+        eprintln!("legacy core version: {}", heartbeat.easytier_version);
+        let mut config_client = session.scoped_config_client();
+        let mut peer_client: super::session::SessionPeerClient =
+            session.scoped_client::<PeerManageRpcClientFactory<BaseController>>();
+        let mut desired = initial_managed_network_config(instance_id);
+        let mut previous_revision = None;
+        for (revision, hostname, dns) in [
+            (
+                "legacy-initial",
+                "legacy-initial-host",
+                serde_json::Value::Null,
+            ),
+            (
+                "legacy-updated",
+                "legacy-updated-host",
+                json!({"domain": "et.net.", "zone": []}),
+            ),
+        ] {
+            desired["hostname"] = json!(hostname);
+            desired["dns"] = dns;
+            *webhook_state.config_revision.write().await = revision.to_owned();
+            mgr.reconcile_managed_network_configs(
+                user_id,
+                machine_id,
+                vec![managed_config(instance_id, desired.clone())],
+                Some(revision.to_owned()),
+                previous_revision,
+            )
+            .await
+            .unwrap();
+            wait_for_applied_revision(&mgr, user_id, machine_id, revision).await;
+            let observed = super::runtime_reconcile::get_runtime_config(
+                &mut config_client,
+                &mut peer_client,
+                &instance_id.to_string(),
+                heartbeat.support_manual_routes_patch,
+            )
+            .await
+            .unwrap();
+            assert_eq!(observed.hostname.as_deref(), Some(hostname));
+            assert!(observed.dns.is_none());
+            previous_revision = Some(revision.to_owned());
+        }
+
+        desired["hostname"] = json!("must-not-be-patched");
+        desired["dns"] = json!({"domain": "unsupported.test"});
+        *webhook_state.config_revision.write().await = "legacy-unsupported".to_owned();
+        mgr.reconcile_managed_network_configs(
+            user_id,
+            machine_id,
+            vec![managed_config(instance_id, desired.clone())],
+            Some("legacy-unsupported".to_owned()),
+            previous_revision,
+        )
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(8),
+                wait_for_applied_revision(&mgr, user_id, machine_id, "legacy-unsupported"),
+            )
+            .await
+            .is_err()
+        );
+        let observed = super::runtime_reconcile::get_runtime_config(
+            &mut config_client,
+            &mut peer_client,
+            &instance_id.to_string(),
+            heartbeat.support_manual_routes_patch,
+        )
+        .await
+        .unwrap();
+        assert_eq!(observed.hostname.as_deref(), Some("legacy-updated-host"));
+        assert!(observed.dns.is_none());
+
+        desired["dns"] = serde_json::Value::Null;
+        *webhook_state.config_revision.write().await = "legacy-recovered".to_owned();
+        mgr.reconcile_managed_network_configs(
+            user_id,
+            machine_id,
+            vec![managed_config(instance_id, desired)],
+            Some("legacy-recovered".to_owned()),
+            Some("legacy-unsupported".to_owned()),
+        )
+        .await
+        .unwrap();
+        wait_for_applied_revision(&mgr, user_id, machine_id, "legacy-recovered").await;
+        core.kill().await.unwrap();
+        std::fs::remove_dir_all(config_dir).unwrap();
+        webhook_server.abort();
+    }
+
+    #[tokio::test]
     async fn managed_web_config_revision_updates_running_core_config() {
         let (webhook_config, webhook_server, webhook_state) = test_webhook_config().await;
         let mut mgr = ClientManager::new(

@@ -436,6 +436,7 @@ fn build_heartbeat_request(
             .collect(),
         support_heartbeat_policy: true,
         support_manual_routes_patch: true,
+        support_dns_config: true,
     }
 }
 
@@ -751,6 +752,8 @@ mod tests {
         assert!(request.support_heartbeat_policy);
         assert!(request.support_manual_routes_patch);
         assert!(!HeartbeatRequest::default().support_manual_routes_patch);
+        assert!(request.support_dns_config);
+        assert!(!HeartbeatRequest::default().support_dns_config);
     }
 
     #[test]

@@ -969,14 +969,22 @@ async fn reconcile_desired_runtime_configs(
             continue;
         }
 
-        let desired_config = match serde_json::from_str::<NetworkConfig>(&config.network_config) {
+        let desired_config = match serde_json::from_str::<NetworkConfig>(&config.network_config)
+            .map_err(anyhow::Error::from)
+            .and_then(|config| {
+                runtime_reconcile::ensure_dns_config_supported(
+                    &config,
+                    round.req.support_dns_config,
+                )?;
+                Ok(config)
+            }) {
             Ok(cfg) => cfg,
             Err(e) => {
                 tracing::error!(
                     user_id = ?round.user_id,
                     machine_id = ?round.machine_id,
                     instance_id = %config.network_instance_id,
-                    "Failed to deserialize network config, skipping: {:?}",
+                    "Failed to prepare network config, skipping: {:?}",
                     e
                 );
                 if source == PersistedConfigSource::Web {
@@ -1466,6 +1474,117 @@ mod tests {
             let runtime = data.managed_runtime();
             assert!(!runtime.applied_config_revision_known);
             assert_eq!(runtime.applied_config_revision.as_deref(), revision);
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_dns_sends_no_config_rpc_and_cannot_mark_revision_applied() {
+        use easytier::proto::api::{
+            config::{
+                ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
+                PatchConfigResponse,
+            },
+            instance::PeerManageRpcClientFactory,
+            manage::WebClientServiceClientFactory,
+        };
+
+        struct NoConfigRpc;
+        #[async_trait::async_trait]
+        impl ConfigRpc for NoConfigRpc {
+            type Controller = BaseController;
+
+            async fn get_config(
+                &self,
+                _: BaseController,
+                _: GetConfigRequest,
+            ) -> easytier::proto::rpc_types::error::Result<GetConfigResponse> {
+                panic!("unsupported DNS must be rejected before reading runtime config")
+            }
+
+            async fn patch_config(
+                &self,
+                _: BaseController,
+                _: PatchConfigRequest,
+            ) -> easytier::proto::rpc_types::error::Result<PatchConfigResponse> {
+                panic!("unsupported DNS must not send a patch")
+            }
+        }
+
+        let (storage, data, mut round) = takeover_session(Some("current")).await;
+        let instance_id = uuid::Uuid::from(round.req.running_network_instances[0]);
+        round.should_apply_runtime_revision = true;
+        round
+            .local_configs
+            .push(crate::db::entity::user_running_network_configs::Model {
+                id: 1,
+                user_id: round.user_id,
+                device_id: round.machine_id.to_string(),
+                network_instance_id: instance_id.to_string(),
+                network_config: serde_json::json!({
+                    "networking_method": "Standalone",
+                    "dns": { "domain": "unsupported.test" }
+                })
+                .to_string(),
+                source: "web".to_owned(),
+                disabled: false,
+                create_time: chrono::Utc::now().into(),
+                update_time: chrono::Utc::now().into(),
+            });
+        data.read().await.managed_runtime().applied_config_revision = None;
+        let rpc = easytier::proto::rpc::bidirect::BidirectRpcManager::new();
+        let mut clients = SessionClients {
+            rpc: rpc
+                .rpc_client()
+                .scoped_client::<WebClientServiceClientFactory<BaseController>>(
+                    1,
+                    1,
+                    String::new(),
+                ),
+            config: Box::new(NoConfigRpc),
+            peer: rpc
+                .rpc_client()
+                .scoped_client::<PeerManageRpcClientFactory<BaseController>>(1, 1, String::new()),
+        };
+        let weak = std::sync::Arc::downgrade(&data);
+        let mut cache = ReconcileCache::default();
+        for running in [true, false] {
+            round.running_inst_ids = if running {
+                HashSet::from([instance_id.to_string()])
+            } else {
+                HashSet::new()
+            };
+            let mut mutation_fence = RuntimeMutationFence::default();
+            let outcome = tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                reconcile_desired_runtime_configs(
+                    &ReconcileRoundContext {
+                        session_data: &weak,
+                        round: &round,
+                    },
+                    &mut clients,
+                    &mut cache,
+                    &mut mutation_fence,
+                ),
+            )
+            .await
+            .expect("capability rejection must not wait for RPC");
+            assert!(outcome.managed_revision_failed);
+            assert!(!mutation_fence.started);
+            mark_config_revision_applied_if_current(
+                &weak,
+                &storage.weak_ref().upgrade().unwrap(),
+                &round,
+                &outcome,
+                &mutation_fence,
+            )
+            .await;
+            assert!(
+                data.read()
+                    .await
+                    .managed_runtime()
+                    .applied_config_revision
+                    .is_none()
+            );
         }
     }
 

@@ -96,6 +96,22 @@ fn full_dns_patch(
     easytier_core::gateway::magic_dns::normalized_dns(&config.gen_config()?)
 }
 
+pub(super) fn ensure_dns_config_supported(
+    config: &NetworkConfig,
+    support_dns_config: bool,
+) -> anyhow::Result<()> {
+    if !support_dns_config {
+        let default_dns = easytier_core::gateway::magic_dns::normalized_dns(
+            &easytier_core::config::toml::TomlConfig::default(),
+        )?;
+        anyhow::ensure!(
+            full_dns_patch(config)? == default_dns,
+            "core does not support DNS configuration"
+        );
+    }
+    Ok(())
+}
+
 fn normalized_data_compress_algo(algo: Option<i32>) -> Option<i32> {
     let default = CompressionAlgoPb::None as i32;
     let effective = algo.map(|algo| if algo < default { default } else { algo });
@@ -1758,16 +1774,25 @@ mod tests {
         assert_eq!(patch.hostname.as_deref(), Some(""));
     }
 
-    fn dns_record(kind: easytier::proto::core_config::DnsRecordType, value: &str) -> easytier::proto::core_config::DnsRecordRaw {
+    fn dns_record(
+        kind: easytier::proto::core_config::DnsRecordType,
+        value: &str,
+    ) -> easytier::proto::core_config::DnsRecordRaw {
         easytier::proto::core_config::DnsRecordRaw {
             name: "nas".to_owned(),
             r#type: kind as i32,
-            data: Some(easytier::proto::core_config::dns_record_raw::Data::Value(value.to_owned())),
+            data: Some(easytier::proto::core_config::dns_record_raw::Data::Value(
+                value.to_owned(),
+            )),
             ..Default::default()
         }
     }
 
-    fn config_with_dns(domain: &str, origin: &str, records: &[easytier::proto::core_config::DnsRecordRaw]) -> NetworkConfig {
+    fn config_with_dns(
+        domain: &str,
+        origin: &str,
+        records: &[easytier::proto::core_config::DnsRecordRaw],
+    ) -> NetworkConfig {
         let mut config = config_with_port_forwards(Vec::new());
         config.enable_magic_dns = Some(true);
         config.dns = Some(easytier::proto::core_config::DnsConfigRaw {
@@ -1784,9 +1809,58 @@ mod tests {
     }
 
     #[test]
+    fn legacy_core_allows_omitted_or_default_empty_dns() {
+        let mut config = config_with_port_forwards(Vec::new());
+        ensure_dns_config_supported(&config, false).unwrap();
+        for domain in [None, Some("et.net"), Some("ET.NET.")] {
+            config.dns = Some(easytier::proto::core_config::DnsConfigRaw {
+                domain: domain.map(str::to_owned),
+                zone: Some(Default::default()),
+            });
+            ensure_dns_config_supported(&config, false).unwrap();
+        }
+    }
+
+    #[test]
+    fn legacy_core_rejects_dns_zones_or_custom_domain() {
+        let mut custom_domain = config_with_dns("mesh.test", "records.test", &[]);
+        custom_domain.dns.as_mut().unwrap().zone = None;
+        for config in [
+            custom_domain,
+            config_with_dns("et.net", "records.test", &[]),
+            config_with_dns(
+                "et.net",
+                "records.test",
+                &[dns_record(
+                    easytier::proto::core_config::DnsRecordType::A,
+                    "192.0.2.1",
+                )],
+            ),
+        ] {
+            let error = ensure_dns_config_supported(&config, false).unwrap_err();
+            assert_eq!(error.to_string(), "core does not support DNS configuration");
+            ensure_dns_config_supported(&config, true).unwrap();
+        }
+    }
+
+    #[test]
     fn dns_record_origin_domain_and_clear_changes_use_hot_patch() {
-        let current = config_with_dns("mesh.test", "old.test", &[dns_record(easytier::proto::core_config::DnsRecordType::A, "192.0.2.1")]);
-        let desired = config_with_dns("new.test", "new.test", &[dns_record(easytier::proto::core_config::DnsRecordType::Aaaa, "fd00::8")]);
+        let current = config_with_dns(
+            "mesh.test",
+            "old.test",
+            &[dns_record(
+                easytier::proto::core_config::DnsRecordType::A,
+                "192.0.2.1",
+            )],
+        );
+        let desired = config_with_dns(
+            "new.test",
+            "new.test",
+            &[dns_record(
+                easytier::proto::core_config::DnsRecordType::Aaaa,
+                "fd00::8",
+            )],
+        );
         let RuntimeReconcileAction::Patch(patch) =
             prepare_web_source_runtime_reconcile_from_current(&current, desired.clone(), true)
                 .unwrap()
@@ -1796,7 +1870,13 @@ mod tests {
         let dns = patch.dns.unwrap();
         assert_eq!(dns.domain.as_deref(), Some("new.test."));
         assert_eq!(dns.zone.as_ref().unwrap().items[0].origin, "new.test.");
-        assert!(dns.zone.unwrap().items[0].records.as_ref().unwrap().items[0].r#type == easytier::proto::core_config::DnsRecordType::Aaaa as i32);
+        assert_eq!(
+            dns.zone.unwrap().items[0].records.as_ref().unwrap().items[0].r#type,
+            easytier::proto::core_config::DnsRecordType::Aaaa as i32
+        );
+        assert!(ensure_runtime_config_converged(&current, &desired, true).is_err());
+        let readback = NetworkConfig::new_from_config(desired.gen_config().unwrap()).unwrap();
+        ensure_runtime_config_converged(&readback, &desired, true).unwrap();
 
         let mut cleared = desired.clone();
         cleared.dns = None;
