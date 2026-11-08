@@ -1,3 +1,19 @@
+gui_settings:
+  title: 设置
+  autostart: 开机自启动
+  autostart_hint: 登录系统后自动打开 EasyTier GUI，此开关立即生效。系统可能要求管理员授权。
+  close_to_tray: 点击关闭时最小化到托盘
+  close_to_tray_hint: 关闭窗口后继续在后台运行，可通过托盘或设置中的“退出”结束程序。
+  auto_start_network: 启动后自动运行指定网络
+  auto_start_network_hint: 每次打开 GUI 后自动运行所选网络。配合“开机自启动”即可在登录系统后自动连接。
+  normal_mode_only: 此选项仅适用于普通模式。服务模式由系统服务管理网络启动，远程模式不自动启动网络。
+  startup_network: 指定网络
+  no_networks: 暂无可选网络，请先创建并保存网络配置。
+  networks_unavailable: 无法读取网络列表，请连接客户端后重试。
+  network_missing: 原先指定的网络已不存在，请重新选择。
+  network_start_failed: 自动运行网络失败
+  tools: 更多设置
+  saved: 设置已保存
 network: 网络
 networking_method: 网络方式
 public_server: 公共服务器
