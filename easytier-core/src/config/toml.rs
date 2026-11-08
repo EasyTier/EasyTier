@@ -597,6 +597,9 @@ impl TomlConfig {
     }
 
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
+        if let Some(dns) = &config.dns {
+            super::dns::compile_dns(dns)?;
+        }
         config.secure_mode = config
             .secure_mode
             .take()

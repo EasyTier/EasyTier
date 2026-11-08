@@ -172,7 +172,10 @@ function allFieldFixture() {
     dns: { zone: [{
       origin: 'example.test.',
       ttl: 0,
-      records: ['nas IN A 192.0.2.1'],
+      records: [
+        { name: 'nas', type: 'A', value: '192.0.2.1' },
+        { name: 'info', type: 'TXT', ttl: 0, txt: { segments: ['quote" slash\\ ;', '', 'tail'] } },
+      ],
     }] },
     enable_private_mode: true,
     enable_quic_proxy: true,
@@ -620,6 +623,10 @@ for (const dns of [
   { zone: [] },
   { domain: 'mesh.test.', zone: [{ origin: 'example.test.' }] },
   { zone: [{ origin: 'example.test.', ttl: 0, records: [] }] },
+  { zone: [{ origin: 'example.test.', records: [
+    { name: '@', type: 'MX', value: '10 mail' },
+    { name: 'info', type: 'TXT', txt: { segments: ['first', '', 'second'] } },
+  ] }] },
 ]) {
   const normalized = normalizeNetworkConfig({ ...DEFAULT_NETWORK_CONFIG(), dns });
   const backend = toBackendNetworkConfig(normalized);

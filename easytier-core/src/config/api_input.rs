@@ -247,6 +247,9 @@ fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Erro
 impl NetworkConfigExt for NetworkConfig {
     #[allow(deprecated)]
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
+        if let Some(dns) = &self.dns {
+            super::dns::compile_dns(dns)?;
+        }
         let cfg = TomlConfigLoader::default();
         cfg.set_dns(self.dns.clone());
         cfg.set_id(
@@ -711,7 +714,7 @@ mod tests {
             "",
             "[dns]\n",
             "[dns]\ndomain = 'mesh.test.'\n",
-            "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = ['nas IN A 10.0.0.8', 'nas IN AAAA fd00::8']\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = [{ name = 'nas', type = 'A', value = '10.0.0.8' }, { name = 'nas', type = 'AAAA', value = 'fd00::8' }]\n",
         ] {
             let config = TomlConfigLoader::new_from_str(dns).unwrap();
             let expected = config.get_dns();
@@ -745,7 +748,15 @@ mod tests {
             "[dns]\nzone = []\n",
             "[[dns.zone]]\norigin = 'example.test.'\n",
             "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = []\n",
-            "[[dns.zone]]\norigin = 'example.test.'\nrecords = ['@ IN A 192.0.2.1']\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'A', value = '192.0.2.1' }]\n",
+            r#"[[dns.zone]]
+origin = 'example.test.'
+ttl = 60
+records = [
+    { name = '@', type = 'MX', value = '10 mail' },
+    { name = 'info', type = 'TXT', ttl = 0, txt = { segments = ['quote" slash\ ;', '', 'tail'] } },
+]
+"#,
         ] {
             let config = TomlConfigLoader::new_from_str(input).unwrap();
             let expected = config.get_dns();
@@ -812,11 +823,67 @@ mod tests {
             "[[dns.zone]]\norigin = 'example.test.'\nrecrods = []\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = {}\n",
             "[[dns.zone]]\norigin = 'example.test.'\nttl = -1\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'A', value = '192.0.2.1', txt = { segments = ['x'] } }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'UNKNOWN', value = 'x' }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'TXT', value = 'x' }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = ['@ IN A 192.0.2.1']\n",
         ] {
             assert!(
                 TomlConfigLoader::new_from_str(input).is_err(),
                 "accepted {input}"
             );
+        }
+    }
+
+    #[test]
+    fn dns_alpn_errors_use_file_and_management_field_paths() {
+        for kind in ["HTTPS", "SVCB"] {
+            for (value, valid) in [
+                ("1 . alpn=,", false),
+                ("1 . alpn=h2,,h3", false),
+                (r#"1 . alpn="h2,,h3""#, false),
+                (r"1 . alpn=\@,h2", false),
+                (r"1 . alpn=\(h2", false),
+                (r"1 . alpn=\$TTL", false),
+                (r#"1 . "alpn=;h2""#, false),
+                (r#"1 . "alpn= h2""#, false),
+                (r#"1 . alpn=\"unterminated"#, false),
+                ("1 . alpn=\"", false),
+                ("1 . port=\"", false),
+                (r#"1 target key65400="unterminated"#, false),
+                (r#"1 target key65400="tail\""#, false),
+                ("1 target alpn=h2,h3 port=443", true),
+                (r#"1 target alpn="h2,h3" port=443"#, true),
+                (r#"1 target alpn="f\\\\oo\,bar,h2" port=443"#, true),
+                (r"1 target alpn=\, port=443", true),
+                ("1 target alpn=h2, port=443", true),
+                (r#"1 target key65400="complete""#, true),
+                (r#"1 target key65400="tail\\""#, true),
+            ] {
+                let network: NetworkConfig = serde_json::from_value(serde_json::json!({
+                    "networking_method": NetworkingMethod::Standalone as i32,
+                    "dns": { "zone": [{
+                        "origin": "example.test.",
+                        "records": [{ "name": "svc", "type": kind, "value": value }]
+                    }] }
+                }))
+                .unwrap();
+                let file = format!(
+                    "[[dns.zone]]\norigin = 'example.test.'\nrecords = [\
+                     {{ name = 'svc', type = '{kind}', value = '{value}' }}]\n"
+                );
+                for result in [network.gen_config(), TomlConfigLoader::new_from_str(&file)] {
+                    if valid {
+                        assert!(result.is_ok(), "{kind} {value}: {result:?}");
+                    } else {
+                        let error = result.unwrap_err().to_string();
+                        assert!(
+                            error.contains("dns.zone[0].records[0].value"),
+                            "{kind} {value}: {error}"
+                        );
+                    }
+                }
+            }
         }
     }
 

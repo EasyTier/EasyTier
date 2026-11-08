@@ -9,6 +9,7 @@ import {
   type VpnPortalConfig,
 } from '../generated/proto/api_manage'
 import { ScalarType } from '@protobuf-ts/runtime'
+import { DnsRecordType, type DnsRecordRaw } from '../generated/proto/core_config'
 import type { FlagMeta } from '../generated/proto/annotations'
 import {
   VpnPortalClientState,
@@ -37,7 +38,7 @@ import {
 } from '../generated/proto/common'
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
 
-export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
+export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, DnsRecordType, NatType, NetworkingMethod }
 export { VpnPortalClientState }
 export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig, VpnPortalClientConfig, VpnPortalClientInfo, VpnPortalConfig, VpnPortalInfo }
 
@@ -57,11 +58,20 @@ export const PEER_PROTOCOLS: { [proto: string]: number } = {
 
 // Configuration JSON uses transparent repeated wrappers, as Rust Serde does.
 // Derive the value types from the protocol schema rather than copying fields.
+type OneofJson<T> = T extends { oneofKind: keyof T }
+  ? { [Field in Exclude<keyof T, 'oneofKind'>]: ConfigJson<T[Field]> }
+  : never
+
 type ConfigJson<T> = T extends { items: Array<infer Item> }
   ? ConfigJson<Item>[]
-  : T extends object ? { [Key in keyof T]: ConfigJson<T[Key]> } : T
+  : T extends DnsRecordRaw
+    ? ConfigJson<Omit<T, 'data' | 'type'>>
+      & { type: DnsRecordType | keyof typeof DnsRecordType }
+      & OneofJson<T['data']>
+    : T extends object ? { [Key in keyof T]: ConfigJson<T[Key]> } : T
 
 export type DnsConfig = ConfigJson<NonNullable<ProtoNetworkConfig['dns']>>
+export type DnsRecord = ConfigJson<DnsRecordRaw>
 
 export type NetworkConfig = Omit<
   ProtoNetworkConfig,

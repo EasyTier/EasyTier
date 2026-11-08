@@ -1,7 +1,6 @@
 # Local Magic DNS records
 
-Configure records through a TOML file. Enable Magic DNS as before and add
-static records using DNS zone file syntax:
+Enable Magic DNS and configure static records in the same TOML file:
 
 ```toml
 [flags]
@@ -14,25 +13,119 @@ domain = "et.net."
 origin = "et.net."
 ttl = 60
 records = [
-    "nas IN A 10.0.0.8",
-    "nas IN AAAA fd00::8",
-    "files IN CNAME nas",
-    'info IN TXT "local records"',
+    { name = "nas", type = "A", value = "10.0.0.8" },
+    { name = "nas", type = "AAAA", value = "fd00::8" },
+    { name = "files", type = "CNAME", value = "nas" },
+    { name = "info", type = "TXT", txt = { segments = ["local records"] } },
 ]
 
 [[dns.zone]]
 origin = "example.test."
-records = ["service 120 IN A 10.0.0.9"]
+records = [
+    { name = "service", type = "A", ttl = 120, value = "10.0.0.9" },
+    { name = "@", type = "MX", value = "10 mail" },
+    { name = "_sip._tcp", type = "SRV", value = "10 5 5060 sip" },
+]
 ```
 
-`domain` under `[dns]` sets the default Magic DNS domain, defaulting to `"et.net."`
-when omitted, and supersedes the deprecated `flags.tld_dns_zone`.
+`dns.domain` controls the automatically generated node names, defaults to
+`"et.net."`, and supersedes the deprecated `flags.tld_dns_zone`. Automatically
+generated records are not part of the editable static `records` array.
 
-`origin` must be a non-root DNS name. Record names are relative to it;
-absolute names must belong to that zone.
-`ttl` supplies the default TTL in seconds, or zero when omitted. Individual
-records may specify their own TTL. Zone file directives such as `$INCLUDE` are
-not accepted.
+## Record semantics
+
+Each record object represents one resource record. `name` and `type` are required.
+The DNS class is always IN. The `value` contains only the type's RDATA, without
+an owner, TTL, class or type prefix. For example, MX uses `"10 mail"` and SRV uses
+`"10 5 5060 sip"`. Quoting and escaping inside these compound values follow the
+DNS library's presentation syntax. Zone directives, comments, additional records
+and unused trailing tokens are rejected.
+
+Supported types are A, AAAA, ANAME, CAA, CERT, CNAME, CSYNC, HINFO, HTTPS, MX,
+NAPTR, NS, OPENPGPKEY, PTR, SOA, SRV, SSHFP, SVCB, TLSA and TXT. This input
+support does not add DNSSEC, ANAME resolution or change automatic SOA behavior.
+
+`origin` must be a non-root DNS name. A trailing dot is optional on the zone
+origin. Origins must be unique within one instance's configuration after
+normalization. Record names without a trailing dot are relative to the origin;
+`@` names the origin itself. Absolute owner names must belong to the zone.
+Underscores and wildcard owner names retain their DNS meaning.
+
+Domain-name fields inside RDATA follow the same relative/absolute rules, including
+`@` for the origin. Absolute targets may point outside the zone. `"."` is accepted
+where the record type permits a root target. SOA's mailbox field uses DNS name
+syntax, not `user@example.com`. Text fields such as TXT segments, CAA properties
+and NAPTR regular expressions are not expanded as domain names.
+
+The optional `ttl` fields use seconds. A record without a TTL inherits its zone's
+TTL, and a zone without a TTL defaults to zero. Explicit zero is preserved.
+Records with the same owner and type form one RRset and must have the same
+effective TTL. Multiple values are allowed except for the library's single-value
+types such as CNAME, ANAME and SOA. Duplicate RDATA and CNAME conflicts are errors.
+SOA records must use the zone origin.
+
+Input order, relative names and omitted TTLs are preserved when saving the
+configuration. DNS answers do not promise RRset value order. Runtime comparison
+uses parsed data, so rearranging an RRset or changing domain-name case does not
+change its meaning.
+
+## TXT records
+
+TXT uses `txt.segments` instead of `value`:
+
+```toml
+[[dns.zone.records]]
+name = "info"
+type = "TXT"
+txt = { segments = ['quote" slash\ ;', "", "tail"] }
+```
+
+Each array element becomes one UTF-8 DNS character-string of at most 255 bytes.
+There must be at least one segment; an empty segment is allowed. Segments are
+ordered and are never split or combined automatically. To configure two TXT
+records, add two record objects.
+
+Segments use only TOML or JSON escaping, with no second layer of DNS text
+escaping. `value` and `txt` are mutually exclusive. TXT must use `txt`, and other
+types must use `value`.
+
+## Configuration and management
+
+The file and management API share `core_config.DnsConfigRaw`, including the
+record enum and the `value | txt` oneof. Management JSON uses the same field names
+and transparent collection arrays:
+
+```json
+{
+  "dns": {
+    "zone": [{
+      "origin": "example.test.",
+      "ttl": 60,
+      "records": [
+        {"name": "nas", "type": "A", "value": "192.0.2.1"},
+        {"name": "info", "type": "TXT", "txt": {"segments": ["first", "second"]}}
+      ]
+    }]
+  }
+}
+```
+
+An omitted collection and an explicit empty array remain distinct in the input.
+The collection wrappers are `RepeatedDnsZoneConfigRaw` and `RepeatedDnsRecordRaw`;
+their protobuf `items` fields are transparent in file/management JSON.
+
+File input, management configuration generation and native DNS startup use the
+same core compiler. Validation happens before a candidate configuration is
+accepted and reports paths such as `dns.zone[0].records[1].value`. Compound
+RDATA errors identify `value`, rather than separate MX/SRV subfields. Existing
+management error responses carry these paths and the parser's explanation.
+
+The existing management operation replaces the complete configuration candidate;
+records do not have IDs or individual CRUD operations. Concurrent full edits
+can overwrite each other. This model does not add configuration CAS or DNS
+publication acknowledgements. CLI configuration files use the TOML model above.
+
+## Runtime boundary
 
 Static records come from the local configuration of the EasyTier instance that
 wins the local Magic DNS server election. They coexist with automatically
@@ -42,53 +135,10 @@ configuration, no static records are served, even when another local instance
 has some. Records are not distributed to other machines.
 
 Only the elected instance's configured zones are added to the system resolver
-match list, after the default zone. Zones configured by other local instances
-are neither served nor used for system name resolution.
+match list, after the default zone. Configured zones are authoritative: a name
+missing from a configured zone does not fall back to system DNS. Queries outside
+those zones retain the existing forwarding behavior.
 
-Configured zones are authoritative: a name missing from a configured zone does
-not fall back to system DNS. Queries outside those zones retain the existing
-system DNS forwarding behavior. This does not change Magic DNS activation,
-the fixed DNS address, TUN requirements, or platform DNS setup. Systems without
-automatic DNS setup must continue to configure their resolver manually.
-
-## Migration and configuration definitions
-
-The file and management API share `core_config.DnsConfigRaw`. `NetworkConfig.dns`
-uses field 77. These DNS inputs were not released as a public string contract.
-The local `UpdateDnsRecordRequest` is unchanged: static records stay local to the
-server instance and are never carried over RPC.
-
-Optional arrays use reusable messages: `common.RepeatedString` for record strings and
-`core_config.RepeatedDnsZoneConfigRaw` for zones. An absent wrapper means the array was
-omitted; a present wrapper with no items means an explicit empty array. TOML still
-uses `[[dns.zone]]`, `zone = []`, and `records = []`. The collection wrappers use
-ordinary Serde with `serde(transparent)`. Both `DnsConfigRaw` and
-`DnsZoneConfigRaw` use pbjson and delegate their collection fields to these
-transparent wrappers. TOML and DNS management JSON both use `zone`, with no
-field renaming:
-
-```json
-{"dns":{"zone":[{"origin":"example.test.","ttl":0,"records":["nas IN A 192.0.2.1"]}]}}
-```
-
-The protobuf field numbers, field types and wrapper nesting define the binary
-contract. The DNS root uses zone at tag 1 and domain at tag 2; each zone uses
-origin 1, ttl 2 and records 3; collection wrappers use items at tag 1. A future
-configuration generator can rename helper messages while preserving this layout.
-Existing TOML and JSON field names remain part of their respective formats.
-
-`ConfigLoader::get_dns` and `set_dns` now use this Raw message directly. Native
-DNS input is parsed directly into runtime records. Defaults, collection unwrapping,
-domain normalization and record validation stay in the native DNS parser. Management
-projections and browser form merging preserve the Raw collection presence.
-
-When replacing the legacy DNS runtime, replace the interim
-`ConfigLoader::get_dns`/`set_dns` methods and their internal call sites as needed.
-dns-policy removes the legacy `magic_dns.proto` along with the old DNS server;
-its node RPC and zone distribution protocol replace this local transport. This
-interim feature does not extend that transport.
-
-The existing `accept_dns` switch and this interim runtime's authoritative-zone
-behavior remain in use for now. On migration, the full DNS implementation and
-the shared definition own activation and fallthrough defaults; these temporary
-behaviors are not additional compatibility requirements for that implementation.
+This does not change Magic DNS activation, the fixed DNS address, TUN
+requirements, platform DNS setup or node record RPC. Systems without automatic
+DNS setup must continue to configure their resolver manually.
