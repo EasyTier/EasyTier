@@ -589,7 +589,7 @@ mod tests {
     use easytier::{
         common::{
             MachineIdOptions,
-            config::{ConfigSource, NetworkConfigExt},
+            config::{ConfigLoader, ConfigSource, NetworkConfigExt},
         },
         instance::factory::{
             NativeInstanceManager, native_compact_instance_manager_with_runtime,
@@ -1617,6 +1617,120 @@ mod tests {
         );
         server.abort();
         old_server.abort();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root and an isolated TUN-capable environment"]
+    async fn managed_dns_config_updates_running_instance_without_recreation() {
+        let _ = easytier::common::log::init_console();
+        let (webhook_config, webhook_server, webhook_state) = test_webhook_config().await;
+        *webhook_state.config_revision.write().await = "dns-initial".to_owned();
+        let mut mgr = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
+            Arc::new(FeatureFlags::default()),
+            webhook_config,
+        );
+        let config_server_addr = add_random_udp_listener(&mut mgr).await;
+        let machine_id = uuid::Uuid::new_v4();
+        let instance_id = uuid::Uuid::new_v4();
+        let core_manager = Arc::new(native_instance_manager());
+        let client =
+            start_web_client_for_test(config_server_addr, machine_id, core_manager.clone()).await;
+        let user_id = wait_for_validated_user(&mgr, machine_id).await;
+        let mut desired = json!({
+            "instance_id": instance_id.to_string(),
+            "dhcp": false,
+            "virtual_ipv4": "10.89.0.7",
+            "network_length": 24,
+            "network_name": "managed-dns",
+            "network_secret": "managed-dns-test",
+            "networking_method": "Standalone",
+            "listener_urls": [],
+            "dev_name": format!("dnsweb{:08x}", rand::random::<u32>()),
+            "no_tun": false,
+            "disable_ipv6": true,
+            "multi_thread": false,
+            "enable_magic_dns": true,
+            "dns": {
+                "domain": "mesh.web.test.",
+                "zone": [{
+                    "origin": "records.web.test.",
+                    "ttl": 60,
+                    "records": [{"name": "nas", "type": "A", "value": "192.0.2.10"}]
+                }]
+            }
+        });
+        mgr.reconcile_managed_network_configs(
+            user_id,
+            machine_id,
+            vec![managed_config(instance_id, desired.clone())],
+            Some("dns-initial".to_owned()),
+            None,
+        )
+        .await
+        .unwrap();
+        wait_for_applied_revision(&mgr, user_id, machine_id, "dns-initial").await;
+        let original = core_manager.instance(instance_id).unwrap();
+
+        desired["dns"]["zone"][0]["records"] = json!([
+            {"name": "nas", "type": "A", "value": "192.0.2.20"},
+            {"name": "@", "type": "TXT", "txt": {"segments": ["updated through web"]}}
+        ]);
+        *webhook_state.config_revision.write().await = "dns-updated".to_owned();
+        mgr.reconcile_managed_network_configs(
+            user_id,
+            machine_id,
+            vec![managed_config(instance_id, desired.clone())],
+            Some("dns-updated".to_owned()),
+            Some("dns-initial".to_owned()),
+        )
+        .await
+        .unwrap();
+        wait_for_applied_revision(&mgr, user_id, machine_id, "dns-updated").await;
+        assert!(Arc::ptr_eq(
+            &original,
+            &core_manager.instance(instance_id).unwrap()
+        ));
+        let dns = core_manager.config(instance_id).unwrap().get_dns().unwrap();
+        let records = &dns.zone.as_ref().unwrap().items[0]
+            .records
+            .as_ref()
+            .unwrap()
+            .items;
+        assert!(records.iter().any(|record| matches!(&record.data, Some(easytier::proto::core_config::dns_record_raw::Data::Value(value)) if value == "192.0.2.20")));
+        assert!(!records.iter().any(|record| matches!(&record.data, Some(easytier::proto::core_config::dns_record_raw::Data::Value(value)) if value == "192.0.2.10")));
+        assert!(
+            records
+                .iter()
+                .any(|record| matches!(&record.data, Some(easytier::proto::core_config::dns_record_raw::Data::Txt(txt)) if txt.segments == ["updated through web"]))
+        );
+
+        desired["dns"]["zone"] = json!([]);
+        *webhook_state.config_revision.write().await = "dns-cleared".to_owned();
+        mgr.reconcile_managed_network_configs(
+            user_id,
+            machine_id,
+            vec![managed_config(instance_id, desired)],
+            Some("dns-cleared".to_owned()),
+            Some("dns-updated".to_owned()),
+        )
+        .await
+        .unwrap();
+        wait_for_applied_revision(&mgr, user_id, machine_id, "dns-cleared").await;
+        assert!(Arc::ptr_eq(
+            &original,
+            &core_manager.instance(instance_id).unwrap()
+        ));
+        let dns = core_manager.config(instance_id).unwrap().get_dns().unwrap();
+        assert!(dns.zone.unwrap().items.is_empty());
+        core_manager
+            .delete_network_instances([instance_id])
+            .await
+            .unwrap();
+        drop(client);
+        webhook_server.abort();
     }
 
     #[tokio::test]

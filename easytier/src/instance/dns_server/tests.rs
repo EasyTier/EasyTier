@@ -32,6 +32,18 @@ use crate::proto::api::instance::Route;
 use crate::proto::magic_dns::{MagicDnsServerRpc as _, UpdateDnsRecordRequest};
 use crate::proto::rpc_types::controller::{BaseController, Controller as _};
 
+fn client_controller(port: u16) -> BaseController {
+    let mut ctrl = BaseController::default();
+    ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {
+        tunnel_type: "tcp".to_owned(),
+        remote_addr: Some(crate::proto::common::Url {
+            url: format!("tcp://127.0.0.1:{port}"),
+        }),
+        ..Default::default()
+    }));
+    ctrl
+}
+
 pub async fn prepare_env(
     dns_name: &str,
     tun_ip: Ipv4Inet,
@@ -169,9 +181,23 @@ async fn test_magic_dns_server_instance() {
     ];
     dns_server_inst
         .data
-        .update_dns_records(
-            routes.iter(),
-            &super::zone::parse_origin(DEFAULT_ET_DNS_ZONE).unwrap(),
+        .update_dns_record(
+            client_controller(54320),
+            UpdateDnsRecordRequest {
+                zone: DEFAULT_ET_DNS_ZONE.to_owned(),
+                instance_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+                dns: Some(DnsConfig::default()),
+                routes: routes
+                    .iter()
+                    .map(|route| Route {
+                        hostname: route.hostname.clone(),
+                        ipv4_addr: route
+                            .ipv4_addr
+                            .map(|ip| Ipv4Inet::new(ip, 32).unwrap().into()),
+                        ..Default::default()
+                    })
+                    .collect(),
+            },
         )
         .await
         .unwrap();
@@ -303,6 +329,8 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
             ctrl.clone(),
             UpdateDnsRecordRequest {
                 zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                instance_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+                dns: Some(DnsConfig::default()),
                 routes: vec![Route {
                     hostname: "test1".to_string(),
                     ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/32").unwrap().into()),
@@ -319,6 +347,8 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
             ctrl,
             UpdateDnsRecordRequest {
                 zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                instance_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+                dns: Some(DnsConfig::default()),
                 routes: vec![Route {
                     hostname: "test1".to_string(),
                     ipv4_addr: Some(Ipv4Inet::from_str("1.1.1.1/32").unwrap().into()),
@@ -371,6 +401,8 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
             ctrl,
             UpdateDnsRecordRequest {
                 zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                instance_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+                dns: Some(DnsConfig::default()),
                 routes: vec![],
             },
         )
@@ -385,5 +417,223 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
         )
         .await
         .unwrap();
-    assert!(!dns_records.records.contains_key(DEFAULT_ET_DNS_ZONE));
+    assert!(
+        dns_records
+            .records
+            .get(DEFAULT_ET_DNS_ZONE)
+            .is_none_or(|zone| zone.records.is_empty())
+    );
+}
+
+// The fake IP is inside the supplied subnet and Linux has no SystemConfig here,
+// so this exercises real TCP publication/election without touching host DNS/TUN.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_magic_dns_runtime_clients_republish_after_election() {
+    use hickory_proto::{
+        op::{Message, Query},
+        rr::{RData, RecordType},
+    };
+    use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, UdpPacket};
+
+    async fn expect_record(
+        core: &Arc<NativeCoreInstance>,
+        packets: &mut HostPacketReceiver,
+        name: &str,
+        expected: Option<(&str, u32)>,
+    ) {
+        let mut query = Message::new();
+        query.add_query(Query::query(name.parse().unwrap(), RecordType::A));
+        let payload = query.to_vec().unwrap();
+        let source = "10.50.0.100".parse::<Ipv4Addr>().unwrap();
+        let destination = MAGIC_DNS_FAKE_IP.parse::<Ipv4Addr>().unwrap();
+        let mut packet = vec![0u8; 28 + payload.len()];
+        {
+            let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+            ipv4.set_version(4);
+            ipv4.set_header_len(20);
+            ipv4.set_total_len((28 + payload.len()) as u16);
+            ipv4.set_hop_limit(64);
+            ipv4.set_next_header(IpProtocol::Udp);
+            ipv4.set_src_addr(source);
+            ipv4.set_dst_addr(destination);
+        }
+        {
+            let mut udp = UdpPacket::new_unchecked(&mut packet[20..]);
+            udp.set_src_port(5353);
+            udp.set_dst_port(53);
+            udp.set_len((8 + payload.len()) as u16);
+            udp.payload_mut().copy_from_slice(&payload);
+            udp.fill_checksum(&IpAddress::Ipv4(source), &IpAddress::Ipv4(destination));
+        }
+        Ipv4Packet::new_unchecked(&mut packet).fill_checksum();
+        let expected = expected.map(|(ip, ttl)| (ip.parse::<Ipv4Addr>().unwrap(), ttl));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                core.packet_plane()
+                    .send_local_ip_packet(HostPacket::copy_from_payload(&packet))
+                    .await
+                    .unwrap();
+                if let Ok(Some(packet)) =
+                    tokio::time::timeout(Duration::from_millis(100), packets.recv()).await
+                {
+                    let ipv4 = Ipv4Packet::new_checked(packet.payload()).unwrap();
+                    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+                    let response = Message::from_vec(udp.payload()).unwrap();
+                    let addresses = response
+                        .answers()
+                        .iter()
+                        .filter_map(|record| match record.data() {
+                            RData::A(ip) => Some((ip.0, record.ttl())),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if addresses == expected.into_iter().collect::<Vec<_>>() {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("DNS record {name} did not converge to {expected:?}"));
+    }
+
+    fn dns(name: &str, ip: &str, ttl: u32) -> DnsConfig {
+        DnsConfig {
+            domain: Some("runtime.test".to_owned()),
+            zone: Some(
+                vec![DnsZoneConfig {
+                    origin: "runtime.test".to_owned(),
+                    ttl: Some(ttl),
+                    records: Some(
+                        vec![easytier_proto::core_config::DnsRecordRaw {
+                            name: name.to_owned(),
+                            r#type: easytier_proto::core_config::DnsRecordType::A as i32,
+                            data: Some(easytier_proto::core_config::dns_record_raw::Data::Value(
+                                ip.to_owned(),
+                            )),
+                            ..Default::default()
+                        }]
+                        .into(),
+                    ),
+                }]
+                .into(),
+            ),
+        }
+    }
+
+    fn start(
+        core: &Arc<NativeCoreInstance>,
+        ctx: ArcGlobalCtx,
+    ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
+        let mut runner = DnsRunner::new(
+            core.packet_plane(),
+            ctx,
+            None,
+            "100.100.100.0/24".parse().unwrap(),
+            MAGIC_DNS_FAKE_IP.parse().unwrap(),
+        );
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move { runner.run(task_cancel).await });
+        (cancel, task)
+    }
+
+    let ctx_a = get_mock_global_ctx();
+    ctx_a.config.set_dns(Some(dns("first", "10.50.0.1", 60)));
+    let ctx_b = get_mock_global_ctx();
+    ctx_b.config.set_dns(Some(dns("second", "10.50.0.2", 60)));
+    let (core_a, mut packets_a) = build_test_core(ctx_a.clone()).await;
+    let (core_b, mut packets_b) = build_test_core(ctx_b.clone()).await;
+    let (cancel_a, task_a) = start(&core_a, ctx_a.clone());
+    expect_record(
+        &core_a,
+        &mut packets_a,
+        "first.runtime.test.",
+        Some(("10.50.0.1", 60)),
+    )
+    .await;
+    let (cancel_b, task_b) = start(&core_b, ctx_b.clone());
+    expect_record(
+        &core_a,
+        &mut packets_a,
+        "second.runtime.test.",
+        Some(("10.50.0.2", 60)),
+    )
+    .await;
+
+    // The route revision is unchanged: the next normal cycle still uploads DNS.
+    ctx_b.config.set_dns(Some(dns("second", "10.50.0.3", 60)));
+    expect_record(
+        &core_a,
+        &mut packets_a,
+        "second.runtime.test.",
+        Some(("10.50.0.3", 60)),
+    )
+    .await;
+    ctx_b.config.set_dns(Some(DnsConfig {
+        domain: Some("runtime.test".to_owned()),
+        zone: Some(Vec::new().into()),
+    }));
+    expect_record(&core_a, &mut packets_a, "second.runtime.test.", None).await;
+    ctx_a.config.set_dns(Some(dns("first", "10.50.0.1", 120)));
+    expect_record(
+        &core_a,
+        &mut packets_a,
+        "first.runtime.test.",
+        Some(("10.50.0.1", 120)),
+    )
+    .await;
+    ctx_a.config.set_dns(Some(dns("first", "10.50.0.1", 60)));
+    expect_record(
+        &core_a,
+        &mut packets_a,
+        "first.runtime.test.",
+        Some(("10.50.0.1", 60)),
+    )
+    .await;
+    ctx_b.config.set_dns(Some(dns("second", "10.50.0.5", 60)));
+    expect_record(
+        &core_a,
+        &mut packets_a,
+        "second.runtime.test.",
+        Some(("10.50.0.5", 60)),
+    )
+    .await;
+
+    cancel_a.cancel();
+    task_a.await.unwrap();
+    // The remaining runner elects itself and periodically re-uploads its saved configuration.
+    expect_record(
+        &core_b,
+        &mut packets_b,
+        "second.runtime.test.",
+        Some(("10.50.0.5", 60)),
+    )
+    .await;
+    expect_record(&core_b, &mut packets_b, "first.runtime.test.", None).await;
+    let (cancel_a, task_a) = start(&core_a, ctx_a);
+    expect_record(
+        &core_b,
+        &mut packets_b,
+        "first.runtime.test.",
+        Some(("10.50.0.1", 60)),
+    )
+    .await;
+    expect_record(
+        &core_b,
+        &mut packets_b,
+        "second.runtime.test.",
+        Some(("10.50.0.5", 60)),
+    )
+    .await;
+
+    cancel_a.cancel();
+    task_a.await.unwrap();
+    expect_record(&core_b, &mut packets_b, "first.runtime.test.", None).await;
+    cancel_b.cancel();
+    task_b.await.unwrap();
+    core_a.stop().await;
+    core_b.stop().await;
 }

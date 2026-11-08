@@ -23,6 +23,18 @@ pub struct DnsZone {
     pub records: BTreeMap<RrKey, RecordSet>,
 }
 
+impl DnsZone {
+    pub fn origin(&self) -> &LowerName {
+        &self.origin
+    }
+
+    pub fn iter_records(&self) -> impl Iterator<Item = &Record> {
+        self.records
+            .values()
+            .flat_map(RecordSet::records_without_rrsigs)
+    }
+}
+
 pub fn parse_origin(origin: &str) -> anyhow::Result<LowerName> {
     ensure!(
         !origin.trim().is_empty(),

@@ -65,6 +65,7 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
             .as_ref()
             .and_then(|mode| mode.local_private_key.as_deref())
             .is_some_and(|key| !key.is_empty());
+    config.dns = None;
     config.acl = None;
     config.port_forwards.clear();
     config.proxy_cidrs.clear();
@@ -87,6 +88,12 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     config.data_compress_algo = data_compress_algo;
     config.encryption_algorithm = encryption_algorithm;
     Ok(config)
+}
+
+fn full_dns_patch(
+    config: &NetworkConfig,
+) -> anyhow::Result<easytier::proto::core_config::DnsConfigRaw> {
+    easytier_core::gateway::magic_dns::normalized_dns(&config.gen_config()?)
 }
 
 fn normalized_data_compress_algo(algo: Option<i32>) -> Option<i32> {
@@ -322,6 +329,12 @@ fn web_source_runtime_patch(
     }
     if current_base != desired_base {
         return Ok(None);
+    }
+
+    let current_dns = full_dns_patch(current)?;
+    let desired_dns = full_dns_patch(desired)?;
+    if current_dns != desired_dns {
+        patch.dns = Some(desired_dns);
     }
 
     if desired.hostname.is_some() && current_hostname != desired_hostname {
@@ -1743,5 +1756,57 @@ mod tests {
             .expect("hot patch");
 
         assert_eq!(patch.hostname.as_deref(), Some(""));
+    }
+
+    fn dns_record(kind: easytier::proto::core_config::DnsRecordType, value: &str) -> easytier::proto::core_config::DnsRecordRaw {
+        easytier::proto::core_config::DnsRecordRaw {
+            name: "nas".to_owned(),
+            r#type: kind as i32,
+            data: Some(easytier::proto::core_config::dns_record_raw::Data::Value(value.to_owned())),
+            ..Default::default()
+        }
+    }
+
+    fn config_with_dns(domain: &str, origin: &str, records: &[easytier::proto::core_config::DnsRecordRaw]) -> NetworkConfig {
+        let mut config = config_with_port_forwards(Vec::new());
+        config.enable_magic_dns = Some(true);
+        config.dns = Some(easytier::proto::core_config::DnsConfigRaw {
+            domain: Some(domain.to_owned()),
+            zone: Some(easytier::proto::core_config::RepeatedDnsZoneConfigRaw {
+                items: vec![easytier::proto::core_config::DnsZoneConfigRaw {
+                    origin: origin.to_owned(),
+                    ttl: Some(60),
+                    records: Some(records.to_vec().into()),
+                }],
+            }),
+        });
+        config
+    }
+
+    #[test]
+    fn dns_record_origin_domain_and_clear_changes_use_hot_patch() {
+        let current = config_with_dns("mesh.test", "old.test", &[dns_record(easytier::proto::core_config::DnsRecordType::A, "192.0.2.1")]);
+        let desired = config_with_dns("new.test", "new.test", &[dns_record(easytier::proto::core_config::DnsRecordType::Aaaa, "fd00::8")]);
+        let RuntimeReconcileAction::Patch(patch) =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired.clone(), true)
+                .unwrap()
+        else {
+            panic!("DNS changes must preserve the running instance");
+        };
+        let dns = patch.dns.unwrap();
+        assert_eq!(dns.domain.as_deref(), Some("new.test."));
+        assert_eq!(dns.zone.as_ref().unwrap().items[0].origin, "new.test.");
+        assert!(dns.zone.unwrap().items[0].records.as_ref().unwrap().items[0].r#type == easytier::proto::core_config::DnsRecordType::Aaaa as i32);
+
+        let mut cleared = desired.clone();
+        cleared.dns = None;
+        let patch = web_source_runtime_patch(&desired, &cleared, true)
+            .unwrap()
+            .unwrap();
+        let dns = patch
+            .dns
+            .expect("clearing records needs an explicit DNS replacement");
+        assert!(dns.zone.unwrap().items.is_empty());
+        assert_eq!(dns.domain.as_deref(), Some("et.net."));
     }
 }
