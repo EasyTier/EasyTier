@@ -207,6 +207,9 @@ fn parse_value(kind: RecordType, value: &str, origin: &Name) -> anyhow::Result<R
             *token = origin.to_string();
         }
     }
+    if matches!(kind, RecordType::SVCB | RecordType::HTTPS) {
+        validate_svcb_params(&tokens)?;
+    }
     let mut tokens = tokens.iter().map(String::as_str);
     let mut data = RData::parse(kind, &mut tokens, Some(origin))?;
     ensure!(tokens.next().is_none(), "unexpected trailing RDATA tokens");
@@ -230,6 +233,58 @@ fn parse_value(kind: RecordType, value: &str, origin: &Name) -> anyhow::Result<R
         _ => {}
     }
     Ok(data)
+}
+
+// Hickory 0.25.2 slices quoted values and expects ALPN decoding to be infallible.
+// Reject malformed quotes and list members before entering those parser paths.
+fn validate_svcb_params(tokens: &[String]) -> anyhow::Result<()> {
+    for token in tokens.iter().skip(2) {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+        ensure!(value != "\"", "unclosed SVCB parameter quote");
+        if key != "alpn" {
+            continue;
+        }
+        let value = value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .unwrap_or(value);
+        let mut chars = value.chars();
+        let mut member = String::new();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\\' => {
+                    if let Some(ch) = chars.next() {
+                        member.push(ch);
+                    }
+                }
+                ',' => {
+                    validate_alpn_member(&member)?;
+                    member.clear();
+                }
+                ch => member.push(ch),
+            }
+        }
+        if !member.is_empty() {
+            validate_alpn_member(&member)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_alpn_member(value: &str) -> anyhow::Result<()> {
+    // The library expects its first lexer token to be character data, rather
+    // than a leading blank, @, or parenthesized list.
+    ensure!(
+        value
+            .chars()
+            .next()
+            .is_some_and(|ch| !ch.is_whitespace() && !matches!(ch, '@' | '(')),
+        "invalid ALPN protocol identifier"
+    );
+    rdata_tokens(value).context("invalid ALPN protocol identifier")?;
+    Ok(())
 }
 
 /// Tokenize one RDATA, retaining the iterator for strict consumption checks.

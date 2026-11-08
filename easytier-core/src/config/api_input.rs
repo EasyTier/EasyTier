@@ -835,6 +835,54 @@ records = [
         }
     }
 
+    #[test]
+    fn dns_alpn_errors_use_file_and_management_field_paths() {
+        for kind in ["HTTPS", "SVCB"] {
+            for (value, valid) in [
+                ("1 . alpn=,", false),
+                ("1 . alpn=h2,,h3", false),
+                (r#"1 . alpn="h2,,h3""#, false),
+                (r"1 . alpn=\@,h2", false),
+                (r"1 . alpn=\(h2", false),
+                (r"1 . alpn=\$TTL", false),
+                (r#"1 . "alpn=;h2""#, false),
+                (r#"1 . "alpn= h2""#, false),
+                (r#"1 . alpn=\"unterminated"#, false),
+                ("1 . alpn=\"", false),
+                ("1 . port=\"", false),
+                ("1 target alpn=h2,h3 port=443", true),
+                (r#"1 target alpn="h2,h3" port=443"#, true),
+                (r#"1 target alpn="f\\\\oo\,bar,h2" port=443"#, true),
+                (r"1 target alpn=\, port=443", true),
+                ("1 target alpn=h2, port=443", true),
+            ] {
+                let network: NetworkConfig = serde_json::from_value(serde_json::json!({
+                    "networking_method": NetworkingMethod::Standalone as i32,
+                    "dns": { "zone": [{
+                        "origin": "example.test.",
+                        "records": [{ "name": "svc", "type": kind, "value": value }]
+                    }] }
+                }))
+                .unwrap();
+                let file = format!(
+                    "[[dns.zone]]\norigin = 'example.test.'\nrecords = [\
+                     {{ name = 'svc', type = '{kind}', value = '{value}' }}]\n"
+                );
+                for result in [network.gen_config(), TomlConfigLoader::new_from_str(&file)] {
+                    if valid {
+                        assert!(result.is_ok(), "{kind} {value}: {result:?}");
+                    } else {
+                        let error = result.unwrap_err().to_string();
+                        assert!(
+                            error.contains("dns.zone[0].records[0].value"),
+                            "{kind} {value}: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn api_portal_config() -> manage::VpnPortalConfig {
         manage::VpnPortalConfig {
             enabled: None,
