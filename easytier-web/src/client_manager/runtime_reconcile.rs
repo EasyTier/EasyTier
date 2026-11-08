@@ -101,11 +101,12 @@ pub(super) fn ensure_dns_config_supported(
     support_dns_config: bool,
 ) -> anyhow::Result<()> {
     if !support_dns_config {
-        let default_dns = easytier_core::gateway::magic_dns::normalized_dns(
-            &easytier_core::config::toml::TomlConfig::default(),
-        )?;
+        let dns_config = easytier_core::config::toml::TomlConfig::default();
+        let default_dns = easytier_core::gateway::magic_dns::normalized_dns(&dns_config)?;
+        // Legacy flags do not require the new DNS configuration capability.
+        dns_config.set_dns(config.dns.clone());
         anyhow::ensure!(
-            full_dns_patch(config)? == default_dns,
+            easytier_core::gateway::magic_dns::normalized_dns(&dns_config)? == default_dns,
             "core does not support DNS configuration"
         );
     }
@@ -1809,23 +1810,28 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn legacy_core_allows_omitted_or_default_empty_dns() {
-        let mut config = config_with_port_forwards(Vec::new());
-        ensure_dns_config_supported(&config, false).unwrap();
-        for domain in [None, Some("et.net"), Some("ET.NET.")] {
-            config.dns = Some(easytier::proto::core_config::DnsConfigRaw {
-                domain: domain.map(str::to_owned),
-                zone: Some(Default::default()),
-            });
+        for legacy_domain in [None, Some("corp.internal.")] {
+            let mut config = config_with_port_forwards(Vec::new());
+            config.tld_dns_zone = legacy_domain.map(str::to_owned);
             ensure_dns_config_supported(&config, false).unwrap();
+            for domain in [None, Some("et.net"), Some("ET.NET.")] {
+                config.dns = Some(easytier::proto::core_config::DnsConfigRaw {
+                    domain: domain.map(str::to_owned),
+                    zone: Some(Default::default()),
+                });
+                ensure_dns_config_supported(&config, false).unwrap();
+            }
         }
     }
 
     #[test]
+    #[allow(deprecated)]
     fn legacy_core_rejects_dns_zones_or_custom_domain() {
         let mut custom_domain = config_with_dns("mesh.test", "records.test", &[]);
         custom_domain.dns.as_mut().unwrap().zone = None;
-        for config in [
+        for mut config in [
             custom_domain,
             config_with_dns("et.net", "records.test", &[]),
             config_with_dns(
@@ -1837,6 +1843,7 @@ mod tests {
                 )],
             ),
         ] {
+            config.tld_dns_zone = Some("corp.internal.".to_owned());
             let error = ensure_dns_config_supported(&config, false).unwrap_err();
             assert_eq!(error.to_string(), "core does not support DNS configuration");
             ensure_dns_config_supported(&config, true).unwrap();
