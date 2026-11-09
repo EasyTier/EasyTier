@@ -28,6 +28,39 @@ export function peerConns(info: PeerRoutePair) {
   return info.peer?.conns || []
 }
 
+export type TrafficCounters = Map<string, { tx: number, rx: number }>
+
+// Keep counters per connection: peers come and go, so a delta of the summed
+// counters jumps by whole lifetime totals and is not a rate.
+export function trafficCounters(infos: PeerRoutePair[]): TrafficCounters {
+  const counters: TrafficCounters = new Map()
+  for (const info of infos) {
+    for (const conn of peerConns(info)) {
+      counters.set(conn.conn_id, {
+        tx: numericValue(conn.stats?.tx_bytes) ?? 0,
+        rx: numericValue(conn.stats?.rx_bytes) ?? 0,
+      })
+    }
+  }
+  return counters
+}
+
+// Bytes per second; connections missing from either sample and counters that
+// went backwards (the node restarted) add nothing.
+export function trafficRate(prev: TrafficCounters, cur: TrafficCounters, seconds: number) {
+  let tx = 0
+  let rx = 0
+  for (const [connId, counter] of cur) {
+    const before = prev.get(connId)
+    if (!before)
+      continue
+
+    tx += Math.max(0, counter.tx - before.tx)
+    rx += Math.max(0, counter.rx - before.rx)
+  }
+  return { tx: tx / seconds, rx: rx / seconds }
+}
+
 function defaultConnId(info: PeerRoutePair) {
   const defaultConn = info.peer?.default_conn_id
   if (!defaultConn)
