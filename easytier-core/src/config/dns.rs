@@ -272,6 +272,9 @@ fn validate_alpn_member(value: &str) -> anyhow::Result<()> {
         "invalid ALPN protocol identifier"
     );
     rdata_tokens(value).context("invalid ALPN protocol identifier")?;
+    // ALPN is lexed again by Hickory, whose escape rules differ from ours.
+    // Reject its lexer errors before the infallible ALPN parsing path.
+    RData::try_from_str(RecordType::TXT, value).context("invalid ALPN protocol identifier")?;
     Ok(())
 }
 
