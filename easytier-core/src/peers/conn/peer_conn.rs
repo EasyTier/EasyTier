@@ -366,7 +366,7 @@ impl PeerConn {
         let fec = tunnel_info
             .as_ref()
             .is_some_and(|info| info.tunnel_type == "udp")
-            .then(|| Arc::new(PeerConnFec::new(&flags)));
+            .then(|| Arc::new(PeerConnFec::new(&flags, context.udp_fec_metrics())));
         let (recv, sink, tunnel_owner): (_, _, Box<dyn Any + Send>) = if let Some(fec) = &fec {
             let mut io = PeerConnFecIo::new(tunnel, filter_chain, fec.clone());
             (io.get_stream(), io.get_sink(), Box::new(io))

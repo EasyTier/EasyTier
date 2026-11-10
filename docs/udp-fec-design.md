@@ -181,6 +181,31 @@ connection throughput counters retain their filter-layer accounting.
 The recovered count is recorded before the restored packet passes the
 connection filters; it does not establish authenticated application delivery.
 
+The instance stats registry also records FEC events under `network_name`:
+
+- `udp_fec_source_packets_tx` and `udp_fec_source_bytes_tx`
+- `udp_fec_repair_packets_tx` and `udp_fec_repair_bytes_tx`
+- `udp_fec_source_packets_rx` and `udp_fec_source_bytes_rx`
+- `udp_fec_repair_packets_rx` and `udp_fec_repair_bytes_rx`
+- `udp_fec_packets_recovered`
+
+These counters are returned by the existing stats RPC, `easytier-cli stats`
+and `easytier-cli stats prometheus`. They accumulate events across connections
+in the same network rather than summing live connection snapshots. Disconnecting
+a connection does not subtract its counts. They follow the stats registry's
+existing lifecycle: a series with no remaining counter handles can expire
+after more than three inactive one-minute cleanup epochs, and recreating an
+expired series starts it at zero.
+
+Transmit events require successful tunnel sink acceptance, which does not prove
+host-socket transmission or remote delivery. Receive events count syntactically
+valid frames processed by an active decoder, including duplicate originals and
+repairs. Frames buffered during negotiation are counted only when processed.
+Receive bytes use the same complete-frame boundary as transmit bytes. Recovered
+packets are counted once before connection filtering, without adding synthetic
+source receive events or bytes. These metrics do not change existing traffic or
+connection throughput accounting.
+
 Tests cover coding rank and overlap, variable lengths, source arrival during
 elimination, duplicate delivery, deadlines, expiration, bounded storage,
 handshake activation, existing session filters, and loss recovery over real

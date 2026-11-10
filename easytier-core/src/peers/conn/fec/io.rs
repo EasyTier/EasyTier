@@ -133,6 +133,10 @@ async fn writer<F: TunnelFilter + 'static>(
                     let mut state = fec.state.lock();
                     state.stats.tx_repairs += 1;
                     state.stats.tx_repair_bytes += bytes;
+                    if let Some(metrics) = &state.metrics {
+                        metrics.tx_repairs.inc();
+                        metrics.tx_repair_bytes.add(bytes);
+                    }
                 }
             }
             let next_deadline = tx.deadline().into_iter().chain(fec.deadline()).min();
@@ -157,6 +161,10 @@ async fn writer<F: TunnelFilter + 'static>(
                 let mut state = fec.state.lock();
                 state.stats.tx_sources += 1;
                 state.stats.tx_source_bytes += bytes;
+                if let Some(metrics) = &state.metrics {
+                    metrics.tx_sources.inc();
+                    metrics.tx_source_bytes.add(bytes);
+                }
             } else {
                 write_one(&mut sink, packet, &fec, &mut tx).await?;
             }

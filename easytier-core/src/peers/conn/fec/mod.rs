@@ -19,7 +19,10 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 
 use crate::{
-    foundation::time::Instant,
+    foundation::{
+        stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
+        time::Instant,
+    },
     packet::{PacketType, UDP_TUNNEL_HEADER_SIZE, ZCPacket},
     proto::{common::Flags, core_peer::peer::PeerConnFecStats},
     socket::udp::MAX_UDP_SESSION_DATAGRAM_SIZE,
@@ -99,6 +102,37 @@ struct State {
     encode_kcp: bool,
     encode_quic: bool,
     stats: PeerConnFecStats,
+    metrics: Option<PeerConnFecMetrics>,
+}
+
+pub(crate) struct PeerConnFecMetrics {
+    tx_sources: CounterHandle,
+    tx_source_bytes: CounterHandle,
+    tx_repairs: CounterHandle,
+    tx_repair_bytes: CounterHandle,
+    rx_sources: CounterHandle,
+    rx_source_bytes: CounterHandle,
+    rx_repairs: CounterHandle,
+    rx_repair_bytes: CounterHandle,
+    recovered: CounterHandle,
+}
+
+impl PeerConnFecMetrics {
+    pub(crate) fn new(stats_manager: &StatsManager, network_name: String) -> Self {
+        let labels = LabelSet::new().with_label_type(LabelType::NetworkName(network_name));
+        let counter = |name| stats_manager.get_counter(name, labels.clone());
+        Self {
+            tx_sources: counter(MetricName::UdpFecSourcePacketsTx),
+            tx_source_bytes: counter(MetricName::UdpFecSourceBytesTx),
+            tx_repairs: counter(MetricName::UdpFecRepairPacketsTx),
+            tx_repair_bytes: counter(MetricName::UdpFecRepairBytesTx),
+            rx_sources: counter(MetricName::UdpFecSourcePacketsRx),
+            rx_source_bytes: counter(MetricName::UdpFecSourceBytesRx),
+            rx_repairs: counter(MetricName::UdpFecRepairPacketsRx),
+            rx_repair_bytes: counter(MetricName::UdpFecRepairBytesRx),
+            recovered: counter(MetricName::UdpFecPacketsRecovered),
+        }
+    }
 }
 
 pub(crate) struct PeerConnFec {
@@ -109,7 +143,7 @@ pub(crate) struct PeerConnFec {
 }
 
 impl PeerConnFec {
-    pub(crate) fn new(flags: &Flags) -> Self {
+    pub(crate) fn new(flags: &Flags, metrics: Option<PeerConnFecMetrics>) -> Self {
         let mut local_features = vec![FEATURE.to_owned()];
         for (enabled, feature) in [
             (flags.enable_udp_fec, ENABLED_FEATURE),
@@ -129,6 +163,7 @@ impl PeerConnFec {
                 encode_kcp: flags.enable_udp_fec_kcp,
                 encode_quic: flags.enable_udp_fec_quic,
                 stats: PeerConnFecStats::default(),
+                metrics,
             }),
             writer_wake: Notify::new(),
             reader_wake: AtomicWaker::new(),
@@ -273,6 +308,12 @@ impl PeerConnFec {
                 return None;
             };
             state.stats.rx_sources += 1;
+            if let Some(metrics) = &state.metrics {
+                metrics.rx_sources.inc();
+                metrics
+                    .rx_source_bytes
+                    .add(packet.tunnel_payload().len() as u64);
+            }
             rx.decoder.source(id, peer, now);
             if rx.delivered.insert(id) {
                 wire::restore_peer(peer)
@@ -287,6 +328,12 @@ impl PeerConnFec {
                 return None;
             };
             state.stats.rx_repairs += 1;
+            if let Some(metrics) = &state.metrics {
+                metrics.rx_repairs.inc();
+                metrics
+                    .rx_repair_bytes
+                    .add(packet.tunnel_payload().len() as u64);
+            }
             rx.decoder.repair(first, count, repair, symbol, now);
             None
         }
@@ -306,6 +353,9 @@ impl PeerConnFec {
                 };
                 if rx.delivered.insert(id) {
                     state.stats.recovered += 1;
+                    if let Some(metrics) = &state.metrics {
+                        metrics.recovered.inc();
+                    }
                     return Some(packet);
                 }
             }

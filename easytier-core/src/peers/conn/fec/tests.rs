@@ -14,8 +14,13 @@ use async_trait::async_trait;
 use futures::{Sink, SinkExt, StreamExt, task::AtomicWaker};
 
 use crate::{
+    config::{
+        peers::PeerRuntimeSnapshot,
+        runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+    },
     foundation::time::{Duration, Instant, sleep, timeout},
     packet::{PacketType, ZCPacket},
+    peers::context::{CorePeerContext, CorePeerContextAdapters, PeerContext},
     proto::common::{Flags, TunnelInfo},
     socket::udp::{UdpSession, UdpSessionKind, VirtualUdpSocket},
     tunnel::{
@@ -67,10 +72,13 @@ async fn udp_pair() -> (Box<dyn Tunnel>, Box<dyn Tunnel>) {
 }
 
 fn active_io(tunnel: Box<dyn Tunnel>) -> (PeerConnFecIo, Arc<PeerConnFec>) {
-    let fec = Arc::new(PeerConnFec::new(&Flags {
-        enable_udp_fec: true,
-        ..Default::default()
-    }));
+    let fec = Arc::new(PeerConnFec::new(
+        &Flags {
+            enable_udp_fec: true,
+            ..Default::default()
+        },
+        None,
+    ));
     fec.set_remote_features(&[FEATURE.to_owned()]);
     (PeerConnFecIo::new(tunnel, EmptyFilter, fec.clone()), fec)
 }
@@ -148,11 +156,112 @@ async fn udp_tail_repair_recovers_an_isolated_complete_peer_packet() {
 }
 
 #[tokio::test]
+async fn udp_fec_metrics_accumulate_across_connections() {
+    let contexts = ["fec-left", "fec-right"].map(|network_name| {
+        let mut snapshot = PeerRuntimeSnapshot::default();
+        snapshot.runtime.network_identity.network_name = network_name.to_owned();
+        CorePeerContext::new(
+            CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot)),
+            Arc::new(()),
+            CorePeerContextAdapters {
+                stun_info_source: None,
+                events: Arc::new(()),
+                credential_storage: None,
+            },
+        )
+    });
+    let snapshot = |context: &CorePeerContext| {
+        let expected_labels = crate::foundation::stats::LabelSet::new()
+            .with_label("network_name", context.network_name());
+        context
+            .stats_manager()
+            .get_all_metrics()
+            .into_iter()
+            .map(|metric| {
+                assert_eq!(metric.labels, expected_labels);
+                (metric.name_str(), metric.value)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let original = source(37, 73);
+    let peer_bytes = original.tunnel_payload().len() as u64;
+    let source_bytes = peer_bytes + wire::SOURCE_HEADER_SIZE as u64;
+    let repair_bytes = peer_bytes + 2 + wire::REPAIR_HEADER_SIZE as u64;
+    let mut accepted_repairs = 0;
+
+    for round in 1..=2 {
+        let (left, right) = udp_pair().await;
+        let left = Box::new(TunnelWithFilter::new(left, DropSources(vec![0])));
+        let [left_fec, right_fec] = contexts.each_ref().map(|context| {
+            let fec = Arc::new(PeerConnFec::new(
+                &Flags {
+                    enable_udp_fec: true,
+                    ..Default::default()
+                },
+                context.udp_fec_metrics(),
+            ));
+            fec.set_remote_features(&[FEATURE.to_owned()]);
+            fec
+        });
+        let left_io = PeerConnFecIo::new(left, EmptyFilter, left_fec.clone());
+        let mut right_io = PeerConnFecIo::new(right, EmptyFilter, right_fec.clone());
+        let mut stream = right_io.get_stream();
+
+        left_io.get_sink().send(original.clone()).await.unwrap();
+        assert_eq!(
+            next(&mut stream).await.tunnel_payload(),
+            original.tunnel_payload()
+        );
+        left_io.get_sink().send(original.clone()).await.unwrap();
+        assert_eq!(
+            next(&mut stream).await.tunnel_payload(),
+            original.tunnel_payload()
+        );
+        wait_until(|| left_fec.stats().tx_sources == 2).await;
+        accepted_repairs += left_fec.stats().tx_repairs;
+
+        let [left_metrics, right_metrics] = contexts.each_ref().map(snapshot);
+        assert_eq!(left_metrics.len(), 9);
+        assert_eq!(right_metrics.len(), 9);
+        assert_eq!(left_metrics["udp_fec_source_packets_tx"], 2 * round);
+        assert_eq!(
+            left_metrics["udp_fec_source_bytes_tx"],
+            2 * round * source_bytes
+        );
+        assert_eq!(left_metrics["udp_fec_repair_packets_tx"], accepted_repairs);
+        assert_eq!(
+            left_metrics["udp_fec_repair_bytes_tx"],
+            accepted_repairs * repair_bytes
+        );
+        assert_eq!(left_metrics["udp_fec_source_packets_rx"], 0);
+        assert_eq!(left_metrics["udp_fec_packets_recovered"], 0);
+        assert_eq!(right_metrics["udp_fec_source_packets_tx"], 0);
+        assert_eq!(right_metrics["udp_fec_source_packets_rx"], round);
+        assert_eq!(
+            right_metrics["udp_fec_source_bytes_rx"],
+            round * source_bytes
+        );
+        assert_eq!(right_metrics["udp_fec_repair_packets_rx"], round);
+        assert_eq!(
+            right_metrics["udp_fec_repair_bytes_rx"],
+            round * repair_bytes
+        );
+        assert_eq!(right_metrics["udp_fec_packets_recovered"], round);
+        drop((stream, left_io, right_io, left_fec, right_fec));
+        assert_eq!(snapshot(&contexts[0]), left_metrics);
+        assert_eq!(snapshot(&contexts[1]), right_metrics);
+        assert!(contexts[1].stats_manager().export_prometheus().contains(
+            format!("udp_fec_packets_recovered{{network_name=\"fec-right\"}} {round}").as_str()
+        ));
+    }
+}
+
+#[tokio::test]
 async fn udp_framed_data_can_overtake_plain_handshake_without_changing_the_parser() {
     for requested in [false, true] {
         let (left, right) = udp_pair().await;
         let (_left_stream, mut sink) = left.split();
-        let fec = Arc::new(PeerConnFec::new(&Flags::default()));
+        let fec = Arc::new(PeerConnFec::new(&Flags::default(), None));
         assert!(fec.state.lock().rx.is_none());
         let mut io = PeerConnFecIo::new(right, EmptyFilter, fec.clone());
         let mut stream = io.get_stream();
