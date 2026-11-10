@@ -897,6 +897,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn runtime_patch_ignores_runtime_defaults_and_adds_port_forward() {
         let mut current = config_with_port_forwards(vec![port_forward(23000, 5174)]);
         current.virtual_ipv4 = Some("10.144.0.2".to_string());
@@ -906,6 +907,7 @@ mod tests {
         current.disable_ipv6 = Some(false);
         current.mtu = Some(1380);
         current.multi_thread = Some(true);
+        current.tld_dns_zone = Some("et.net.".to_owned());
 
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
@@ -914,6 +916,7 @@ mod tests {
             .expect("build patch")
             .expect("hot patch");
 
+        assert!(patch.dns.is_none());
         assert_eq!(patch.port_forwards.len(), 1);
         assert_eq!(
             patch_port(&patch.port_forwards[0]),
