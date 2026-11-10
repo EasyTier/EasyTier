@@ -843,6 +843,7 @@ records = [
 
     #[test]
     fn dns_alpn_errors_use_file_and_management_field_paths() {
+        let long_alpn = format!("1 . \"alpn=a ( {})\"", "b ".repeat(1500));
         for kind in ["HTTPS", "SVCB"] {
             for (value, valid) in [
                 ("1 . alpn=,", false),
@@ -866,6 +867,7 @@ records = [
                 (r#"1 target alpn="f\\\\oo\,bar,h2" port=443"#, true),
                 (r"1 target alpn=\, port=443", true),
                 ("1 target alpn=h2, port=443", true),
+                (long_alpn.as_str(), true),
                 (r#"1 target key65400="complete""#, true),
                 (r#"1 target key65400="tail\\""#, true),
             ] {

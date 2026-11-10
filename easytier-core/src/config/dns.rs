@@ -172,7 +172,7 @@ fn compile_record(input: &DnsRecordRaw, origin: &Name, ttl: u32) -> anyhow::Resu
 }
 
 fn parse_value(kind: RecordType, value: &str, origin: &Name) -> anyhow::Result<RData> {
-    let mut tokens = rdata_tokens(value)?;
+    let mut tokens = rdata_tokens(value, kind == RecordType::TXT)?;
     let name_fields: &[usize] = match kind {
         RecordType::ANAME | RecordType::CNAME | RecordType::NS | RecordType::PTR => &[0],
         RecordType::MX | RecordType::SVCB | RecordType::HTTPS => &[1],
@@ -271,17 +271,14 @@ fn validate_alpn_member(value: &str) -> anyhow::Result<()> {
             .is_some_and(|ch| !ch.is_whitespace() && !matches!(ch, '@' | '(')),
         "invalid ALPN protocol identifier"
     );
-    rdata_tokens(value).context("invalid ALPN protocol identifier")?;
-    // ALPN is lexed again by Hickory, whose escape rules differ from ours.
-    // Reject its lexer errors before the infallible ALPN parsing path.
-    RData::try_from_str(RecordType::TXT, value).context("invalid ALPN protocol identifier")?;
+    rdata_tokens(value, false).context("invalid ALPN protocol identifier")?;
     Ok(())
 }
 
 /// Tokenize one RDATA, retaining the iterator for strict consumption checks.
-/// Decode quoted strings here because Hickory 0.25.2 treats decimal escapes as
-/// shifted Unicode digits rather than DNS octets.
-fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
+/// Hickory's lexer is private; its TXT parser decodes non-TXT quoted strings
+/// using the same escaping rules as the previous zone-file input.
+fn rdata_tokens(value: &str, decode_txt: bool) -> anyhow::Result<Vec<String>> {
     let mut chars = value.char_indices().peekable();
     let mut tokens = Vec::new();
     let mut list = false;
@@ -299,38 +296,47 @@ fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
             ch if ch.is_whitespace() => {}
             ';' | '$' => bail!("zone directives and comments are not supported in RDATA"),
             '"' => {
-                let mut closed = false;
-                let mut token = Vec::new();
+                let mut end = None;
                 let mut steps = 0;
-                while let Some((_, ch)) = chars.next() {
+                while let Some((index, ch)) = chars.next() {
+                    if ch == '\\' {
+                        let (_, escaped) = chars.next().context("incomplete RDATA escape")?;
+                        let numeric_escape =
+                            escaped.is_ascii_digit() || (!decode_txt && escaped.is_numeric());
+                        if numeric_escape {
+                            ensure!(
+                                chars.next().is_some() && chars.next().is_some(),
+                                "incomplete numeric RDATA escape"
+                            );
+                        }
+                        steps += 1;
+                        continue;
+                    }
                     if ch == '"' {
-                        closed = true;
+                        end = Some(index + 1);
                         break;
                     }
                     steps += 1;
-                    ensure!(steps <= 4093, "RDATA token exceeds parser limit");
-                    if ch == '\\' {
-                        let (_, escaped) = chars.next().context("incomplete RDATA escape")?;
-                        ensure!(!escaped.is_control(), "control character in RDATA escape");
-                        if escaped.is_ascii_digit() {
-                            let mut octet = escaped.to_digit(10).unwrap();
-                            for _ in 0..2 {
-                                let (_, digit) =
-                                    chars.next().context("incomplete numeric RDATA escape")?;
-                                ensure!(digit.is_ascii_digit(), "invalid numeric RDATA escape");
-                                octet = octet * 10 + digit.to_digit(10).unwrap();
-                            }
-                            ensure!(octet <= 255, "numeric RDATA escape exceeds 255");
-                            token.push(octet as u8);
-                        } else {
-                            token.extend_from_slice(escaped.encode_utf8(&mut [0; 4]).as_bytes());
-                        }
-                    } else {
-                        token.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
-                    }
                 }
-                ensure!(closed, "unclosed RDATA quoted string");
-                tokens.push(String::from_utf8(token)?);
+                let end = end.context("unclosed RDATA quoted string")?;
+                let token = &value[start..end];
+                // The dependency's lexer asserts after 4096 steps per token.
+                // Values that exceed that bound must fail rather than panic.
+                ensure!(steps <= 4093, "RDATA token exceeds parser limit");
+                if decode_txt {
+                    tokens.push(decode_txt_string(&token[1..token.len() - 1])?);
+                    continue;
+                }
+                // A leading blank enters the same lexer state as RDATA after
+                // a zone-file header, including its maximum token length.
+                let RData::TXT(decoded) =
+                    RData::try_from_str(RecordType::TXT, &format!(" {token}"))?
+                else {
+                    unreachable!("the TXT parser returns TXT");
+                };
+                for segment in decoded.txt_data() {
+                    tokens.push(String::from_utf8(segment.to_vec())?);
+                }
             }
             ch => {
                 ensure!(!ch.is_control(), "control character in RDATA");
@@ -354,6 +360,33 @@ fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
     }
     ensure!(!list, "unclosed RDATA parenthesis");
     Ok(tokens)
+}
+
+// Hickory 0.25.2 decodes decimal escapes as shifted Unicode digits, not octets.
+fn decode_txt_string(value: &str) -> anyhow::Result<String> {
+    let mut chars = value.chars();
+    let mut bytes = Vec::new();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let escaped = chars.next().context("incomplete RDATA escape")?;
+            ensure!(!escaped.is_control(), "control character in RDATA escape");
+            if escaped.is_ascii_digit() {
+                let mut octet = escaped.to_digit(10).unwrap();
+                for _ in 0..2 {
+                    let digit = chars.next().context("incomplete numeric RDATA escape")?;
+                    ensure!(digit.is_ascii_digit(), "invalid numeric RDATA escape");
+                    octet = octet * 10 + digit.to_digit(10).unwrap();
+                }
+                ensure!(octet <= 255, "numeric RDATA escape exceeds 255");
+                bytes.push(octet as u8);
+            } else {
+                bytes.extend_from_slice(escaped.encode_utf8(&mut [0; 4]).as_bytes());
+            }
+        } else {
+            bytes.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
+        }
+    }
+    Ok(String::from_utf8(bytes)?)
 }
 
 #[cfg(test)]
@@ -446,10 +479,11 @@ mod tests {
             "x".repeat(255),
             "é".repeat(127),
             "é".to_owned(),
+            "\u{0663}".to_owned(),
         ];
         let value = format!(
-            r#""quote\" slash\\ ;\010" "" "{}" "{}" "\195\169""#,
-            segments[2], segments[3]
+            r#""quote\" slash\\ ;\010" "" "{}" "{}" "\195\169" "\{}""#,
+            segments[2], segments[3], segments[5]
         );
         let mut input = record(DnsRecordType::Txt, &value);
         let parsed = compile_zone(&zone(vec![input.clone()])).unwrap();
@@ -551,6 +585,7 @@ mod tests {
             format!("0 custom \"{}\"", "a".repeat(4092)),
             format!("0 \"custom\"\"{}\"", "a".repeat(4093)),
             format!("0 custom \"{}\"", "\\a".repeat(3000)),
+            r#"0 custom "a\077b""#.into(),
         ] {
             let content = format!("$ORIGIN example.test.\n$TTL 60\nservice IN CAA {value}\n");
             let (_, existing) = Parser::new(content, None, Some(origin.clone()))
@@ -564,23 +599,6 @@ mod tests {
             &format!("0 custom \"{}\"", "a".repeat(4094)),
         );
         assert!(compile_zone(&zone(vec![input])).is_err());
-        let parsed = compile_zone(&zone(vec![record(
-            DnsRecordType::Caa,
-            r#"0 custom "a\077b""#,
-        )]))
-        .unwrap();
-        assert_eq!(
-            parsed
-                .records
-                .values()
-                .next()
-                .unwrap()
-                .records_without_rrsigs()
-                .next()
-                .unwrap()
-                .data(),
-            &RData::parse(RecordType::CAA, ["0", "custom", "aMb"].into_iter(), None).unwrap()
-        );
         for target in [r"host\065label.example.test.", r"host\-label.example.test."] {
             let expected =
                 RData::parse(RecordType::CNAME, [target].into_iter(), Some(&origin)).unwrap();
