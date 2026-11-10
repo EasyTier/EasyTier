@@ -427,6 +427,56 @@ where
 
     async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
         self.start_stun_routine();
+        self.tcp_port_mapping(local_port).await
+    }
+
+    fn update_stun_info(&self) {
+        self.redetect_notify.notify_waiters();
+    }
+}
+
+impl<R, D> StunInfoCollector<R, D>
+where
+    R: StunSocketRuntime,
+    D: StunDnsRuntime + ?Sized,
+{
+    /// Looks up this host's public IP once without starting background NAT
+    /// detection: UDP over IPv4 first, then TCP, then UDP over IPv6.
+    pub async fn query_public_ip(&self) -> anyhow::Result<IpAddr> {
+        let udp_error = match self
+            .runtime
+            .bind_udp(stun_udp_bind_options(
+                self.udp_socket_context.clone(),
+                IpVersion::V4,
+                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
+            ))
+            .await
+        {
+            Ok(socket) => match self.udp_port_mapping_with_socket(socket).await {
+                Ok(addr) => return Ok(addr.ip()),
+                Err(error) => error,
+            },
+            Err(error) => error.into(),
+        };
+        let tcp_error = match self.tcp_port_mapping(0).await {
+            Ok(addr) => return Ok(addr.ip()),
+            Err(error) => error,
+        };
+        let stun_servers_v6 = self.stun_servers_v6.read().unwrap().clone();
+        if let Some(ip) = Self::get_public_ipv6(
+            self.runtime.clone(),
+            self.dns.clone(),
+            self.udp_socket_context.clone(),
+            &stun_servers_v6,
+        )
+        .await
+        {
+            return Ok(ip.into());
+        }
+        anyhow::bail!("no STUN server answered (udp: {udp_error:#}; tcp: {tcp_error:#})")
+    }
+
+    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
         let mut servers = self
             .tcp_nat_test_result
             .read()
@@ -472,22 +522,10 @@ where
         anyhow::bail!("no TCP STUN mapping found")
     }
 
-    fn update_stun_info(&self) {
-        self.redetect_notify.notify_waiters();
-    }
-}
-
-#[async_trait]
-impl<R, D> StunSocketMapper<<R as VirtualUdpSocketFactory>::Socket> for StunInfoCollector<R, D>
-where
-    R: StunSocketRuntime,
-    D: StunDnsRuntime + ?Sized,
-{
-    async fn get_udp_port_mapping_with_socket(
+    async fn udp_port_mapping_with_socket(
         &self,
         socket: Arc<<R as VirtualUdpSocketFactory>::Socket>,
     ) -> anyhow::Result<SocketAddr> {
-        self.start_stun_routine();
         let mut servers = self
             .udp_nat_test_result
             .read()
@@ -524,6 +562,21 @@ where
             }
         }
         anyhow::bail!("no UDP STUN mapping found")
+    }
+}
+
+#[async_trait]
+impl<R, D> StunSocketMapper<<R as VirtualUdpSocketFactory>::Socket> for StunInfoCollector<R, D>
+where
+    R: StunSocketRuntime,
+    D: StunDnsRuntime + ?Sized,
+{
+    async fn get_udp_port_mapping_with_socket(
+        &self,
+        socket: Arc<<R as VirtualUdpSocketFactory>::Socket>,
+    ) -> anyhow::Result<SocketAddr> {
+        self.start_stun_routine();
+        self.udp_port_mapping_with_socket(socket).await
     }
 }
 
@@ -764,5 +817,39 @@ mod tests {
             binds[0].context.netns.as_ref().map(|netns| netns.token()),
             Some("instance-a")
         );
+    }
+
+    #[tokio::test]
+    async fn query_public_ip_does_not_start_background_detection() {
+        let runtime = Arc::new(MockRuntime::default());
+        let collector = StunInfoCollector::new(
+            runtime.clone(),
+            Arc::new(MockDns),
+            SocketContext::default(),
+            vec!["stun.example".to_owned()],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let ip = collector.query_public_ip().await.unwrap();
+
+        assert_eq!(ip, "198.51.100.10".parse::<IpAddr>().unwrap());
+        assert!(!collector.started.load(Ordering::Acquire));
+        assert_eq!(runtime.udp_binds.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn query_public_ip_fails_without_servers() {
+        let collector = StunInfoCollector::new(
+            Arc::new(MockRuntime::default()),
+            Arc::new(MockDns),
+            SocketContext::default(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert!(collector.query_public_ip().await.is_err());
+        assert!(!collector.started.load(Ordering::Acquire));
     }
 }

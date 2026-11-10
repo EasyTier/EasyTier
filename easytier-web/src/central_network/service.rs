@@ -1551,6 +1551,7 @@ mod tests {
                 easytier_version: "test".to_owned(),
                 device_os: "{}".to_owned(),
                 client_url: format!("tcp://{device_id}"),
+                reported_public_ip: None,
             })
             .await
             .unwrap();

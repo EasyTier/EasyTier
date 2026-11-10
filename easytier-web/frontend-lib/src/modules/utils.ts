@@ -108,7 +108,8 @@ export function buildDeviceInfo(device: any): DeviceInfo {
     let dev_info: DeviceInfo = {
         hostname: device.info?.hostname,
         alias: device.alias || undefined,
-        public_ip: device.client_url,
+        // Prefer the address the node discovered via STUN at startup.
+        public_ip: device.info?.public_ip || device.client_url,
         running_network_instances: runningInstances.map((instance: any) => UuidToStr(instance)),
         running_network_count: runningInstances.length,
         report_time: device.info?.report_time,

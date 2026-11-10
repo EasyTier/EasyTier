@@ -328,6 +328,9 @@ pub struct ValidateTokenRequest {
     pub token: String,
     pub machine_id: String,
     pub public_ip: Option<String>,
+    /// Public IP the node discovered via STUN, when it reported one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_public_ip: Option<String>,
     pub hostname: String,
     pub version: String,
     pub os_type: Option<String>,
@@ -853,6 +856,7 @@ mod tests {
                 token: "token".to_string(),
                 machine_id: uuid::Uuid::new_v4().to_string(),
                 public_ip: None,
+                reported_public_ip: None,
                 hostname: String::new(),
                 version: String::new(),
                 os_type: None,

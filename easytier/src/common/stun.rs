@@ -8,7 +8,8 @@ use async_trait::async_trait;
 #[cfg(test)]
 use easytier_core::connectivity::stun::{StunInfoProvider, StunSocketMapper};
 use easytier_core::{
-    connectivity::stun::StunInfoCollector as CoreStunInfoCollector, socket::SocketContext,
+    connectivity::stun::{StunInfoCollector as CoreStunInfoCollector, StunServerConfig},
+    socket::SocketContext,
 };
 #[cfg(test)]
 use easytier_proto::common::{NatType, StunInfo};
@@ -91,15 +92,30 @@ impl StunSocketMapper<RuntimeUdpSocket> for MockStunInfoCollector {
     }
 }
 
+pub fn default_stun_server_config() -> StunServerConfig {
+    StunServerConfig {
+        udp_servers: default_udp_stun_servers(),
+        tcp_servers: default_tcp_stun_servers(),
+        udp_v6_servers: default_udp_v6_stun_servers(),
+    }
+}
+
 pub fn runtime_stun_info_collector(socket_context: SocketContext) -> StunInfoCollector {
+    runtime_stun_info_collector_with_servers(socket_context, default_stun_server_config())
+}
+
+pub fn runtime_stun_info_collector_with_servers(
+    socket_context: SocketContext,
+    servers: StunServerConfig,
+) -> StunInfoCollector {
     let runtime = native_host_runtime();
     StunInfoCollector::new(
         runtime.clone(),
         runtime,
         socket_context,
-        default_udp_stun_servers(),
-        default_tcp_stun_servers(),
-        default_udp_v6_stun_servers(),
+        servers.udp_servers,
+        servers.tcp_servers,
+        servers.udp_v6_servers,
     )
 }
 

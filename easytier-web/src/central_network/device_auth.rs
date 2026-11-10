@@ -74,6 +74,7 @@ impl WebhookHandler for DeviceAuth {
                     distribution: request.os_distribution.clone().unwrap_or_default(),
                 })?,
                 client_url,
+                reported_public_ip: request.reported_public_ip.clone(),
             })
             .await?;
         response.valid = true;
@@ -254,6 +255,7 @@ mod tests {
             token: token.to_owned(),
             machine_id: machine_id.to_string(),
             public_ip: Some("192.0.2.1".to_owned()),
+            reported_public_ip: None,
             hostname: "device".to_owned(),
             version: "2.7.0".to_owned(),
             os_type: Some("Linux".to_owned()),
@@ -316,6 +318,7 @@ mod tests {
             easytier_version: initial.easytier_version,
             device_os: initial.device_os,
             client_url: "tcp://192.0.2.2:1234".to_owned(),
+            reported_public_ip: None,
         })
         .await
         .unwrap();
@@ -324,11 +327,13 @@ mod tests {
             .unwrap();
         req.hostname = "renamed".to_owned();
         req.version = "2.8.0".to_owned();
+        req.reported_public_ip = Some("198.51.100.20".to_owned());
         assert_eq!(
             auth.validate_token(&req).await.unwrap().config_revision,
             "revision-1"
         );
         let refreshed = db.get_device(device).await.unwrap().unwrap();
+        assert_eq!(refreshed.reported_public_ip, "198.51.100.20");
         assert_eq!(refreshed.hostname, "renamed");
         assert_eq!(refreshed.easytier_version, "2.8.0");
         assert_eq!(refreshed.alias, "office");
