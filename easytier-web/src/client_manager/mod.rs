@@ -16,12 +16,25 @@ use std::{
 
 use dashmap::DashMap;
 use easytier::proto::{
-    api::{config::ConfigRpc, manage::WebClientService},
+    api::{
+        config::ConfigRpc,
+        manage::{
+            DeleteNetworkInstanceRequest, GetNetworkInstanceConfigRequest, NetworkConfig,
+            RunNetworkInstanceRequest, ValidateConfigRequest, ValidateConfigResponse,
+            WebClientService,
+        },
+    },
     rpc_types::controller::BaseController,
     web::{HeartbeatRequest, HeartbeatResponse},
 };
 use easytier_core::{
-    management::remote_client::{self, RemoteClientManager},
+    config::toml::ConfigSource,
+    management::{
+        config_source_from_rpc, config_source_to_rpc,
+        remote_client::{
+            self, PersistentConfig as _, RemoteClientError, RemoteClientManager, Storage as _,
+        },
+    },
     socket::SocketListener,
     tunnel::{Tunnel, web_security},
 };
@@ -539,6 +552,7 @@ impl ClientManager {
     }
 }
 
+#[async_trait::async_trait]
 impl
     RemoteClientManager<
         (UserIdInDb, uuid::Uuid),
@@ -570,6 +584,192 @@ impl
         sea_orm::DbErr,
     > {
         self.storage.db()
+    }
+
+    async fn handle_validate_config(
+        &self,
+        (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+        config: NetworkConfig,
+    ) -> Result<ValidateConfigResponse, RemoteClientError<sea_orm::DbErr>> {
+        let session = self
+            .get_session_by_machine_id(user_id, &machine_id)
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        let heartbeat = session
+            .get_heartbeat_req()
+            .await
+            .ok_or_else(|| RemoteClientError::Other("Client heartbeat is not ready".to_owned()))?;
+        session
+            .scoped_rpc_client()
+            .validate_config(
+                BaseController::default(),
+                ValidateConfigRequest {
+                    config: Some(runtime_reconcile::runtime_config_for_dns_capability(
+                        config,
+                        heartbeat.support_dns_config,
+                    )),
+                },
+            )
+            .await
+            .map_err(RemoteClientError::RpcError)
+    }
+
+    async fn handle_run_network_instance_with_source(
+        &self,
+        identify @ (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+        config: NetworkConfig,
+        save: bool,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        let session = self
+            .get_session_by_machine_id(user_id, &machine_id)
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        let heartbeat = session
+            .get_heartbeat_req()
+            .await
+            .ok_or_else(|| RemoteClientError::Other("Client heartbeat is not ready".to_owned()))?;
+        let response = session
+            .scoped_rpc_client()
+            .run_network_instance(
+                BaseController::default(),
+                RunNetworkInstanceRequest {
+                    inst_id: None,
+                    config: Some(runtime_reconcile::runtime_config_for_dns_capability(
+                        config.clone(),
+                        heartbeat.support_dns_config,
+                    )),
+                    overwrite: true,
+                    source: config_source_to_rpc(source),
+                },
+            )
+            .await?;
+        if save {
+            self.storage
+                .db()
+                .insert_or_update_user_network_config(
+                    identify,
+                    response.inst_id.unwrap_or_default().into(),
+                    config,
+                    source,
+                )
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+        }
+        Ok(())
+    }
+
+    async fn handle_update_network_state(
+        &self,
+        identify @ (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+        inst_id: uuid::Uuid,
+        disabled: bool,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        let session = self
+            .get_session_by_machine_id(user_id, &machine_id)
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        let client = session.scoped_rpc_client();
+        let (config, source) = self
+            .handle_get_network_config_with_source(identify, inst_id)
+            .await?;
+        if disabled {
+            self.storage
+                .db()
+                .insert_or_update_user_network_config(identify, inst_id, config, source)
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+            client
+                .delete_network_instance(
+                    BaseController::default(),
+                    DeleteNetworkInstanceRequest {
+                        inst_ids: vec![inst_id.into()],
+                    },
+                )
+                .await?;
+        } else {
+            let heartbeat = session.get_heartbeat_req().await.ok_or_else(|| {
+                RemoteClientError::Other("Client heartbeat is not ready".to_owned())
+            })?;
+            client
+                .run_network_instance(
+                    BaseController::default(),
+                    RunNetworkInstanceRequest {
+                        inst_id: Some(inst_id.into()),
+                        config: Some(runtime_reconcile::runtime_config_for_dns_capability(
+                            config,
+                            heartbeat.support_dns_config,
+                        )),
+                        overwrite: true,
+                        source: config_source_to_rpc(source),
+                    },
+                )
+                .await?;
+        }
+        self.storage
+            .db()
+            .update_network_config_state(identify, inst_id, disabled)
+            .await
+            .map_err(RemoteClientError::PersistentError)
+    }
+
+    async fn handle_get_network_config_with_source(
+        &self,
+        identify @ (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+        inst_id: uuid::Uuid,
+    ) -> Result<(NetworkConfig, ConfigSource), RemoteClientError<sea_orm::DbErr>> {
+        if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
+            && let Ok(response) = session
+                .scoped_rpc_client()
+                .get_network_instance_config(
+                    BaseController::default(),
+                    GetNetworkInstanceConfigRequest {
+                        inst_id: Some(inst_id.into()),
+                    },
+                )
+                .await
+            && let Some(mut config) = response.config
+        {
+            let source = config_source_from_rpc(response.source);
+            let retain_saved_dns = session
+                .get_heartbeat_req()
+                .await
+                .is_some_and(|heartbeat| !heartbeat.support_dns_config);
+            let saved = if retain_saved_dns || source.is_none() {
+                self.storage
+                    .db()
+                    .get_network_config(identify, &inst_id.to_string())
+                    .await
+                    .map_err(RemoteClientError::PersistentError)?
+            } else {
+                None
+            };
+            if retain_saved_dns && let Some(saved) = &saved {
+                // The editor must retain DNS intent that this core cannot return.
+                config.dns = saved
+                    .get_network_config()
+                    .map_err(RemoteClientError::PersistentError)?
+                    .dns;
+            }
+            let source = source.unwrap_or_else(|| {
+                saved
+                    .map(|config| config.get_runtime_network_config_source())
+                    .unwrap_or(ConfigSource::User)
+            });
+            return Ok((config, source));
+        }
+        let saved = self
+            .storage
+            .db()
+            .get_network_config(identify, &inst_id.to_string())
+            .await
+            .map_err(RemoteClientError::PersistentError)?
+            .ok_or_else(|| {
+                RemoteClientError::NotFound(format!("No such network instance: {inst_id}"))
+            })?;
+        Ok((
+            saved
+                .get_network_config()
+                .map_err(RemoteClientError::PersistentError)?,
+            saved.get_runtime_network_config_source(),
+        ))
     }
 }
 
@@ -1277,6 +1477,279 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_dns_runtime_requests_follow_heartbeat_and_preserve_saved_config() {
+        use easytier::proto::{
+            api::manage::{
+                GetNetworkInstanceConfigRequest, GetNetworkInstanceConfigResponse,
+                ListNetworkInstanceMetaResponse, ListNetworkInstanceResponse,
+                RunNetworkInstanceRequest, RunNetworkInstanceResponse, ValidateConfigRequest,
+                ValidateConfigResponse, WebClientServiceDescriptor,
+                WebClientServiceMethodDescriptor,
+            },
+            rpc::bidirect::BidirectRpcManager,
+            rpc_types::handler::Handler,
+            web::{HeartbeatRequest, WebServerServiceClientFactory},
+        };
+        use prost::Message as _;
+
+        #[derive(Default)]
+        struct Requests {
+            runs: Vec<RunNetworkInstanceRequest>,
+            validations: Vec<ValidateConfigRequest>,
+            runtime_config: Option<NetworkConfig>,
+        }
+        #[derive(Clone)]
+        struct Recorder {
+            instance_id: uuid::Uuid,
+            requests: Arc<std::sync::Mutex<Requests>>,
+        }
+        #[async_trait::async_trait]
+        impl Handler for Recorder {
+            type Descriptor = WebClientServiceDescriptor;
+            type Controller = super::BaseController;
+
+            async fn call(
+                &self,
+                _: Self::Controller,
+                method: WebClientServiceMethodDescriptor,
+                input: prost::bytes::Bytes,
+            ) -> easytier::proto::rpc_types::error::Result<prost::bytes::Bytes> {
+                let mut requests = self.requests.lock().unwrap();
+                let response = match method {
+                    WebClientServiceMethodDescriptor::RunNetworkInstance => {
+                        let request = RunNetworkInstanceRequest::decode(input)?;
+                        requests.runtime_config = request.config.clone();
+                        requests.runs.push(request);
+                        RunNetworkInstanceResponse {
+                            inst_id: Some(self.instance_id.into()),
+                        }
+                        .encode_to_vec()
+                    }
+                    WebClientServiceMethodDescriptor::ValidateConfig => {
+                        requests
+                            .validations
+                            .push(ValidateConfigRequest::decode(input)?);
+                        ValidateConfigResponse::default().encode_to_vec()
+                    }
+                    WebClientServiceMethodDescriptor::GetNetworkInstanceConfig => {
+                        let request = GetNetworkInstanceConfigRequest::decode(input)?;
+                        assert_eq!(
+                            request.inst_id.map(uuid::Uuid::from),
+                            Some(self.instance_id)
+                        );
+                        GetNetworkInstanceConfigResponse {
+                            config: requests.runtime_config.clone(),
+                            source: easytier::proto::api::manage::ConfigSource::User as i32,
+                        }
+                        .encode_to_vec()
+                    }
+                    WebClientServiceMethodDescriptor::DeleteNetworkInstance => {
+                        requests.runtime_config = None;
+                        easytier::proto::api::manage::DeleteNetworkInstanceResponse::default()
+                            .encode_to_vec()
+                    }
+                    WebClientServiceMethodDescriptor::ListNetworkInstance => {
+                        ListNetworkInstanceResponse::default().encode_to_vec()
+                    }
+                    WebClientServiceMethodDescriptor::ListNetworkInstanceMeta => {
+                        ListNetworkInstanceMetaResponse::default().encode_to_vec()
+                    }
+                    _ => panic!("unexpected direct runtime method: {method:?}"),
+                };
+                Ok(response.into())
+            }
+        }
+
+        let db = Db::memory_db().await;
+        let mgr = ClientManager::new(
+            db.clone(),
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        let user_id = db
+            .auto_create_user("dns-capability-token")
+            .await
+            .unwrap()
+            .id;
+        let machine_id = uuid::Uuid::new_v4();
+        let instance_id = uuid::Uuid::new_v4();
+        let identify = (user_id, machine_id);
+        let saved = NetworkConfig {
+            instance_id: Some(instance_id.to_string()),
+            hostname: Some("dns-capability-host".to_owned()),
+            networking_method: Some(NetworkingMethod::Standalone as i32),
+            dns: Some(easytier::proto::core_config::DnsConfigRaw {
+                domain: Some("retained.test".to_owned()),
+                zone: None,
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            mgr.handle_validate_config(identify, saved.clone()).await,
+            Err(super::RemoteClientError::ClientNotFound)
+        ));
+        assert!(matches!(
+            mgr.handle_run_network_instance(identify, saved.clone(), true)
+                .await,
+            Err(super::RemoteClientError::ClientNotFound)
+        ));
+
+        let requests = Arc::new(std::sync::Mutex::new(Requests::default()));
+        let rpc = BidirectRpcManager::new();
+        rpc.rpc_server().registry().register(
+            Recorder {
+                instance_id,
+                requests: requests.clone(),
+            },
+            "",
+        );
+        let client_url = "ring://dns-capability".parse::<url::Url>().unwrap();
+        let mut session = Session::new(
+            mgr.storage.weak_ref(),
+            client_url.clone(),
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+            1,
+        );
+        session.serve(rpc.run_and_create_tunnel()).await;
+        let session = Arc::new(session);
+        mgr.client_sessions
+            .insert(client_url.clone(), session.clone());
+        mgr.storage.update_client(
+            StorageToken {
+                token: "dns-capability-token".to_owned(),
+                client_url,
+                machine_id,
+                user_id,
+            },
+            1,
+            true,
+        );
+        for result in [
+            mgr.handle_validate_config(identify, saved.clone())
+                .await
+                .map(|_| ()),
+            mgr.handle_run_network_instance(identify, saved.clone(), true)
+                .await,
+        ] {
+            assert!(matches!(
+                result,
+                Err(super::RemoteClientError::Other(message))
+                    if message == "Client heartbeat is not ready"
+            ));
+        }
+        assert!(requests.lock().unwrap().runs.is_empty());
+        assert!(requests.lock().unwrap().validations.is_empty());
+        assert!(
+            db.get_network_config(identify, &instance_id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let heartbeat_client = rpc
+            .rpc_client()
+            .scoped_client::<WebServerServiceClientFactory<super::BaseController>>(
+                1,
+                1,
+                String::new(),
+            );
+        let runtime_id = uuid::Uuid::new_v4();
+        for (index, supported) in [false, true, false].into_iter().enumerate() {
+            heartbeat_client
+                .heartbeat(
+                    super::BaseController::default(),
+                    HeartbeatRequest {
+                        machine_id: Some(machine_id.into()),
+                        inst_id: Some(runtime_id.into()),
+                        user_token: "dns-capability-token".to_owned(),
+                        report_time: chrono::Local::now().to_rfc3339(),
+                        support_config_source: true,
+                        support_heartbeat_policy: true,
+                        support_manual_routes_patch: true,
+                        support_dns_config: supported,
+                        running_network_instances: vec![instance_id.into()],
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            mgr.handle_validate_config(identify, saved.clone())
+                .await
+                .unwrap();
+            mgr.handle_run_network_instance(identify, saved.clone(), index == 2)
+                .await
+                .unwrap();
+        }
+        let editable = mgr
+            .handle_get_network_config(identify, instance_id)
+            .await
+            .unwrap();
+        assert_eq!(editable, saved);
+        assert!(
+            requests
+                .lock()
+                .unwrap()
+                .runtime_config
+                .as_ref()
+                .unwrap()
+                .dns
+                .is_none()
+        );
+        mgr.handle_save_network_config(identify, instance_id, editable)
+            .await
+            .unwrap();
+        mgr.handle_update_network_state(identify, instance_id, true)
+            .await
+            .unwrap();
+        mgr.handle_update_network_state(identify, instance_id, false)
+            .await
+            .unwrap();
+
+        {
+            let observed = requests.lock().unwrap();
+            assert_eq!(observed.validations.len(), 3);
+            assert_eq!(observed.runs.len(), 4);
+            for (index, supported) in [false, true, false].into_iter().enumerate() {
+                let mut target = saved.clone();
+                if !supported {
+                    target.dns = None;
+                }
+                assert_eq!(observed.validations[index].config, Some(target.clone()));
+                assert_eq!(observed.runs[index].config, Some(target));
+                assert!(observed.runs[index].overwrite);
+                assert!(observed.runs[index].inst_id.is_none());
+            }
+            let restarted = &observed.runs[3];
+            assert!(restarted.config.as_ref().unwrap().dns.is_none());
+            assert_eq!(restarted.inst_id.map(uuid::Uuid::from), Some(instance_id));
+            assert!(restarted.overwrite);
+            assert!(observed.runs.iter().all(|request| {
+                request.source == easytier::proto::api::manage::ConfigSource::User as i32
+            }));
+        }
+        let persisted = db
+            .get_network_config(identify, &instance_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let persisted_config: NetworkConfig =
+            serde_json::from_str(&persisted.network_config).unwrap();
+        assert_eq!(persisted_config, saved);
+        assert!(!persisted.disabled);
+        session.stop().await;
+        rpc.stop().await;
+    }
+
+    #[tokio::test]
     async fn compact_runtime_preserves_unsupported_web_config_during_hot_patch() {
         let (webhook_config, webhook_server, webhook_state) = test_webhook_config().await;
         *webhook_state.config_revision.write().await = "compact-initial".to_owned();
@@ -1743,7 +2216,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires EASYTIER_TEST_LEGACY_CORE and an isolated network environment"]
-    async fn legacy_core_reconciles_ordinary_config_and_rejects_dns() {
+    async fn legacy_core_reconciles_supported_fields_and_retains_saved_dns() {
         use easytier::proto::api::instance::PeerManageRpcClientFactory;
         use easytier::proto::rpc_types::controller::BaseController;
 
@@ -1827,7 +2300,7 @@ mod tests {
             previous_revision = Some(revision.to_owned());
         }
 
-        desired["hostname"] = json!("must-not-be-patched");
+        desired["hostname"] = json!("legacy-with-saved-dns");
         desired["dns"] = json!({"domain": "unsupported.test"});
         *webhook_state.config_revision.write().await = "legacy-unsupported".to_owned();
         mgr.reconcile_managed_network_configs(
@@ -1839,14 +2312,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            tokio::time::timeout(
-                Duration::from_secs(8),
-                wait_for_applied_revision(&mgr, user_id, machine_id, "legacy-unsupported"),
-            )
-            .await
-            .is_err()
-        );
+        wait_for_applied_revision(&mgr, user_id, machine_id, "legacy-unsupported").await;
         let observed = super::runtime_reconcile::get_runtime_config(
             &mut config_client,
             &mut peer_client,
@@ -1855,8 +2321,20 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(observed.hostname.as_deref(), Some("legacy-updated-host"));
+        assert_eq!(observed.hostname.as_deref(), Some("legacy-with-saved-dns"));
         assert!(observed.dns.is_none());
+        let saved = mgr
+            .storage
+            .db()
+            .get_network_config((user_id, machine_id), &instance_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let saved: NetworkConfig = serde_json::from_str(&saved.network_config).unwrap();
+        assert_eq!(
+            saved.dns.unwrap().domain.as_deref(),
+            Some("unsupported.test")
+        );
 
         desired["dns"] = serde_json::Value::Null;
         *webhook_state.config_revision.write().await = "legacy-recovered".to_owned();

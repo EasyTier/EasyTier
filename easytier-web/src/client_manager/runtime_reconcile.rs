@@ -22,6 +22,7 @@ use easytier::{
         },
         common::{CompressionAlgoPb, FlagsPatch, Ipv4Inet as RpcIpv4Inet},
         rpc_types::controller::BaseController,
+        web::HeartbeatRequest,
     },
 };
 use optionize::Retain;
@@ -96,19 +97,15 @@ fn full_dns_patch(
     easytier_core::gateway::magic_dns::normalized_dns(&config.gen_config()?)
 }
 
-pub(super) fn ensure_dns_config_supported(
-    config: &NetworkConfig,
+pub(super) fn runtime_config_for_dns_capability(
+    mut config: NetworkConfig,
     support_dns_config: bool,
-) -> anyhow::Result<()> {
-    if !support_dns_config && config.dns.is_some() {
-        let mut legacy_config = config.clone();
-        legacy_config.dns = None;
-        anyhow::ensure!(
-            full_dns_patch(config)? == full_dns_patch(&legacy_config)?,
-            "core does not support DNS configuration"
-        );
+) -> NetworkConfig {
+    // Keep saved intent intact; only the runtime target follows this heartbeat.
+    if !support_dns_config {
+        config.dns = None;
     }
-    Ok(())
+    config
 }
 
 fn normalized_data_compress_algo(algo: Option<i32>) -> Option<i32> {
@@ -565,7 +562,9 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
     desired_config: NetworkConfig,
     is_running: bool,
     support_manual_routes_patch: bool,
+    support_dns_config: bool,
 ) -> anyhow::Result<RuntimeReconcileAction> {
+    let desired_config = runtime_config_for_dns_capability(desired_config, support_dns_config);
     if !is_running {
         return Ok(RuntimeReconcileAction::Run {
             config: Box::new(desired_config),
@@ -580,6 +579,7 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
         support_manual_routes_patch,
     )
     .await?;
+    let current_config = runtime_config_for_dns_capability(current_config, support_dns_config);
 
     prepare_web_source_runtime_reconcile_from_current(
         &current_config,
@@ -621,20 +621,24 @@ pub(super) async fn apply_web_source_runtime_reconcile(
     inst_id: &str,
     desired_config: NetworkConfig,
     action: RuntimeReconcileAction,
-    support_manual_routes_patch: bool,
+    heartbeat: &HeartbeatRequest,
 ) -> anyhow::Result<NetworkConfig> {
+    let desired_config =
+        runtime_config_for_dns_capability(desired_config, heartbeat.support_dns_config);
     match action {
         RuntimeReconcileAction::Unchanged(current_config) => Ok(*current_config),
         RuntimeReconcileAction::Run { config, overwrite } => {
             let hostname_applied = config.hostname.is_some();
             run_web_source_instance(rpc_client, inst_id, *config, overwrite).await?;
-            let mut current_config = get_runtime_config(
+            let current_config = get_runtime_config(
                 config_client,
                 peer_client,
                 inst_id,
-                support_manual_routes_patch,
+                heartbeat.support_manual_routes_patch,
             )
             .await?;
+            let mut current_config =
+                runtime_config_for_dns_capability(current_config, heartbeat.support_dns_config);
             ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
             restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
@@ -650,13 +654,15 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                     },
                 )
                 .await?;
-            let mut current_config = get_runtime_config(
+            let current_config = get_runtime_config(
                 config_client,
                 peer_client,
                 inst_id,
-                support_manual_routes_patch,
+                heartbeat.support_manual_routes_patch,
             )
             .await?;
+            let mut current_config =
+                runtime_config_for_dns_capability(current_config, heartbeat.support_dns_config);
             ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
             restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
@@ -1244,6 +1250,7 @@ mod tests {
         #[async_trait::async_trait]
         impl ConfigRpc for ConfigReader {
             type Controller = BaseController;
+
             async fn get_dns_status(
                 &self,
                 _: BaseController,
@@ -1253,7 +1260,6 @@ mod tests {
             > {
                 unreachable!("configuration reconciliation does not query DNS publication")
             }
-
             async fn get_config(
                 &self,
                 _: BaseController,
@@ -1820,53 +1826,63 @@ mod tests {
 
     #[test]
     #[allow(deprecated)]
-    fn legacy_core_allows_dns_equivalent_to_legacy_config() {
-        for legacy_domain in [None, Some("corp.internal.")] {
-            let mut current = config_with_port_forwards(Vec::new());
-            current.tld_dns_zone = legacy_domain.map(str::to_owned);
-            ensure_dns_config_supported(&current, false).unwrap();
-            let domain = legacy_domain.unwrap_or("et.net.");
-            for domain in [
-                None,
-                Some(domain.to_owned()),
-                Some(domain.trim_end_matches('.').to_uppercase()),
-            ] {
-                let mut desired = current.clone();
-                desired.dns = Some(easytier::proto::core_config::DnsConfigRaw {
-                    domain,
-                    zone: Some(Default::default()),
-                });
-                ensure_dns_config_supported(&desired, false).unwrap();
-                ensure_runtime_config_converged(&current, &desired, false).unwrap();
-            }
-        }
+    fn legacy_dns_runtime_target_keeps_saved_dns_and_legacy_domain() {
+        let mut saved = config_with_dns(
+            "mesh.test",
+            "records.test",
+            &[dns_record(
+                easytier::proto::core_config::DnsRecordType::A,
+                "192.0.2.1",
+            )],
+        );
+        saved.tld_dns_zone = Some("corp.internal.".to_owned());
+        let original = saved.clone();
+        let target = runtime_config_for_dns_capability(saved.clone(), false);
+        assert!(target.dns.is_none());
+        assert_eq!(saved, original);
+        assert_eq!(target.tld_dns_zone, saved.tld_dns_zone);
+        assert_eq!(
+            full_dns_patch(&target).unwrap().domain.as_deref(),
+            Some("corp.internal.")
+        );
+
+        let mut current = target.clone();
+        current.hostname = Some("before".to_owned());
+        let mut desired = target;
+        desired.hostname = Some("after".to_owned());
+        let RuntimeReconcileAction::Patch(patch) =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired.clone(), true)
+                .unwrap()
+        else {
+            panic!("supported fields should still produce a patch");
+        };
+        assert_eq!(patch.hostname.as_deref(), Some("after"));
+        assert!(patch.dns.is_none());
+        current.hostname = desired.hostname.clone();
+        ensure_runtime_config_converged(&current, &desired, true).unwrap();
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn legacy_core_rejects_dns_zones_or_domain_changes() {
-        let mut custom_domain = config_with_dns("mesh.test", "records.test", &[]);
-        custom_domain.dns.as_mut().unwrap().zone = None;
-        let mut default_domain = config_with_dns("et.net", "records.test", &[]);
-        default_domain.dns.as_mut().unwrap().zone = None;
-        for mut config in [
-            custom_domain,
-            default_domain,
-            config_with_dns("et.net", "records.test", &[]),
-            config_with_dns(
-                "et.net",
-                "records.test",
-                &[dns_record(
-                    easytier::proto::core_config::DnsRecordType::A,
-                    "192.0.2.1",
-                )],
-            ),
-        ] {
-            config.tld_dns_zone = Some("corp.internal.".to_owned());
-            let error = ensure_dns_config_supported(&config, false).unwrap_err();
-            assert_eq!(error.to_string(), "core does not support DNS configuration");
-            ensure_dns_config_supported(&config, true).unwrap();
-        }
+    fn dns_capability_restores_strict_runtime_target_after_upgrade() {
+        let saved = config_with_dns(
+            "mesh.test",
+            "records.test",
+            &[dns_record(
+                easytier::proto::core_config::DnsRecordType::A,
+                "192.0.2.1",
+            )],
+        );
+        let legacy = runtime_config_for_dns_capability(saved.clone(), false);
+        let supported = runtime_config_for_dns_capability(saved.clone(), true);
+        assert_eq!(supported, saved);
+        assert!(ensure_runtime_config_converged(&legacy, &supported, false).is_err());
+
+        let RuntimeReconcileAction::Patch(patch) =
+            prepare_web_source_runtime_reconcile_from_current(&legacy, supported, true).unwrap()
+        else {
+            panic!("an upgraded runtime must apply the retained DNS configuration");
+        };
+        assert!(patch.dns.is_some());
     }
 
     #[test]

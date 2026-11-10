@@ -133,6 +133,14 @@ edits can overwrite each other. Records do not have IDs or individual CRUD
 operations; this model adds neither configuration CAS nor a publication ACK
 state machine.
 
+Web keeps the original desired configuration when a connected core does not
+advertise DNS configuration support. For that heartbeat, startup, patch planning,
+readback comparison and runtime caches omit the unsupported `dns` field. Other
+configuration still converges, and an applied revision means its supported fields
+were applied. Once a core advertises support, the retained DNS configuration
+participates in strict comparison and reconciliation again. This does not infer
+capabilities from an offline device or add a frontend notice.
+
 ## Runtime boundary
 
 All connected local instances contribute, including Web-managed and standalone

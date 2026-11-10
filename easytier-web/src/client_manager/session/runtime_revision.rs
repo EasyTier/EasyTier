@@ -243,13 +243,22 @@ impl SessionRuntimeConfigCache {
         inst_id: &str,
         desired_config: NetworkConfig,
         support_manual_routes_patch: bool,
+        support_dns_config: bool,
     ) -> anyhow::Result<Option<runtime_reconcile::RuntimeReconcileAction>> {
         let Some(observed_config) = self.entries.get(inst_id) else {
             return Ok(None);
         };
 
+        let observed_config = runtime_reconcile::runtime_config_for_dns_capability(
+            observed_config.clone(),
+            support_dns_config,
+        );
+        let desired_config = runtime_reconcile::runtime_config_for_dns_capability(
+            desired_config,
+            support_dns_config,
+        );
         runtime_reconcile::prepare_web_source_runtime_reconcile_from_current(
-            observed_config,
+            &observed_config,
             desired_config,
             support_manual_routes_patch,
         )
@@ -971,12 +980,11 @@ async fn reconcile_desired_runtime_configs(
 
         let desired_config = match serde_json::from_str::<NetworkConfig>(&config.network_config)
             .map_err(anyhow::Error::from)
-            .and_then(|config| {
-                runtime_reconcile::ensure_dns_config_supported(
-                    &config,
+            .map(|config| {
+                runtime_reconcile::runtime_config_for_dns_capability(
+                    config,
                     round.req.support_dns_config,
-                )?;
-                Ok(config)
+                )
             }) {
             Ok(cfg) => cfg,
             Err(e) => {
@@ -1027,6 +1035,7 @@ async fn reconcile_desired_runtime_configs(
                     &desired_config,
                     &mut cache.runtime_configs,
                     round.req.support_manual_routes_patch,
+                    round.req.support_dns_config,
                 )
                 .await
                 {
@@ -1092,6 +1101,7 @@ async fn reconcile_running_web_config(
             &config.network_instance_id,
             desired_config.clone(),
             round.req.support_manual_routes_patch,
+            round.req.support_dns_config,
         )? {
             Some(action) => action,
             None => {
@@ -1102,6 +1112,7 @@ async fn reconcile_running_web_config(
                     desired_config.clone(),
                     true,
                     round.req.support_manual_routes_patch,
+                    round.req.support_dns_config,
                 )
                 .await?
             }
@@ -1123,7 +1134,7 @@ async fn reconcile_running_web_config(
             &config.network_instance_id,
             desired_config.clone(),
             action,
-            round.req.support_manual_routes_patch,
+            &round.req,
         )
         .await?;
         runtime_config_cache.remember(&config.network_instance_id, observed_config);
@@ -1232,6 +1243,7 @@ async fn remember_web_runtime_config_after_run(
     desired_config: &NetworkConfig,
     runtime_config_cache: &mut SessionRuntimeConfigCache,
     support_manual_routes_patch: bool,
+    support_dns_config: bool,
 ) -> anyhow::Result<()> {
     let observed_config = runtime_reconcile::get_runtime_config(
         &mut clients.config,
@@ -1240,6 +1252,8 @@ async fn remember_web_runtime_config_after_run(
         support_manual_routes_patch,
     )
     .await?;
+    let observed_config =
+        runtime_reconcile::runtime_config_for_dns_capability(observed_config, support_dns_config);
     remember_if_runtime_matches_desired(
         inst_id,
         desired_config,
@@ -1478,19 +1492,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_dns_sends_no_config_rpc_and_cannot_mark_revision_applied() {
+    async fn dns_capability_change_invalidates_applied_revision_and_stale_round() {
+        let (storage, data, mut round) = takeover_session(Some("current")).await;
+        round.should_apply_runtime_revision = true;
+        let weak = std::sync::Arc::downgrade(&data);
+        let initial_epoch = round.runtime_config_epoch;
+        for (index, supported) in [true, false].into_iter().enumerate() {
+            let mut current = round.req.clone();
+            current.support_dns_config = supported;
+            {
+                let mut data = data.write().await;
+                SessionRpcService::store_latest_heartbeat_req(&mut data, current.clone());
+                let runtime = data.managed_runtime();
+                assert!(runtime.applied_config_revision.is_none());
+                assert!(runtime.known_runtime_base_revision.is_none());
+                assert!(matches!(
+                    runtime.pending_managed_config_reconcile,
+                    Some(ManagedConfigReconcileHint::Full)
+                ));
+                assert_eq!(
+                    runtime.runtime_config_epoch,
+                    initial_epoch + index as u64 + 1
+                );
+                assert_eq!(
+                    runtime.runtime_config_cache_epoch,
+                    round.runtime_config_cache_epoch + index as u64 + 1
+                );
+            }
+            assert!(!SessionRpcService::runtime_heartbeat_is_current(&weak, &round.req).await);
+            assert!(SessionRpcService::runtime_heartbeat_is_current(&weak, &current).await);
+            mark_config_revision_applied_if_current(
+                &weak,
+                &storage.weak_ref().upgrade().unwrap(),
+                &round,
+                &ReconcileOutcome::default(),
+                &RuntimeMutationFence::default(),
+            )
+            .await;
+            assert!(
+                data.read()
+                    .await
+                    .managed_runtime()
+                    .applied_config_revision
+                    .is_none()
+            );
+            round.req = current;
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_dns_runtime_target_converges_and_caches_supported_fields() {
         use easytier::proto::api::{
             config::{
                 ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
                 PatchConfigResponse,
             },
             instance::PeerManageRpcClientFactory,
-            manage::WebClientServiceClientFactory,
+            manage::{
+                RunNetworkInstanceResponse, WebClientServiceClient, WebClientServiceClientFactory,
+                WebClientServiceDescriptor, WebClientServiceMethodDescriptor,
+            },
         };
+        use prost::Message as _;
 
-        struct NoConfigRpc;
+        #[derive(Clone)]
+        struct RunRecorder(std::sync::Arc<std::sync::Mutex<Vec<RunNetworkInstanceRequest>>>);
         #[async_trait::async_trait]
-        impl ConfigRpc for NoConfigRpc {
+        impl easytier::proto::rpc_types::handler::Handler for RunRecorder {
+            type Descriptor = WebClientServiceDescriptor;
+            type Controller = BaseController;
+
+            async fn call(
+                &self,
+                _: BaseController,
+                method: WebClientServiceMethodDescriptor,
+                input: prost::bytes::Bytes,
+            ) -> easytier::proto::rpc_types::error::Result<prost::bytes::Bytes> {
+                assert_eq!(method, WebClientServiceMethodDescriptor::RunNetworkInstance);
+                let request = RunNetworkInstanceRequest::decode(input)?;
+                self.0.lock().unwrap().push(request);
+                Ok(RunNetworkInstanceResponse::default().encode_to_vec().into())
+            }
+        }
+
+        struct ConfigReader {
+            config: NetworkConfig,
+            reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl ConfigRpc for ConfigReader {
             type Controller = BaseController;
 
             async fn get_dns_status(
@@ -1508,7 +1598,12 @@ mod tests {
                 _: BaseController,
                 _: GetConfigRequest,
             ) -> easytier::proto::rpc_types::error::Result<GetConfigResponse> {
-                panic!("unsupported DNS must be rejected before reading runtime config")
+                self.reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(GetConfigResponse {
+                    config: Some(self.config.clone()),
+                    toml_config: String::new(),
+                })
             }
 
             async fn patch_config(
@@ -1516,13 +1611,23 @@ mod tests {
                 _: BaseController,
                 _: PatchConfigRequest,
             ) -> easytier::proto::rpc_types::error::Result<PatchConfigResponse> {
-                panic!("unsupported DNS must not send a patch")
+                panic!("matching supported fields must not send a patch")
             }
         }
 
         let (storage, data, mut round) = takeover_session(Some("current")).await;
         let instance_id = uuid::Uuid::from(round.req.running_network_instances[0]);
         round.should_apply_runtime_revision = true;
+        round.req.support_manual_routes_patch = true;
+        round.running_inst_ids = HashSet::from([instance_id.to_string()]);
+        let mut current = config_with_port_forwards(Vec::new());
+        current.instance_id = Some(instance_id.to_string());
+        let mut desired = current.clone();
+        desired.dns = Some(easytier::proto::core_config::DnsConfigRaw {
+            domain: Some("saved-for-upgrade.test".to_owned()),
+            zone: None,
+        });
+        let saved_config = serde_json::to_string(&desired).unwrap();
         round
             .local_configs
             .push(crate::db::entity::user_running_network_configs::Model {
@@ -1530,17 +1635,14 @@ mod tests {
                 user_id: round.user_id,
                 device_id: round.machine_id.to_string(),
                 network_instance_id: instance_id.to_string(),
-                network_config: serde_json::json!({
-                    "networking_method": "Standalone",
-                    "dns": { "domain": "unsupported.test" }
-                })
-                .to_string(),
+                network_config: saved_config.clone(),
                 source: "web".to_owned(),
                 disabled: false,
                 create_time: chrono::Utc::now().into(),
                 update_time: chrono::Utc::now().into(),
             });
         data.read().await.managed_runtime().applied_config_revision = None;
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let rpc = easytier::proto::rpc::bidirect::BidirectRpcManager::new();
         let mut clients = SessionClients {
             rpc: rpc
@@ -1550,19 +1652,17 @@ mod tests {
                     1,
                     String::new(),
                 ),
-            config: Box::new(NoConfigRpc),
+            config: Box::new(ConfigReader {
+                config: current.clone(),
+                reads: reads.clone(),
+            }),
             peer: rpc
                 .rpc_client()
                 .scoped_client::<PeerManageRpcClientFactory<BaseController>>(1, 1, String::new()),
         };
         let weak = std::sync::Arc::downgrade(&data);
         let mut cache = ReconcileCache::default();
-        for running in [true, false] {
-            round.running_inst_ids = if running {
-                HashSet::from([instance_id.to_string()])
-            } else {
-                HashSet::new()
-            };
+        for _ in 0..2 {
             let mut mutation_fence = RuntimeMutationFence::default();
             let outcome = tokio::time::timeout(
                 std::time::Duration::from_millis(250),
@@ -1577,8 +1677,8 @@ mod tests {
                 ),
             )
             .await
-            .expect("capability rejection must not wait for RPC");
-            assert!(outcome.managed_revision_failed);
+            .expect("matching runtime must not wait for a mutation RPC");
+            assert!(!outcome.has_failed);
             assert!(!mutation_fence.started);
             mark_config_revision_applied_if_current(
                 &weak,
@@ -1588,13 +1688,53 @@ mod tests {
                 &mutation_fence,
             )
             .await;
-            assert!(
+            assert_eq!(
                 data.read()
                     .await
                     .managed_runtime()
                     .applied_config_revision
-                    .is_none()
+                    .as_deref(),
+                Some("current")
             );
+        }
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(
+            cache.runtime_configs.entries[&instance_id.to_string()]
+                .dns
+                .is_none()
+        );
+        assert_eq!(round.local_configs[0].network_config, saved_config);
+        assert!(desired.dns.is_some());
+
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        clients.rpc = Box::new(WebClientServiceClient::new(RunRecorder(requests.clone())));
+        round.running_inst_ids.clear();
+        for source in ["web", "user", "legacy"] {
+            round.local_configs[0].source = source.to_owned();
+            let outcome = reconcile_desired_runtime_configs(
+                &ReconcileRoundContext {
+                    session_data: &weak,
+                    round: &round,
+                },
+                &mut clients,
+                &mut cache,
+                &mut RuntimeMutationFence::default(),
+            )
+            .await;
+            assert!(!outcome.has_failed);
+            assert_eq!(round.local_configs[0].network_config, saved_config);
+        }
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        for (index, request) in requests.iter().enumerate() {
+            assert!(request.config.as_ref().unwrap().dns.is_none());
+            assert!(!request.overwrite);
+            let expected_source = if index == 0 {
+                easytier::proto::api::manage::ConfigSource::Web
+            } else {
+                easytier::proto::api::manage::ConfigSource::User
+            };
+            assert_eq!(request.source, expected_source as i32);
         }
     }
 
@@ -2282,7 +2422,12 @@ mod tests {
     fn session_runtime_config_cache_misses_unknown_instance() {
         let cache = SessionRuntimeConfigCache::default();
         let action = cache
-            .plan("missing", config_with_port_forwards(Vec::new()), false)
+            .plan(
+                "missing",
+                config_with_port_forwards(Vec::new()),
+                false,
+                true,
+            )
             .expect("prepare action");
 
         assert!(action.is_none());
@@ -2305,6 +2450,7 @@ mod tests {
                     "managed",
                     manual.clone(),
                     heartbeat.support_manual_routes_patch,
+                    true,
                 )
                 .unwrap()
                 .unwrap();
@@ -2329,7 +2475,7 @@ mod tests {
 
         cache.remember("managed", config.clone());
         let action = cache
-            .plan("managed", config, false)
+            .plan("managed", config, false, true)
             .expect("prepare action")
             .expect("cached action");
 
@@ -2348,7 +2494,7 @@ mod tests {
 
         let unmanaged_desired = config_with_port_forwards(Vec::new());
         let action = cache
-            .plan("managed", unmanaged_desired, false)
+            .plan("managed", unmanaged_desired, false, true)
             .expect("prepare unmanaged hostname action")
             .expect("cached action");
         let runtime_reconcile::RuntimeReconcileAction::Unchanged(observed) = action else {
@@ -2360,7 +2506,7 @@ mod tests {
         let mut explicit_clear = config_with_port_forwards(Vec::new());
         explicit_clear.hostname = Some(String::new());
         let action = cache
-            .plan("managed", explicit_clear, false)
+            .plan("managed", explicit_clear, false, true)
             .expect("prepare explicit clear action")
             .expect("cached action");
         let runtime_reconcile::RuntimeReconcileAction::Patch(patch) = action else {
@@ -2379,7 +2525,7 @@ mod tests {
 
         cache.remember("managed", current);
         let action = cache
-            .plan("managed", desired, false)
+            .plan("managed", desired, false, true)
             .expect("prepare action")
             .expect("cached action");
 
@@ -2411,7 +2557,7 @@ mod tests {
         cache.forget("managed");
 
         let action = cache
-            .plan("managed", config, false)
+            .plan("managed", config, false, true)
             .expect("prepare action after remove");
         assert!(action.is_none());
     }
@@ -2424,7 +2570,7 @@ mod tests {
         remember_if_runtime_matches_desired("managed", &config, config.clone(), &mut cache)
             .expect("remember observed config after run");
         let action = cache
-            .plan("managed", config, false)
+            .plan("managed", config, false, true)
             .expect("prepare action after run")
             .expect("cached action");
 
@@ -2449,7 +2595,7 @@ mod tests {
                 .contains("runtime config still differs after managed run")
         );
         let action = cache
-            .plan("managed", desired, false)
+            .plan("managed", desired, false, true)
             .expect("prepare action after stale run result");
         assert!(action.is_none());
     }
@@ -2484,7 +2630,7 @@ mod tests {
         let mut cache = SessionRuntimeConfigCache::default();
         cache.remember("managed", observed);
         let action = cache
-            .plan("managed", desired, false)
+            .plan("managed", desired, false, true)
             .expect("prepare action after restore")
             .expect("cached action");
 
