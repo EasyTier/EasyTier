@@ -341,11 +341,14 @@ fn rdata_tokens(value: &str, decode_txt: bool) -> anyhow::Result<Vec<String>> {
             ch => {
                 ensure!(!ch.is_control(), "control character in RDATA");
                 let mut end = start + ch.len_utf8();
+                let mut escaped = decode_txt && ch == '\\';
                 while let Some(&(index, ch)) = chars.peek() {
-                    if ch.is_whitespace() || matches!(ch, ')' | ';') {
+                    // Escaped TXT delimiters belong to the character-string.
+                    if !escaped && (ch.is_whitespace() || matches!(ch, ')' | ';')) {
                         break;
                     }
                     ensure!(!ch.is_control(), "control character in RDATA");
+                    escaped = decode_txt && !escaped && ch == '\\';
                     chars.next();
                     end = index + ch.len_utf8();
                 }
@@ -354,7 +357,11 @@ fn rdata_tokens(value: &str, decode_txt: bool) -> anyhow::Result<Vec<String>> {
                     token.chars().count() <= 4093,
                     "RDATA token exceeds parser limit"
                 );
-                tokens.push(token.to_owned());
+                tokens.push(if decode_txt {
+                    decode_txt_string(token)?
+                } else {
+                    token.to_owned()
+                });
             }
         }
     }
@@ -480,9 +487,14 @@ mod tests {
             "é".repeat(127),
             "é".to_owned(),
             "\u{0663}".to_owned(),
+            "hello world".to_owned(),
+            "escaped space;close)".to_owned(),
+            "quote\"slash\\".to_owned(),
+            "é".to_owned(),
+            ";start".to_owned(),
         ];
         let value = format!(
-            r#""quote\" slash\\ ;\010" "" "{}" "{}" "\195\169" "\{}""#,
+            r#""quote\" slash\\ ;\010" "" "{}" "{}" "\195\169" "\{}" hello\032world escaped\ space\;close\) quote\"slash\\ \195\169 \;start"#,
             segments[2], segments[3], segments[5]
         );
         let mut input = record(DnsRecordType::Txt, &value);
@@ -515,6 +527,11 @@ mod tests {
             r#""\01""#.to_owned(),
             r#""\0x0""#.to_owned(),
             r#""\255""#.to_owned(),
+            r"\256".to_owned(),
+            r"\01".to_owned(),
+            r"\0x0".to_owned(),
+            r"\255".to_owned(),
+            "trailing\\".to_owned(),
         ] {
             input.value = Some(value);
             assert!(compile_zone(&zone(vec![input.clone()])).is_err());
