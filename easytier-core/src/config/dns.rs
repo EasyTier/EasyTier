@@ -89,6 +89,10 @@ pub fn compile_zone(input: &DnsZoneConfigRaw) -> anyhow::Result<DnsZone> {
         .map_err(|error| anyhow::anyhow!("{path}.{error:#}"))?;
         let owner = LowerName::new(record.name());
         let record_type = record.record_type();
+        ensure!(
+            record_type != RecordType::CNAME || owner != origin,
+            "{path}.name: CNAME cannot replace the zone origin's required SOA"
+        );
         let types = owner_types.entry(owner.clone()).or_default();
         ensure!(
             types.is_empty()
@@ -549,6 +553,14 @@ mod tests {
                 record(DnsRecordType::Cname, "target"),
             ]))
             .is_err()
+        );
+        let mut apex_cname = record(DnsRecordType::Cname, "target");
+        apex_cname.name = "@".to_owned();
+        assert!(
+            compile_zone(&zone(vec![apex_cname]))
+                .unwrap_err()
+                .to_string()
+                .contains("required SOA")
         );
     }
 

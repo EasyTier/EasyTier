@@ -34,6 +34,23 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
     }
 
     #[cfg(feature = "web-client")]
+    async fn dns_status(&self) -> anyhow::Result<crate::proto::api::config::DnsRuntimeStatus> {
+        #[cfg(all(feature = "magic-dns", feature = "tun"))]
+        {
+            anyhow::ensure!(
+                self.global_ctx.get_flags().accept_dns,
+                "DNS is disabled for this instance"
+            );
+            crate::instance::dns_server::client_instance::dns_status(
+                self.global_ctx.get_id().to_string(),
+            )
+            .await
+        }
+        #[cfg(not(all(feature = "magic-dns", feature = "tun")))]
+        anyhow::bail!("DNS runtime status is unavailable in this build")
+    }
+
+    #[cfg(feature = "web-client")]
     fn synchronize_config(
         &self,
         patch: &crate::proto::api::config::InstanceConfigPatch,

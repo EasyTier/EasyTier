@@ -96,7 +96,40 @@ message GetConfigResponse {
   string toml_config = 2;
 }
 
+// Published authority data, not a recursive DNS lookup or a save acknowledgement.
+message DnsRecordStatus {
+  string zone = 1;
+  bool automatic = 2;
+  repeated core_config.DnsRecordRaw requested = 3;
+  string authority = 4;
+  repeated core_config.DnsRecordRaw effective = 5;
+  repeated string notices = 6;
+}
+
+message DnsZoneStatus {
+  string origin = 1;
+  repeated core_config.DnsRecordRaw apex_records = 2;
+}
+
+message DnsRuntimeStatus {
+  // Absent when this instance has not published to the queried server.
+  core_config.DnsConfigRaw published_dns = 1;
+  repeated DnsRecordStatus records = 2;
+  repeated DnsZoneStatus zones = 3;
+}
+
+message GetDnsStatusRequest {
+  api.instance.InstanceIdentifier instance = 1;
+}
+
+message GetDnsStatusResponse {
+  core_config.DnsConfigRaw saved_dns = 1;
+  DnsRuntimeStatus runtime = 2;
+  optional bool saved_config_matches_contribution = 3;
+}
+
 service ConfigRpc {
   rpc PatchConfig(PatchConfigRequest) returns (PatchConfigResponse);
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  rpc GetDnsStatus(GetDnsStatusRequest) returns (GetDnsStatusResponse);
 }

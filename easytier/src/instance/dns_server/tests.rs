@@ -560,6 +560,15 @@ async fn test_magic_dns_runtime_clients_republish_after_election() {
         Some(("10.50.0.2", 60)),
     )
     .await;
+    let status = super::client_instance::dns_status(ctx_b.get_id().to_string())
+        .await
+        .unwrap();
+    assert!(status.published_dns.is_some());
+    assert!(status.records.iter().any(|record| {
+        record.effective.iter().any(|record| {
+            record.name == "second.runtime.test." && record.value.as_deref() == Some("10.50.0.2")
+        })
+    }));
 
     // The route revision is unchanged: the next normal cycle still uploads DNS.
     ctx_b.config.set_dns(Some(dns("second", "10.50.0.3", 60)));
@@ -611,6 +620,14 @@ async fn test_magic_dns_runtime_clients_republish_after_election() {
     )
     .await;
     expect_record(&core_b, &mut packets_b, "first.runtime.test.", None).await;
+    let status = super::client_instance::dns_status(ctx_b.get_id().to_string())
+        .await
+        .unwrap();
+    assert!(status.records.iter().any(|record| {
+        record.effective.iter().any(|record| {
+            record.name == "second.runtime.test." && record.value.as_deref() == Some("10.50.0.5")
+        })
+    }));
     let (cancel_a, task_a) = start(&core_a, ctx_a);
     expect_record(
         &core_b,

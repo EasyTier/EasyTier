@@ -319,6 +319,8 @@ struct DnsArgs {
 enum DnsSubCommand {
     /// Show this instance's saved DNS configuration.
     Show,
+    /// Compare saved DNS with a current server snapshot and show authority records.
+    Status,
     /// Patch DNS from a file containing only [dns] and [[dns.zone]].
     Set {
         #[arg(long)]
@@ -794,6 +796,13 @@ mod tests {
             cli.sub_command,
             SubCommand::Dns(DnsArgs {
                 sub_command: DnsSubCommand::Set { .. }
+            })
+        ));
+        let cli = Cli::try_parse_from(["easytier-cli", "dns", "status"]).unwrap();
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Dns(DnsArgs {
+                sub_command: DnsSubCommand::Status
             })
         ));
         let patch = parse_dns_file("[dns]\ndomain = 'mesh.test'\n").unwrap();
@@ -3414,6 +3423,37 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
+    async fn fetch_dns_status(&self) -> Result<serde_json::Value, Error> {
+        let response = self
+            .get_config_client()
+            .await?
+            .get_dns_status(
+                BaseController::default(),
+                easytier_proto::api::config::GetDnsStatusRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?;
+        Ok(serde_json::to_value(response)?)
+    }
+
+    async fn handle_dns_status(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_dns_status()))
+            .await?;
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+        self.print_results(&results, |state| {
+            println!(
+                "Current server snapshot (authority data, not a recursive query; \
+                 configuration publication is asynchronous):"
+            );
+            println!("{}", serde_json::to_string_pretty(state)?);
+            Ok(())
+        })
+    }
+
     async fn apply_dns_patch(
         &self,
         dns: easytier_proto::core_config::DnsConfigRaw,
@@ -3452,9 +3492,15 @@ impl<'a> CommandHandler<'a> {
             self.apply_dns_patch(dns).await?;
         }
         if *self.output_format == OutputFormat::Json {
-            println!("{}", serde_json::json!({ "saved": true }));
+            println!(
+                "{}",
+                serde_json::json!({ "saved": true, "publication": "asynchronous" })
+            );
         } else {
-            println!("DNS configuration saved; the existing DNS sync loop will publish it.");
+            println!(
+                "DNS configuration saved; publication is asynchronous. \
+                 Use `dns status` to inspect the current server snapshot and conflicts."
+            );
         }
         Ok(())
     }
@@ -3989,6 +4035,7 @@ async fn main() -> Result<(), Error> {
         }
         SubCommand::Dns(args) => match &args.sub_command {
             DnsSubCommand::Show => handler.handle_dns_show().await?,
+            DnsSubCommand::Status => handler.handle_dns_status().await?,
             DnsSubCommand::Set { file } => {
                 let contents = std::fs::read_to_string(file).with_context(|| {
                     format!("failed to read DNS configuration {}", file.display())

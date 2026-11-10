@@ -22,6 +22,26 @@ use crate::{
 
 use super::MAGIC_DNS_INSTANCE_ADDR;
 
+pub(crate) async fn dns_status(
+    instance_id: String,
+) -> anyhow::Result<crate::proto::api::config::DnsRuntimeStatus> {
+    tokio::time::timeout(Duration::from_secs(3), async move {
+        let mut client = runtime_rpc_client(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
+        let stub = client
+            .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>(String::new())
+            .await?;
+        let status = stub
+            .get_dns_status(
+                BaseController::default(),
+                crate::proto::magic_dns::GetDnsStatusRequest { instance_id },
+            )
+            .await?;
+        Ok(status)
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("DNS status query timed out; retry after election"))?
+}
+
 pub struct MagicDnsClientInstance {
     rpc_client: RuntimeRpcClient,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,

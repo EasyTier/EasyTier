@@ -605,6 +605,16 @@ mod tests {
     impl ConfigRpc for PatchRpc {
         type Controller = BaseController;
 
+        async fn get_dns_status(
+            &self,
+            _: BaseController,
+            _: easytier_proto::api::config::GetDnsStatusRequest,
+        ) -> easytier_proto::rpc_types::error::Result<
+            easytier_proto::api::config::GetDnsStatusResponse,
+        > {
+            unreachable!("configuration reconciliation does not query DNS publication")
+        }
+
         async fn patch_config(
             &self,
             _: BaseController,

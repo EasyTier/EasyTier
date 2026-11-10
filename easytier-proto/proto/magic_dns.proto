@@ -3,6 +3,7 @@ syntax = "proto3";
 import "google/protobuf/timestamp.proto";
 import "common.proto";
 import "api_instance.proto";
+import "api_config.proto";
 import "core_config.proto";
 
 package magic_dns;
@@ -40,6 +41,10 @@ message GetDnsRecordResponse {
     map<string, DnsRecordList> records = 1;
 }
 
+message GetDnsStatusRequest {
+    string instance_id = 1;
+}
+
 message HandshakeRequest {}
 
 message HandshakeResponse {}
@@ -49,4 +54,5 @@ service MagicDnsServerRpc {
     rpc Heartbeat(common.Void) returns (common.Void) {}
     rpc UpdateDnsRecord(UpdateDnsRecordRequest) returns (common.Void) {}
     rpc GetDnsRecord(common.Void) returns (GetDnsRecordResponse) {}
+    rpc GetDnsStatus(GetDnsStatusRequest) returns (api.config.DnsRuntimeStatus) {}
 }

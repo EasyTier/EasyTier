@@ -351,6 +351,10 @@ impl Server {
         Ok(())
     }
 
+    pub async fn local_origins(&self) -> BTreeSet<LowerName> {
+        self.local_zones.read().await.keys().cloned().collect()
+    }
+
     /// Publishes a complete batch under the same Catalog write lock used by
     /// authority selection. Keep the local CNAME lookup index in the same batch.
     pub async fn replace_zones(

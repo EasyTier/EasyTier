@@ -89,6 +89,20 @@ where
         self.instance_runtime.management_events()
     }
 
+    #[cfg(feature = "web-client")]
+    pub async fn dns_status(
+        self: &Arc<Self>,
+    ) -> anyhow::Result<crate::proto::api::config::DnsRuntimeStatus> {
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            return tokio_util::task::AbortOnDropHandle::new(
+                runtime.spawn(async move { instance.instance_runtime.dns_status().await }),
+            )
+            .await?;
+        }
+        self.instance_runtime.dns_status().await
+    }
+
     pub fn global_peer_map_snapshot(&self) -> crate::proto::peer_rpc::GetGlobalPeerMapResponse {
         self.peer_center.global_peer_map_snapshot()
     }

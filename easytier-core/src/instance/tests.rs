@@ -725,7 +725,10 @@ mod portable_runtime {
         };
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
         use easytier_proto::{
-            api::config::{ConfigRpc, GetConfigRequest, InstanceConfigPatch, PatchConfigRequest},
+            api::config::{
+                ConfigRpc, DnsRuntimeStatus, GetConfigRequest, GetDnsStatusRequest,
+                InstanceConfigPatch, PatchConfigRequest,
+            },
             api::instance::{
                 PeerManageRpc, ShowNodeInfoRequest,
                 instance_identifier::{InstanceSelector, Selector},
@@ -734,7 +737,25 @@ mod portable_runtime {
             rpc_types::controller::BaseController,
         };
 
-        struct ManagementTestFactory;
+        struct DnsStatusHost(Arc<std::sync::Mutex<DnsRuntimeStatus>>);
+
+        #[async_trait]
+        impl InstanceRuntimeHost for DnsStatusHost {
+            async fn prepare(
+                &self,
+                _: Arc<CorePacketPlane>,
+            ) -> anyhow::Result<Option<Arc<dyn crate::gateway::dhcp::DhcpHost>>> {
+                Ok(None)
+            }
+
+            async fn shutdown(&self) {}
+
+            async fn dns_status(&self) -> anyhow::Result<DnsRuntimeStatus> {
+                Ok(self.0.lock().unwrap().clone())
+            }
+        }
+
+        struct ManagementTestFactory(Arc<std::sync::Mutex<DnsRuntimeStatus>>);
 
         impl InstanceFactory for ManagementTestFactory {
             type Instance = CoreInstance<TestHost>;
@@ -751,11 +772,16 @@ mod portable_runtime {
                 adapters.config.force_exit_node = true;
                 adapters.config.public_ipv6_provider_supported = true;
                 adapters.config.easytier_version = "host-version".to_owned();
+                adapters.instance_runtime = Arc::new(DnsStatusHost(self.0.clone()));
                 CoreInstance::from_toml(config, adapters)
             }
         }
 
-        let manager = Arc::new(InstanceManager::new(ManagementTestFactory, None));
+        let published = Arc::new(std::sync::Mutex::new(DnsRuntimeStatus::default()));
+        let manager = Arc::new(InstanceManager::new(
+            ManagementTestFactory(published.clone()),
+            None,
+        ));
         let config = TomlConfig::new_from_str(
             r#"
 instance_name = "managed-by-name"
@@ -839,6 +865,56 @@ network_secret = "network-secret"
         assert_eq!(saved.hostname.as_deref(), Some("patched-in-core"));
         assert_eq!(saved.dns, Some(dns));
         assert!(response.toml_config.contains("192.0.2.10"));
+        let status_request = || GetDnsStatusRequest {
+            instance: Some(selector()),
+        };
+        let pending = rpc
+            .get_dns_status(BaseController::default(), status_request())
+            .await
+            .unwrap();
+        assert_eq!(pending.saved_config_matches_contribution, Some(false));
+        assert!(pending.runtime.unwrap().published_dns.is_none());
+        published.lock().unwrap().published_dns = pending.saved_dns;
+        let applied = rpc
+            .get_dns_status(BaseController::default(), status_request())
+            .await
+            .unwrap();
+        assert_eq!(applied.saved_config_matches_contribution, Some(true));
+        // Saving and GetConfig do not advance the independently observed state.
+        rpc.patch_config(
+            BaseController::default(),
+            PatchConfigRequest {
+                instance: Some(selector()),
+                patch: Some(InstanceConfigPatch {
+                    dns: Some(easytier_proto::core_config::DnsConfigRaw {
+                        domain: Some("new.test".to_owned()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let pending = rpc
+            .get_dns_status(BaseController::default(), status_request())
+            .await
+            .unwrap();
+        assert_eq!(pending.saved_config_matches_contribution, Some(false));
+        assert_eq!(
+            pending.saved_dns.unwrap().domain.as_deref(),
+            Some("new.test.")
+        );
+        assert_eq!(
+            pending
+                .runtime
+                .unwrap()
+                .published_dns
+                .unwrap()
+                .domain
+                .as_deref(),
+            Some("mesh.test.")
+        );
 
         let secret = BASE64_STANDARD.encode([9u8; 32]);
         rpc.patch_config(

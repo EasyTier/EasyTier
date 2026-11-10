@@ -1,4 +1,4 @@
-pub(crate) use easytier_core::gateway::magic_dns::{Zone, dns_domain, parse_origin};
+pub(crate) use easytier_core::gateway::magic_dns::{dns_domain, parse_origin};
 
 #[cfg(test)]
 mod tests {

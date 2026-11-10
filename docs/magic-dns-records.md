@@ -43,7 +43,7 @@ and unused trailing tokens are rejected.
 
 Supported types are A, AAAA, ANAME, CAA, CERT, CNAME, CSYNC, HINFO, HTTPS, MX,
 NAPTR, NS, OPENPGPKEY, PTR, SOA, SRV, SSHFP, SVCB, TLSA and TXT. This input
-support does not add DNSSEC, ANAME resolution or change automatic SOA behavior.
+support does not add DNSSEC or ANAME resolution.
 
 `origin` must be a non-root DNS name. A trailing dot is optional on the zone
 origin. Origins must be unique within one instance's configuration after
@@ -62,7 +62,8 @@ TTL, and a zone without a TTL defaults to zero. Explicit zero is preserved.
 Records with the same owner and type form one RRset and must have the same
 effective TTL. Multiple values are allowed except for the library's single-value
 types such as CNAME, ANAME and SOA. Duplicate RDATA and CNAME conflicts are errors.
-SOA records must use the zone origin.
+SOA records must use the zone origin. A CNAME at the origin is rejected because
+every authoritative zone needs its own SOA.
 
 Input order, relative names and omitted TTLs are preserved when saving the
 configuration. DNS answers do not promise RRset value order. Runtime comparison
@@ -120,24 +121,80 @@ accepted and reports paths such as `dns.zone[0].records[1].value`. Compound
 RDATA errors identify `value`, rather than separate MX/SRV subfields. Existing
 management error responses carry these paths and the parser's explanation.
 
-The existing management operation replaces the complete configuration candidate;
-records do not have IDs or individual CRUD operations. Concurrent full edits
-can overwrite each other. This model does not add configuration CAS or DNS
-publication acknowledgements. CLI configuration files use the TOML model above.
+`ConfigRpc.PatchConfig` and `easytier-cli dns set --file dns.toml` patch a running
+instance. An omitted `dns` or child field preserves its saved value. A supplied
+zone array replaces that instance's static zones; `zone: []` or `dns clear`
+clears them while retaining its default domain and automatic node records.
+`dns show` and `ConfigRpc.GetConfig` read saved configuration.
+
+Successful saving does not confirm publication. The existing 500 ms loop sends
+the complete contribution to the elected server asynchronously. Concurrent full
+edits can overwrite each other. Records do not have IDs or individual CRUD
+operations; this model adds neither configuration CAS nor a publication ACK
+state machine.
 
 ## Runtime boundary
 
-Static records come from the local configuration of the EasyTier instance that
-wins the local Magic DNS server election. They coexist with automatically
-generated node records and survive route updates. Configuration changes take
-effect when the instance restarts. If the elected instance has no `[dns]`
-configuration, no static records are served, even when another local instance
-has some. Records are not distributed to other machines.
+All connected local instances contribute, including Web-managed and standalone
+instances. The elected server aggregates equal normalized origins into one zone.
+Different origins remain separate authoritative zones, selected by the longest
+matching suffix. There is no fallback to a parent zone after a negative answer.
+For example, `db.dev` in `corp.test` is hidden while a `dev.corp.test` zone
+exists, even if the child only contains `api`. To add names without creating this
+boundary, put them in the same origin.
 
-Only the elected instance's configured zones are added to the system resolver
-match list, after the default zone. Configured zones are authoritative: a name
-missing from a configured zone does not fall back to system DNS. Queries outside
-those zones retain the existing forwarding behavior.
+Conflicts are resolved per name and RRset, so unrelated records and route
+updates still take effect:
+
+- A, AAAA and PTR values are combined across instances and deduplicated by
+  canonical RDATA. Automatic A records participate in the same address set.
+- Other types keep one instance's complete RRset. Identical sets are deduplicated;
+  differing sets use the lowest normalized instance UUID. Multi-valued sets
+  within one configuration remain supported. This is a conservative merge
+  policy, not a claim that DNS forbids those types from having multiple values:
+  combining TXT can create two SPF policies, MX can mix Null MX with mail servers,
+  service records can change selection, and certificate records can broaden trust.
+- A CNAME cannot coexist with other types at its name. Manual contributions take
+  precedence over automatic node records, then the lowest instance UUID wins.
+  ANAME remains a singleton RRset and can coexist with other non-CNAME types;
+  this does not add ANAME address substitution.
+- Compatible sources use their minimum TTL for every record in the effective
+  RRset. Suppressed sources do not change it. Thus a static A merged with an
+  automatic A has TTL 1; saved TTLs remain unchanged.
+- One explicit SOA wins by UUID, independent of its serial. A default SOA is
+  generated only when no instance supplies one. Its original serial and timers
+  are preserved, including negative-cache settings; serials are not incremented.
+  NS records do not choose an instance or introduce delegation machinery.
+
+Disconnect withdraws the connection's contribution and recomputes winners.
+Clearing static zones leaves its node records intact. Election rebuilds the state
+from republished contributions, so availability and winners can change while
+members reconnect. DNS caches can retain old answers until their TTL expires.
+The established empty default route zones remain authoritative after withdrawal.
+Static-only zones are removed when their last contributor leaves. Records are
+not distributed to other machines.
+
+The system resolver match list includes all contributed default and static
+origins, after the elected instance's default search domain. A name missing from
+its selected zone does not fall back to system DNS. Queries outside local zones
+retain the existing forwarding behavior.
+
+Use `easytier-cli --instance-id <uuid> dns status` or
+`ConfigRpc.GetDnsStatus` with the existing instance selector to inspect a current
+server snapshot. `saved_config_matches_contribution` compares the saved DNS
+configuration with that server's accepted contribution; it is false while a
+new save is awaiting publication or no contribution has been observed. It does
+not mean every saved record won conflict resolution. Each contributed RRset
+shows requested values, actual selected authority, records at that name and
+suppression, merge or TTL notices. Zone apex records include the selected SOA.
+Only names and zones contributed by the selected instance are enumerated.
+
+These are published authority records, not final recursive query results:
+CNAME chains, wildcard matching, ANAME behavior and client caches still affect
+queries. A child-zone notice explains when a record is present in the parent
+authority but unreachable through that parent. DNS being disabled, an unavailable
+server or an election gap is reported as unavailable, not as synchronous save
+failure. This query does not change `GetConfig` or Web's saved-config readback.
 
 This does not change Magic DNS activation, the fixed DNS address, TUN
 requirements, platform DNS setup or node record RPC. Systems without automatic

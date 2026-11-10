@@ -253,6 +253,11 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
         Vec::new()
     }
 
+    #[cfg(feature = "web-client")]
+    async fn dns_status(&self) -> anyhow::Result<crate::proto::api::config::DnsRuntimeStatus> {
+        anyhow::bail!("DNS runtime status is not supported by this Host")
+    }
+
     /// Applies Host-side cached views of fields already committed to the
     /// shared TOML model.
     #[cfg(feature = "web-client")]

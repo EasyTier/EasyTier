@@ -98,12 +98,13 @@ where
 }
 
 /// One instance's contribution, owned by its long-lived publishing connection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MagicDnsClientRecord {
     pub source: Option<String>,
     pub zone: LowerName,
     pub routes: Vec<MagicDnsRoute>,
     pub configured: BTreeMap<LowerName, Vec<super::Zone>>,
+    pub dns: crate::config::toml::DnsConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -172,6 +173,7 @@ impl MagicDnsRecordStore {
                 zone,
                 routes,
                 configured,
+                dns,
             },
         );
         Ok(MagicDnsRecordSnapshot::from_clients(clients))

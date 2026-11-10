@@ -9,9 +9,10 @@
 use super::{
     MAGIC_DNS_INSTANCE_SOCKET_ADDR,
     config::{GeneralConfigBuilder, RunConfigBuilder},
+    records::MergedRecords,
     server::Server,
     system_config::{OSConfig, SystemConfig},
-    zone::{self, Zone},
+    zone,
 };
 use crate::{
     common::{
@@ -20,15 +21,13 @@ use crate::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
         netns::NetNS,
     },
-    instance::dns_server::{
-        config::{Record, RecordBuilder, RecordType},
-        server::build_authority,
-    },
     proto::{
+        api::config::DnsRuntimeStatus,
         common::{TunnelInfo, Void},
         magic_dns::{
-            DnsRecord, DnsRecordA, DnsRecordList, GetDnsRecordResponse, HandshakeRequest,
-            HandshakeResponse, MagicDnsServerRpc, MagicDnsServerRpcServer, UpdateDnsRecordRequest,
+            DnsRecord, DnsRecordA, DnsRecordList, GetDnsRecordResponse, GetDnsStatusRequest,
+            HandshakeRequest, HandshakeResponse, MagicDnsServerRpc, MagicDnsServerRpcServer,
+            UpdateDnsRecordRequest,
             dns_record::{self},
         },
         rpc::standalone::{
@@ -55,7 +54,6 @@ use std::{
     io,
     net::Ipv4Addr,
     sync::Arc,
-    time::Duration,
 };
 
 pub(super) struct MagicDnsServerInstanceData {
@@ -65,6 +63,7 @@ pub(super) struct MagicDnsServerInstanceData {
     fake_ip: Ipv4Addr,
     manage_fake_ip_route: bool,
     route_store: MagicDnsRecordStore,
+    record_status: Mutex<BTreeMap<String, DnsRuntimeStatus>>,
     record_apply: Arc<tokio::sync::Mutex<()>>,
     owner_instance_id: String,
     default_zone: LowerName,
@@ -74,98 +73,6 @@ pub(super) struct MagicDnsServerInstanceData {
 }
 
 impl MagicDnsServerInstanceData {
-    fn build_zone<'a>(
-        routes: impl Iterator<Item = &'a MagicDnsRoute>,
-        zone: &LowerName,
-        snapshot: &MagicDnsRecordSnapshot,
-    ) -> anyhow::Result<hickory_server::store::in_memory::InMemoryAuthority> {
-        let mut records: Vec<Record> = vec![];
-        for route in routes {
-            if route.hostname.is_empty() {
-                continue;
-            }
-
-            let Some(ipv4_addr) = route.ipv4_addr else {
-                continue;
-            };
-
-            let record = RecordBuilder::default()
-                .rr_type(RecordType::A)
-                .name(format!("{}.{}", route.hostname, zone))
-                .value(ipv4_addr.to_string())
-                .ttl(Duration::from_secs(1))
-                .build()?;
-
-            // check record name valid for dns
-            if let Err(e) = record.name() {
-                tracing::error!("Invalid subdomain label: {}", e);
-                continue;
-            }
-
-            records.push(record);
-        }
-
-        let soa_record = RecordBuilder::default()
-            .rr_type(RecordType::SOA)
-            .name(zone.to_string())
-            .value(format!(
-                "ns.{} hostmaster.{} 2023101001 7200 3600 1209600 86400",
-                zone, zone
-            ))
-            .ttl(Duration::from_secs(60))
-            .build()?;
-        records.push(soa_record);
-
-        let mut authority = build_authority(zone, &records)?;
-        for group in snapshot
-            .clients
-            .values()
-            .filter_map(|client| client.configured.get(zone))
-        {
-            for record in group.iter().flat_map(Zone::iter_records) {
-                authority.upsert_mut(record.clone(), 0);
-            }
-        }
-        Ok(authority)
-    }
-
-    fn validate_conflicts(snapshot: &MagicDnsRecordSnapshot) -> anyhow::Result<()> {
-        // Cross-instance static conflicts are rejected before any Catalog or OS
-        // mutation. Keep single-instance zone parser/upsert behavior unchanged.
-        let mut records: BTreeMap<(LowerName, LowerName), Vec<(&str, &hickory_proto::rr::Record)>> =
-            BTreeMap::new();
-        for (id, client) in &snapshot.clients {
-            for (origin, group) in &client.configured {
-                for record in group.iter().flat_map(Zone::iter_records) {
-                    let key = (origin.clone(), LowerName::new(record.name()));
-                    for (other_id, other) in records.entry(key.clone()).or_default().iter() {
-                        if *other_id == id {
-                            continue;
-                        }
-                        use hickory_proto::rr::RecordType as R;
-                        let same_type = record.record_type() == other.record_type();
-                        let cname =
-                            record.record_type() == R::CNAME || other.record_type() == R::CNAME;
-                        let conflict = (cname && !same_type)
-                            || (same_type && record.ttl() != other.ttl())
-                            || (same_type
-                                && matches!(record.record_type(), R::CNAME | R::SOA)
-                                && record.data() != other.data());
-                        anyhow::ensure!(
-                            !conflict,
-                            "DNS static conflict at {} in {} with instance {}",
-                            key.1,
-                            origin,
-                            other_id
-                        );
-                    }
-                    records.get_mut(&key).unwrap().push((id, record));
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn system_domains(&self, snapshot: &MagicDnsRecordSnapshot) -> Vec<String> {
         let default = snapshot
             .clients
@@ -191,7 +98,6 @@ impl MagicDnsServerInstanceData {
             !self.closing.load(std::sync::atomic::Ordering::Acquire),
             "DNS server is closing"
         );
-        Self::validate_conflicts(&snapshot)?;
         let previous = self.route_store.snapshot();
         let mut zones: BTreeSet<LowerName> = snapshot.zones.keys().cloned().collect();
         zones.extend(snapshot.configured_origins().cloned());
@@ -200,19 +106,21 @@ impl MagicDnsServerInstanceData {
         if zones.is_empty() {
             zones.insert(self.default_zone.clone());
         }
-        let removals = previous
+        let removals: BTreeSet<_> = previous
             .configured_origins()
             .filter(|origin| !zones.contains(*origin))
             .cloned()
             .collect();
-        let mut authorities = BTreeMap::new();
-        for zone in zones {
-            let routes = snapshot.zones.get(&zone).into_iter().flatten();
-            authorities.insert(
-                zone.clone(),
-                Arc::new(Self::build_zone(routes, &zone, &snapshot)?),
-            );
-        }
+        // Empty former route zones remain authoritative. Include them when
+        // resolving parent/child visibility as well as when publishing records.
+        zones.extend(
+            self.dns_server
+                .local_origins()
+                .await
+                .difference(&removals)
+                .cloned(),
+        );
+        let merged = MergedRecords::build(&snapshot, zones)?;
         let domains = self.system_domains(&snapshot);
         let domains_changed = domains != *self.system_dns_domains.lock().unwrap();
         let mut system_result = Ok(());
@@ -251,7 +159,10 @@ impl MagicDnsServerInstanceData {
         } else {
             apply
         };
-        self.dns_server.replace_zones(authorities, removals).await;
+        self.dns_server
+            .replace_zones(merged.authorities, removals)
+            .await;
+        *self.record_status.lock().unwrap() = merged.status;
         self.route_store.commit(snapshot);
         system_result
     }
@@ -355,6 +266,27 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         }
         Ok(GetDnsRecordResponse { records: ret })
     }
+
+    async fn get_dns_status(
+        &self,
+        _ctrl: Self::Controller,
+        input: GetDnsStatusRequest,
+    ) -> crate::proto::rpc_types::error::Result<DnsRuntimeStatus> {
+        let instance_id = uuid::Uuid::parse_str(&input.instance_id)
+            .map_err(anyhow::Error::from)?
+            .to_string();
+        let _apply = self.record_apply.lock().await;
+        if self.closing.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(anyhow::anyhow!("DNS server is closing; retry after election").into());
+        }
+        Ok(self
+            .record_status
+            .lock()
+            .unwrap()
+            .get(&instance_id)
+            .cloned()
+            .unwrap_or_default())
+    }
 }
 
 // This should only be used for UDP response.
@@ -451,6 +383,9 @@ impl RpcServerHook for MagicDnsServerInstanceData {
         let apply = self.record_apply.clone().lock_owned().await;
         let remote_addr: url::Url = remote_addr.into();
         let snapshot = self.route_store.without_source(remote_addr.as_ref());
+        if snapshot.clients == self.route_store.snapshot().clients {
+            return;
+        }
         if let Err(error) = self.apply_snapshot(snapshot, apply, true).await {
             tracing::error!(?error, "failed to update DNS after publisher disconnect");
         }
@@ -577,6 +512,7 @@ impl MagicDnsServerInstance {
             fake_ip,
             manage_fake_ip_route,
             route_store,
+            record_status: Mutex::new(BTreeMap::new()),
             record_apply: Arc::new(tokio::sync::Mutex::new(())),
             owner_instance_id,
             default_zone: default_zone.clone(),
@@ -667,6 +603,7 @@ mod tests {
         rr::{RData, RecordType},
     };
     use std::str::FromStr;
+    use std::time::Duration;
 
     type DomainConfigRecord = (Vec<String>, Vec<String>);
     type DomainConfigSpyCalls = Arc<Mutex<Vec<DomainConfigRecord>>>;
@@ -743,6 +680,7 @@ mod tests {
             fake_ip: "100.100.100.101".parse().unwrap(),
             manage_fake_ip_route: false,
             route_store,
+            record_status: Mutex::new(BTreeMap::new()),
             record_apply: Arc::new(tokio::sync::Mutex::new(())),
             owner_instance_id: "00000000-0000-0000-0000-000000000001".to_owned(),
             default_zone: zone::parse_origin(default_zone).unwrap(),
@@ -1159,6 +1097,12 @@ mod tests {
                 &data.dns_server.read_catalog().await.find(&origin).unwrap()[0]
             ));
         }
+        data.on_client_disconnected(controller(54003).get_tunnel_info().cloned())
+            .await;
+        assert!(Arc::ptr_eq(
+            &accepted,
+            &data.dns_server.read_catalog().await.find(&origin).unwrap()[0]
+        ));
 
         let mut changed = dns;
         changed.zone.as_mut().unwrap().items[0].ttl = Some(43);
@@ -1334,11 +1278,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejected_static_snapshot_preserves_accepted_contribution_and_routes() {
-        let data = data_with(None).await;
-        data.update_dns_record(
-            controller(54001),
-            contribution(
+    async fn conflicts_are_deterministic_and_do_not_freeze_names_or_routes() {
+        for reverse in [false, true] {
+            let data = data_with(None).await;
+            let preferred = contribution(
                 2,
                 config(&[(
                     "shared.test",
@@ -1347,75 +1290,359 @@ mod tests {
                         record("first", DnsRecordType::A, "10.0.0.1", None),
                     ],
                 )]),
-            ),
-        )
-        .await
-        .unwrap();
-        data.update_dns_record(
-            controller(54002),
-            contribution(
-                3,
-                config(&[(
-                    "shared.test",
-                    &[record("safe", DnsRecordType::A, "10.0.0.3", None)],
-                )]),
-            ),
-        )
-        .await
-        .unwrap();
-        for records in [
-            vec![record("alias", DnsRecordType::Cname, "other", None)],
-            vec![record("alias", DnsRecordType::A, "10.0.0.4", None)],
-            vec![record("bad", DnsRecordType::A, "invalid", None)],
-        ] {
-            let error = data
-                .update_dns_record(
-                    controller(54002),
-                    contribution(3, config(&[("shared.test", &records)])),
-                )
-                .await
-                .unwrap_err();
-            assert!(!error.to_string().is_empty());
+            );
+            let mut other = request("10.0.0.3/24");
+            other.instance_id = uuid::Uuid::from_u128(3).to_string();
+            other.dns = Some(config(&[(
+                "shared.test",
+                &[
+                    record("alias", DnsRecordType::Cname, "second", None),
+                    record("second", DnsRecordType::A, "10.0.0.2", None),
+                    record("safe", DnsRecordType::A, "10.0.0.3", None),
+                ],
+            )]));
+            let mut updates = [(54001, preferred), (54002, other)];
+            if reverse {
+                updates.reverse();
+            }
+            for (port, update) in updates {
+                data.update_dns_record(controller(port), update)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                a(&data, "alias.shared.test.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 1)]
+            );
             assert_eq!(
                 a(&data, "safe.shared.test.").await,
                 vec![Ipv4Addr::new(10, 0, 0, 3)]
             );
+            assert_eq!(
+                a(&data, "node.et.net.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 3)]
+            );
+            let status = data
+                .get_dns_status(
+                    BaseController::default(),
+                    GetDnsStatusRequest {
+                        instance_id: uuid::Uuid::from_u128(3).to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            let alias = status
+                .records
+                .iter()
+                .find(|record| record.requested[0].name == "alias.shared.test.")
+                .unwrap();
+            assert!(
+                alias
+                    .notices
+                    .iter()
+                    .any(|notice| notice.contains("suppressed"))
+            );
+            assert_eq!(
+                alias.effective[0].value.as_deref(),
+                Some("first.shared.test.")
+            );
+            assert!(
+                status
+                    .records
+                    .iter()
+                    .all(|record| record.requested[0].name != "first.shared.test.")
+            );
+
+            let mut update = request("10.0.0.4/24");
+            update.instance_id = uuid::Uuid::from_u128(3).to_string();
+            update.dns = Some(config(&[(
+                "shared.test",
+                &[
+                    record("alias", DnsRecordType::A, "10.0.0.8", None),
+                    record("new", DnsRecordType::A, "10.0.0.4", None),
+                ],
+            )]));
+            data.update_dns_record(controller(54002), update)
+                .await
+                .unwrap();
+            assert_eq!(
+                a(&data, "alias.shared.test.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 1)]
+            );
+            assert_eq!(
+                a(&data, "new.shared.test.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 4)]
+            );
+            assert_eq!(
+                a(&data, "node.et.net.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 4)]
+            );
+            assert!(
+                data.update_dns_record(
+                    controller(54002),
+                    contribution(
+                        3,
+                        config(&[(
+                            "shared.test",
+                            &[record("bad", DnsRecordType::A, "invalid", None),]
+                        )])
+                    )
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(
+                a(&data, "new.shared.test.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 4)]
+            );
+            data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
+                .await;
+            assert_eq!(
+                a(&data, "alias.shared.test.").await,
+                vec![Ipv4Addr::new(10, 0, 0, 8)]
+            );
+            assert!(
+                data.get_dns_status(
+                    BaseController::default(),
+                    GetDnsStatusRequest {
+                        instance_id: uuid::Uuid::from_u128(2).to_string(),
+                    }
+                )
+                .await
+                .unwrap()
+                .published_dns
+                .is_none()
+            );
         }
-        let mut refresh = request("10.0.0.5/24");
-        refresh.instance_id = uuid::Uuid::from_u128(3).to_string();
-        refresh.dns = Some(config(&[(
-            "shared.test",
-            &[record("safe", DnsRecordType::A, "10.0.0.3", None)],
-        )]));
-        data.update_dns_record(controller(54002), refresh)
-            .await
-            .unwrap();
-        assert_eq!(
-            a(&data, "safe.shared.test.").await,
-            vec![Ipv4Addr::new(10, 0, 0, 3)]
-        );
+    }
+
+    #[tokio::test]
+    async fn compatible_sets_merge_but_policy_sets_keep_one_source() {
+        let data = data_with(None).await;
+        for (id, port, ip, ipv6, target, ttl) in [
+            (3, 54002, "10.0.0.3", "fd00::3", "second", 20),
+            (2, 54001, "10.0.0.2", "fd00::2", "first", 60),
+        ] {
+            let mut update = request("10.0.0.9/24");
+            update.instance_id = uuid::Uuid::from_u128(id).to_string();
+            update.dns = Some(config(&[(
+                "et.net",
+                &[
+                    record("node", DnsRecordType::A, ip, Some(ttl)),
+                    record("node", DnsRecordType::Aaaa, ipv6, Some(ttl)),
+                    record("ptr", DnsRecordType::Ptr, target, Some(ttl)),
+                    record(
+                        "info",
+                        DnsRecordType::Txt,
+                        &format!("\"v=spf1 include:{target} -all\""),
+                        Some(ttl),
+                    ),
+                    record("aname", DnsRecordType::Aname, target, Some(ttl)),
+                    record("node-alias", DnsRecordType::Cname, "node", Some(ttl)),
+                ],
+            )]));
+            update.routes.push(Route {
+                hostname: "node-alias".to_owned(),
+                ipv4_addr: Some("10.0.0.10/24".parse::<Ipv4Inet>().unwrap().into()),
+                ..Default::default()
+            });
+            data.update_dns_record(controller(port), update)
+                .await
+                .unwrap();
+        }
         assert_eq!(
             a(&data, "node.et.net.").await,
-            vec![Ipv4Addr::new(10, 0, 0, 5)]
+            vec![
+                Ipv4Addr::new(10, 0, 0, 2),
+                Ipv4Addr::new(10, 0, 0, 3),
+                Ipv4Addr::new(10, 0, 0, 9),
+            ]
         );
+        assert!(
+            query(&data, "node.et.net.", RecordType::A)
+                .await
+                .answers()
+                .iter()
+                .all(|record| record.ttl() == 1)
+        );
+        let aaaa = query(&data, "node.et.net.", RecordType::AAAA).await;
+        assert_eq!(aaaa.answers().len(), 2);
+        assert!(aaaa.answers().iter().all(|record| record.ttl() == 20));
+        let ptr = query(&data, "ptr.et.net.", RecordType::PTR).await;
+        assert_eq!(ptr.answers().len(), 2);
+        assert!(ptr.answers().iter().all(|record| record.ttl() == 20));
+        for (name, kind, expected) in [
+            ("info.et.net.", RecordType::TXT, "v=spf1 include:first -all"),
+            ("aname.et.net.", RecordType::ANAME, "first.et.net."),
+        ] {
+            let response = query(&data, name, kind).await;
+            assert_eq!(response.answers().len(), 1);
+            assert_eq!(response.answers()[0].data().to_string(), expected);
+            assert_eq!(response.answers()[0].ttl(), 60);
+        }
+        assert_eq!(
+            a(&data, "node-alias.et.net.").await,
+            a(&data, "node.et.net.").await
+        );
+        let status = data
+            .get_dns_status(
+                BaseController::default(),
+                GetDnsStatusRequest {
+                    instance_id: uuid::Uuid::from_u128(3).to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(status.records.iter().any(|record| {
+            record.automatic
+                && record.requested[0].name == "node-alias.et.net."
+                && record
+                    .notices
+                    .iter()
+                    .any(|notice| notice.contains("suppressed"))
+        }));
+        data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
+            .await;
+        let txt = query(&data, "info.et.net.", RecordType::TXT).await;
+        assert_eq!(
+            txt.answers()[0].data().to_string(),
+            "v=spf1 include:second -all"
+        );
+        assert_eq!(txt.answers()[0].ttl(), 20);
+    }
+
+    #[tokio::test]
+    async fn explicit_soa_and_child_zone_status_match_authority_boundaries() {
+        let parent = config(&[(
+            "corp.test",
+            &[
+                record("db.dev", DnsRecordType::A, "10.0.0.1", None),
+                record(
+                    "@",
+                    DnsRecordType::Soa,
+                    "ns hostmaster 1 7200 3600 1209600 30",
+                    Some(40),
+                ),
+            ],
+        )]);
+        let data = data_with(Some(&parent)).await;
+        let soa = query(&data, "corp.test.", RecordType::SOA).await;
+        assert_eq!(soa.answers()[0].data().as_soa().unwrap().serial(), 1);
+        assert_eq!(soa.answers()[0].ttl(), 40);
         data.update_dns_record(
             controller(54002),
             contribution(
-                3,
-                config(&[(
-                    "shared.test",
-                    &[record("fixed", DnsRecordType::A, "10.0.0.6", None)],
-                )]),
+                2,
+                config(&[
+                    (
+                        "dev.corp.test",
+                        &[record("api", DnsRecordType::A, "10.0.0.2", None)],
+                    ),
+                    (
+                        "corp.test",
+                        &[record(
+                            "@",
+                            DnsRecordType::Soa,
+                            "other hostmaster 999 7200 3600 1209600 60",
+                            None,
+                        )],
+                    ),
+                ]),
             ),
         )
         .await
         .unwrap();
-        assert!(
-            query(&data, "safe.shared.test.", RecordType::A)
-                .await
-                .answers()
-                .is_empty()
+        assert!(a(&data, "db.dev.corp.test.").await.is_empty());
+        assert_eq!(
+            a(&data, "api.dev.corp.test.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 2)]
         );
+        assert_eq!(
+            query(&data, "corp.test.", RecordType::SOA).await.answers()[0]
+                .data()
+                .as_soa()
+                .unwrap()
+                .serial(),
+            1
+        );
+        let status = data
+            .get_dns_status(
+                BaseController::default(),
+                GetDnsStatusRequest {
+                    instance_id: uuid::Uuid::from_u128(1).to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let db = status
+            .records
+            .iter()
+            .find(|record| record.requested[0].name == "db.dev.corp.test.")
+            .unwrap();
+        assert_eq!(db.authority, "dev.corp.test.");
+        assert!(db.effective.is_empty());
+        assert!(db.notices.iter().any(|notice| notice.contains("shadowed")));
+        assert!(
+            status
+                .zones
+                .iter()
+                .find(|zone| zone.origin == "corp.test.")
+                .unwrap()
+                .apex_records
+                .iter()
+                .any(|record| record.r#type == DnsRecordType::Soa as i32 && record.ttl == Some(40))
+        );
+        data.on_client_disconnected(controller(54002).get_tunnel_info().cloned())
+            .await;
+        assert_eq!(
+            a(&data, "db.dev.corp.test.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 1)]
+        );
+        data.update_dns_record(
+            controller(54003),
+            contribution(
+                3,
+                DnsConfig {
+                    domain: Some("dev.corp.test.".to_owned()),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        data.on_client_disconnected(controller(54003).get_tunnel_info().cloned())
+            .await;
+        data.update_dns_record(
+            controller(54001),
+            contribution(1, config(&[("corp.test", &[])])),
+        )
+        .await
+        .unwrap();
+        let soa = query(&data, "corp.test.", RecordType::SOA).await;
+        assert_eq!(
+            soa.answers()[0].data().as_soa().unwrap().serial(),
+            2023101001
+        );
+        // Refreshing the parent must not lose an empty former route-zone cut.
+        let mut parent = config(&[(
+            "corp.test",
+            &[record("db.dev", DnsRecordType::A, "10.0.0.8", None)],
+        )]);
+        parent.domain = Some("et.net.".to_owned());
+        data.update_dns_record(controller(54001), contribution(1, parent))
+            .await
+            .unwrap();
+        assert!(a(&data, "db.dev.corp.test.").await.is_empty());
+        let status = data
+            .get_dns_status(
+                BaseController::default(),
+                GetDnsStatusRequest {
+                    instance_id: uuid::Uuid::from_u128(1).to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.records[0].authority, "dev.corp.test.");
     }
 
     struct FailingSystemConfig;

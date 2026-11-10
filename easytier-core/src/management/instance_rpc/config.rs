@@ -1,6 +1,7 @@
 use easytier_proto::{
     api::config::{
-        ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest, PatchConfigResponse,
+        ConfigRpc, GetConfigRequest, GetConfigResponse, GetDnsStatusRequest, GetDnsStatusResponse,
+        PatchConfigRequest, PatchConfigResponse,
     },
     rpc_types::{self, controller::BaseController},
 };
@@ -43,6 +44,31 @@ where
         Ok(GetConfigResponse {
             config: Some(network_config_from_toml(&config)),
             toml_config: config.dump(),
+        })
+    }
+
+    async fn get_dns_status(
+        &self,
+        _: BaseController,
+        request: GetDnsStatusRequest,
+    ) -> rpc_types::error::Result<GetDnsStatusResponse> {
+        let instance = self.instance(request.instance.as_ref())?;
+        let config = instance
+            .toml_config()
+            .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
+        let saved = crate::gateway::magic_dns::normalized_dns(&config)?;
+        let runtime = instance.dns_status().await?;
+        let matches = if let Some(published) = &runtime.published_dns {
+            published.domain == saved.domain
+                && crate::config::dns::compile_dns(published)?
+                    == crate::config::dns::compile_dns(&saved)?
+        } else {
+            false
+        };
+        Ok(GetDnsStatusResponse {
+            saved_dns: Some(saved),
+            runtime: Some(runtime),
+            saved_config_matches_contribution: Some(matches),
         })
     }
 }
