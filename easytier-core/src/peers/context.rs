@@ -32,6 +32,7 @@ use crate::{
     foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
     foundation::token_bucket::{ArcByteLimiter, BucketConfig, TokenBucketManager},
     peers::{
+        conn::fec::PeerConnFecMetrics,
         credential_manager::{CredentialManager, CredentialStorage},
         util::shrink_dashmap,
         whitelist::check_network_in_relay_whitelist,
@@ -707,6 +708,10 @@ pub(crate) trait PeerContext: Send + Sync {
 
     fn record_control_rx(&self, _network_name: &str, _bytes: u64) {}
 
+    fn udp_fec_metrics(&self) -> Option<PeerConnFecMetrics> {
+        None
+    }
+
     fn recv_limiter(
         &self,
         _network_name: &str,
@@ -991,6 +996,13 @@ impl PeerContext for CorePeerContext {
             MetricName::TrafficControlBytesRx,
             MetricName::TrafficControlPacketsRx,
         );
+    }
+
+    fn udp_fec_metrics(&self) -> Option<PeerConnFecMetrics> {
+        Some(PeerConnFecMetrics::new(
+            &self.stats_manager,
+            self.network_name(),
+        ))
     }
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {

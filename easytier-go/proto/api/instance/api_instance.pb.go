@@ -519,6 +519,7 @@ type PeerConnInfo struct {
 	NoiseRemoteStaticPubkey []byte                    `protobuf:"bytes,12,opt,name=noise_remote_static_pubkey,json=noiseRemoteStaticPubkey,proto3" json:"noise_remote_static_pubkey,omitempty"`
 	SecureAuthLevel         peer_rpc.SecureAuthLevel  `protobuf:"varint,13,opt,name=secure_auth_level,json=secureAuthLevel,proto3,enum=peer_rpc.SecureAuthLevel" json:"secure_auth_level,omitempty"`
 	PeerIdentityType        peer_rpc.PeerIdentityType `protobuf:"varint,14,opt,name=peer_identity_type,json=peerIdentityType,proto3,enum=peer_rpc.PeerIdentityType" json:"peer_identity_type,omitempty"`
+	Fec                     *PeerConnFecStats         `protobuf:"bytes,15,opt,name=fec,proto3" json:"fec,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -649,6 +650,13 @@ func (x *PeerConnInfo) GetPeerIdentityType() peer_rpc.PeerIdentityType {
 		return x.PeerIdentityType
 	}
 	return peer_rpc.PeerIdentityType(0)
+}
+
+func (x *PeerConnInfo) GetFec() *PeerConnFecStats {
+	if x != nil {
+		return x.Fec
+	}
+	return nil
 }
 
 type PeerInfo struct {
@@ -3808,6 +3816,122 @@ func (x *ListCredentialsResponse) GetCredentials() []*CredentialInfo {
 	return nil
 }
 
+type PeerConnFecStats struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Active         bool                   `protobuf:"varint,1,opt,name=active,proto3" json:"active,omitempty"`
+	TxSources      uint64                 `protobuf:"varint,2,opt,name=tx_sources,json=txSources,proto3" json:"tx_sources,omitempty"`
+	TxRepairs      uint64                 `protobuf:"varint,3,opt,name=tx_repairs,json=txRepairs,proto3" json:"tx_repairs,omitempty"`
+	TxSourceBytes  uint64                 `protobuf:"varint,4,opt,name=tx_source_bytes,json=txSourceBytes,proto3" json:"tx_source_bytes,omitempty"`
+	TxRepairBytes  uint64                 `protobuf:"varint,5,opt,name=tx_repair_bytes,json=txRepairBytes,proto3" json:"tx_repair_bytes,omitempty"`
+	RxSources      uint64                 `protobuf:"varint,6,opt,name=rx_sources,json=rxSources,proto3" json:"rx_sources,omitempty"`
+	RxRepairs      uint64                 `protobuf:"varint,7,opt,name=rx_repairs,json=rxRepairs,proto3" json:"rx_repairs,omitempty"`
+	Recovered      uint64                 `protobuf:"varint,8,opt,name=recovered,proto3" json:"recovered,omitempty"`
+	Duplicates     uint64                 `protobuf:"varint,9,opt,name=duplicates,proto3" json:"duplicates,omitempty"`
+	InvalidPackets uint64                 `protobuf:"varint,10,opt,name=invalid_packets,json=invalidPackets,proto3" json:"invalid_packets,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *PeerConnFecStats) Reset() {
+	*x = PeerConnFecStats{}
+	mi := &file_api_instance_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PeerConnFecStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PeerConnFecStats) ProtoMessage() {}
+
+func (x *PeerConnFecStats) ProtoReflect() protoreflect.Message {
+	mi := &file_api_instance_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PeerConnFecStats.ProtoReflect.Descriptor instead.
+func (*PeerConnFecStats) Descriptor() ([]byte, []int) {
+	return file_api_instance_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *PeerConnFecStats) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+func (x *PeerConnFecStats) GetTxSources() uint64 {
+	if x != nil {
+		return x.TxSources
+	}
+	return 0
+}
+
+func (x *PeerConnFecStats) GetTxRepairs() uint64 {
+	if x != nil {
+		return x.TxRepairs
+	}
+	return 0
+}
+
+func (x *PeerConnFecStats) GetTxSourceBytes() uint64 {
+	if x != nil {
+		return x.TxSourceBytes
+	}
+	return 0
+}
+
+func (x *PeerConnFecStats) GetTxRepairBytes() uint64 {
+	if x != nil {
+		return x.TxRepairBytes
+	}
+	return 0
+}
+
+func (x *PeerConnFecStats) GetRxSources() uint64 {
+	if x != nil {
+		return x.RxSources
+	}
+	return 0
+}
+
+func (x *PeerConnFecStats) GetRxRepairs() uint64 {
+	if x != nil {
+		return x.RxRepairs
+	}
+	return 0
+}
+
+func (x *PeerConnFecStats) GetRecovered() uint64 {
+	if x != nil {
+		return x.Recovered
+	}
+	return 0
+}
+
+func (x *PeerConnFecStats) GetDuplicates() uint64 {
+	if x != nil {
+		return x.Duplicates
+	}
+	return 0
+}
+
+func (x *PeerConnFecStats) GetInvalidPackets() uint64 {
+	if x != nil {
+		return x.InvalidPackets
+	}
+	return 0
+}
+
 type InstanceIdentifier_InstanceSelector struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
@@ -3817,7 +3941,7 @@ type InstanceIdentifier_InstanceSelector struct {
 
 func (x *InstanceIdentifier_InstanceSelector) Reset() {
 	*x = InstanceIdentifier_InstanceSelector{}
-	mi := &file_api_instance_proto_msgTypes[60]
+	mi := &file_api_instance_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3829,7 +3953,7 @@ func (x *InstanceIdentifier_InstanceSelector) String() string {
 func (*InstanceIdentifier_InstanceSelector) ProtoMessage() {}
 
 func (x *InstanceIdentifier_InstanceSelector) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[60]
+	mi := &file_api_instance_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3865,7 +3989,7 @@ type ListGlobalForeignNetworkResponse_OneForeignNetwork struct {
 
 func (x *ListGlobalForeignNetworkResponse_OneForeignNetwork) Reset() {
 	*x = ListGlobalForeignNetworkResponse_OneForeignNetwork{}
-	mi := &file_api_instance_proto_msgTypes[62]
+	mi := &file_api_instance_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3877,7 +4001,7 @@ func (x *ListGlobalForeignNetworkResponse_OneForeignNetwork) String() string {
 func (*ListGlobalForeignNetworkResponse_OneForeignNetwork) ProtoMessage() {}
 
 func (x *ListGlobalForeignNetworkResponse_OneForeignNetwork) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[62]
+	mi := &file_api_instance_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3930,7 +4054,7 @@ type ListGlobalForeignNetworkResponse_ForeignNetworks struct {
 
 func (x *ListGlobalForeignNetworkResponse_ForeignNetworks) Reset() {
 	*x = ListGlobalForeignNetworkResponse_ForeignNetworks{}
-	mi := &file_api_instance_proto_msgTypes[63]
+	mi := &file_api_instance_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3942,7 +4066,7 @@ func (x *ListGlobalForeignNetworkResponse_ForeignNetworks) String() string {
 func (*ListGlobalForeignNetworkResponse_ForeignNetworks) ProtoMessage() {}
 
 func (x *ListGlobalForeignNetworkResponse_ForeignNetworks) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[63]
+	mi := &file_api_instance_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3989,7 +4113,7 @@ const file_api_instance_proto_rawDesc = "" +
 	"\n" +
 	"tx_packets\x18\x04 \x01(\x04R\ttxPackets\x12\x1d\n" +
 	"\n" +
-	"latency_us\x18\x05 \x01(\x04R\tlatencyUs\"\xdc\x04\n" +
+	"latency_us\x18\x05 \x01(\x04R\tlatencyUs\"\x8e\x05\n" +
 	"\fPeerConnInfo\x12\x17\n" +
 	"\aconn_id\x18\x01 \x01(\tR\x06connId\x12\x1c\n" +
 	"\n" +
@@ -4006,7 +4130,8 @@ const file_api_instance_proto_rawDesc = "" +
 	"\x19noise_local_static_pubkey\x18\v \x01(\fR\x16noiseLocalStaticPubkey\x12;\n" +
 	"\x1anoise_remote_static_pubkey\x18\f \x01(\fR\x17noiseRemoteStaticPubkey\x12E\n" +
 	"\x11secure_auth_level\x18\r \x01(\x0e2\x19.peer_rpc.SecureAuthLevelR\x0fsecureAuthLevel\x12H\n" +
-	"\x12peer_identity_type\x18\x0e \x01(\x0e2\x1a.peer_rpc.PeerIdentityTypeR\x10peerIdentityType\"\xd3\x01\n" +
+	"\x12peer_identity_type\x18\x0e \x01(\x0e2\x1a.peer_rpc.PeerIdentityTypeR\x10peerIdentityType\x120\n" +
+	"\x03fec\x18\x0f \x01(\v2\x1e.api.instance.PeerConnFecStatsR\x03fec\"\xd3\x01\n" +
 	"\bPeerInfo\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x120\n" +
 	"\x05conns\x18\x02 \x03(\v2\x1a.api.instance.PeerConnInfoR\x05conns\x124\n" +
@@ -4253,7 +4378,25 @@ const file_api_instance_proto_rawDesc = "" +
 	"\x16public_key_fingerprint\x18\a \x01(\tR\x14publicKeyFingerprintB\v\n" +
 	"\t_reusable\"Y\n" +
 	"\x17ListCredentialsResponse\x12>\n" +
-	"\vcredentials\x18\x01 \x03(\v2\x1c.api.instance.CredentialInfoR\vcredentials*\x8b\x01\n" +
+	"\vcredentials\x18\x01 \x03(\v2\x1c.api.instance.CredentialInfoR\vcredentials\"\xdd\x02\n" +
+	"\x10PeerConnFecStats\x12\x16\n" +
+	"\x06active\x18\x01 \x01(\bR\x06active\x12\x1d\n" +
+	"\n" +
+	"tx_sources\x18\x02 \x01(\x04R\ttxSources\x12\x1d\n" +
+	"\n" +
+	"tx_repairs\x18\x03 \x01(\x04R\ttxRepairs\x12&\n" +
+	"\x0ftx_source_bytes\x18\x04 \x01(\x04R\rtxSourceBytes\x12&\n" +
+	"\x0ftx_repair_bytes\x18\x05 \x01(\x04R\rtxRepairBytes\x12\x1d\n" +
+	"\n" +
+	"rx_sources\x18\x06 \x01(\x04R\trxSources\x12\x1d\n" +
+	"\n" +
+	"rx_repairs\x18\a \x01(\x04R\trxRepairs\x12\x1c\n" +
+	"\trecovered\x18\b \x01(\x04R\trecovered\x12\x1e\n" +
+	"\n" +
+	"duplicates\x18\t \x01(\x04R\n" +
+	"duplicates\x12'\n" +
+	"\x0finvalid_packets\x18\n" +
+	" \x01(\x04R\x0einvalidPackets*\x8b\x01\n" +
 	"\x12TrustedKeySourcePb\x12%\n" +
 	"!TRUSTED_KEY_SOURCE_PB_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fTRUSTED_KEY_SOURCE_PB_OSPF_NODE\x10\x01\x12)\n" +
@@ -4328,7 +4471,7 @@ func file_api_instance_proto_rawDescGZIP() []byte {
 }
 
 var file_api_instance_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_api_instance_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
+var file_api_instance_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
 var file_api_instance_proto_goTypes = []any{
 	(TrustedKeySourcePb)(0),                     // 0: api.instance.TrustedKeySourcePb
 	(ConnectorStatus)(0),                        // 1: api.instance.ConnectorStatus
@@ -4395,152 +4538,154 @@ var file_api_instance_proto_goTypes = []any{
 	(*ListCredentialsRequest)(nil),              // 62: api.instance.ListCredentialsRequest
 	(*CredentialInfo)(nil),                      // 63: api.instance.CredentialInfo
 	(*ListCredentialsResponse)(nil),             // 64: api.instance.ListCredentialsResponse
-	(*InstanceIdentifier_InstanceSelector)(nil), // 65: api.instance.InstanceIdentifier.InstanceSelector
-	nil, // 66: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
-	(*ListGlobalForeignNetworkResponse_OneForeignNetwork)(nil), // 67: api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
-	(*ListGlobalForeignNetworkResponse_ForeignNetworks)(nil),   // 68: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
-	nil,                                         // 69: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
-	nil,                                         // 70: api.instance.MetricSnapshot.LabelsEntry
-	(*common.UUID)(nil),                         // 71: common.UUID
-	(*common.TunnelInfo)(nil),                   // 72: common.TunnelInfo
-	(peer_rpc.SecureAuthLevel)(0),               // 73: peer_rpc.SecureAuthLevel
-	(peer_rpc.PeerIdentityType)(0),              // 74: peer_rpc.PeerIdentityType
-	(*common.Ipv4Inet)(nil),                     // 75: common.Ipv4Inet
-	(*common.StunInfo)(nil),                     // 76: common.StunInfo
-	(*common.PeerFeatureFlag)(nil),              // 77: common.PeerFeatureFlag
-	(*common.Ipv6Inet)(nil),                     // 78: common.Ipv6Inet
-	(*peer_rpc.GetIpListResponse)(nil),          // 79: peer_rpc.GetIpListResponse
-	(*peer_rpc.RouteForeignNetworkSummary)(nil), // 80: peer_rpc.RouteForeignNetworkSummary
-	(*common.Url)(nil),                          // 81: common.Url
-	(*common.SocketAddr)(nil),                   // 82: common.SocketAddr
-	(*acl.AclStats)(nil),                        // 83: acl.AclStats
-	(*common.PortForwardConfigPb)(nil),          // 84: common.PortForwardConfigPb
+	(*PeerConnFecStats)(nil),                    // 65: api.instance.PeerConnFecStats
+	(*InstanceIdentifier_InstanceSelector)(nil), // 66: api.instance.InstanceIdentifier.InstanceSelector
+	nil, // 67: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
+	(*ListGlobalForeignNetworkResponse_OneForeignNetwork)(nil), // 68: api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
+	(*ListGlobalForeignNetworkResponse_ForeignNetworks)(nil),   // 69: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
+	nil,                                         // 70: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
+	nil,                                         // 71: api.instance.MetricSnapshot.LabelsEntry
+	(*common.UUID)(nil),                         // 72: common.UUID
+	(*common.TunnelInfo)(nil),                   // 73: common.TunnelInfo
+	(peer_rpc.SecureAuthLevel)(0),               // 74: peer_rpc.SecureAuthLevel
+	(peer_rpc.PeerIdentityType)(0),              // 75: peer_rpc.PeerIdentityType
+	(*common.Ipv4Inet)(nil),                     // 76: common.Ipv4Inet
+	(*common.StunInfo)(nil),                     // 77: common.StunInfo
+	(*common.PeerFeatureFlag)(nil),              // 78: common.PeerFeatureFlag
+	(*common.Ipv6Inet)(nil),                     // 79: common.Ipv6Inet
+	(*peer_rpc.GetIpListResponse)(nil),          // 80: peer_rpc.GetIpListResponse
+	(*peer_rpc.RouteForeignNetworkSummary)(nil), // 81: peer_rpc.RouteForeignNetworkSummary
+	(*common.Url)(nil),                          // 82: common.Url
+	(*common.SocketAddr)(nil),                   // 83: common.SocketAddr
+	(*acl.AclStats)(nil),                        // 84: acl.AclStats
+	(*common.PortForwardConfigPb)(nil),          // 85: common.PortForwardConfigPb
 }
 var file_api_instance_proto_depIdxs = []int32{
-	71, // 0: api.instance.InstanceIdentifier.id:type_name -> common.UUID
-	65, // 1: api.instance.InstanceIdentifier.instance_selector:type_name -> api.instance.InstanceIdentifier.InstanceSelector
-	72, // 2: api.instance.PeerConnInfo.tunnel:type_name -> common.TunnelInfo
+	72, // 0: api.instance.InstanceIdentifier.id:type_name -> common.UUID
+	66, // 1: api.instance.InstanceIdentifier.instance_selector:type_name -> api.instance.InstanceIdentifier.InstanceSelector
+	73, // 2: api.instance.PeerConnInfo.tunnel:type_name -> common.TunnelInfo
 	7,  // 3: api.instance.PeerConnInfo.stats:type_name -> api.instance.PeerConnStats
-	73, // 4: api.instance.PeerConnInfo.secure_auth_level:type_name -> peer_rpc.SecureAuthLevel
-	74, // 5: api.instance.PeerConnInfo.peer_identity_type:type_name -> peer_rpc.PeerIdentityType
-	8,  // 6: api.instance.PeerInfo.conns:type_name -> api.instance.PeerConnInfo
-	71, // 7: api.instance.PeerInfo.default_conn_id:type_name -> common.UUID
-	71, // 8: api.instance.PeerInfo.directly_connected_conns:type_name -> common.UUID
-	5,  // 9: api.instance.ListPeerRequest.instance:type_name -> api.instance.InstanceIdentifier
-	9,  // 10: api.instance.ListPeerResponse.peer_infos:type_name -> api.instance.PeerInfo
-	14, // 11: api.instance.ListPeerResponse.my_info:type_name -> api.instance.NodeInfo
-	75, // 12: api.instance.Route.ipv4_addr:type_name -> common.Ipv4Inet
-	76, // 13: api.instance.Route.stun_info:type_name -> common.StunInfo
-	77, // 14: api.instance.Route.feature_flag:type_name -> common.PeerFeatureFlag
-	78, // 15: api.instance.Route.ipv6_addr:type_name -> common.Ipv6Inet
-	78, // 16: api.instance.Route.public_ipv6_addr:type_name -> common.Ipv6Inet
-	78, // 17: api.instance.Route.ipv6_public_addr_prefix:type_name -> common.Ipv6Inet
-	12, // 18: api.instance.PeerRoutePair.route:type_name -> api.instance.Route
-	9,  // 19: api.instance.PeerRoutePair.peer:type_name -> api.instance.PeerInfo
-	76, // 20: api.instance.NodeInfo.stun_info:type_name -> common.StunInfo
-	77, // 21: api.instance.NodeInfo.feature_flag:type_name -> common.PeerFeatureFlag
-	79, // 22: api.instance.NodeInfo.ip_list:type_name -> peer_rpc.GetIpListResponse
-	78, // 23: api.instance.NodeInfo.public_ipv6_addr:type_name -> common.Ipv6Inet
-	78, // 24: api.instance.NodeInfo.ipv6_public_addr_prefix:type_name -> common.Ipv6Inet
-	5,  // 25: api.instance.ShowNodeInfoRequest.instance:type_name -> api.instance.InstanceIdentifier
-	14, // 26: api.instance.ShowNodeInfoResponse.node_info:type_name -> api.instance.NodeInfo
-	78, // 27: api.instance.PublicIpv6LeaseInfo.leased_addr:type_name -> common.Ipv6Inet
-	5,  // 28: api.instance.ListPublicIpv6InfoRequest.instance:type_name -> api.instance.InstanceIdentifier
-	78, // 29: api.instance.ListPublicIpv6InfoResponse.provider_prefix:type_name -> common.Ipv6Inet
-	17, // 30: api.instance.ListPublicIpv6InfoResponse.provider_leases:type_name -> api.instance.PublicIpv6LeaseInfo
-	5,  // 31: api.instance.ListRouteRequest.instance:type_name -> api.instance.InstanceIdentifier
-	12, // 32: api.instance.ListRouteResponse.routes:type_name -> api.instance.Route
-	5,  // 33: api.instance.DumpRouteRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 34: api.instance.ListForeignNetworkRequest.instance:type_name -> api.instance.InstanceIdentifier
-	0,  // 35: api.instance.TrustedKeyInfoPb.source:type_name -> api.instance.TrustedKeySourcePb
-	9,  // 36: api.instance.ForeignNetworkEntryPb.peers:type_name -> api.instance.PeerInfo
-	25, // 37: api.instance.ForeignNetworkEntryPb.trusted_keys:type_name -> api.instance.TrustedKeyInfoPb
-	66, // 38: api.instance.ListForeignNetworkResponse.foreign_networks:type_name -> api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
-	5,  // 39: api.instance.ListGlobalForeignNetworkRequest.instance:type_name -> api.instance.InstanceIdentifier
-	69, // 40: api.instance.ListGlobalForeignNetworkResponse.foreign_networks:type_name -> api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
-	5,  // 41: api.instance.GetForeignNetworkSummaryRequest.instance:type_name -> api.instance.InstanceIdentifier
-	80, // 42: api.instance.GetForeignNetworkSummaryResponse.summary:type_name -> peer_rpc.RouteForeignNetworkSummary
-	81, // 43: api.instance.Connector.url:type_name -> common.Url
-	1,  // 44: api.instance.Connector.status:type_name -> api.instance.ConnectorStatus
-	5,  // 45: api.instance.ListConnectorRequest.instance:type_name -> api.instance.InstanceIdentifier
-	32, // 46: api.instance.ListConnectorResponse.connectors:type_name -> api.instance.Connector
-	81, // 47: api.instance.MappedListener.url:type_name -> common.Url
-	5,  // 48: api.instance.ListMappedListenerRequest.instance:type_name -> api.instance.InstanceIdentifier
-	35, // 49: api.instance.ListMappedListenerResponse.mappedlisteners:type_name -> api.instance.MappedListener
-	2,  // 50: api.instance.VpnPortalClientInfo.state:type_name -> api.instance.VpnPortalClientState
-	38, // 51: api.instance.VpnPortalInfo.clients:type_name -> api.instance.VpnPortalClientInfo
-	5,  // 52: api.instance.GetVpnPortalInfoRequest.instance:type_name -> api.instance.InstanceIdentifier
-	39, // 53: api.instance.GetVpnPortalInfoResponse.vpn_portal_info:type_name -> api.instance.VpnPortalInfo
-	82, // 54: api.instance.TcpProxyEntry.src:type_name -> common.SocketAddr
-	82, // 55: api.instance.TcpProxyEntry.dst:type_name -> common.SocketAddr
-	4,  // 56: api.instance.TcpProxyEntry.state:type_name -> api.instance.TcpProxyEntryState
-	3,  // 57: api.instance.TcpProxyEntry.transport_type:type_name -> api.instance.TcpProxyEntryTransportType
-	5,  // 58: api.instance.ListTcpProxyEntryRequest.instance:type_name -> api.instance.InstanceIdentifier
-	42, // 59: api.instance.ListTcpProxyEntryResponse.entries:type_name -> api.instance.TcpProxyEntry
-	5,  // 60: api.instance.GetAclStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
-	83, // 61: api.instance.GetAclStatsResponse.acl_stats:type_name -> acl.AclStats
-	5,  // 62: api.instance.GetWhitelistRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 63: api.instance.ListPortForwardRequest.instance:type_name -> api.instance.InstanceIdentifier
-	84, // 64: api.instance.ListPortForwardResponse.cfgs:type_name -> common.PortForwardConfigPb
-	70, // 65: api.instance.MetricSnapshot.labels:type_name -> api.instance.MetricSnapshot.LabelsEntry
-	5,  // 66: api.instance.GetStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
-	51, // 67: api.instance.GetStatsResponse.metrics:type_name -> api.instance.MetricSnapshot
-	5,  // 68: api.instance.GetPrometheusStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 69: api.instance.GenerateCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 70: api.instance.UpsertCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 71: api.instance.RevokeCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 72: api.instance.ListCredentialsRequest.instance:type_name -> api.instance.InstanceIdentifier
-	63, // 73: api.instance.ListCredentialsResponse.credentials:type_name -> api.instance.CredentialInfo
-	26, // 74: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry.value:type_name -> api.instance.ForeignNetworkEntryPb
-	67, // 75: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks.foreign_networks:type_name -> api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
-	68, // 76: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry.value:type_name -> api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
-	10, // 77: api.instance.PeerManageRpc.ListPeer:input_type -> api.instance.ListPeerRequest
-	18, // 78: api.instance.PeerManageRpc.ListPublicIpv6Info:input_type -> api.instance.ListPublicIpv6InfoRequest
-	20, // 79: api.instance.PeerManageRpc.ListRoute:input_type -> api.instance.ListRouteRequest
-	22, // 80: api.instance.PeerManageRpc.DumpRoute:input_type -> api.instance.DumpRouteRequest
-	24, // 81: api.instance.PeerManageRpc.ListForeignNetwork:input_type -> api.instance.ListForeignNetworkRequest
-	28, // 82: api.instance.PeerManageRpc.ListGlobalForeignNetwork:input_type -> api.instance.ListGlobalForeignNetworkRequest
-	15, // 83: api.instance.PeerManageRpc.ShowNodeInfo:input_type -> api.instance.ShowNodeInfoRequest
-	30, // 84: api.instance.PeerManageRpc.GetForeignNetworkSummary:input_type -> api.instance.GetForeignNetworkSummaryRequest
-	33, // 85: api.instance.ConnectorManageRpc.ListConnector:input_type -> api.instance.ListConnectorRequest
-	36, // 86: api.instance.MappedListenerManageRpc.ListMappedListener:input_type -> api.instance.ListMappedListenerRequest
-	40, // 87: api.instance.VpnPortalRpc.GetVpnPortalInfo:input_type -> api.instance.GetVpnPortalInfoRequest
-	43, // 88: api.instance.TcpProxyRpc.ListTcpProxyEntry:input_type -> api.instance.ListTcpProxyEntryRequest
-	45, // 89: api.instance.AclManageRpc.GetAclStats:input_type -> api.instance.GetAclStatsRequest
-	47, // 90: api.instance.AclManageRpc.GetWhitelist:input_type -> api.instance.GetWhitelistRequest
-	49, // 91: api.instance.PortForwardManageRpc.ListPortForward:input_type -> api.instance.ListPortForwardRequest
-	52, // 92: api.instance.StatsRpc.GetStats:input_type -> api.instance.GetStatsRequest
-	54, // 93: api.instance.StatsRpc.GetPrometheusStats:input_type -> api.instance.GetPrometheusStatsRequest
-	56, // 94: api.instance.CredentialManageRpc.GenerateCredential:input_type -> api.instance.GenerateCredentialRequest
-	60, // 95: api.instance.CredentialManageRpc.RevokeCredential:input_type -> api.instance.RevokeCredentialRequest
-	62, // 96: api.instance.CredentialManageRpc.ListCredentials:input_type -> api.instance.ListCredentialsRequest
-	58, // 97: api.instance.CredentialManageRpc.UpsertCredential:input_type -> api.instance.UpsertCredentialRequest
-	11, // 98: api.instance.PeerManageRpc.ListPeer:output_type -> api.instance.ListPeerResponse
-	19, // 99: api.instance.PeerManageRpc.ListPublicIpv6Info:output_type -> api.instance.ListPublicIpv6InfoResponse
-	21, // 100: api.instance.PeerManageRpc.ListRoute:output_type -> api.instance.ListRouteResponse
-	23, // 101: api.instance.PeerManageRpc.DumpRoute:output_type -> api.instance.DumpRouteResponse
-	27, // 102: api.instance.PeerManageRpc.ListForeignNetwork:output_type -> api.instance.ListForeignNetworkResponse
-	29, // 103: api.instance.PeerManageRpc.ListGlobalForeignNetwork:output_type -> api.instance.ListGlobalForeignNetworkResponse
-	16, // 104: api.instance.PeerManageRpc.ShowNodeInfo:output_type -> api.instance.ShowNodeInfoResponse
-	31, // 105: api.instance.PeerManageRpc.GetForeignNetworkSummary:output_type -> api.instance.GetForeignNetworkSummaryResponse
-	34, // 106: api.instance.ConnectorManageRpc.ListConnector:output_type -> api.instance.ListConnectorResponse
-	37, // 107: api.instance.MappedListenerManageRpc.ListMappedListener:output_type -> api.instance.ListMappedListenerResponse
-	41, // 108: api.instance.VpnPortalRpc.GetVpnPortalInfo:output_type -> api.instance.GetVpnPortalInfoResponse
-	44, // 109: api.instance.TcpProxyRpc.ListTcpProxyEntry:output_type -> api.instance.ListTcpProxyEntryResponse
-	46, // 110: api.instance.AclManageRpc.GetAclStats:output_type -> api.instance.GetAclStatsResponse
-	48, // 111: api.instance.AclManageRpc.GetWhitelist:output_type -> api.instance.GetWhitelistResponse
-	50, // 112: api.instance.PortForwardManageRpc.ListPortForward:output_type -> api.instance.ListPortForwardResponse
-	53, // 113: api.instance.StatsRpc.GetStats:output_type -> api.instance.GetStatsResponse
-	55, // 114: api.instance.StatsRpc.GetPrometheusStats:output_type -> api.instance.GetPrometheusStatsResponse
-	57, // 115: api.instance.CredentialManageRpc.GenerateCredential:output_type -> api.instance.GenerateCredentialResponse
-	61, // 116: api.instance.CredentialManageRpc.RevokeCredential:output_type -> api.instance.RevokeCredentialResponse
-	64, // 117: api.instance.CredentialManageRpc.ListCredentials:output_type -> api.instance.ListCredentialsResponse
-	59, // 118: api.instance.CredentialManageRpc.UpsertCredential:output_type -> api.instance.UpsertCredentialResponse
-	98, // [98:119] is the sub-list for method output_type
-	77, // [77:98] is the sub-list for method input_type
-	77, // [77:77] is the sub-list for extension type_name
-	77, // [77:77] is the sub-list for extension extendee
-	0,  // [0:77] is the sub-list for field type_name
+	74, // 4: api.instance.PeerConnInfo.secure_auth_level:type_name -> peer_rpc.SecureAuthLevel
+	75, // 5: api.instance.PeerConnInfo.peer_identity_type:type_name -> peer_rpc.PeerIdentityType
+	65, // 6: api.instance.PeerConnInfo.fec:type_name -> api.instance.PeerConnFecStats
+	8,  // 7: api.instance.PeerInfo.conns:type_name -> api.instance.PeerConnInfo
+	72, // 8: api.instance.PeerInfo.default_conn_id:type_name -> common.UUID
+	72, // 9: api.instance.PeerInfo.directly_connected_conns:type_name -> common.UUID
+	5,  // 10: api.instance.ListPeerRequest.instance:type_name -> api.instance.InstanceIdentifier
+	9,  // 11: api.instance.ListPeerResponse.peer_infos:type_name -> api.instance.PeerInfo
+	14, // 12: api.instance.ListPeerResponse.my_info:type_name -> api.instance.NodeInfo
+	76, // 13: api.instance.Route.ipv4_addr:type_name -> common.Ipv4Inet
+	77, // 14: api.instance.Route.stun_info:type_name -> common.StunInfo
+	78, // 15: api.instance.Route.feature_flag:type_name -> common.PeerFeatureFlag
+	79, // 16: api.instance.Route.ipv6_addr:type_name -> common.Ipv6Inet
+	79, // 17: api.instance.Route.public_ipv6_addr:type_name -> common.Ipv6Inet
+	79, // 18: api.instance.Route.ipv6_public_addr_prefix:type_name -> common.Ipv6Inet
+	12, // 19: api.instance.PeerRoutePair.route:type_name -> api.instance.Route
+	9,  // 20: api.instance.PeerRoutePair.peer:type_name -> api.instance.PeerInfo
+	77, // 21: api.instance.NodeInfo.stun_info:type_name -> common.StunInfo
+	78, // 22: api.instance.NodeInfo.feature_flag:type_name -> common.PeerFeatureFlag
+	80, // 23: api.instance.NodeInfo.ip_list:type_name -> peer_rpc.GetIpListResponse
+	79, // 24: api.instance.NodeInfo.public_ipv6_addr:type_name -> common.Ipv6Inet
+	79, // 25: api.instance.NodeInfo.ipv6_public_addr_prefix:type_name -> common.Ipv6Inet
+	5,  // 26: api.instance.ShowNodeInfoRequest.instance:type_name -> api.instance.InstanceIdentifier
+	14, // 27: api.instance.ShowNodeInfoResponse.node_info:type_name -> api.instance.NodeInfo
+	79, // 28: api.instance.PublicIpv6LeaseInfo.leased_addr:type_name -> common.Ipv6Inet
+	5,  // 29: api.instance.ListPublicIpv6InfoRequest.instance:type_name -> api.instance.InstanceIdentifier
+	79, // 30: api.instance.ListPublicIpv6InfoResponse.provider_prefix:type_name -> common.Ipv6Inet
+	17, // 31: api.instance.ListPublicIpv6InfoResponse.provider_leases:type_name -> api.instance.PublicIpv6LeaseInfo
+	5,  // 32: api.instance.ListRouteRequest.instance:type_name -> api.instance.InstanceIdentifier
+	12, // 33: api.instance.ListRouteResponse.routes:type_name -> api.instance.Route
+	5,  // 34: api.instance.DumpRouteRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,  // 35: api.instance.ListForeignNetworkRequest.instance:type_name -> api.instance.InstanceIdentifier
+	0,  // 36: api.instance.TrustedKeyInfoPb.source:type_name -> api.instance.TrustedKeySourcePb
+	9,  // 37: api.instance.ForeignNetworkEntryPb.peers:type_name -> api.instance.PeerInfo
+	25, // 38: api.instance.ForeignNetworkEntryPb.trusted_keys:type_name -> api.instance.TrustedKeyInfoPb
+	67, // 39: api.instance.ListForeignNetworkResponse.foreign_networks:type_name -> api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
+	5,  // 40: api.instance.ListGlobalForeignNetworkRequest.instance:type_name -> api.instance.InstanceIdentifier
+	70, // 41: api.instance.ListGlobalForeignNetworkResponse.foreign_networks:type_name -> api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
+	5,  // 42: api.instance.GetForeignNetworkSummaryRequest.instance:type_name -> api.instance.InstanceIdentifier
+	81, // 43: api.instance.GetForeignNetworkSummaryResponse.summary:type_name -> peer_rpc.RouteForeignNetworkSummary
+	82, // 44: api.instance.Connector.url:type_name -> common.Url
+	1,  // 45: api.instance.Connector.status:type_name -> api.instance.ConnectorStatus
+	5,  // 46: api.instance.ListConnectorRequest.instance:type_name -> api.instance.InstanceIdentifier
+	32, // 47: api.instance.ListConnectorResponse.connectors:type_name -> api.instance.Connector
+	82, // 48: api.instance.MappedListener.url:type_name -> common.Url
+	5,  // 49: api.instance.ListMappedListenerRequest.instance:type_name -> api.instance.InstanceIdentifier
+	35, // 50: api.instance.ListMappedListenerResponse.mappedlisteners:type_name -> api.instance.MappedListener
+	2,  // 51: api.instance.VpnPortalClientInfo.state:type_name -> api.instance.VpnPortalClientState
+	38, // 52: api.instance.VpnPortalInfo.clients:type_name -> api.instance.VpnPortalClientInfo
+	5,  // 53: api.instance.GetVpnPortalInfoRequest.instance:type_name -> api.instance.InstanceIdentifier
+	39, // 54: api.instance.GetVpnPortalInfoResponse.vpn_portal_info:type_name -> api.instance.VpnPortalInfo
+	83, // 55: api.instance.TcpProxyEntry.src:type_name -> common.SocketAddr
+	83, // 56: api.instance.TcpProxyEntry.dst:type_name -> common.SocketAddr
+	4,  // 57: api.instance.TcpProxyEntry.state:type_name -> api.instance.TcpProxyEntryState
+	3,  // 58: api.instance.TcpProxyEntry.transport_type:type_name -> api.instance.TcpProxyEntryTransportType
+	5,  // 59: api.instance.ListTcpProxyEntryRequest.instance:type_name -> api.instance.InstanceIdentifier
+	42, // 60: api.instance.ListTcpProxyEntryResponse.entries:type_name -> api.instance.TcpProxyEntry
+	5,  // 61: api.instance.GetAclStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
+	84, // 62: api.instance.GetAclStatsResponse.acl_stats:type_name -> acl.AclStats
+	5,  // 63: api.instance.GetWhitelistRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,  // 64: api.instance.ListPortForwardRequest.instance:type_name -> api.instance.InstanceIdentifier
+	85, // 65: api.instance.ListPortForwardResponse.cfgs:type_name -> common.PortForwardConfigPb
+	71, // 66: api.instance.MetricSnapshot.labels:type_name -> api.instance.MetricSnapshot.LabelsEntry
+	5,  // 67: api.instance.GetStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
+	51, // 68: api.instance.GetStatsResponse.metrics:type_name -> api.instance.MetricSnapshot
+	5,  // 69: api.instance.GetPrometheusStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,  // 70: api.instance.GenerateCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,  // 71: api.instance.UpsertCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,  // 72: api.instance.RevokeCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,  // 73: api.instance.ListCredentialsRequest.instance:type_name -> api.instance.InstanceIdentifier
+	63, // 74: api.instance.ListCredentialsResponse.credentials:type_name -> api.instance.CredentialInfo
+	26, // 75: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry.value:type_name -> api.instance.ForeignNetworkEntryPb
+	68, // 76: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks.foreign_networks:type_name -> api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
+	69, // 77: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry.value:type_name -> api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
+	10, // 78: api.instance.PeerManageRpc.ListPeer:input_type -> api.instance.ListPeerRequest
+	18, // 79: api.instance.PeerManageRpc.ListPublicIpv6Info:input_type -> api.instance.ListPublicIpv6InfoRequest
+	20, // 80: api.instance.PeerManageRpc.ListRoute:input_type -> api.instance.ListRouteRequest
+	22, // 81: api.instance.PeerManageRpc.DumpRoute:input_type -> api.instance.DumpRouteRequest
+	24, // 82: api.instance.PeerManageRpc.ListForeignNetwork:input_type -> api.instance.ListForeignNetworkRequest
+	28, // 83: api.instance.PeerManageRpc.ListGlobalForeignNetwork:input_type -> api.instance.ListGlobalForeignNetworkRequest
+	15, // 84: api.instance.PeerManageRpc.ShowNodeInfo:input_type -> api.instance.ShowNodeInfoRequest
+	30, // 85: api.instance.PeerManageRpc.GetForeignNetworkSummary:input_type -> api.instance.GetForeignNetworkSummaryRequest
+	33, // 86: api.instance.ConnectorManageRpc.ListConnector:input_type -> api.instance.ListConnectorRequest
+	36, // 87: api.instance.MappedListenerManageRpc.ListMappedListener:input_type -> api.instance.ListMappedListenerRequest
+	40, // 88: api.instance.VpnPortalRpc.GetVpnPortalInfo:input_type -> api.instance.GetVpnPortalInfoRequest
+	43, // 89: api.instance.TcpProxyRpc.ListTcpProxyEntry:input_type -> api.instance.ListTcpProxyEntryRequest
+	45, // 90: api.instance.AclManageRpc.GetAclStats:input_type -> api.instance.GetAclStatsRequest
+	47, // 91: api.instance.AclManageRpc.GetWhitelist:input_type -> api.instance.GetWhitelistRequest
+	49, // 92: api.instance.PortForwardManageRpc.ListPortForward:input_type -> api.instance.ListPortForwardRequest
+	52, // 93: api.instance.StatsRpc.GetStats:input_type -> api.instance.GetStatsRequest
+	54, // 94: api.instance.StatsRpc.GetPrometheusStats:input_type -> api.instance.GetPrometheusStatsRequest
+	56, // 95: api.instance.CredentialManageRpc.GenerateCredential:input_type -> api.instance.GenerateCredentialRequest
+	60, // 96: api.instance.CredentialManageRpc.RevokeCredential:input_type -> api.instance.RevokeCredentialRequest
+	62, // 97: api.instance.CredentialManageRpc.ListCredentials:input_type -> api.instance.ListCredentialsRequest
+	58, // 98: api.instance.CredentialManageRpc.UpsertCredential:input_type -> api.instance.UpsertCredentialRequest
+	11, // 99: api.instance.PeerManageRpc.ListPeer:output_type -> api.instance.ListPeerResponse
+	19, // 100: api.instance.PeerManageRpc.ListPublicIpv6Info:output_type -> api.instance.ListPublicIpv6InfoResponse
+	21, // 101: api.instance.PeerManageRpc.ListRoute:output_type -> api.instance.ListRouteResponse
+	23, // 102: api.instance.PeerManageRpc.DumpRoute:output_type -> api.instance.DumpRouteResponse
+	27, // 103: api.instance.PeerManageRpc.ListForeignNetwork:output_type -> api.instance.ListForeignNetworkResponse
+	29, // 104: api.instance.PeerManageRpc.ListGlobalForeignNetwork:output_type -> api.instance.ListGlobalForeignNetworkResponse
+	16, // 105: api.instance.PeerManageRpc.ShowNodeInfo:output_type -> api.instance.ShowNodeInfoResponse
+	31, // 106: api.instance.PeerManageRpc.GetForeignNetworkSummary:output_type -> api.instance.GetForeignNetworkSummaryResponse
+	34, // 107: api.instance.ConnectorManageRpc.ListConnector:output_type -> api.instance.ListConnectorResponse
+	37, // 108: api.instance.MappedListenerManageRpc.ListMappedListener:output_type -> api.instance.ListMappedListenerResponse
+	41, // 109: api.instance.VpnPortalRpc.GetVpnPortalInfo:output_type -> api.instance.GetVpnPortalInfoResponse
+	44, // 110: api.instance.TcpProxyRpc.ListTcpProxyEntry:output_type -> api.instance.ListTcpProxyEntryResponse
+	46, // 111: api.instance.AclManageRpc.GetAclStats:output_type -> api.instance.GetAclStatsResponse
+	48, // 112: api.instance.AclManageRpc.GetWhitelist:output_type -> api.instance.GetWhitelistResponse
+	50, // 113: api.instance.PortForwardManageRpc.ListPortForward:output_type -> api.instance.ListPortForwardResponse
+	53, // 114: api.instance.StatsRpc.GetStats:output_type -> api.instance.GetStatsResponse
+	55, // 115: api.instance.StatsRpc.GetPrometheusStats:output_type -> api.instance.GetPrometheusStatsResponse
+	57, // 116: api.instance.CredentialManageRpc.GenerateCredential:output_type -> api.instance.GenerateCredentialResponse
+	61, // 117: api.instance.CredentialManageRpc.RevokeCredential:output_type -> api.instance.RevokeCredentialResponse
+	64, // 118: api.instance.CredentialManageRpc.ListCredentials:output_type -> api.instance.ListCredentialsResponse
+	59, // 119: api.instance.CredentialManageRpc.UpsertCredential:output_type -> api.instance.UpsertCredentialResponse
+	99, // [99:120] is the sub-list for method output_type
+	78, // [78:99] is the sub-list for method input_type
+	78, // [78:78] is the sub-list for extension type_name
+	78, // [78:78] is the sub-list for extension extendee
+	0,  // [0:78] is the sub-list for field type_name
 }
 
 func init() { file_api_instance_proto_init() }
@@ -4559,14 +4704,14 @@ func file_api_instance_proto_init() {
 	file_api_instance_proto_msgTypes[51].OneofWrappers = []any{}
 	file_api_instance_proto_msgTypes[53].OneofWrappers = []any{}
 	file_api_instance_proto_msgTypes[58].OneofWrappers = []any{}
-	file_api_instance_proto_msgTypes[60].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[61].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_instance_proto_rawDesc), len(file_api_instance_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   66,
+			NumMessages:   67,
 			NumExtensions: 0,
 			NumServices:   9,
 		},
