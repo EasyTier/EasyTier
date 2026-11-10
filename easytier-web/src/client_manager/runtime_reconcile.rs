@@ -100,13 +100,11 @@ pub(super) fn ensure_dns_config_supported(
     config: &NetworkConfig,
     support_dns_config: bool,
 ) -> anyhow::Result<()> {
-    if !support_dns_config {
-        let dns_config = easytier_core::config::toml::TomlConfig::default();
-        let default_dns = easytier_core::gateway::magic_dns::normalized_dns(&dns_config)?;
-        // Legacy flags do not require the new DNS configuration capability.
-        dns_config.set_dns(config.dns.clone());
+    if !support_dns_config && config.dns.is_some() {
+        let mut legacy_config = config.clone();
+        legacy_config.dns = None;
         anyhow::ensure!(
-            easytier_core::gateway::magic_dns::normalized_dns(&dns_config)? == default_dns,
+            full_dns_patch(config)? == full_dns_patch(&legacy_config)?,
             "core does not support DNS configuration"
         );
     }
@@ -1814,28 +1812,38 @@ mod tests {
 
     #[test]
     #[allow(deprecated)]
-    fn legacy_core_allows_omitted_or_default_empty_dns() {
+    fn legacy_core_allows_dns_equivalent_to_legacy_config() {
         for legacy_domain in [None, Some("corp.internal.")] {
-            let mut config = config_with_port_forwards(Vec::new());
-            config.tld_dns_zone = legacy_domain.map(str::to_owned);
-            ensure_dns_config_supported(&config, false).unwrap();
-            for domain in [None, Some("et.net"), Some("ET.NET.")] {
-                config.dns = Some(easytier::proto::core_config::DnsConfigRaw {
-                    domain: domain.map(str::to_owned),
+            let mut current = config_with_port_forwards(Vec::new());
+            current.tld_dns_zone = legacy_domain.map(str::to_owned);
+            ensure_dns_config_supported(&current, false).unwrap();
+            let domain = legacy_domain.unwrap_or("et.net.");
+            for domain in [
+                None,
+                Some(domain.to_owned()),
+                Some(domain.trim_end_matches('.').to_uppercase()),
+            ] {
+                let mut desired = current.clone();
+                desired.dns = Some(easytier::proto::core_config::DnsConfigRaw {
+                    domain,
                     zone: Some(Default::default()),
                 });
-                ensure_dns_config_supported(&config, false).unwrap();
+                ensure_dns_config_supported(&desired, false).unwrap();
+                ensure_runtime_config_converged(&current, &desired, false).unwrap();
             }
         }
     }
 
     #[test]
     #[allow(deprecated)]
-    fn legacy_core_rejects_dns_zones_or_custom_domain() {
+    fn legacy_core_rejects_dns_zones_or_domain_changes() {
         let mut custom_domain = config_with_dns("mesh.test", "records.test", &[]);
         custom_domain.dns.as_mut().unwrap().zone = None;
+        let mut default_domain = config_with_dns("et.net", "records.test", &[]);
+        default_domain.dns.as_mut().unwrap().zone = None;
         for mut config in [
             custom_domain,
+            default_domain,
             config_with_dns("et.net", "records.test", &[]),
             config_with_dns(
                 "et.net",
