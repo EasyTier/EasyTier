@@ -754,7 +754,7 @@ origin = 'example.test.'
 ttl = 60
 records = [
     { name = '@', type = 'MX', value = '10 mail' },
-    { name = 'info', type = 'TXT', ttl = 0, txt = { segments = ['quote" slash\ ;', '', 'tail'] } },
+    { name = 'info', type = 'TXT', ttl = 0, value = '"quote\" slash\\ ;" "" "tail"' },
 ]
 "#,
         ] {
@@ -825,7 +825,7 @@ records = [
             "[[dns.zone]]\norigin = 'example.test.'\nttl = -1\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'A', value = '192.0.2.1', txt = { segments = ['x'] } }]\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'UNKNOWN', value = 'x' }]\n",
-            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'TXT', value = 'x' }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'TXT', value = '' }]\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = ['@ IN A 192.0.2.1']\n",
         ] {
             assert!(

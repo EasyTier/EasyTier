@@ -1676,7 +1676,7 @@ mod tests {
 
         desired["dns"]["zone"][0]["records"] = json!([
             {"name": "nas", "type": "A", "value": "192.0.2.20"},
-            {"name": "@", "type": "TXT", "txt": {"segments": ["updated through web"]}}
+            {"name": "@", "type": "TXT", "value": "\"updated through web\""}
         ]);
         *webhook_state.config_revision.write().await = "dns-updated".to_owned();
         mgr.reconcile_managed_network_configs(
@@ -1699,12 +1699,20 @@ mod tests {
             .as_ref()
             .unwrap()
             .items;
-        assert!(records.iter().any(|record| matches!(&record.data, Some(easytier::proto::core_config::dns_record_raw::Data::Value(value)) if value == "192.0.2.20")));
-        assert!(!records.iter().any(|record| matches!(&record.data, Some(easytier::proto::core_config::dns_record_raw::Data::Value(value)) if value == "192.0.2.10")));
         assert!(
             records
                 .iter()
-                .any(|record| matches!(&record.data, Some(easytier::proto::core_config::dns_record_raw::Data::Txt(txt)) if txt.segments == ["updated through web"]))
+                .any(|record| record.value.as_deref() == Some("192.0.2.20"))
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|record| record.value.as_deref() == Some("192.0.2.10"))
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.value.as_deref() == Some("\"updated through web\""))
         );
 
         desired["dns"]["zone"] = json!([]);

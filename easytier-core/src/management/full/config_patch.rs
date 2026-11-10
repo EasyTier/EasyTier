@@ -823,11 +823,7 @@ mod dns_tests {
                                 vec![easytier_proto::core_config::DnsRecordRaw {
                                     name: "host".to_owned(),
                                     r#type: easytier_proto::core_config::DnsRecordType::A as i32,
-                                    data: Some(
-                                        easytier_proto::core_config::dns_record_raw::Data::Value(
-                                            "not-an-ip".to_owned(),
-                                        ),
-                                    ),
+                                    value: Some("not-an-ip".to_owned()),
                                     ..Default::default()
                                 }]
                                 .into(),

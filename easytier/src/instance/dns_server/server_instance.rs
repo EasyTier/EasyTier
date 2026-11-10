@@ -661,9 +661,7 @@ mod tests {
     use super::*;
     use crate::proto::api::instance::Route;
     use easytier_core::config::toml::{DnsConfig, DnsZoneConfig};
-    use easytier_proto::core_config::{
-        DnsRecordRaw, DnsRecordType, DnsTxtData, dns_record_raw::Data,
-    };
+    use easytier_proto::core_config::{DnsRecordRaw, DnsRecordType};
     use hickory_proto::{
         op::{Message, Query},
         rr::{RData, RecordType},
@@ -694,13 +692,7 @@ mod tests {
             name: name.into(),
             r#type: kind as i32,
             ttl,
-            data: Some(if kind == DnsRecordType::Txt {
-                Data::Txt(DnsTxtData {
-                    segments: vec![value.into()],
-                })
-            } else {
-                Data::Value(value.into())
-            }),
+            value: Some(value.into()),
         }
     }
 
@@ -841,7 +833,7 @@ mod tests {
                     record("specific", DnsRecordType::Cname, "nas.sub", None),
                     record("missing", DnsRecordType::Cname, "absent", None),
                     record("cycle", DnsRecordType::Cname, "cycle.example.test.", None),
-                    record("info", DnsRecordType::Txt, "local record", None),
+                    record("info", DnsRecordType::Txt, "\"local record\"", None),
                 ],
             ),
             (

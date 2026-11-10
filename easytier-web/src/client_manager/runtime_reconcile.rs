@@ -1783,9 +1783,7 @@ mod tests {
         easytier::proto::core_config::DnsRecordRaw {
             name: "nas".to_owned(),
             r#type: kind as i32,
-            data: Some(easytier::proto::core_config::dns_record_raw::Data::Value(
-                value.to_owned(),
-            )),
+            value: Some(value.to_owned()),
             ..Default::default()
         }
     }

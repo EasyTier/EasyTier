@@ -16,7 +16,7 @@ records = [
     { name = "nas", type = "A", value = "10.0.0.8" },
     { name = "nas", type = "AAAA", value = "fd00::8" },
     { name = "files", type = "CNAME", value = "nas" },
-    { name = "info", type = "TXT", txt = { segments = ["local records"] } },
+    { name = "info", type = "TXT", value = '"local records"' },
 ]
 
 [[dns.zone]]
@@ -71,28 +71,28 @@ change its meaning.
 
 ## TXT records
 
-TXT uses `txt.segments` instead of `value`:
+TXT uses the same `value` field as other record types:
 
 ```toml
 [[dns.zone.records]]
 name = "info"
 type = "TXT"
-txt = { segments = ['quote" slash\ ;', "", "tail"] }
+value = '"quote\" slash\\ ;" "" "tail"'
 ```
 
-Each array element becomes one UTF-8 DNS character-string of at most 255 bytes.
-There must be at least one segment; an empty segment is allowed. Segments are
+Each quoted string becomes one UTF-8 DNS character-string of at most 255 bytes.
+There must be at least one string; an empty string is allowed. Strings are
 ordered and are never split or combined automatically. To configure two TXT
 records, add two record objects.
 
-Segments use only TOML or JSON escaping, with no second layer of DNS text
-escaping. `value` and `txt` are mutually exclusive. TXT must use `txt`, and other
-types must use `value`.
+The example uses a TOML literal string to preserve DNS quotes and escapes.
+DNS presentation escaping still applies inside `value`, as it does for HINFO
+and NAPTR. JSON and TOML basic strings also apply their own escaping rules.
 
 ## Configuration and management
 
 The file and management API share `core_config.DnsConfigRaw`, including the
-record enum and the `value | txt` oneof. Management JSON uses the same field names
+record enum and the `value` field. Management JSON uses the same field names
 and transparent collection arrays:
 
 ```json
@@ -103,7 +103,7 @@ and transparent collection arrays:
       "ttl": 60,
       "records": [
         {"name": "nas", "type": "A", "value": "192.0.2.1"},
-        {"name": "info", "type": "TXT", "txt": {"segments": ["first", "second"]}}
+        {"name": "info", "type": "TXT", "value": "\"first\" \"second\""}
       ]
     }]
   }

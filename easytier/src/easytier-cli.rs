@@ -806,7 +806,7 @@ mod tests {
 origin = "records.test"
 records = [
     { name = "nas", type = "A", value = "192.0.2.10" },
-    { name = "info", type = "TXT", txt = { segments = ["literal ; \" \\", "tail"] } },
+    { name = "info", type = "TXT", value = '"literal ; \" \\" "tail"' },
 ]
 "#,
         )
@@ -817,11 +817,10 @@ records = [
             records[0].r#type,
             easytier_proto::core_config::DnsRecordType::A as i32
         );
-        assert!(matches!(
-            &records[1].data,
-            Some(easytier_proto::core_config::dns_record_raw::Data::Txt(txt))
-                if txt.segments == ["literal ; \" \\", "tail"]
-        ));
+        assert_eq!(
+            records[1].value.as_deref(),
+            Some(r#""literal ; \" \\" "tail""#)
+        );
         assert!(parse_dns_file("hostname = 'unrelated'\n[dns]\nzone = []").is_err());
         assert!(parse_dns_file("").is_err());
     }

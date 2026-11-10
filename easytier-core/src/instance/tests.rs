@@ -803,9 +803,7 @@ network_secret = "network-secret"
                         vec![easytier_proto::core_config::DnsRecordRaw {
                             name: "saved".to_owned(),
                             r#type: easytier_proto::core_config::DnsRecordType::A as i32,
-                            data: Some(easytier_proto::core_config::dns_record_raw::Data::Value(
-                                "192.0.2.10".to_owned(),
-                            )),
+                            value: Some("192.0.2.10".to_owned()),
                             ..Default::default()
                         }]
                         .into(),

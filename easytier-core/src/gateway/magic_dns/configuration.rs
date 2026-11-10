@@ -65,7 +65,7 @@ domain = "MESH.test"
 origin = "RECORDS.test"
 ttl = 60
 records = [
-    { name = "info", type = "TXT", ttl = 0, txt = { segments = ["space quote\" slash\\ semicolon;", "tail"] } },
+    { name = "info", type = "TXT", ttl = 0, value = '"space quote\" slash\\ semicolon;" "tail"' },
     { name = "alias", type = "CNAME", value = "info" },
 ]
 "#,
