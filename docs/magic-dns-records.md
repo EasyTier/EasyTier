@@ -167,6 +167,11 @@ reconnection, the periodic upload restores the current configuration. This is
 eventually consistent and adds no publication acknowledgement or status API.
 Records are not distributed to other machines.
 
+Released local DNS clients such as v2.6.4 can continue publishing automatic
+node routes without an instance UUID. Their contributions remain owned by the
+publishing connection and are replaced on update and withdrawn on disconnect.
+Static DNS contributions require a supporting client.
+
 Static zone origins must be distinct across active publishers after normalization.
 An update that overlaps another instance's static origin is rejected as a whole;
 its previously accepted contribution remains until a later valid upload or

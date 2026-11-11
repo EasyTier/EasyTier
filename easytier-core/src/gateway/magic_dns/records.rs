@@ -147,7 +147,16 @@ impl MagicDnsRecordStore {
         routes: Vec<MagicDnsRoute>,
         dns: crate::config::toml::DnsConfig,
     ) -> anyhow::Result<MagicDnsRecordSnapshot> {
-        let instance_id = uuid::Uuid::parse_str(&instance_id)?.to_string();
+        // Released DNS clients omit the instance UUID and own their records
+        // through the publishing connection, as before static DNS support.
+        let instance_id = if instance_id.is_empty() {
+            let source = source
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Legacy DNS records require a connection"))?;
+            format!("legacy:{source}")
+        } else {
+            uuid::Uuid::parse_str(&instance_id)?.to_string()
+        };
         let mut clients = self.clients.lock().unwrap().clone();
         let previous = clients.get(&instance_id);
         if let Some(owner) = previous.and_then(|client| client.source.as_ref()) {

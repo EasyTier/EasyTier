@@ -1047,6 +1047,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn released_dns_protocol_replaces_and_withdraws_connection_owned_routes() {
+        use prost::Message as _;
+
+        // v2.6.4 magic_dns.proto defines only these two request fields.
+        #[derive(prost::Message)]
+        struct ReleasedUpdateDnsRecordRequest {
+            #[prost(string, tag = "1")]
+            zone: String,
+            #[prost(message, repeated, tag = "2")]
+            routes: Vec<Route>,
+        }
+
+        let released_request = |hostname: &str, ip: Option<&str>| {
+            let request = ReleasedUpdateDnsRecordRequest {
+                zone: "et.net.".to_owned(),
+                routes: ip
+                    .into_iter()
+                    .map(|ip| Route {
+                        hostname: hostname.to_owned(),
+                        ipv4_addr: Some(ip.parse::<Ipv4Inet>().unwrap().into()),
+                        ..Default::default()
+                    })
+                    .collect(),
+            };
+            UpdateDnsRecordRequest::decode(request.encode_to_vec().as_slice()).unwrap()
+        };
+        let dns = config(&[(
+            "configured.test",
+            &[record("svc", DnsRecordType::A, "10.0.0.9", None)],
+        )]);
+        let data = data_with(Some(&dns)).await;
+        for (port, hostname, ip) in [
+            (54001, "old-a", "10.0.0.1/24"),
+            (54002, "old-b", "10.0.0.2/24"),
+        ] {
+            data.update_dns_record(controller(port), released_request(hostname, Some(ip)))
+                .await
+                .unwrap();
+        }
+        let mut modern = request("10.0.0.3/24");
+        modern.routes[0].hostname = "modern".to_owned();
+        data.update_dns_record(controller(54003), modern.clone())
+            .await
+            .unwrap();
+        data.update_dns_record(
+            controller(54001),
+            released_request("old-a", Some("10.0.0.4/24")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            a(&data, "old-a.et.net.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 4)]
+        );
+        assert_eq!(
+            a(&data, "old-b.et.net.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 2)]
+        );
+        assert_eq!(
+            a(&data, "modern.et.net.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 3)]
+        );
+        data.update_dns_record(controller(54001), released_request("old-a", None))
+            .await
+            .unwrap();
+        assert!(a(&data, "old-a.et.net.").await.is_empty());
+        data.update_dns_record(
+            controller(54001),
+            released_request("old-a", Some("10.0.0.5/24")),
+        )
+        .await
+        .unwrap();
+        data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
+            .await;
+        assert!(a(&data, "old-a.et.net.").await.is_empty());
+        assert_eq!(
+            a(&data, "old-b.et.net.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 2)]
+        );
+        // Reconnecting uses a new connection-owned contribution.
+        data.update_dns_record(
+            controller(54004),
+            released_request("old-a", Some("10.0.0.6/24")),
+        )
+        .await
+        .unwrap();
+        data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
+            .await;
+        assert_eq!(
+            a(&data, "old-a.et.net.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 6)]
+        );
+        modern.instance_id = "invalid-uuid".to_owned();
+        assert!(
+            data.update_dns_record(controller(54003), modern)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            a(&data, "modern.et.net.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 3)]
+        );
+        assert_eq!(
+            a(&data, "svc.configured.test.").await,
+            vec![Ipv4Addr::new(10, 0, 0, 9)]
+        );
+    }
+
+    #[tokio::test]
     async fn different_zones_replace_clear_and_disconnect_independently() {
         let data = data_with(None).await;
         let first = config(&[(
