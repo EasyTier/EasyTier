@@ -358,6 +358,10 @@ impl RouteMessage {
         self.src_len
     }
 
+    pub(crate) fn protocol(&self) -> u8 {
+        self.protocol
+    }
+
     pub(crate) fn route_type(&self) -> RouteType {
         RouteType::from_raw(self.route_type)
     }
