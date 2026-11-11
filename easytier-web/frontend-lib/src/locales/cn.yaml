@@ -511,7 +511,8 @@ web:
     virtual_cidr_hint: 未填写子网掩码时默认补上 /24。设置后成员将按加入顺序从该网段分配静态 IP（10.x.0.1、.2…）；留空则由节点自动协商（DHCP）
     virtual_cidr_placeholder: 例如 10.200.0.0（默认 /24），留空自动
     peer_urls_placeholder: 每行一个节点地址，例如 tcp://10.0.0.1:11010
-    create_hint: 网络密码将自动生成，可在网络详情中查看或重置
+    network_secret_placeholder: 留空则自动生成
+    create_hint: 可自行填写网络密码，留空则自动生成；创建后可在网络设置中修改或重置
     gateway_mode: 接入点
     gateway_hint: 成员将通过本控制台的内置接入点自动组网（发现与打洞辅助，默认不中继数据）
     advanced_mode: 高级：手动指定初始节点

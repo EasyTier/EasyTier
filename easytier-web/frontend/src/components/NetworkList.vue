@@ -50,6 +50,7 @@ const createVisible = ref(false);
 const creating = ref(false);
 const createForm = ref({
     display_name: '',
+    network_secret: '',
     virtual_cidr: '',
     secure_mode: false,
 });
@@ -94,6 +95,7 @@ onUnmounted(() => {
 const openCreate = () => {
     createForm.value = {
         display_name: '',
+        network_secret: '',
         virtual_cidr: '',
         // The built-in gateway speaks the Noise handshake; third-party
         // peers of advanced networking may not, so secure mode defaults on
@@ -132,7 +134,8 @@ const createNetwork = async () => {
                 secure_mode: createForm.value.secure_mode,
             };
         }
-        const detail = await api?.create_network(settings);
+        // An empty secret lets the server generate one.
+        const detail = await api?.create_network(settings, createForm.value.network_secret.trim() || undefined);
         createVisible.value = false;
         await loadNetworks();
         if (detail) {
@@ -207,6 +210,11 @@ const openNetwork = (network: CentralNetworkSummary) => {
                 <div class="flex flex-col gap-1">
                     <label for="network-display-name">{{ t('web.network_list.display_name') }}</label>
                     <InputText id="network-display-name" v-model="createForm.display_name" />
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label for="create-network-secret">{{ t('network_secret') }}</label>
+                    <InputText id="create-network-secret" v-model="createForm.network_secret"
+                        :placeholder="t('web.network_list.network_secret_placeholder')" />
                 </div>
                 <div class="flex flex-col gap-1">
                     <div class="flex items-center">
