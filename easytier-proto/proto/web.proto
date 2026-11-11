@@ -27,6 +27,8 @@ message HeartbeatRequest {
   // Supports explicit manual mode patches and typed empty-manual readback.
   // Older peers silently ignore unknown patch fields; missing means false.
   bool support_manual_routes_patch = 12;
+  // True advertises DNS PatchConfig support. Offline metadata leaves it unset.
+  optional bool support_dns_config_patch = 13;
 }
 
 message HeartbeatResponse {
