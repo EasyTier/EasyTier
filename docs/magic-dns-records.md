@@ -120,10 +120,37 @@ accepted and reports paths such as `dns.zone[0].records[1].value`. Compound
 RDATA errors identify `value`, rather than separate MX/SRV subfields. Existing
 management error responses carry these paths and the parser's explanation.
 
-The existing management operation replaces the complete configuration candidate;
-records do not have IDs or individual CRUD operations. Concurrent full edits
-can overwrite each other. This model does not add configuration CAS or DNS
-publication acknowledgements. CLI configuration files use the TOML model above.
+The full management operation replaces the complete configuration candidate.
+`PatchConfig` also accepts `InstanceConfigPatch.dns`: omitted DNS members are
+unchanged, a present `zone` array replaces all static zones, and `zone = []`
+clears them while preserving the domain. An empty DNS patch changes nothing.
+Record lists are replaced with their zone; records have no IDs or individual
+CRUD operations. Invalid DNS is rejected before saving that DNS change.
+Concurrent edits can overwrite each other. This does not add configuration
+CAS or DNS publication acknowledgements.
+
+Use `easytier-cli dns show` to read the instance's saved DNS configuration.
+`easytier-cli dns set --file dns.toml` sends a DNS-only TOML patch using the
+same syntax as above, without `[flags]` or other unrelated settings. For
+example, `[dns]` followed by `domain = "mesh.test."` changes only the domain.
+`easytier-cli dns clear` clears static zones and preserves the domain. Writes
+require one instance; use `--instance-id` or `--instance-name` when necessary.
+The CLI reads the configuration back before reporting success. This checks
+saved configuration, not DNS answers; restart the instance to publish changes.
+As with other patches, the instance's backing file is updated when configured.
+For instances without a backing file, export the updated configuration and use
+it on restart.
+
+EasyTier Web keeps the desired DNS configuration in its saved configuration.
+Cores advertise DNS patch support in their heartbeat. On older cores, Web
+skips DNS patching and DNS readback comparisons, while continuing to apply
+and verify other fields. Editing or restarting such a configuration retains
+the saved DNS fields; initial startup requests still include DNS, which cores
+that do not recognize the field ignore. After upgrading to a supporting core,
+Web reconciles saved DNS again. An applied revision on an older core covers
+only supported fields; on a supporting core it includes saved DNS, never DNS
+publication. Offline editing reads the saved configuration without inferring
+core capabilities. This adds no DNS form or runtime status to the Web UI.
 
 ## Runtime boundary
 
