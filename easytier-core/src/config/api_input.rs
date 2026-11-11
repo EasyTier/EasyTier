@@ -760,7 +760,7 @@ origin = 'example.test.'
 ttl = 60
 records = [
     { name = '@', type = 'MX', value = '10 mail' },
-    { name = 'info', type = 'TXT', ttl = 0, txt = { segments = ['quote" slash\ ;', '', 'tail'] } },
+    { name = 'info', type = 'TXT', ttl = 0, value = '"quote\" slash\\ ;" "" "tail"' },
 ]
 "#,
         ] {
@@ -831,7 +831,7 @@ records = [
             "[[dns.zone]]\norigin = 'example.test.'\nttl = -1\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'A', value = '192.0.2.1', txt = { segments = ['x'] } }]\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'UNKNOWN', value = 'x' }]\n",
-            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'TXT', value = 'x' }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'TXT', value = '' }]\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = ['@ IN A 192.0.2.1']\n",
         ] {
             assert!(
@@ -843,6 +843,7 @@ records = [
 
     #[test]
     fn dns_alpn_errors_use_file_and_management_field_paths() {
+        let long_alpn = format!("1 . \"alpn=a ( {})\"", "b ".repeat(1500));
         for kind in ["HTTPS", "SVCB"] {
             for (value, valid) in [
                 ("1 . alpn=,", false),
@@ -854,15 +855,19 @@ records = [
                 (r#"1 . "alpn=;h2""#, false),
                 (r#"1 . "alpn= h2""#, false),
                 (r#"1 . alpn=\"unterminated"#, false),
+                ("1 . alpn=\\\"\\\\\u{0663}ab\\\"", false),
+                ("1 . alpn=\"\\\"\\\\\u{0663}ab\\\"\"", false),
                 ("1 . alpn=\"", false),
                 ("1 . port=\"", false),
                 (r#"1 target key65400="unterminated"#, false),
                 (r#"1 target key65400="tail\""#, false),
                 ("1 target alpn=h2,h3 port=443", true),
+                ("1 target alpn=h\u{0663} port=443", true),
                 (r#"1 target alpn="h2,h3" port=443"#, true),
                 (r#"1 target alpn="f\\\\oo\,bar,h2" port=443"#, true),
                 (r"1 target alpn=\, port=443", true),
                 ("1 target alpn=h2, port=443", true),
+                (long_alpn.as_str(), true),
                 (r#"1 target key65400="complete""#, true),
                 (r#"1 target key65400="tail\\""#, true),
             ] {

@@ -1,4 +1,4 @@
-use easytier_proto::core_config::{DnsRecordRaw, DnsRecordType, dns_record_raw::Data};
+use easytier_proto::core_config::{DnsRecordRaw, DnsRecordType};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr as _;
 use std::sync::Arc;
@@ -132,7 +132,7 @@ async fn test_magic_dns_server_instance() {
                     name: "svc".into(),
                     r#type: DnsRecordType::A as i32,
                     ttl: None,
-                    data: Some(Data::Value("10.0.0.9".into())),
+                    value: Some("10.0.0.9".into()),
                 }]
                 .into(),
             ),
@@ -262,7 +262,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
                         name: "svc".into(),
                         r#type: DnsRecordType::A as i32,
                         ttl: None,
-                        data: Some(Data::Value("10.0.0.9".into())),
+                        value: Some("10.0.0.9".into()),
                     }]
                     .into(),
                 ),
