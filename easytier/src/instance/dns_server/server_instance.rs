@@ -496,28 +496,44 @@ impl MagicDnsServerInstance {
             system_config,
         });
 
-        // The candidate above only builds in-memory authorities and reads
-        // system configuration. Install the hook before serve takes ownership
-        // of it, then elect before modifying routes or system DNS settings.
         let tcp_listener = runtime_rpc_listener(MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse()?);
-        let mut rpc_server = StandAloneServer::new(tcp_listener);
-        rpc_server
-            .registry()
-            .register(MagicDnsServerRpcServer::new_arc(data.clone()), "");
+        Self::start(
+            StandAloneServer::new(tcp_listener),
+            data,
+            packet_plane,
+            tun_inet,
+            async {
+                if manage_fake_ip_route
+                    && !tun_inet.contains(&fake_ip)
+                    && let Some(tun_dev_name) = &tun_dev
+                {
+                    let cost = if cfg!(target_os = "windows") {
+                        Some(4)
+                    } else {
+                        None
+                    };
+                    Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost)
+                        .await?;
+                }
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    async fn start(
+        mut rpc_server: StandAloneServer<RuntimeRpcListener>,
+        data: Arc<MagicDnsServerInstanceData>,
+        packet_plane: Arc<CorePacketPlane>,
+        tun_inet: Ipv4Inet,
+        add_route: impl std::future::Future<Output = anyhow::Result<()>>,
+    ) -> anyhow::Result<Self> {
+        // Binding elects the server; registration enables record publication.
+        // Keep those separate until initialization has completed, and install
+        // the hook before serve takes ownership of it.
         rpc_server.set_hook(data.clone());
         rpc_server.serve().await?;
-
-        if manage_fake_ip_route
-            && !tun_inet.contains(&fake_ip)
-            && let Some(tun_dev_name) = &tun_dev
-        {
-            let cost = if cfg!(target_os = "windows") {
-                Some(4)
-            } else {
-                None
-            };
-            Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
-        }
+        add_route.await?;
 
         data.init_zones()
             .await
@@ -527,9 +543,11 @@ impl MagicDnsServerInstance {
         // completed, so construction failure cannot leave a managed pipeline
         // registration that never reaches async cleanup.
         let packet_filter = packet_plane
-            .register_magic_dns_resolver(fake_ip, data.clone())
+            .register_magic_dns_resolver(data.fake_ip, data.clone())
             .await;
-
+        rpc_server
+            .registry()
+            .register(MagicDnsServerRpcServer::new_arc(data.clone()), "");
         Ok(Self {
             _rpc_server: rpc_server,
             data,
@@ -726,6 +744,177 @@ mod tests {
             .collect::<Vec<_>>();
         answers.sort();
         answers
+    }
+
+    #[cfg(feature = "tun")]
+    mod startup {
+        use super::*;
+        use crate::{
+            common::global_ctx::tests::get_mock_global_ctx,
+            instance::dns_server::tests::build_test_core,
+            proto::{
+                magic_dns::MagicDnsServerRpcClientFactory, rpc::standalone::runtime_rpc_client,
+            },
+        };
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        #[derive(Default)]
+        struct StartupSystemConfig {
+            domains: Mutex<Vec<String>>,
+            writes: AtomicUsize,
+            closes: AtomicUsize,
+        }
+
+        impl SystemConfig for StartupSystemConfig {
+            fn set_dns(&self, config: &OSConfig) -> io::Result<()> {
+                self.writes.fetch_add(1, Ordering::SeqCst);
+                *self.domains.lock().unwrap() = config.match_domains.clone();
+                Ok(())
+            }
+
+            fn close(&self) -> io::Result<()> {
+                self.closes.fetch_add(1, Ordering::SeqCst);
+                self.domains.lock().unwrap().clear();
+                Ok(())
+            }
+        }
+
+        fn rpc_address() -> std::net::SocketAddr {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn startup_publishes_rpc_only_after_route_and_dns_are_ready() {
+            for fail_route in [true, false] {
+                let (core, _packets) = build_test_core(get_mock_global_ctx()).await;
+                let system = Arc::new(StartupSystemConfig::default());
+                let mut data = data_with(None).await;
+                data.system_config = Some(system.clone());
+                let data = Arc::new(data);
+                let address = rpc_address();
+                let (entered, started) = tokio::sync::oneshot::channel();
+                let (release, blocked) = tokio::sync::oneshot::channel();
+                let starting_data = data.clone();
+                let packet_plane = core.packet_plane();
+                let starting = tokio::spawn(async move {
+                    MagicDnsServerInstance::start(
+                        StandAloneServer::new(runtime_rpc_listener(address)),
+                        starting_data,
+                        packet_plane,
+                        "100.100.100.0/24".parse().unwrap(),
+                        async move {
+                            entered.send(()).unwrap();
+                            blocked.await?;
+                            anyhow::ensure!(!fail_route, "injected fake-IP route failure");
+                            Ok(())
+                        },
+                    )
+                    .await
+                });
+                started.await.unwrap();
+
+                let mut early_client =
+                    runtime_rpc_client(format!("tcp://{address}").parse().unwrap());
+                let early = early_client
+                    .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>(String::new())
+                    .await
+                    .unwrap();
+                let result = early
+                    .update_dns_record(BaseController::default(), request("10.0.0.8/24"))
+                    .await;
+                assert!(
+                    matches!(
+                        &result,
+                        Err(crate::proto::rpc_types::error::Error::InvalidServiceKey(..))
+                    ),
+                    "expected an unregistered DNS service during startup, got {result:?}"
+                );
+                assert_eq!(system.writes.load(Ordering::SeqCst), 0);
+                assert_eq!(data.route_store.snapshot().clients.len(), 1);
+
+                let mut loser_data = data_with(None).await;
+                let loser_system = Arc::new(StartupSystemConfig::default());
+                loser_data.system_config = Some(loser_system.clone());
+                let loser_route = AtomicBool::new(false);
+                assert!(
+                    MagicDnsServerInstance::start(
+                        StandAloneServer::new(runtime_rpc_listener(address)),
+                        Arc::new(loser_data),
+                        core.packet_plane(),
+                        "100.100.100.0/24".parse().unwrap(),
+                        async {
+                            loser_route.store(true, Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
+                    .await
+                    .is_err()
+                );
+                assert!(!loser_route.load(Ordering::SeqCst));
+                assert_eq!(loser_system.writes.load(Ordering::SeqCst), 0);
+                assert_eq!(loser_system.closes.load(Ordering::SeqCst), 0);
+
+                release.send(()).unwrap();
+                let result = starting.await.unwrap();
+                drop(early);
+                if fail_route {
+                    assert!(
+                        result
+                            .err()
+                            .unwrap()
+                            .to_string()
+                            .contains("injected fake-IP route failure")
+                    );
+                    assert_eq!(system.writes.load(Ordering::SeqCst), 0);
+                    assert_eq!(system.closes.load(Ordering::SeqCst), 0);
+                    assert!(system.domains.lock().unwrap().is_empty());
+                    tokio::time::timeout(Duration::from_secs(5), early_client.wait())
+                        .await
+                        .unwrap();
+                    let mut next = StandAloneServer::new(runtime_rpc_listener(address));
+                    next.serve().await.unwrap();
+                } else {
+                    let server = result.ok().unwrap();
+                    assert_eq!(system.writes.load(Ordering::SeqCst), 1);
+                    assert_eq!(*system.domains.lock().unwrap(), ["et.net."]);
+
+                    // A connection accepted before registration has no service;
+                    // the normal client handshake fails and a later retry reconnects.
+                    let mut client =
+                        runtime_rpc_client(format!("tcp://{address}").parse().unwrap());
+                    let rpc = client
+                        .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>(
+                            String::new(),
+                        )
+                        .await
+                        .unwrap();
+                    rpc.handshake(BaseController::default(), HandshakeRequest::default())
+                        .await
+                        .unwrap();
+                    rpc.update_dns_record(BaseController::default(), request("10.0.0.8/24"))
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        a(&data, "node.et.net.").await,
+                        vec![Ipv4Addr::new(10, 0, 0, 8)]
+                    );
+                    server.clean_env().await;
+                    assert_eq!(system.closes.load(Ordering::SeqCst), 1);
+                    assert!(system.domains.lock().unwrap().is_empty());
+                    let writes = system.writes.load(Ordering::SeqCst);
+                    assert!(
+                        rpc.update_dns_record(BaseController::default(), request("10.0.0.9/24"))
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(system.writes.load(Ordering::SeqCst), writes);
+                }
+                core.stop().await;
+            }
+        }
     }
 
     #[tokio::test]

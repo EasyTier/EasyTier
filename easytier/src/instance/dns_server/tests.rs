@@ -38,7 +38,9 @@ pub async fn prepare_env(
     prepare_env_with_tld_dns_zone(dns_name, tun_ip, None).await
 }
 
-async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPacketReceiver) {
+pub(super) async fn build_test_core(
+    ctx: ArcGlobalCtx,
+) -> (Arc<NativeCoreInstance>, HostPacketReceiver) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
     let adapters = runtime_core_host_adapters(
         ctx.clone(),
