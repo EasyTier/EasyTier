@@ -558,6 +558,7 @@ impl PeerConn {
         &self,
         send_secret_digest: bool,
         metric_network_name: &str,
+        network_name_override: Option<String>,
     ) -> Result<(), Error> {
         let network = self.context.network_identity();
         let mut req = HandshakeRequest {
@@ -565,7 +566,7 @@ impl PeerConn {
             my_peer_id: self.my_peer_id,
             version: VERSION,
             features: self.local_features(),
-            network_name: network.network_name.clone(),
+            network_name: network_name_override.unwrap_or_else(|| network.network_name.clone()),
             ..Default::default()
         };
 
@@ -1066,7 +1067,20 @@ impl PeerConn {
         handshake_recved(self, &remote_network_name)?;
 
         let server_network_name = self.context.network_name();
-        let (role_hint, secret_proof_32) = if msg1_pb.a_network_name == server_network_name {
+        let name_matches = msg1_pb.a_network_name == server_network_name;
+        // Reply with our real name only to a peer that already declared it (the
+        // normal same-network join). Any other peer gets an echo of its own declared
+        // name instead: msg2 is sent before the secret proof in msg3 is verified, so
+        // it must not disclose ours.
+        // The "fg-" prefix keeps the echo from ever matching the peer's own name,
+        // which would trip the peer-side check that a matching name requires
+        // role_hint == 1.
+        let b_network_name_for_reply = if name_matches {
+            server_network_name.clone()
+        } else {
+            format!("fg-{}", msg1_pb.a_network_name)
+        };
+        let (role_hint, secret_proof_32) = if name_matches {
             (
                 1,
                 self.context
@@ -1094,7 +1108,7 @@ impl PeerConn {
 
         let b_conn_id = uuid::Uuid::new_v4();
         let msg2_pb = PeerConnNoiseMsg2Pb {
-            b_network_name: server_network_name,
+            b_network_name: b_network_name_for_reply,
             role_hint,
             action: match action {
                 PeerSessionAction::Join => PeerConnSessionActionPb::Join as i32,
@@ -1251,8 +1265,25 @@ impl PeerConn {
             self.is_client = Some(false);
 
             let send_digest = self.get_network_identity() == self.context.network_identity();
-            self.send_handshake(send_digest, &self.get_network_identity().network_name)
-                .await?;
+            // Same rule as the noise msg2 path: reply with the real name only to a
+            // peer that already declared it, echo from the peer's own name otherwise.
+            let my_name = self.context.network_identity().network_name;
+            let peer_name = self
+                .info
+                .as_ref()
+                .map(|i| i.network_name.clone())
+                .unwrap_or_default();
+            let reply_name = if peer_name.is_empty() || peer_name == my_name {
+                None
+            } else {
+                Some(format!("fg-{}", peer_name))
+            };
+            self.send_handshake(
+                send_digest,
+                &self.get_network_identity().network_name,
+                reply_name,
+            )
+            .await?;
         } else {
             return Err(Error::WaitRespError(format!(
                 "unexpected packet type during handshake: {}",
@@ -1286,7 +1317,7 @@ impl PeerConn {
             self.is_client = Some(true);
         } else {
             let network = self.context.network_identity();
-            self.send_handshake(true, &network.network_name).await?;
+            self.send_handshake(true, &network.network_name, None).await?;
             tracing::info!("waiting for handshake request from server");
             let rsp = self.wait_handshake_loop().await?;
             tracing::info!("handshake response: {:?}", rsp);
