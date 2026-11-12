@@ -1,7 +1,8 @@
 use std::{collections::BTreeSet, net::Ipv4Addr};
 
 use super::{
-    Error, IfConfiguerTrait, cidr_to_subnet_mask, ignore_removed_shell_cmd_not_found, run_shell_cmd,
+    Error, IfConfiguerTrait, cidr_to_subnet_mask, ignore_removed_shell_cmd_not_found,
+    run_shell_cmd, run_shell_cmd_output,
 };
 use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
@@ -37,6 +38,34 @@ impl MacIfConfiger {
 
 async fn run_delete_shell_cmd(cmd: &str) -> Result<(), Error> {
     ignore_removed_shell_cmd_not_found(run_shell_cmd(cmd).await)
+}
+
+fn ipv4_route_matches(output: &str, name: &str, address: Ipv4Addr, prefix: u8) -> bool {
+    let field = |key: &str| {
+        output.lines().find_map(|line| {
+            let (label, value) = line.trim().split_once(':')?;
+            (label == key).then_some(value.trim())
+        })
+    };
+    let destination = match field("destination") {
+        Some("default") => Some(Ipv4Addr::UNSPECIFIED),
+        Some(value) => value.parse().ok(),
+        None => None,
+    };
+    let mask = match field("mask") {
+        Some("default") => Some(Ipv4Addr::UNSPECIFIED),
+        Some(value) => value.parse().ok(),
+        None if field("destination") == Some("default") => Some(Ipv4Addr::UNSPECIFIED),
+        None if field("flags")
+            .is_some_and(|flags| flags.split([',', '<', '>']).any(|flag| flag == "HOST")) =>
+        {
+            Some(Ipv4Addr::BROADCAST)
+        }
+        None => None,
+    };
+    destination == Some(address)
+        && mask == Some(cidr_to_subnet_mask(prefix))
+        && field("interface") == Some(name)
 }
 
 #[async_trait]
@@ -83,6 +112,25 @@ impl IfConfiguerTrait for MacIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
+        // The -interface argument to route delete does not constrain route ownership.
+        // A lookup can also return a covering route, so check the exact prefix.
+        let output = match run_shell_cmd_output(&format!(
+            "route -n get -net {} -netmask {}",
+            address,
+            cidr_to_subnet_mask(cidr_prefix),
+        ))
+        .await
+        {
+            Ok(output) => output,
+            Err(err) => {
+                ignore_removed_shell_cmd_not_found(Err(err))?;
+                return Ok(());
+            }
+        };
+        if !ipv4_route_matches(&output, name, address, cidr_prefix) {
+            tracing::debug!(%name, %address, cidr_prefix, "skip deleting an IPv4 route owned elsewhere");
+            return Ok(());
+        }
         run_delete_shell_cmd(
             format!(
                 "route -n delete {} -netmask {} -interface {}",
@@ -193,5 +241,144 @@ impl IfConfiguerTrait for MacIfConfiger {
             .as_str(),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_route_cleanup_requires_the_exact_prefix_and_interface() {
+        let subnet = "192.0.2.0".parse().unwrap();
+        let own = "destination: 192.0.2.0\nmask: 255.255.255.0\ninterface: utun4\n";
+        assert!(ipv4_route_matches(own, "utun4", subnet, 24));
+        assert!(!ipv4_route_matches(own, "en0", subnet, 24));
+        assert!(!ipv4_route_matches(own, "utun4", subnet, 25));
+        assert!(!ipv4_route_matches(
+            "destination: default\nmask: default\ninterface: utun4\n",
+            "utun4",
+            subnet,
+            24,
+        ));
+        assert!(!ipv4_route_matches("", "utun4", subnet, 24));
+    }
+
+    #[test]
+    fn ipv4_route_cleanup_handles_host_and_default_routes() {
+        assert!(ipv4_route_matches(
+            "destination: 192.0.2.1\ninterface: utun4\nflags: <UP,HOST,DONE,STATIC>\n",
+            "utun4",
+            "192.0.2.1".parse().unwrap(),
+            32,
+        ));
+        assert!(ipv4_route_matches(
+            "destination: default\ninterface: utun4\n",
+            "utun4",
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requires root; temporarily installs an unused documentation subnet on lo0"]
+    async fn conflicting_ipv4_route_preserves_the_existing_interface() {
+        let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&uid.stdout).trim(), "0");
+        let address: Ipv4Addr = "192.0.2.240".parse().unwrap();
+        let prefix = 28;
+        let query = "route -n get -net 192.0.2.240 -netmask 255.255.255.240";
+        let before = run_shell_cmd_output(query).await.unwrap_or_default();
+        assert!(
+            !before
+                .lines()
+                .any(|line| line.trim() == "destination: 192.0.2.240"),
+            "test destination is already in use"
+        );
+
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let output = std::process::Command::new("route")
+                    .args([
+                        "-n",
+                        "get",
+                        "-net",
+                        "192.0.2.240",
+                        "-netmask",
+                        "255.255.255.240",
+                    ])
+                    .output()
+                    .unwrap();
+                if ipv4_route_matches(
+                    &String::from_utf8_lossy(&output.stdout),
+                    "lo0",
+                    "192.0.2.240".parse().unwrap(),
+                    28,
+                ) {
+                    let _ = std::process::Command::new("route")
+                        .args([
+                            "-n",
+                            "delete",
+                            "-net",
+                            "192.0.2.240",
+                            "-netmask",
+                            "255.255.255.240",
+                            "-interface",
+                            "lo0",
+                        ])
+                        .output();
+                }
+            }
+        }
+
+        run_shell_cmd(
+            "route -n add -net 192.0.2.240 -netmask 255.255.255.240 -interface 127.0.0.1",
+        )
+        .await
+        .unwrap();
+        let _cleanup = Cleanup;
+        let configurer = MacIfConfiger::default();
+        assert!(matches!(
+            configurer
+                .add_ipv4_route("en0", address, prefix, None)
+                .await,
+            Err(Error::ShellCommandError(_))
+        ));
+        configurer
+            .remove_ipv4_route("en0", address, prefix)
+            .await
+            .unwrap();
+        assert!(ipv4_route_matches(
+            &run_shell_cmd_output(query).await.unwrap(),
+            "lo0",
+            address,
+            prefix,
+        ));
+
+        configurer
+            .remove_ipv4_route("lo0", address, prefix)
+            .await
+            .unwrap();
+        configurer
+            .add_ipv4_route("lo0", address, prefix, None)
+            .await
+            .unwrap();
+        configurer
+            .remove_ipv4_route("lo0", address, prefix)
+            .await
+            .unwrap();
+        // Repeating cleanup must preserve the covering route returned by route get.
+        configurer
+            .remove_ipv4_route("lo0", address, prefix)
+            .await
+            .unwrap();
+        assert!(!ipv4_route_matches(
+            &run_shell_cmd_output(query).await.unwrap_or_default(),
+            "lo0",
+            address,
+            prefix,
+        ));
     }
 }
