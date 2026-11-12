@@ -200,6 +200,8 @@ struct PeerArgs {
 enum PeerSubCommand {
     /// List connected peers
     List,
+    /// Show peer connection details (local/remote addresses)
+    Conns,
     /// Show public IPv6 address information
     Ipv6,
     /// List foreign networks discovered by this instance
@@ -1116,6 +1118,38 @@ mod tests {
             vec!["--daemon"]
         );
     }
+
+    #[test]
+    fn peer_conns_command_parses() {
+        let cli = Cli::try_parse_from(["easytier-cli", "peer", "conns"]).unwrap();
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Peer(PeerArgs {
+                sub_command: Some(PeerSubCommand::Conns)
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "easytier-cli", "-n", "net1", "-o", "json", "peer", "conns",
+        ])
+        .unwrap();
+        assert_eq!(cli.instance_select.name.as_deref(), Some("net1"));
+        assert_eq!(cli.output_format, OutputFormat::Json);
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Peer(PeerArgs {
+                sub_command: Some(PeerSubCommand::Conns)
+            })
+        ));
+    }
+
+    #[test]
+    fn peer_list_command_still_parses_without_subcommand() {
+        let cli = Cli::try_parse_from(["easytier-cli", "peer"]).unwrap();
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Peer(PeerArgs { sub_command: None })
+        ));
+    }
 }
 
 fn format_proxy_cidrs(value: &str) -> String {
@@ -1877,6 +1911,8 @@ impl<'a> CommandHandler<'a> {
             tunnel_proto: String,
             #[tabled(rename = "NAT")]
             nat_type: String,
+            #[tabled(rename = "remote")]
+            remote_addr: String,
             #[tabled(skip)]
             id: String,
             version: String,
@@ -1905,6 +1941,7 @@ impl<'a> CommandHandler<'a> {
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tunnel_proto: p.get_conn_protos().unwrap_or_default().join(","),
                     nat_type: p.get_udp_nat_type(),
+                    remote_addr: p.get_remote_addr().unwrap_or_else(|| "-".to_string()),
                     id: route.peer_id.to_string(),
                     version: if route.version.is_empty() {
                         "unknown".to_string()
@@ -1934,6 +1971,7 @@ impl<'a> CommandHandler<'a> {
                     } else {
                         "Unknown".to_string()
                     },
+                    remote_addr: "-".to_string(),
                     id: p.peer_id.to_string(),
                     version: p.version,
                 }
@@ -2011,6 +2049,98 @@ impl<'a> CommandHandler<'a> {
                 &["version", "tunnel", "nat", "tx", "rx", "loss", "lat(ms)"],
                 self.no_trunc,
             )
+        })
+    }
+
+    async fn handle_peer_conns(&self) -> Result<(), Error> {
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct ConnRow {
+            peer_id: String,
+            conn_id: String,
+            #[tabled(rename = "proto")]
+            proto: String,
+            #[tabled(rename = "local")]
+            local_addr: String,
+            #[tabled(rename = "remote")]
+            remote_addr: String,
+            #[tabled(rename = "resolved")]
+            resolved_remote_addr: String,
+            #[tabled(rename = "lat(ms)")]
+            lat_ms: String,
+            #[tabled(rename = "rx")]
+            rx_bytes: String,
+            #[tabled(rename = "tx")]
+            tx_bytes: String,
+            loss_rate: String,
+        }
+
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_peer_list_data()))
+            .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        self.print_results(&results, |data| {
+            let mut rows: Vec<ConnRow> = Vec::new();
+            for pair in &data.peer_routes {
+                let peer = pair.peer.as_ref();
+                let route = pair.route.clone().unwrap_or_default();
+                let peer_id = route.peer_id.to_string();
+                for conn in peer.map(|p| &p.conns).unwrap_or(&vec![]) {
+                    let proto = conn
+                        .tunnel
+                        .as_ref()
+                        .map(|t| t.display_tunnel_type())
+                        .unwrap_or_else(|| "-".to_string());
+                    let local = conn
+                        .tunnel
+                        .as_ref()
+                        .and_then(|t| t.display_local_addr())
+                        .unwrap_or_else(|| "-".to_string());
+                    let remote = conn
+                        .tunnel
+                        .as_ref()
+                        .and_then(|t| t.display_remote_addr())
+                        .unwrap_or_else(|| "-".to_string());
+                    let stats = conn
+                        .stats
+                        .as_ref()
+                        .map(|s| (s.rx_bytes, s.tx_bytes, s.latency_us));
+                    rows.push(ConnRow {
+                        peer_id: peer_id.clone(),
+                        conn_id: conn.conn_id.clone(),
+                        proto,
+                        local_addr: local,
+                        remote_addr: remote,
+                        resolved_remote_addr: conn
+                            .tunnel
+                            .as_ref()
+                            .and_then(|t| {
+                                t.effective_remote_addr()
+                                    .map(|u| u.url.clone())
+                            })
+                            .unwrap_or_else(|| "-".to_string()),
+                        lat_ms: format!("{:.2}", stats.map(|(_, _, l)| l as f64 / 1000.0).unwrap_or(0.0)),
+                        rx_bytes: format_size(stats.map(|(r, _, _)| r).unwrap_or(0), humansize::DECIMAL),
+                        tx_bytes: format_size(stats.map(|(_, t, _)| t).unwrap_or(0), humansize::DECIMAL),
+                        loss_rate: format!("{:.1}%", conn.loss_rate * 100.0),
+                    });
+                }
+            }
+            if rows.is_empty() {
+                println!("no peer connections found");
+            } else {
+                print_output(
+                    &rows,
+                    self.output_format,
+                    &[],
+                    &["resolved"],
+                    self.no_trunc,
+                )?;
+            }
+            Ok(())
         })
     }
 
@@ -3728,6 +3858,9 @@ async fn main() -> Result<(), Error> {
         SubCommand::Peer(peer_args) => match &peer_args.sub_command {
             Some(PeerSubCommand::List) => {
                 handler.handle_peer_list().await?;
+            }
+            Some(PeerSubCommand::Conns) => {
+                handler.handle_peer_conns().await?;
             }
             Some(PeerSubCommand::Ipv6) => {
                 handler.handle_peer_ipv6().await?;
