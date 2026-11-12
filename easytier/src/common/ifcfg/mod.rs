@@ -143,6 +143,14 @@ fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
     target_os = "freebsd"
 ))]
 async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
+    run_shell_cmd_output(cmd).await.map(|_| ())
+}
+
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
+async fn run_shell_cmd_output(cmd: &str) -> Result<String, Error> {
     let cmd_out: std::process::Output;
     let stdout: String;
     let stderr: String;
@@ -173,13 +181,26 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     };
 
     let ec = cmd_out.status.code();
-    let succ = cmd_out.status.success();
+    let succ = shell_command_succeeded(cmd_out.status.success(), &stderr);
     tracing::info!(?cmd, ?ec, ?succ, ?stdout, ?stderr, "run shell cmd");
 
-    if !cmd_out.status.success() {
+    if !succ {
         return Err(Error::ShellCommandError(stdout + &stderr));
     }
-    Ok(())
+    Ok(stdout)
+}
+
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd",
+    test
+))]
+fn shell_command_succeeded(exit_success: bool, stderr: &str) -> bool {
+    // Darwin route(8) can exit successfully after the routing socket rejects a request.
+    exit_success
+        && !stderr
+            .lines()
+            .any(|line| line.starts_with("route: writing to routing socket:"))
 }
 
 #[cfg(any(
@@ -277,7 +298,23 @@ pub(crate) fn list_ipv6_ndp_proxy(
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, ignore_removed_shell_cmd_not_found};
+    use super::{Error, ignore_removed_shell_cmd_not_found, shell_command_succeeded};
+
+    #[test]
+    fn route_socket_errors_override_a_successful_exit_status() {
+        for error in ["File exists", "not in table", "Permission denied"] {
+            assert!(!shell_command_succeeded(
+                true,
+                &format!("route: writing to routing socket: {error}\n"),
+            ));
+        }
+        assert!(!shell_command_succeeded(false, ""));
+        assert!(shell_command_succeeded(true, ""));
+        assert!(shell_command_succeeded(
+            true,
+            "ifconfig: warning: example\n"
+        ));
+    }
 
     #[test]
     fn removed_shell_cmd_ignores_missing_addresses_and_routes() {
