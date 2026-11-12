@@ -1418,41 +1418,344 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_or_overlapping_zone_rejects_the_complete_update() {
-        let data = data_with(None).await;
-        let dns = |origin: &str, value: &str| {
-            config(&[(origin, &[record("svc", DnsRecordType::A, value, None)])])
-        };
+    async fn same_zone_records_replace_clear_and_disconnect_independently() {
+        let mut data = data_with(None).await;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        data.system_config = Some(Arc::new(SystemConfigSpy(calls.clone())));
+        data.init_zones().await.unwrap();
+        let first = config(&[(
+            "shared.test",
+            &[
+                record("svc", DnsRecordType::A, "10.0.0.1", None),
+                record("svc", DnsRecordType::A, "10.0.0.2", None),
+                record("svc", DnsRecordType::Aaaa, "fd00::1", None),
+                record("svc", DnsRecordType::Aaaa, "fd00::2", None),
+                record("first", DnsRecordType::A, "10.0.0.10", None),
+            ],
+        )]);
+        let second = config(&[(
+            "SHARED.test.",
+            &[
+                record("svc", DnsRecordType::A, "10.0.0.2", None),
+                record("svc", DnsRecordType::A, "10.0.0.3", None),
+                record("svc", DnsRecordType::Aaaa, "fd00::2", None),
+                record("svc", DnsRecordType::Aaaa, "fd00::3", None),
+                record("second", DnsRecordType::A, "10.0.0.20", None),
+            ],
+        )]);
+        data.update_dns_record(controller(54001), contribution(2, first.clone()))
+            .await
+            .unwrap();
+        data.update_dns_record(controller(54002), contribution(3, second))
+            .await
+            .unwrap();
+        assert_eq!(
+            a(&data, "svc.shared.test.").await,
+            ["10.0.0.1", "10.0.0.2", "10.0.0.3"].map(|ip| ip.parse::<Ipv4Addr>().unwrap())
+        );
+        let response = query(&data, "svc.shared.test.", RecordType::AAAA).await;
+        let mut values = response
+            .answers()
+            .iter()
+            .map(|record| {
+                assert_eq!(record.ttl(), 60);
+                record.data().to_string()
+            })
+            .collect::<Vec<_>>();
+        values.sort();
+        assert_eq!(values, ["fd00::1", "fd00::2", "fd00::3"]);
+        assert_eq!(a(&data, "first.shared.test.").await.len(), 1);
+        assert_eq!(a(&data, "second.shared.test.").await.len(), 1);
+        // A second publisher of the same origin needs no extra OS domain.
+        assert_eq!(calls.lock().unwrap().len(), 2);
+
         data.update_dns_record(
             controller(54001),
-            contribution(2, dns("first.test", "10.0.0.1")),
+            contribution(
+                2,
+                config(&[(
+                    "shared.test",
+                    &[record("svc", DnsRecordType::A, "10.0.0.4", None)],
+                )]),
+            ),
         )
         .await
         .unwrap();
+        assert_eq!(
+            a(&data, "svc.shared.test.").await,
+            ["10.0.0.2", "10.0.0.3", "10.0.0.4"].map(|ip| ip.parse::<Ipv4Addr>().unwrap())
+        );
+        assert!(a(&data, "first.shared.test.").await.is_empty());
+        data.update_dns_record(controller(54001), contribution(2, config(&[])))
+            .await
+            .unwrap();
+        assert_eq!(
+            a(&data, "svc.shared.test.").await,
+            ["10.0.0.2", "10.0.0.3"].map(|ip| ip.parse::<Ipv4Addr>().unwrap())
+        );
+        data.update_dns_record(controller(54001), contribution(2, first))
+            .await
+            .unwrap();
+        data.on_client_disconnected(controller(54002).get_tunnel_info().cloned())
+            .await;
+        assert_eq!(
+            a(&data, "svc.shared.test.").await,
+            ["10.0.0.1", "10.0.0.2"].map(|ip| ip.parse::<Ipv4Addr>().unwrap())
+        );
+        assert!(a(&data, "second.shared.test.").await.is_empty());
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
+            .await;
+        assert!(
+            !data
+                .dns_server
+                .local_origins()
+                .await
+                .contains(&"shared.test.".parse().unwrap())
+        );
+        assert_eq!(calls.lock().unwrap().last().unwrap().1, ["et.net."]);
+    }
+
+    #[tokio::test]
+    async fn same_zone_other_types_merge_and_singletons_deduplicate() {
+        let shared = [
+            record("alias", DnsRecordType::Cname, "target", None),
+            record("aname", DnsRecordType::Aname, "target", None),
+            record("@", DnsRecordType::Soa, "ns hostmaster 1 2 3 4 5", None),
+        ];
+        let first = [
+            shared.as_slice(),
+            &[
+                record("target", DnsRecordType::A, "10.0.0.1", None),
+                record("info", DnsRecordType::Txt, "\"one\"", None),
+                record("mail", DnsRecordType::Mx, "10 mail-a", None),
+                record("_svc._tcp", DnsRecordType::Srv, "10 5 443 host-a", None),
+                record("https", DnsRecordType::Https, "1 host-a port=443", None),
+            ],
+        ]
+        .concat();
+        let mut second = [
+            shared.as_slice(),
+            &[
+                record("target", DnsRecordType::A, "10.0.0.2", None),
+                record("info", DnsRecordType::Txt, "\"one\"", None),
+                record("info", DnsRecordType::Txt, "\"two\"", None),
+                record("mail", DnsRecordType::Mx, "20 mail-b", None),
+                record("_svc._tcp", DnsRecordType::Srv, "20 5 443 host-b", None),
+                record("https", DnsRecordType::Https, "2 host-b port=443", None),
+            ],
+        ]
+        .concat();
+        // Equivalent absolute targets must deduplicate with relative input.
+        second[0].value = Some("TARGET.shared.test.".to_owned());
+        second[1].value = Some("TARGET.shared.test.".to_owned());
+        second[2].value = Some("NS.shared.test. HOSTMASTER.shared.test. 1 2 3 4 5".to_owned());
+        let data = data_with(Some(&config(&[("shared.test", &first)]))).await;
         data.update_dns_record(
-            controller(54002),
-            contribution(3, dns("second.test", "10.0.0.2")),
+            controller(54001),
+            contribution(2, config(&[("shared.test", &second)])),
         )
         .await
         .unwrap();
-        for rejected in [
-            dns("FIRST.test.", "10.0.0.3"),
-            dns("invalid.test", "invalid address"),
+        for (name, kind, count) in [
+            ("target", RecordType::A, 2),
+            ("alias", RecordType::CNAME, 1),
+            ("aname", RecordType::ANAME, 1),
+            ("shared.test", RecordType::SOA, 1),
+            ("info", RecordType::TXT, 2),
+            ("mail", RecordType::MX, 2),
+            ("_svc._tcp", RecordType::SRV, 2),
+            ("https", RecordType::HTTPS, 2),
         ] {
-            assert!(
-                data.update_dns_record(controller(54002), contribution(3, rejected))
-                    .await
-                    .is_err()
-            );
-            assert_eq!(
-                a(&data, "svc.first.test.").await,
-                vec![Ipv4Addr::new(10, 0, 0, 1)]
-            );
-            assert_eq!(
-                a(&data, "svc.second.test.").await,
-                vec![Ipv4Addr::new(10, 0, 0, 2)]
-            );
+            let name = if kind == RecordType::SOA {
+                format!("{name}.")
+            } else {
+                format!("{name}.shared.test.")
+            };
+            let response = query(&data, &name, kind).await;
+            assert_eq!(response.answers().len(), count, "{name} {kind}");
+            let values = response
+                .answers()
+                .iter()
+                .map(|record| {
+                    assert_eq!(record.record_type(), kind);
+                    assert_eq!(record.ttl(), 60);
+                    record.data().to_string()
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(values.len(), count, "{name} {kind}");
         }
+        assert_eq!(
+            a(&data, "alias.shared.test.").await,
+            ["10.0.0.1", "10.0.0.2"].map(|ip| ip.parse::<Ipv4Addr>().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn same_zone_static_and_automatic_a_records_keep_configured_ttl() {
+        for ttl in [0, 60] {
+            let dns = |value| {
+                config(&[(
+                    "et.net",
+                    &[record("node", DnsRecordType::A, value, Some(ttl))],
+                )])
+            };
+            let data = data_with(Some(&dns("10.0.0.8"))).await;
+            let mut update = request("10.0.0.8/24");
+            update.dns = Some(dns("10.0.0.9"));
+            data.update_dns_record(controller(54001), update)
+                .await
+                .unwrap();
+            let mut automatic = request("10.0.0.10/24");
+            automatic.instance_id = uuid::Uuid::from_u128(3).to_string();
+            data.update_dns_record(controller(54002), automatic)
+                .await
+                .unwrap();
+            assert_eq!(
+                a(&data, "node.et.net.").await,
+                ["10.0.0.8", "10.0.0.9", "10.0.0.10"].map(|ip| ip.parse::<Ipv4Addr>().unwrap())
+            );
+            data.update_dns_record(controller(54003), contribution(1, config(&[])))
+                .await
+                .unwrap();
+            for answer in query(&data, "node.et.net.", RecordType::A).await.answers() {
+                assert_eq!(answer.ttl(), ttl);
+            }
+            // Clearing the final static contribution keeps automatic values
+            // and restores their TTL instead of retaining the static TTL.
+            data.update_dns_record(controller(54001), request("10.0.0.8/24"))
+                .await
+                .unwrap();
+            assert_eq!(
+                a(&data, "node.et.net.").await,
+                ["10.0.0.8", "10.0.0.10"].map(|ip| ip.parse::<Ipv4Addr>().unwrap())
+            );
+            for answer in query(&data, "node.et.net.", RecordType::A).await.answers() {
+                assert_eq!(answer.ttl(), 1);
+            }
+            data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
+                .await;
+            assert_eq!(
+                a(&data, "node.et.net.").await,
+                ["10.0.0.10".parse::<Ipv4Addr>().unwrap()]
+            );
+            let accepted = data.route_store.snapshot().clients;
+            let error = data
+                .update_dns_record(
+                    controller(54003),
+                    contribution(
+                        1,
+                        config(&[(
+                            "et.net",
+                            &[record("node", DnsRecordType::Cname, "target", None)],
+                        )]),
+                    ),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("automatic DNS record"),
+                "{error}"
+            );
+            assert_eq!(data.route_store.snapshot().clients, accepted);
+        }
+    }
+
+    #[tokio::test]
+    async fn incompatible_same_zone_records_reject_the_complete_update() {
+        let dns = config(&[(
+            "shared.test",
+            &[
+                record("svc", DnsRecordType::A, "10.0.0.1", None),
+                record("alias", DnsRecordType::Cname, "svc", None),
+                record("aname", DnsRecordType::Aname, "svc", None),
+                record("@", DnsRecordType::Soa, "ns hostmaster 1 2 3 4 5", None),
+            ],
+        )]);
+        let mut data = data_with(Some(&dns)).await;
+        let previous = config(&[(
+            "previous.test",
+            &[record("svc", DnsRecordType::A, "10.0.0.2", None)],
+        )]);
+        data.update_dns_record(controller(54001), contribution(2, previous))
+            .await
+            .unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        data.system_config = Some(Arc::new(SystemConfigSpy(calls.clone())));
+        data.init_zones().await.unwrap();
+        let accepted = data.route_store.snapshot().clients;
+        for (conflict, message) in [
+            (
+                record("svc", DnsRecordType::A, "10.0.0.3", Some(61)),
+                "RRset TTLs must match",
+            ),
+            (
+                record("svc", DnsRecordType::A, "10.0.0.1", Some(0)),
+                "RRset TTLs must match",
+            ),
+            (
+                record("svc", DnsRecordType::Cname, "target", None),
+                "CNAME cannot coexist",
+            ),
+            (
+                record("alias", DnsRecordType::A, "10.0.0.3", None),
+                "CNAME cannot coexist",
+            ),
+            (
+                record("alias", DnsRecordType::Cname, "other", None),
+                "CNAME permits only one value",
+            ),
+            (
+                record("aname", DnsRecordType::Aname, "other", None),
+                "ANAME permits only one value",
+            ),
+            (
+                record("@", DnsRecordType::Soa, "ns hostmaster 2 2 3 4 5", None),
+                "SOA permits only one value",
+            ),
+            (
+                record("svc", DnsRecordType::A, "invalid address", None),
+                "value",
+            ),
+        ] {
+            let rejected = config(&[
+                ("SHARED.test.", &[conflict]),
+                (
+                    "candidate.test",
+                    &[record("fresh", DnsRecordType::A, "10.0.0.99", None)],
+                ),
+            ]);
+            let mut update = request("10.0.0.99/24");
+            update.dns = Some(rejected);
+            let error = data
+                .update_dns_record(controller(54001), update)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+            assert_eq!(data.route_store.snapshot().clients, accepted);
+            assert_eq!(
+                a(&data, "svc.shared.test.").await,
+                ["10.0.0.1".parse::<Ipv4Addr>().unwrap()]
+            );
+            assert_eq!(
+                a(&data, "svc.previous.test.").await,
+                ["10.0.0.2".parse::<Ipv4Addr>().unwrap()]
+            );
+            assert!(a(&data, "node.et.net.").await.is_empty());
+            assert!(
+                !data
+                    .dns_server
+                    .local_origins()
+                    .await
+                    .contains(&"candidate.test.".parse().unwrap())
+            );
+            assert_eq!(calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn automatic_routes_deduplicate_across_publishers() {
+        let data = data_with(None).await;
         // Automatic routes still aggregate and deduplicate in their shared zone.
         for (port, id) in [(54001, 2), (54002, 3)] {
             let mut update = request("10.0.0.8/24");

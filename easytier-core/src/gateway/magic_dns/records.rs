@@ -174,14 +174,6 @@ impl MagicDnsRecordStore {
             );
         }
         let configured = super::configured_zones(Some(&dns))?;
-        for origin in configured.keys() {
-            anyhow::ensure!(
-                !clients.iter().any(|(id, client)| {
-                    id != &instance_id && client.configured.contains_key(origin)
-                }),
-                "DNS zone {origin} is already configured by another instance"
-            );
-        }
         clients.insert(
             instance_id,
             MagicDnsClientRecord {
