@@ -568,6 +568,7 @@ export interface TunnelInfo {
   tunnel_type: string
   local_addr: UrlPb
   remote_addr: UrlPb
+  resolved_remote_addr?: UrlPb
 }
 
 export interface PeerConnStats {
