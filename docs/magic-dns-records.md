@@ -158,8 +158,9 @@ core capabilities. This adds no DNS form or runtime status to the Web UI.
 ## Runtime boundary
 
 Every participating EasyTier instance publishes its complete static configuration
-to the elected Magic DNS server on the same machine. Different static zone origins
-are combined and coexist with automatically generated node records. An update
+to the elected Magic DNS server on the same machine. Static zones with the same
+normalized origin are merged, and different origins coexist with automatically
+generated node records. An update
 replaces that instance's entire contribution: changing or clearing zones removes
 its old records, while other instances' contributions remain. Disconnecting a
 publishing connection withdraws its contribution. After server election or
@@ -172,13 +173,22 @@ node routes without an instance UUID. Their contributions remain owned by the
 publishing connection and are replaced on update and withdrawn on disconnect.
 Static DNS contributions require a supporting client.
 
-Static zone origins must be distinct across active publishers after normalization.
-An update that overlaps another instance's static origin is rejected as a whole;
-its previously accepted contribution remains until a later valid upload or
-disconnect. The first accepted contribution retains that origin. Automatic node
-routes can still share a zone. An automatic node name that conflicts with a
-configured CNAME also rejects the update. This does not add record-level conflict
-resolution or merge static RRsets from different instances.
+Across publishers, records with the same owner and type merge into one RRset
+with duplicate RDATA removed. This includes different A and AAAA addresses and
+all other supported multi-value types. Overlapping static RRsets must have the
+same effective TTL. CNAME, ANAME and SOA remain single-value: identical records
+can be shared, but different values are rejected. CNAME cannot coexist with
+another type at the same owner, including an automatically generated A record.
+ANAME input support still does not add ANAME resolution. Automatic node records
+retain their existing aggregation; a shared static/automatic A RRset uses the
+configured TTL, or TTL 1 when only automatic records remain.
+
+An incompatible update is rejected as a whole before publication; its previously
+accepted contribution remains until a later valid upload or disconnect. There
+is no source priority or winner selection. Identical records remain owned by
+each contributing instance, so withdrawing one publisher removes only values
+that no remaining publisher contributes. Input validation within one instance
+still rejects duplicate RDATA and duplicate zone origins.
 
 The system resolver match list includes active node domains and configured
 origins, with the elected instance's current default domain first. Configured
