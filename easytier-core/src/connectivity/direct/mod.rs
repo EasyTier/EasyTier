@@ -748,6 +748,21 @@ where
         dst_peer_id: PeerId,
         url: &Url,
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
+        let default_port = mapped_listener_port(url)
+            .ok_or_else(|| anyhow::anyhow!("listener has no port: {url}"))?;
+        let remote_addr = resolve_remote_addr(
+            self.peer_manager.as_ref(),
+            self.host.as_ref(),
+            self.dns.as_ref(),
+            url,
+            default_port,
+            self.options
+                .udp_bind
+                .context
+                .clone()
+                .with_ip_version(IpVersion::V6),
+        )
+        .await?;
         let socket = self
             .host
             .bind_udp(
@@ -777,7 +792,6 @@ where
                 .remote_send_udp_hole_punch_packet(dst_peer_id, connector_addrs, preferred_src, url)
                 .await;
         }
-        let remote_addr = resolve_literal_url(url, IpVersion::V6)?;
         let connected = udp::connect_with_socket(self.host.clone(), socket, remote_addr).await?;
         let tunnel = self
             .protocol
@@ -1210,8 +1224,63 @@ fn is_public_ipv4(ip: Ipv4Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
-    use crate::connectivity::NoLocalListeners;
+    use crate::{
+        config::{IpPrefix, peers::PeerRuntimeSnapshot},
+        connectivity::NoLocalListeners,
+        host::{
+            packet::host_packet_channel,
+            testkit::{TestDns, TestHost, TestTcpSocket, TestUdpSocket},
+        },
+        peers::peer_manager::PortablePeerManagerConfig,
+        proto::common::StunInfo,
+    };
+
+    struct UnusedStunAndProtocol;
+
+    #[async_trait]
+    impl StunInfoProvider for UnusedStunAndProtocol {
+        fn get_stun_info(&self) -> StunInfo {
+            StunInfo::default()
+        }
+
+        async fn get_udp_port_mapping(&self, _local_port: u16) -> anyhow::Result<SocketAddr> {
+            anyhow::bail!("unused")
+        }
+
+        async fn get_tcp_port_mapping(&self, _local_port: u16) -> anyhow::Result<SocketAddr> {
+            anyhow::bail!("unused")
+        }
+
+        fn update_stun_info(&self) {}
+    }
+
+    #[async_trait]
+    impl StunSocketMapper<TestUdpSocket> for UnusedStunAndProtocol {
+        async fn get_udp_port_mapping_with_socket(
+            &self,
+            _socket: Arc<TestUdpSocket>,
+        ) -> anyhow::Result<SocketAddr> {
+            anyhow::bail!("unused")
+        }
+    }
+
+    #[async_trait]
+    impl ClientProtocolUpgrader<TestTcpSocket> for UnusedStunAndProtocol {
+        fn supports_scheme(&self, _scheme: &str) -> bool {
+            true
+        }
+
+        async fn upgrade_client(
+            &self,
+            _connected: ConnectedTransport<TestTcpSocket>,
+            _requested_url: Url,
+        ) -> anyhow::Result<Box<dyn Tunnel>> {
+            anyhow::bail!("unused")
+        }
+    }
 
     impl<H> DirectConnectorRpcHandler<H>
     where
@@ -1262,6 +1331,48 @@ mod tests {
         let (_, addrs, _) = connector_addrs_from_request(request).unwrap();
         assert_eq!(addrs.len(), MAX_UDP_HOLE_PUNCH_CONNECTOR_ADDRS);
         assert_eq!(addrs[0], SocketAddr::from(([127, 0, 0, 1], 1)));
+    }
+
+    #[tokio::test]
+    async fn public_ipv6_udp_refuses_easytier_managed_local_source() {
+        // TestHost reports [::1] as the local source for every IPv6 remote.
+        let mut runtime = PeerRuntimeSnapshot::default().runtime;
+        runtime.core.routes.ipv6 = Some(IpPrefix::new("::1".parse().unwrap(), 128).unwrap());
+        let (packet_tx, _packet_rx) = host_packet_channel();
+        let peer_manager = Arc::new(
+            PeerManagerCore::new_portable_for_test(
+                PortablePeerManagerConfig::new(runtime),
+                packet_tx,
+            )
+            .unwrap(),
+        );
+        let host = Arc::new(TestHost::default());
+        let unused = Arc::new(UnusedStunAndProtocol);
+        let data = DirectConnectorData {
+            peer_manager,
+            host: host.clone(),
+            protected_tcp_ports: Arc::default(),
+            stun: unused.clone(),
+            running_listeners: Arc::new(NoLocalListeners),
+            dns: Arc::new(TestDns),
+            protocol: unused,
+            options: DirectConnectorOptions::default(),
+            listener_blacklist: ExpiringSet::default(),
+            peer_blacklist: ExpiringSet::default(),
+        };
+
+        let error = data
+            .connect_public_ipv6(2, &"udp://[2001:db8::2]:11010".parse().unwrap())
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("refusing overlay-backed underlay connection"),
+            "{error:#}"
+        );
+        assert_eq!(host.udp_binds.load(Ordering::Relaxed), 0);
     }
 
     #[test]
