@@ -143,8 +143,10 @@ impl DnsRunner {
         tokio::select! {
             _ = cancel_token.cancelled() => Ok(()),
             ret = async {
-                let zone = super::zone::dns_domain(&self.global_ctx.config)?;
-                let client = MagicDnsClientInstance::new(self.packet_plane.clone(), zone).await?;
+                let client = MagicDnsClientInstance::new(
+                    self.packet_plane.clone(),
+                    self.global_ctx.clone(),
+                ).await?;
                 self.client = Some(client);
                 self.client.as_mut().unwrap().run_and_wait().await;
                 Err(anyhow::anyhow!("Client instance exit"))
