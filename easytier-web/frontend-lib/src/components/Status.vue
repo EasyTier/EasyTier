@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { NetworkInstance, type NetworkConfig, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance } from '../types/network'
+import type { NetworkConfig, TunnelInfo, NodeInfo, PeerRoutePair } from '../types/network'
 import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
@@ -17,6 +18,8 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
+
+const copiedPeerId = ref<string | null>(null)
 
 const peerRouteInfos = computed(() => {
   if (props.curNetworkInst) {
@@ -130,6 +133,60 @@ function oneTunnelProto(tunnel?: TunnelInfo): string {
 
 function tunnelProto(info: PeerRoutePair) {
   return [...new Set(peerConns(info).map(c => oneTunnelProto(c.tunnel)))].join(',')
+}
+
+/**
+ * Returns the tunnel detail string for the default connection:
+ * "tunnel_type/local_addr/remote_addr".
+ * Falls back to "tunnel_type/" when addresses are missing.
+ */
+function formatTunnelDetail(info: PeerRoutePair): string {
+  const conns = peerConns(info)
+  for (const conn of conns) {
+    const tunnel = conn.tunnel
+    if (!tunnel) continue
+    const remoteAddr = tunnel.remote_addr.url
+    // Prefer resolved_remote_addr, fall back to remote_addr
+    const resolvedRemoteAddr = tunnel.resolved_remote_addr?.url
+    return resolvedRemoteAddr && resolvedRemoteAddr !== remoteAddr ? `${remoteAddr}/${resolvedRemoteAddr}` : remoteAddr
+  }
+  return ''
+}
+
+/**
+ * Formats the hostname column content and tooltip text:
+ * "Route.hostname(TunnelInfo.tunnel_type/local/remote)"
+ */
+function formatHostnameWithTunnel(info: PeerRoutePair): string {
+  const base = info.route?.hostname ?? ''
+  const tunnel = formatTunnelDetail(info)
+  return tunnel ? `${base}(${tunnel})` : base
+}
+
+/**
+ * Copies the formatted hostname+tunnel string to clipboard on double-click.
+ */
+async function copyNodeAddr(info: PeerRoutePair): Promise<void> {
+  const text = formatHostnameWithTunnel(info)
+  if (!text) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    copiedPeerId.value = info.route.peer_id?.toString() ?? ''
+    setTimeout(() => { copiedPeerId.value = null }, 1500)
+  } catch {
+    // clipboard permission denied or unavailable — silent
+  }
 }
 
 const myNodeInfo = computed(() => {
@@ -426,11 +483,15 @@ function showEventLogs() {
             <Column :header="t('hostname')">
               <template #body="slotProps">
                 <div v-if="!slotProps.data.route.cost || !isPublicServerRoute(slotProps.data)"
-                  v-tooltip="slotProps.data.route.hostname">
-                  {{
-                    slotProps.data.route.hostname }}
+                  v-tooltip="formatHostnameWithTunnel(slotProps.data)"
+                  @dblclick.prevent="copyNodeAddr(slotProps.data)"
+                  :class="{ 'copy-feedback': copiedPeerId === slotProps.data.route.peer_id?.toString() }">
+                  {{ formatHostnameWithTunnel(slotProps.data) }}
                 </div>
-                <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
+                <div v-else v-tooltip="formatHostnameWithTunnel(slotProps.data)"
+                  class="space-x-1"
+                  @dblclick.prevent="copyNodeAddr(slotProps.data)"
+                  :class="{ 'copy-feedback': copiedPeerId === slotProps.data.route.peer_id?.toString() }">
                   <Tag v-if="isPublicServerRoute(slotProps.data)" severity="info" value="Info">
                     {{ t('status.server') }}
                   </Tag>
@@ -466,5 +527,12 @@ function showEventLogs() {
 
 :deep(.p-datatable .p-datatable-column-title) {
   white-space: nowrap;
+}
+
+.copy-feedback {
+  outline: 1.5px solid var(--p-primary-color, #3b82f6);
+  outline-offset: 2px;
+  border-radius: 3px;
+  transition: outline-offset 0.15s;
 }
 </style>
