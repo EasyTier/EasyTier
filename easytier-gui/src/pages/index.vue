@@ -49,13 +49,13 @@ const configServerConnected = ref(false)
 const showAutostartHint = ref(false)
 
 async function openModeDialog() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  editingMode.value = JSON.parse(JSON.stringify(currentMode.value))
   showAutostartHint.value = false
   modeDialogVisible.value = true
 }
 
 async function openAutostartDialog() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  editingMode.value = JSON.parse(JSON.stringify(currentMode.value))
   editingMode.value.mode = 'service'
   showAutostartHint.value = true
   modeDialogVisible.value = true
@@ -229,7 +229,15 @@ async function initWithMode(mode: Mode) {
     initWebClient(mode.config_server_url)
   }
   currentMode.value = mode
-  await saveMode(mode)
+  try {
+    await saveMode(mode)
+  } catch (error) {
+    if (type() !== 'android') {
+      throw error
+    }
+    // The mode is already applied; a preference write must not abort VPN setup.
+    reportManagementWarning({ runtime_applied: true, persistence_warning: String(error) })
+  }
   clientRunning.value = await isClientRunning()
 }
 
@@ -382,7 +390,7 @@ onMounted(async () => {
   })
 })
 async function reconnectClient() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()));
+  editingMode.value = JSON.parse(JSON.stringify(currentMode.value));
   await onModeSave()
 }
 
@@ -498,7 +506,7 @@ async function connectRpcClient(isNormalMode: boolean, url?: string) {
 }
 
 async function openConfigServerDialog() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  editingMode.value = JSON.parse(JSON.stringify(currentMode.value))
   configServerDialogVisible.value = true
 }
 async function onConfigServerSave() {
