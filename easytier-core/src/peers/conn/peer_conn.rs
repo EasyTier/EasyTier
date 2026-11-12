@@ -1273,7 +1273,7 @@ impl PeerConn {
                 .as_ref()
                 .map(|i| i.network_name.clone())
                 .unwrap_or_default();
-            let reply_name = if peer_name.is_empty() || peer_name == my_name {
+            let reply_name = if peer_name == my_name {
                 None
             } else {
                 Some(format!("fg-{}", peer_name))
@@ -1317,7 +1317,8 @@ impl PeerConn {
             self.is_client = Some(true);
         } else {
             let network = self.context.network_identity();
-            self.send_handshake(true, &network.network_name, None).await?;
+            self.send_handshake(true, &network.network_name, None)
+                .await?;
             tracing::info!("waiting for handshake request from server");
             let rsp = self.wait_handshake_loop().await?;
             tracing::info!("handshake response: {:?}", rsp);
