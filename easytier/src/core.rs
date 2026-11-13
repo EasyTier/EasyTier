@@ -1252,6 +1252,9 @@ async fn run_main(mut cli: Cli, stop: impl Future<Output = ()>) -> anyhow::Resul
 
     let result = run_cli(cli, manager.clone(), stop).await;
     let stopped = manager.retain_network_instances(&[]).await;
+    // API/config-server deletions can already have removed instances while
+    // their tracked stop tasks are still restoring host resources.
+    manager.wait().await;
     match result {
         Ok(()) => stopped
             .context("failed to stop network instances")
