@@ -11,7 +11,7 @@ use crate::{
         constants::EASYTIER_VERSION,
         log,
     },
-    instance::factory::native_cli_instance_manager,
+    instance::factory::{NativeInstanceManager, native_cli_instance_manager},
     proto::common::{CompressionAlgoPb, Flags, FlagsPatch, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -1076,27 +1076,19 @@ fn win_service_event_loop(
     std::thread::spawn(move || {
         let rt = Runtime::new().unwrap();
         rt.block_on(async move {
-            tokio::select! {
-                res = run_main(cli) => {
-                    match res {
-                        Ok(_) => {
-                            status_handle.set_service_status(normal_status).unwrap();
-                            std::process::exit(0);
-                        }
-                        Err(error) => {
-                            status_handle.set_service_status(error_status).unwrap();
-                            log::error!(?error);
-                            // exit with non-zero code so the SCM treats this as
-                            // a non-crash failure and applies the configured
-                            // failure actions; staying alive would leave a
-                            // zombie process until the SCM force-kills it.
-                            std::process::exit(1);
-                        }
-                    }
-                },
-                _ = stop_notify.notified() => {
-                    _ = status_handle.set_service_status(normal_status);
+            match run_main(cli, stop_notify.notified()).await {
+                Ok(_) => {
+                    status_handle.set_service_status(normal_status).unwrap();
                     std::process::exit(0);
+                }
+                Err(error) => {
+                    status_handle.set_service_status(error_status).unwrap();
+                    log::error!(?error);
+                    // exit with non-zero code so the SCM treats this as
+                    // a non-crash failure and applies the configured
+                    // failure actions; staying alive would leave a
+                    // zombie process until the SCM force-kills it.
+                    std::process::exit(1);
                 }
             }
         });
@@ -1245,7 +1237,7 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
     win_service_event_loop(stop_notify_recv, cli, status_handle);
 }
 
-async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
+async fn run_main(mut cli: Cli, stop: impl Future<Output = ()>) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init_with_default_console_targets(
         &cli.logging_options,
@@ -1258,6 +1250,26 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
             .with_config_path(cli.config_dir.clone()),
     );
 
+    let result = run_cli(cli, manager.clone(), stop).await;
+    let stopped = manager.retain_network_instances(&[]).await;
+    match result {
+        Ok(()) => stopped
+            .context("failed to stop network instances")
+            .map(|_| ()),
+        Err(error) => {
+            if let Err(stop_error) = stopped {
+                log::error!(?stop_error, "failed to stop network instances");
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn run_cli(
+    cli: Cli,
+    manager: Arc<NativeInstanceManager>,
+    stop: impl Future<Output = ()>,
+) -> anyhow::Result<()> {
     let _rpc_server = ApiRpcServer::new(
         cli.rpc_portal_options.rpc_portal,
         cli.rpc_portal_options.rpc_portal_whitelist,
@@ -1416,12 +1428,17 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!(errors));
             }
         }
-        _ = tokio::signal::ctrl_c() => {
+        signal = tokio::signal::ctrl_c() => {
+            signal.context("failed to receive ctrl-c signal")?;
             log::info!("ctrl-c received, exiting...");
         }
 
         _ = sigterm, if cfg!(unix) => {
             log::warn!("terminate signal received, exiting...");
+        }
+
+        _ = stop => {
+            log::info!("service stop requested, exiting...");
         }
     }
     Ok(())
@@ -1538,7 +1555,7 @@ pub async fn main() -> ExitCode {
 
     let mut ret_code = 0;
 
-    if let Err(error) = run_main(cli).await {
+    if let Err(error) = run_main(cli, std::future::pending()).await {
         log::error!(error = %format_args!("{error:#}"));
         ret_code = 1;
     }
