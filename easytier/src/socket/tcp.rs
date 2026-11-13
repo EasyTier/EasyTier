@@ -303,7 +303,14 @@ pub(crate) async fn bind_tcp_listener(
     let addr = bind_options.local_addr.ok_or_else(|| {
         TunnelError::InvalidAddr("tcp listener requires a local bind address".to_owned())
     })?;
-    if bind_options.bind_device.is_none() && purpose == TcpListenPurpose::PortLease {
+    if bind_options.bind_device.is_none()
+        && matches!(
+            purpose,
+            TcpListenPurpose::PortLease | TcpListenPurpose::PortForward
+        )
+    {
+        // Port forwards follow the bind IP across interface recreation. An
+        // implicit device binding would retain the deleted interface's index.
         bind_options.bind_device = Some(String::new());
     }
     let listener = create_tcp_socket(addr, &bind_options).await?.listen(1024)?;
@@ -362,6 +369,22 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn port_forward_listener_honors_device_binding(
+        #[values(None, Some("lo"), Some(""))] device: Option<&str>,
+    ) {
+        let mut options = TcpListenOptions::port_forward("127.0.0.1:0".parse().unwrap());
+        options.bind.bind_device = device.map(str::to_owned);
+        let listener = bind_tcp_listener(options).await.unwrap();
+        let bound = SockRef::from(&listener.listener).device().unwrap();
+        assert_eq!(
+            bound.as_deref(),
+            device.filter(|name| !name.is_empty()).map(str::as_bytes)
+        );
+    }
 
     #[tokio::test]
     async fn runtime_tcp_owned_split_preserves_full_duplex_and_shutdown() {
