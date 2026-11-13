@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { enrollmentCommands } from '../modules/enrollment';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Button, Checkbox, Column, DataTable, Dialog, Drawer, InputText, SelectButton, Skeleton, useToast } from 'primevue';
 import Tooltip from 'primevue/tooltip';
@@ -42,16 +43,11 @@ watch(viewMode, (mode) => localStorage.setItem('deviceList.viewMode', mode));
 // Zero-device state is where users look for "how do I add one": surface
 // the enrollment command right there.
 const enrollInfo = ref<Awaited<ReturnType<ApiClient['get_console_info']>> | null>(null);
-const enrollCommand = computed(() => {
-    if (!enrollInfo.value) return '';
-    const host = window.location.hostname;
-    const { config_server_protocol: proto, config_server_port: port, username } = enrollInfo.value;
-    return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;
-});
+const enrollCommands = computed(() => enrollmentCommands(enrollInfo.value, window.location.hostname));
 
-const copyEnrollCommand = async () => {
+const copyEnrollCommand = async (command: string) => {
     try {
-        await navigator.clipboard.writeText(enrollCommand.value);
+        await navigator.clipboard.writeText(command);
         toast.add({ severity: 'success', summary: t('web.common.confirm'), life: 1500 });
     } catch (e) {
         console.error(e);
@@ -233,10 +229,12 @@ const locationText = (device: Utils.DeviceInfo) => {
                 <i class="pi pi-server" aria-hidden="true"></i>
                 <h2>{{ search ? t('web.console.no_results') : t('web.console.devices_empty') }}</h2>
                 <p v-if="!search">{{ t('web.console.devices_empty_hint') }}</p>
-                <div v-if="!search && enrollCommand" class="flex items-center gap-2 justify-center mt-2 flex-wrap">
-                    <code class="mono-value p-2 rounded" style="background: var(--console-ground); word-break: break-all">{{ enrollCommand }}</code>
-                    <Button icon="pi pi-copy" severity="secondary" outlined size="small"
-                        :aria-label="t('web.console.enroll_copy')" @click="copyEnrollCommand" />
+                <div v-if="!search && enrollCommands.length" class="flex flex-col gap-2 mt-2">
+                    <div v-for="command in enrollCommands" :key="command" class="flex items-center gap-2 justify-center flex-wrap">
+                        <code class="mono-value p-2 rounded" style="background: var(--console-ground); word-break: break-all">{{ command }}</code>
+                        <Button icon="pi pi-copy" severity="secondary" outlined size="small"
+                            :aria-label="t('web.console.enroll_copy')" @click="copyEnrollCommand(command)" />
+                    </div>
                 </div>
             </div>
             <template v-else>

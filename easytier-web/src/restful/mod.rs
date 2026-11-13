@@ -77,6 +77,7 @@ struct ConsoleInfoConfig {
 struct GetConsoleInfoJsonResp {
     username: String,
     config_server_protocol: String,
+    config_server_protocols: Vec<String>,
     config_server_port: u16,
     webhook_auth: bool,
 }
@@ -218,9 +219,15 @@ impl RestfulServer {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
+        let protocols = match config.config_server_protocol.as_str() {
+            "both" => vec!["udp".to_owned(), "tcp".to_owned()],
+            _ => vec![config.config_server_protocol],
+        };
         Ok(GetConsoleInfoJsonResp {
             username: user.db_user.username,
-            config_server_protocol: config.config_server_protocol,
+            // Preserve a usable URL scheme for older frontends.
+            config_server_protocol: protocols[0].clone(),
+            config_server_protocols: protocols,
             config_server_port: config.config_server_port,
             webhook_auth: config.webhook_auth,
         }
