@@ -30,6 +30,14 @@ struct ResolverFile {
 
 impl ResolverFile {
     fn read(path: &Path) -> io::Result<Self> {
+        Self::read_file(path, false)
+    }
+
+    fn read_for_replacement(path: &Path) -> io::Result<Self> {
+        Self::read_file(path, true)
+    }
+
+    fn read_file(path: &Path, replacing: bool) -> io::Result<Self> {
         if fs::symlink_metadata(path)?.file_type().is_symlink() {
             return Err(io::Error::other(format!(
                 "{} is a managed symlink; automatic Magic DNS takeover is unsupported",
@@ -45,6 +53,24 @@ impl ResolverFile {
             return Err(io::Error::other(
                 "Magic DNS requires a regular, unshared resolv.conf file",
             ));
+        }
+        if replacing {
+            // Atomic replacement creates a new inode. Until attributes can be
+            // preserved, refuse to discard SELinux labels, ACLs or other xattrs.
+            // Ordinary upstream reads do not require changing this metadata.
+            let size = unsafe { nix::libc::flistxattr(file.as_raw_fd(), std::ptr::null_mut(), 0) };
+            if size > 0 {
+                return Err(io::Error::other(format!(
+                    "{} has extended attributes; preserving it instead of replacing system DNS",
+                    path.display(),
+                )));
+            }
+            if size < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(nix::libc::ENOTSUP) {
+                    return Err(error);
+                }
+            }
         }
         let mut content = String::new();
         file.read_to_string(&mut content)?;
@@ -228,7 +254,7 @@ impl RecoveryStore {
 
     fn remove(&self, record: &RecoveryRecord) -> io::Result<()> {
         let temporary = self.directory.join(&record.temporary);
-        match ResolverFile::read(&temporary) {
+        match ResolverFile::read_for_replacement(&temporary) {
             Ok(current) if current == record.pending => fs::remove_file(&temporary)?,
             Ok(_) => {
                 return Err(io::Error::other(
@@ -412,8 +438,8 @@ impl ResolvConfConfigurator {
             file.write_all(content.as_bytes())?;
             file.set_permissions(fs::Permissions::from_mode(expected.mode & 0o7777))?;
             file.sync_all()?;
-            let replacement = ResolverFile::read(&temporary)?;
-            if ResolverFile::read(&self.path)? != *expected {
+            let replacement = ResolverFile::read_for_replacement(&temporary)?;
+            if ResolverFile::read_for_replacement(&self.path)? != *expected {
                 return Err(io::Error::other(
                     "resolv.conf changed outside EasyTier; preserving it",
                 ));
@@ -426,7 +452,7 @@ impl ResolvConfConfigurator {
                 temporary: name,
             })?;
             // The durable recovery record covers both sides of this rename.
-            if ResolverFile::read(&self.path)? != *expected {
+            if ResolverFile::read_for_replacement(&self.path)? != *expected {
                 return Err(io::Error::other(
                     "resolv.conf changed outside EasyTier; preserving it",
                 ));
@@ -467,7 +493,7 @@ impl ResolvConfConfigurator {
         // A pre-rename crash may have left the previous pending resolver file.
         // Only delete it if its full identity still matches the old record.
         let pending = recovery.directory.join(&record.temporary);
-        match ResolverFile::read(&pending) {
+        match ResolverFile::read_for_replacement(&pending) {
             Ok(current) if current == record.pending => fs::remove_file(pending)?,
             Ok(_) => {
                 return Err(io::Error::other(
@@ -659,6 +685,78 @@ mod tests {
         assert!(configurator.close().is_err());
         assert_eq!(fs::read_to_string(&path)?, external);
         assert_eq!(fs::read_dir(directory.path())?.count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_extended_attributes_before_and_after_takeover() -> io::Result<()> {
+        use std::ffi::CString;
+
+        for phase in ["before_read", "before_set", "after_set"] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("resolv.conf");
+            let original = "nameserver 192.0.2.53\n";
+            fs::write(&path, original)?;
+            let configurator = ResolvConfConfigurator::new(path.clone());
+            if phase != "before_read" {
+                assert_eq!(
+                    configurator.original_resolv_conf()?,
+                    Some(original.to_owned())
+                );
+            }
+            if phase == "after_set" {
+                configurator.set_dns(&config())?;
+            }
+            let file = File::open(&path)?;
+            let name = CString::new("user.easytier-test").unwrap();
+            let value = b"preserve";
+            let result = unsafe {
+                nix::libc::fsetxattr(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            };
+            if result != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let snapshot = ResolverFile::read(&path)?;
+            // Refusing metadata replacement must not disable original upstream reads.
+            assert_eq!(
+                configurator.original_resolv_conf()?,
+                Some(original.to_owned())
+            );
+            assert!(configurator.set_dns(&config()).is_err());
+            if phase == "after_set" {
+                assert!(configurator.close().is_err());
+                assert!(
+                    directory
+                        .path()
+                        .join(".easytier-dns/recovery.json")
+                        .exists()
+                );
+                drop(configurator);
+                let restarted = ResolvConfConfigurator::new(path.clone());
+                assert!(restarted.original_resolv_conf().is_err());
+                assert!(ResolverFile::read(&path)? == snapshot);
+            } else {
+                configurator.close()?;
+            }
+            assert!(ResolverFile::read(&path)? == snapshot);
+            let mut actual = [0_u8; 8];
+            let size = unsafe {
+                nix::libc::fgetxattr(
+                    File::open(&path)?.as_raw_fd(),
+                    name.as_ptr(),
+                    actual.as_mut_ptr().cast(),
+                    actual.len(),
+                )
+            };
+            assert_eq!(size, value.len() as isize);
+            assert_eq!(&actual, value);
+        }
         Ok(())
     }
 

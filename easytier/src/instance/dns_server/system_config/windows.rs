@@ -49,18 +49,36 @@ impl NrptRule {
         )
     }
 
+    fn policy_check(&self, nameservers: &str) -> String {
+        format!(
+            "$domain = {}; \
+             $effective = @(Get-DnsClientNrptPolicy -Effective); \
+             $conflicts = @($effective | Where-Object {{ \
+                 $policy = $_; \
+                 $covered = @($policy.Namespace | Where-Object {{ \
+                     $name = $_.Trim('.'); \
+                     ($name -eq $domain -and -not $updating) -or \
+                     $name.EndsWith('.' + $domain, [StringComparison]::OrdinalIgnoreCase) \
+                 }}).Count -gt 0; \
+                 if (-not $covered) {{ return $false }}; \
+                 $servers = (@($policy.NameServers | ForEach-Object {{ \
+                     ([ipaddress] $_).ToString() \
+                 }} | Sort-Object -Unique) -join ';'); \
+                 $covered -and $servers -ne {} \
+             }}); \
+             if ($conflicts.Count -gt 0) {{ \
+                 throw 'An existing NRPT policy routes this domain or a descendant to other DNS servers' \
+             }};",
+            quoted(&self.domain),
+            quoted(nameservers),
+        )
+    }
+
     fn set(&self, nameservers: &str) -> io::Result<()> {
+        let check = self.policy_check(nameservers);
         powershell(&format!(
-            "$rule = Get-DnsClientNrptRule | Where-Object {{ $_.Name -eq {} }}; \
-             if (-not $rule) {{ \
-                 $namespaces = {}; \
-                 $conflicts = @(Get-DnsClientNrptPolicy -Effective | Where-Object {{ \
-                     @($_.Namespace | Where-Object {{ $namespaces -contains $_ }}).Count -gt 0 \
-                 }}); \
-                 if ($conflicts.Count -gt 0) {{ throw 'An existing NRPT policy already owns this domain' }}; \
-             }}",
+            "$updating = [bool](Get-DnsClientNrptRule | Where-Object {{ $_.Name -eq {} }}); {check}",
             quoted(&self.id),
-            self.namespaces(),
         ))?;
         // Create a known ID only after its durable ownership list was saved.
         // Add-DnsClientNrptRule chooses an ID itself, leaving a crash window
@@ -76,15 +94,13 @@ impl NrptRule {
         key.set_value("GenericDNSServers", &nameservers)?;
         key.set_value("Comment", &"EasyTier Magic DNS")?;
         powershell(&format!(
-            "\
-             $effective = @(Get-DnsClientNrptPolicy -Effective); \
+            "$updating = $false; {check} \
              foreach ($namespace in {}) {{ \
                  if (@($effective | Where-Object {{ \
-                     $_.Namespace -contains $namespace -and $_.NameServers -eq {} \
+                     $_.Namespace -contains $namespace \
                  }}).Count -eq 0) {{ throw 'EasyTier NRPT rule is not effective (check Group Policy)' }} \
              }}",
             self.namespaces(),
-            quoted(nameservers),
         ))
     }
 }
@@ -339,7 +355,7 @@ impl SystemConfig for WindowsDNSManager {
 
     fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
         self.prepare()?;
-        let nameservers = cfg
+        let mut nameservers = cfg
             .nameservers
             .iter()
             .map(|s| {
@@ -347,15 +363,17 @@ impl SystemConfig for WindowsDNSManager {
                     .map(|ip| ip.to_string())
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
             })
-            .collect::<io::Result<Vec<_>>>()?
-            .join(";");
+            .collect::<io::Result<Vec<_>>>()?;
+        nameservers.sort();
+        nameservers.dedup();
+        let nameservers = nameservers.join(";");
         if nameservers.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "No Magic DNS server",
             ));
         }
-        let domains: Vec<_> = cfg
+        let mut domains: Vec<_> = cfg
             .match_domains
             .iter()
             .map(|d| d.trim_end_matches('.').to_lowercase())
@@ -375,6 +393,9 @@ impl SystemConfig for WindowsDNSManager {
                 "Invalid DNS domain",
             ));
         }
+        // Update a more specific owned zone before its parent so its old
+        // nameservers do not look like a conflicting descendant during updates.
+        domains.sort_by_key(|domain| std::cmp::Reverse(domain.split('.').count()));
         let mut state = self.state.lock().unwrap();
         self.check_search_lists(&state)?;
         for domain in &domains {
