@@ -1,6 +1,12 @@
 name: EasyTier Core
 
 on:
+  workflow_dispatch:
+    inputs:
+      sign_windows:
+        description: Submit Windows artifacts for SignPath test signing
+        type: boolean
+        default: true
   push:
     branches: [ "develop", "main", "releases/**" ]
   pull_request:
@@ -8,7 +14,8 @@ on:
     types: [ opened, synchronize, reopened, ready_for_review ]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A new PR or branch push must not cancel a full build.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -21,35 +28,116 @@ defaults:
 
 jobs:
   pre_job:
-    # continue-on-error: true # Uncomment once integration is finished
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    # Map a step output to a job output
+    env:
+      RELEVANT_PATHS: >-
+        ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
+        "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "easytier/**",
+        "easytier-core/**", "easytier-proto/**", "easytier-rpc-build/**",
+        "easytier-web/**", "easytier-contrib/easytier-magisk/**",
+        ".github/workflows/core.yml", ".github/actions/**"]
+      FRONTEND_PATHS: >-
+        ["easytier-web/frontend/**", "easytier-web/frontend-lib/**",
+        "easytier-web/config-generator/**", "easytier-proto/proto/**",
+        "easytier-core/src/config/**", "easytier-core/src/lib.rs",
+        "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json",
+        "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
+        "easytier-core/Cargo.toml", "easytier-proto/Cargo.toml",
+        ".github/workflows/core.yml", ".github/actions/prepare-pnpm/**"]
     outputs:
-      # do not skip push on branch starts with releases/
-      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
+      full_build: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
+      frontend_changed: ${{ steps.path_filter.outputs.frontend }}
+      # Release builds must run even if they only change release metadata.
+      should_skip: >-
+        ${{
+          (
+            steps.skip_check.outputs.should_skip == 'true' ||
+            (
+              github.event_name == 'pull_request' &&
+              steps.path_filter.outputs.relevant != 'true'
+            )
+          ) &&
+          github.event_name != 'workflow_dispatch' &&
+          !startsWith(github.ref_name, 'releases/')
+        }}
     steps:
       - id: skip_check
+        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/')
         uses: fkirc/skip-duplicate-actions@v5
         with:
-          # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
-          cancel_others: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/core.yml", ".github/actions/**", "easytier-web/**"]'
+          do_not_skip: '["pull_request", "workflow_dispatch", "schedule", "merge_group"]'
+          paths: ${{ env.RELEVANT_PATHS }}
+
+      - id: path_filter
+        if: >-
+          github.event_name == 'pull_request' &&
+          steps.skip_check.outputs.should_skip != 'true'
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            relevant: ${{ env.RELEVANT_PATHS }}
+            frontend: ${{ env.FRONTEND_PATHS }}
+
+  check:
+    name: Check (${{ matrix.TARGET }})
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.full_build != 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - TARGET: x86_64-unknown-linux-musl
+            OS: ubuntu-24.04
+            FEATURES: jemalloc
+          - TARGET: aarch64-apple-darwin
+            OS: macos-latest
+            FEATURES: jemalloc
+          - TARGET: x86_64-pc-windows-msvc
+            OS: windows-latest
+            FEATURES: mimalloc
+    runs-on: ${{ matrix.OS }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.TARGET }}
+          gui: false
+          pnpm: false
+          token: ${{ github.token }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core-check-${{ matrix.TARGET }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+
+      - name: Check Core and Web
+        run: cargo check --locked --all-targets --target ${{ matrix.TARGET }} --features ${{ matrix.FEATURES }}
+
   build_web:
     runs-on: ubuntu-latest
     needs: pre_job
-    if: needs.pre_job.outputs.should_skip != 'true'
+    if: >-
+      needs.pre_job.outputs.should_skip != 'true' &&
+      (
+        needs.pre_job.outputs.full_build == 'true' ||
+        github.event_name != 'pull_request' ||
+        needs.pre_job.outputs.frontend_changed == 'true'
+      )
     steps:
       - uses: actions/checkout@v5
 
       - name: Setup Frontend Environment
         uses: ./.github/actions/prepare-pnpm
         with:
+          token: ${{ github.token }}
           build-filter: './easytier-web/*'
 
       - name: Archive artifact
+        if: needs.pre_job.outputs.full_build == 'true'
         uses: actions/upload-artifact@v5
         with:
           name: easytier-web-dashboard
@@ -57,7 +145,7 @@ jobs:
             easytier-web/frontend/dist/*
   build:
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - TARGET: x86_64-unknown-linux-musl
@@ -73,6 +161,9 @@ jobs:
           - TARGET: loongarch64-unknown-linux-musl
             OS: ubuntu-24.04
             ARTIFACT_NAME: linux-loongarch64
+          - TARGET: powerpc64le-unknown-linux-musl
+            OS: ubuntu-24.04
+            ARTIFACT_NAME: linux-ppc64le
 
           - TARGET: armv7-unknown-linux-musleabihf # raspberry pi 2-3-4, not tested
             OS: ubuntu-24.04
@@ -125,7 +216,7 @@ jobs:
     needs:
       - pre_job
       - build_web
-    if: needs.pre_job.outputs.should_skip != 'true'
+    if: needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.full_build == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -143,8 +234,8 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           target: ${{ matrix.TARGET }}
-          gui: true
-          pnpm: true
+          gui: false
+          pnpm: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
@@ -152,8 +243,8 @@ jobs:
           # The prefix cache key, this can be changed to start a new cache manually.
           # default: "v0-rust"
           prefix-key: ""
-          shared-key: "core-registry"
-          cache-targets: "false"
+          shared-key: core-release-${{ matrix.TARGET }}
+          cache-targets: "true"
 
       - uses: mlugg/setup-zig@v2
         if: ${{ contains(matrix.OS, 'ubuntu') }}
@@ -164,7 +255,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: ${{ contains(matrix.OS, 'ubuntu') }}
         with:
-          tool: cargo-zigbuild
+          # v0.23.3 emits -mcpu=generic+v6+strict_align for
+          # arm-unknown-linux-musleabi, which zig 0.16.0 rejects;
+          # unpin only together with a zig bump.
+          tool: cargo-zigbuild@0.23.2
 
       - name: Build
         if: ${{ !contains(matrix.TARGET, 'mips') }}
@@ -181,7 +275,7 @@ jobs:
             BUILD=zigbuild
           fi
 
-          if [[ "$TARGET" =~ ^(riscv64|loongarch64|aarch64).*$ || "$TARGET" =~ (freebsd|windows) ]]; then
+          if [[ "$TARGET" =~ ^(riscv64|loongarch64|aarch64|powerpc64le).*$ || "$TARGET" =~ (freebsd|windows) ]]; then
             FEATURES="mimalloc"
           else
             FEATURES="jemalloc"
@@ -257,10 +351,51 @@ jobs:
           path: |
             ./artifacts/*
 
+      - name: Prepare SignPath test artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
+        run: |
+          mkdir -p ./signpath-artifacts
+          cp \
+            ./artifacts/easytier-core.exe \
+            ./artifacts/easytier-cli.exe \
+            ./artifacts/easytier-web.exe \
+            ./artifacts/easytier-web-embed.exe \
+            ./signpath-artifacts/
+
+      - name: Upload unsigned SignPath test artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
+        id: signpath-upload
+        uses: actions/upload-artifact@v5
+        with:
+          name: signpath-unsigned-${{ matrix.ARTIFACT_NAME }}
+          path: ./signpath-artifacts/*
+          if-no-files-found: error
+
+      - name: Submit SignPath test-signing request
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 368cf38d-86d5-4bfe-a1fa-82a50dce7e9f
+          project-slug: EasyTier
+          signing-policy-slug: test-signing
+          artifact-configuration-slug: initial
+          github-artifact-id: ${{ steps.signpath-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ./signpath-signed-artifacts
+
+      - name: Upload signed SignPath test artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows && contains(matrix.TARGET, 'windows') }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: signpath-signed-${{ matrix.ARTIFACT_NAME }}
+          path: ./signpath-signed-artifacts/*
+          if-no-files-found: error
+
   build_magisk:
     runs-on: ubuntu-latest
     needs: [ pre_job, build_web, build ]
-    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.full_build == 'true' && !cancelled()
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5  # 必须先检出代码才能获取模块配置
@@ -272,13 +407,22 @@ jobs:
           name: easytier-linux-aarch64
           path: ./downloaded-binaries/  # 独立目录避免冲突
 
-      # 将二进制文件复制到 Magisk 模块目录
-      - name: Prepare binaries
+      - name: Download Magisk WebUI
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-web-dashboard
+          path: ./downloaded-webui/
+
+      # 将二进制文件和 WebUI 复制到 Magisk 模块目录
+      - name: Prepare Magisk module
         run: |
-          mkdir -p ./easytier-contrib/easytier-magisk/
-          cp ./downloaded-binaries/easytier-core ./easytier-contrib/easytier-magisk/
-          cp ./downloaded-binaries/easytier-cli ./easytier-contrib/easytier-magisk/
-          cp ./downloaded-binaries/easytier-web ./easytier-contrib/easytier-magisk/
+          module_dir=./easytier-contrib/easytier-magisk
+          mkdir -p "$module_dir/webroot"
+          cp ./downloaded-binaries/easytier-core "$module_dir/"
+          cp ./downloaded-binaries/easytier-cli "$module_dir/"
+          cp ./downloaded-binaries/easytier-web "$module_dir/"
+          cp -R ./downloaded-webui/config-generator/. "$module_dir/webroot/"
+          test -f "$module_dir/webroot/index.html"
 
       # 上传生成的模块
       - name: Upload Magisk Module
@@ -293,9 +437,9 @@ jobs:
 
   core-result:
     runs-on: ubuntu-latest
-    needs: [ pre_job, build_web, build, build_magisk ]
-    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    needs: [ pre_job, check, build_web, build, build_magisk ]
+    if: ${{ always() }}
     steps:
       - name: Mark result as failed
-        if: contains(needs.*.result, 'failure')
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1

@@ -12,7 +12,6 @@ use winapi::shared::minwindef::{DWORD, LPVOID};
 use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
 use winapi::um::securitybaseapi::GetTokenInformation;
 use winapi::um::winnt::{HANDLE, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
-use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 use windows::core::{HSTRING, PCWSTR, w};
@@ -97,7 +96,7 @@ impl Command {
         // the cwd always point to %SystemRoot%\System32 and cannot be changed by settting lpdirectory param
         let r = unsafe {
             ShellExecuteW(
-                HWND(0),
+                None,
                 w!("runas"),
                 &HSTRING::from(self.cmd.get_program()),
                 &HSTRING::from(parameters),

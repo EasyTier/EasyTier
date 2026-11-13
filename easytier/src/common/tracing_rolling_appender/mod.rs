@@ -185,35 +185,18 @@ pub struct FileAppenderWrapper {
     appender: std::sync::Arc<parking_lot::Mutex<RollingFileAppenderBase>>,
 }
 
-impl tracing_subscriber::fmt::MakeWriter<'_> for FileAppenderWrapper {
-    type Writer = FileAppenderWriter;
-
-    fn make_writer(&self) -> Self::Writer {
-        FileAppenderWriter {
-            appender: self.appender.clone(),
-        }
-    }
-}
-
 impl FileAppenderWrapper {
     pub fn new(appender: RollingFileAppenderBase) -> Self {
         Self {
             appender: std::sync::Arc::new(parking_lot::Mutex::new(appender)),
         }
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct FileAppenderWriter {
-    appender: std::sync::Arc<parking_lot::Mutex<RollingFileAppenderBase>>,
-}
-
-impl std::io::Write for FileAppenderWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.appender.lock().write(buf)
+    pub fn write_all(&self, buf: &[u8]) -> std::io::Result<()> {
+        self.appender.lock().write_all(buf)
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    pub fn flush(&self) -> std::io::Result<()> {
         self.appender.lock().flush()
     }
 }

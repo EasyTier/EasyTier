@@ -2,6 +2,10 @@ use crate::config;
 use crate::config::types::stored_config::SnapshotImportResult;
 
 pub(crate) fn init_config_store(root_dir: String) -> bool {
+    easytier_ohos_features::install_log_sink(easytier_ohos_features::FeatureLogSink {
+        enabled: crate::feature_log_enabled,
+        emit: crate::feature_log_sink,
+    });
     config::repository::init_config_store(root_dir)
 }
 

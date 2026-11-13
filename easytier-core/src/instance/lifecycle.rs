@@ -1,0 +1,317 @@
+//! Serial start/stop orchestration for `CoreInstance`.
+//!
+//! Each runtime Module owns its internal resources. `CoreInstance` only
+//! chooses their composition order and provides one outer cancellation and
+//! cleanup path.
+
+use std::sync::{Arc, Weak};
+
+#[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+use crate::gateway::dhcp::{DhcpHost, DhcpRouteSource};
+
+use super::{CoreInstance, CoreInstanceHost, CoreInstanceState};
+
+struct RecoveryGuard<F>
+where
+    F: FnOnce(),
+{
+    recovery: Option<F>,
+}
+
+impl<F> RecoveryGuard<F>
+where
+    F: FnOnce(),
+{
+    fn new(recovery: F) -> Self {
+        Self {
+            recovery: Some(recovery),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.recovery.take();
+    }
+}
+
+impl<F> Drop for RecoveryGuard<F>
+where
+    F: FnOnce(),
+{
+    fn drop(&mut self) {
+        if let Some(recovery) = self.recovery.take() {
+            recovery();
+        }
+    }
+}
+
+impl<H> CoreInstance<H>
+where
+    H: CoreInstanceHost,
+{
+    fn recovery_guard(self: &Arc<Self>) -> RecoveryGuard<impl FnOnce() + Send + use<H>> {
+        let weak: Weak<Self> = Arc::downgrade(self);
+        RecoveryGuard::new(move || {
+            if let Some(instance) = weak.upgrade() {
+                tokio::spawn(async move {
+                    instance.stop().await;
+                });
+            }
+        })
+    }
+
+    async fn start_listener(&self) -> anyhow::Result<()> {
+        match &self.listener {
+            Some(listener) => listener.start().await,
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+    async fn start_dhcp(&self, host: Option<Arc<dyn DhcpHost>>) -> anyhow::Result<()> {
+        let config = self.runtime_config.snapshot();
+        if !config.services.dhcp_ipv4 && !config.services.dhcp_ipv6 {
+            return Ok(());
+        }
+        let host = host
+            .ok_or_else(|| anyhow::anyhow!("DHCP is enabled but no host adapter was provided"))?;
+        let route_source: Arc<dyn DhcpRouteSource> = self.peer_manager.clone();
+        self.dhcp
+            .start(route_source, self.runtime_config.clone(), host)
+            .await;
+        Ok(())
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub(super) async fn start_packet_proxy(&self) -> anyhow::Result<()> {
+        let config = self.runtime_config.snapshot();
+        let has_proxy_networks = !config.peer.runtime.core.routes.proxy_networks.is_empty();
+        if config.services.proxy.should_start(has_proxy_networks) {
+            if let Some(runtime) = self.runtime_handle() {
+                let proxy = self.packet_proxy.clone();
+                tokio_util::task::AbortOnDropHandle::new(
+                    runtime.spawn(async move { proxy.start().await }),
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("packet proxy start task failed: {error}"))??;
+            } else {
+                self.packet_proxy
+                    .start()
+                    .await
+                    .map_err(anyhow::Error::new)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn start_components(&self) -> anyhow::Result<()> {
+        #[cfg(feature = "public-ipv6-provider")]
+        self.public_ipv6_provider.validate_before_start().await?;
+        self.peer_manager
+            .get_route()
+            .set_route_cost_fn(self.peer_center.get_cost_calculator())
+            .await;
+
+        self.start_listener().await?;
+        let packet_receiver = self
+            .packet_receiver
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("packet egress is one-shot and already started"))?;
+        self.packet_egress.start(packet_receiver).await?;
+        self.peer_manager.run().await.map_err(anyhow::Error::from)?;
+        if let Some(direct) = &self.direct {
+            direct.run();
+        }
+        #[cfg(feature = "tcp-hole-punch")]
+        if let Some(tcp_hole_punch) = &self.tcp_hole_punch {
+            tcp_hole_punch.run();
+        }
+        if let Some(manual) = &self.manual {
+            manual.start();
+        }
+        #[cfg(feature = "public-ipv6-provider")]
+        self.public_ipv6_provider.start().await;
+
+        let dhcp_host = self.instance_runtime.prepare(self.packet_plane()).await?;
+        #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+        self.start_dhcp(dhcp_host).await?;
+        #[cfg(not(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6")))]
+        let _ = dhcp_host;
+        #[cfg(feature = "wrapped-transport")]
+        if let Some(wrapped_transport) = &self.wrapped_transport {
+            wrapped_transport.start().await?;
+        }
+        #[cfg(feature = "proxy-packet")]
+        if self.startup_plan.packet_proxy {
+            self.start_packet_proxy().await?;
+        }
+        if let Some(udp_hole_punch) = &self.udp_hole_punch {
+            udp_hole_punch.start().await?;
+        }
+        self.peer_center.init().await;
+        #[cfg(feature = "proxy-cidr-monitor")]
+        self.proxy_cidr_monitor
+            .start(&self.peer_manager, self.runtime_config.clone())
+            .await;
+        #[cfg(feature = "vpn-portal")]
+        self.vpn_portal.start().await?;
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        self.data_plane_runtime.start_runtime().await?;
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        self.data_plane_session
+            .start()
+            .map_err(anyhow::Error::new)?;
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        if self.startup_plan.gateway {
+            self.socks5_adapter.start().await?;
+            self.port_forward_adapter.start().await?;
+        }
+        Ok(())
+    }
+
+    async fn stop_components(&self) {
+        if !self.peer_manager.withdraw_routes_before_stop().await {
+            tracing::warn!(
+                instance = %self.instance_name,
+                "not every direct route session acknowledged the shutdown withdrawal"
+            );
+        }
+
+        #[cfg(feature = "vpn-portal")]
+        self.vpn_portal.stop().await;
+        #[cfg(feature = "public-ipv6-provider")]
+        self.public_ipv6_provider.stop().await;
+        #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+        self.dhcp.stop().await;
+        #[cfg(feature = "proxy-cidr-monitor")]
+        self.proxy_cidr_monitor.stop().await;
+        if let Some(listener) = &self.listener {
+            listener.stop().await;
+        }
+        if let Some(udp_hole_punch) = &self.udp_hole_punch {
+            udp_hole_punch.stop().await;
+        }
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        self.port_forward_adapter.stop().await;
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        self.socks5_adapter.stop().await;
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        self.data_plane_session.stop();
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        self.data_plane_runtime.stop_runtime().await;
+        #[cfg(feature = "wrapped-transport")]
+        if let Some(wrapped_transport) = &self.wrapped_transport {
+            wrapped_transport.stop().await;
+        }
+        #[cfg(feature = "proxy-packet")]
+        self.packet_proxy.stop().await;
+        if let Some(manual) = &self.manual {
+            manual.stop().await;
+        }
+        #[cfg(feature = "tcp-hole-punch")]
+        if let Some(tcp_hole_punch) = &self.tcp_hole_punch {
+            tcp_hole_punch.stop().await;
+        }
+        if let Some(direct) = &self.direct {
+            direct.stop().await;
+        }
+        self.peer_center.stop().await;
+
+        // Host packet tasks can still call the packet plane, so stop them
+        // before clearing PeerManager resources.
+        self.instance_runtime.shutdown().await;
+        self.peer_manager.clear_resources().await;
+        self.packet_egress.stop().await;
+    }
+
+    /// Returns the optional Host-owned executor for this instance.
+    pub fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.instance_runtime.runtime_handle()
+    }
+
+    /// Starts the complete instance through one serial composition path.
+    pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            return tokio_util::task::AbortOnDropHandle::new(
+                runtime.spawn(async move { instance.start_on_runtime().await }),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("instance start task failed: {error}"))?;
+        }
+        self.start_on_runtime().await
+    }
+
+    async fn start_on_runtime(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Created {
+            anyhow::bail!("core instance cannot start from state {state:?}");
+        }
+
+        self.latest_error.write().take();
+        self.set_state(CoreInstanceState::Starting);
+        let mut recovery = self.recovery_guard();
+        let result = tokio::select! {
+            _ = self.cancel.cancelled() => {
+                Err(anyhow::anyhow!("core instance start cancelled"))
+            }
+            result = self.start_components() => result,
+        };
+        let result = match result {
+            Ok(()) => {
+                self.set_state(CoreInstanceState::Running);
+                if self.cancel.is_cancelled() {
+                    Err(anyhow::anyhow!("core instance start cancelled"))
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) => Err(error),
+        };
+
+        if let Err(error) = result {
+            self.latest_error.write().replace(format!("{error:#}"));
+            self.cancel.cancel();
+            self.set_state(CoreInstanceState::Stopping);
+            self.stop_components().await;
+            self.set_state(CoreInstanceState::Stopped);
+            recovery.disarm();
+            return Err(error);
+        }
+
+        recovery.disarm();
+        Ok(())
+    }
+
+    pub async fn stop(self: &Arc<Self>) {
+        self.cancel.cancel();
+        if let Some(runtime) = self.runtime_handle() {
+            let instance = self.clone();
+            // Cleanup must survive cancellation even before its first poll.
+            // Dropping a plain JoinHandle detaches rather than aborts the task.
+            runtime
+                .spawn(async move { instance.stop_on_runtime().await })
+                .await
+                .expect("instance stop task failed");
+        } else {
+            self.stop_on_runtime().await;
+        }
+    }
+
+    async fn stop_on_runtime(self: &Arc<Self>) {
+        self.cancel.cancel();
+        let mut recovery = self.recovery_guard();
+        let _operation = self.operation.lock().await;
+        if self.state() == CoreInstanceState::Stopped {
+            recovery.disarm();
+            return;
+        }
+
+        self.set_state(CoreInstanceState::Stopping);
+        self.stop_components().await;
+        self.set_state(CoreInstanceState::Stopped);
+        recovery.disarm();
+    }
+}

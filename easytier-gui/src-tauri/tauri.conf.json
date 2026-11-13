@@ -14,10 +14,17 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "linux": {
+      "deb": {
+        "depends": [
+          "pkexec | policykit-1"
+        ]
+      }
+    }
   },
   "productName": "easytier-gui",
-  "version": "2.6.4",
+  "version": "2.7.0",
   "identifier": "com.kkrainbow.easytier",
   "plugins": {
     "shell": {

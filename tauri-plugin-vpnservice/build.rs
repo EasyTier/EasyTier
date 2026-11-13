@@ -4,6 +4,7 @@ const COMMANDS: &[&str] = &[
     "start_vpn",
     "stop_vpn",
     "get_vpn_status",
+    "consume_vpn_tile_action",
     "registerListener",
 ];
 

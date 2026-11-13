@@ -1,3 +1,4 @@
+use easytier_core::socket::SocketContext;
 use futures::Future;
 
 #[cfg(target_os = "linux")]
@@ -17,7 +18,7 @@ impl NetNSGuard {
     pub fn new(ns: Option<String>) -> Box<Self> {
         let old_ns = if ns.is_some() {
             let old_ns = if cfg!(target_os = "linux") {
-                Some(std::fs::File::open("/proc/self/ns/net").unwrap())
+                Some(std::fs::File::open("/proc/thread-self/ns/net").unwrap())
             } else {
                 None
             };
@@ -84,6 +85,15 @@ impl NetNS {
         NetNS { name }
     }
 
+    pub fn from_socket_context(context: &SocketContext) -> Self {
+        Self::new(
+            context
+                .netns
+                .as_ref()
+                .map(|namespace| namespace.token().to_owned()),
+        )
+    }
+
     pub async fn run_async<F, Fut, Ret>(&self, f: F) -> Ret
     where
         F: FnOnce() -> Fut,
@@ -91,8 +101,13 @@ impl NetNS {
     {
         // TODO: do we really need this lock
         // let _lock = LOCK.lock().await;
-        let _guard = NetNSGuard::new(self.name.clone());
-        f().await
+        // Namespace membership belongs to a thread. Restore it before yielding,
+        // and re-enter on every poll even if the future moves to another thread.
+        // Drop the future in its namespace too, including on cancellation.
+        let mut future = guarden::guard::ContextGuard::new(Box::pin(self.run(f)), |future| {
+            self.run(|| drop(future));
+        });
+        std::future::poll_fn(|cx| self.run(|| future.as_mut().poll(cx))).await
     }
 
     pub fn run<F, Ret>(&self, f: F) -> Ret

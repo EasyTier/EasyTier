@@ -74,6 +74,14 @@ object EasyTierJNI {
     @JvmStatic external fun retainNetworkInstance(instanceNames: Array<String>?): Int
 
     /**
+     * 停止指定的网络实例，其他实例不受影响
+     * @param instanceName 要停止的实例名称，不存在时为 no-op
+     * @return 0 表示成功，-1 表示失败
+     * @throws RuntimeException 当操作失败时抛出异常
+     */
+    @JvmStatic external fun deleteNetworkInstance(instanceName: String): Int
+
+    /**
      * 收集网络信息
      * @param maxLength 最大返回条目数
      * @return 包含网络信息的 JSON 字符串

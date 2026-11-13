@@ -1,0 +1,117 @@
+use std::{sync::Arc, time::Duration};
+
+use crate::{
+    connectivity::stun::StunSocketMapper, peers::conn::peer_conn::PeerConnId,
+    socket::udp::VirtualUdpSocketFactory,
+};
+
+use super::{
+    CoreHostAdapters, CoreInstance, CoreInstanceConfig, CoreInstanceHost, PeerRelaySessionSnapshot,
+    build_capabilities,
+};
+
+impl CoreInstanceConfig {
+    #[doc(hidden)]
+    pub fn validate_build_capabilities_for_test(&self) -> anyhow::Result<()> {
+        build_capabilities::validate(self)
+    }
+}
+
+impl<H> CoreHostAdapters<H>
+where
+    H: CoreInstanceHost,
+{
+    #[doc(hidden)]
+    pub fn replace_stun_provider(
+        &mut self,
+        provider: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
+    ) {
+        self.stun_override = Some(provider);
+    }
+}
+
+impl<H> CoreInstance<H>
+where
+    H: CoreInstanceHost,
+{
+    #[doc(hidden)]
+    pub async fn connected_peers(&self) -> Vec<crate::config::PeerId> {
+        self.peer_manager
+            .get_peer_map()
+            .list_peers_with_conn()
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn admit_client_tunnel_for_test(
+        &self,
+        tunnel: Box<dyn crate::tunnel::Tunnel>,
+    ) -> Result<(crate::config::PeerId, PeerConnId), crate::peers::error::Error> {
+        self.peer_manager.add_client_tunnel(tunnel).await
+    }
+
+    #[doc(hidden)]
+    pub async fn relay_route_has_static_key_for_test(
+        &self,
+        peer_id: crate::config::PeerId,
+    ) -> bool {
+        self.peer_manager
+            .get_peer_map()
+            .get_route_peer_info(peer_id)
+            .await
+            .is_some_and(|info| !info.noise_static_pubkey.is_empty())
+    }
+
+    #[doc(hidden)]
+    pub fn relay_session_snapshot_for_test(
+        &self,
+        peer_id: crate::config::PeerId,
+    ) -> PeerRelaySessionSnapshot {
+        let relay = self.peer_manager.get_relay_peer_map();
+        PeerRelaySessionSnapshot {
+            has_state: relay.has_state(peer_id),
+            has_session: relay.has_session_without_touch(peer_id),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn evict_idle_relay_sessions_for_test(&self, idle: Duration) {
+        self.peer_manager
+            .get_relay_peer_map()
+            .evict_idle_sessions(idle);
+    }
+
+    #[doc(hidden)]
+    pub async fn foreign_network_has_gateway_for_test(
+        &self,
+        network_name: &str,
+        peer_id: crate::config::PeerId,
+    ) -> Option<bool> {
+        self.peer_manager
+            .foreign_network_has_gateway(network_name, peer_id)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub fn evict_unused_peer_sessions_for_test(&self, idle: Duration) {
+        self.peer_manager
+            .get_peer_session_store()
+            .evict_unused_sessions_idle(idle);
+    }
+
+    #[doc(hidden)]
+    pub fn foreign_forward_metered_bytes_for_test(&self, network_name: &str) -> Option<u64> {
+        self.peer_manager
+            .foreign_forward_metered_bytes(network_name)
+    }
+
+    #[doc(hidden)]
+    pub fn network_name_for_test(&self) -> String {
+        self.peer_manager.network_name().to_owned()
+    }
+
+    #[doc(hidden)]
+    pub fn instance_recv_metered_bytes_for_test(&self) -> Option<u64> {
+        self.peer_manager.instance_recv_metered_bytes()
+    }
+}

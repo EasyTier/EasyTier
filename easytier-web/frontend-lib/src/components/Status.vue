@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { IPv4 } from 'ip-num/IPNumber'
-import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance, type NetworkConfig, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
+import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
+import { latencyMs, lossRate, numericValue, peerConns, udpNatTypeName } from '../modules/statusDisplay';
+import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
+import VpnPortalDialog from './VpnPortalDialog.vue';
 
 const props = defineProps<{
   curNetworkInst: NetworkInstance | null,
+  api: RemoteClient,
+  readonly?: boolean,
 }>()
 
 const { t } = useI18n()
@@ -39,8 +43,8 @@ function routeCost(info: any) {
   return '?'
 }
 
-function resolveObjPath(path: string, obj = globalThis, separator = '.') {
-  const properties = Array.isArray(path) ? path : path.split(separator)
+function resolveObjPath(path: string, obj: any = globalThis, separator = '.') {
+  const properties = path.split(separator)
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
 
@@ -48,10 +52,17 @@ function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
-  const conns = info.peer.conns
-  return conns.reduce((acc: number, conn: any) => {
-    return acc + resolveObjPath(field, conn)
-  }, 0)
+  let sum = 0
+  let hasValue = false
+  for (const conn of peerConns(info)) {
+    const value = numericValue(resolveObjPath(field, conn))
+    if (value === undefined)
+      continue
+
+    sum += value
+    hasValue = true
+  }
+  return hasValue ? sum : undefined
 }
 
 function humanFileSize(bytes: number, si = false, dp = 1) {
@@ -74,14 +85,6 @@ function humanFileSize(bytes: number, si = false, dp = 1) {
   return `${bytes.toFixed(dp)} ${units[u]}`
 }
 
-function latencyMs(info: PeerRoutePair) {
-  let lat_us_sum = statsCommon(info, 'stats.latency_us')
-  if (lat_us_sum === undefined)
-    return ''
-  lat_us_sum = lat_us_sum / 1000 / info.peer!.conns.length
-  return `${lat_us_sum % 1 > 0 ? Math.round(lat_us_sum) + 1 : Math.round(lat_us_sum)}ms`
-}
-
 function txBytes(info: PeerRoutePair) {
   const tx = statsCommon(info, 'stats.tx_bytes')
   return tx ? humanFileSize(tx) : ''
@@ -92,11 +95,6 @@ function rxBytes(info: PeerRoutePair) {
   return rx ? humanFileSize(rx) : ''
 }
 
-function lossRate(info: PeerRoutePair) {
-  const lossRate = statsCommon(info, 'loss_rate')
-  return lossRate !== undefined ? `${Math.round(lossRate * 100)}%` : ''
-}
-
 function version(info: PeerRoutePair) {
   return info.route.version === '' ? 'unknown' : info.route.version
 }
@@ -105,7 +103,7 @@ function ipFormat(info: PeerRoutePair) {
   const ip = info.route.ipv4_addr
   if (typeof ip === 'string')
     return ip
-  return ip ? `${IPv4.fromNumber(ip.address.addr)}/${ip.network_length}` : ''
+  return ip ? ipv4InetToString(ip) : ''
 }
 
 function oneTunnelProto(tunnel?: TunnelInfo): string {
@@ -131,7 +129,7 @@ function oneTunnelProto(tunnel?: TunnelInfo): string {
 }
 
 function tunnelProto(info: PeerRoutePair) {
-  return [...new Set(info.peer?.conns.map(c => oneTunnelProto(c.tunnel)))].join(',')
+  return [...new Set(peerConns(info).map(c => oneTunnelProto(c.tunnel)))].join(',')
 }
 
 const myNodeInfo = computed(() => {
@@ -144,34 +142,6 @@ const myNodeInfo = computed(() => {
 interface Chip {
   label: string
   icon: string
-}
-
-// udp nat type
-enum NatType {
-  // has NAT; but own a single public IP, port is not changed
-  Unknown = 0,
-  OpenInternet = 1,
-  NoPAT = 2,
-  FullCone = 3,
-  Restricted = 4,
-  PortRestricted = 5,
-  Symmetric = 6,
-  SymUdpFirewall = 7,
-  SymmetricEasyInc = 8,
-  SymmetricEasyDec = 9,
-};
-
-const udpNatTypeStrMap = {
-  [NatType.Unknown]: 'Unknown',
-  [NatType.OpenInternet]: 'Open Internet',
-  [NatType.NoPAT]: 'No PAT',
-  [NatType.FullCone]: 'Full Cone',
-  [NatType.Restricted]: 'Restricted',
-  [NatType.PortRestricted]: 'Port Restricted',
-  [NatType.Symmetric]: 'Symmetric',
-  [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
-  [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
-  [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
 }
 
 const myNodeInfoChips = computed(() => {
@@ -206,7 +176,7 @@ const myNodeInfoChips = computed(() => {
 
   // local ipv4s
   const local_ipv4s = my_node_info.ips?.interface_ipv4s
-  for (const [idx, ip] of local_ipv4s?.entries()) {
+  for (const [idx, ip] of local_ipv4s?.entries() ?? []) {
     chips.push({
       label: `Local IPv4 ${idx}: ${ipv4ToString(ip)}`,
       icon: '',
@@ -215,7 +185,7 @@ const myNodeInfoChips = computed(() => {
 
   // local ipv6s
   const local_ipv6s = my_node_info.ips?.interface_ipv6s
-  for (const [idx, ip] of local_ipv6s?.entries()) {
+  for (const [idx, ip] of local_ipv6s?.entries() ?? []) {
     chips.push({
       label: `Local IPv6 ${idx}: ${ipv6ToString(ip)}`,
       icon: '',
@@ -226,7 +196,7 @@ const myNodeInfoChips = computed(() => {
   const public_ip = my_node_info.ips?.public_ipv4
   if (public_ip) {
     chips.push({
-      label: `Public IP: ${IPv4.fromNumber(public_ip.addr)}`,
+      label: `Public IP: ${ipv4ToString(public_ip)}`,
       icon: '',
     } as Chip)
   }
@@ -241,17 +211,17 @@ const myNodeInfoChips = computed(() => {
 
   // listeners:
   const listeners = my_node_info.listeners
-  for (const [idx, listener] of listeners?.entries()) {
+  for (const [idx, listener] of listeners?.entries() ?? []) {
     chips.push({
       label: `Listener ${idx}: ${listener.url}`,
       icon: '',
     } as Chip)
   }
 
-  const udpNatType: NatType = my_node_info.stun_info?.udp_nat_type
-  if (udpNatType !== undefined) {
+  const udpNatType = udpNatTypeName(my_node_info.stun_info)
+  if (udpNatType) {
     chips.push({
-      label: `UDP NAT Type: ${udpNatTypeStrMap[udpNatType]}`,
+      label: `UDP NAT Type: ${udpNatType}`,
       icon: '',
     } as Chip)
   }
@@ -281,11 +251,15 @@ function rxGlobalSum() {
 }
 
 function natType(info: PeerRoutePair): string {
-  const udpNatType = info.route?.stun_info?.udp_nat_type;
-  if (udpNatType !== undefined)
-    return udpNatTypeStrMap[udpNatType as NatType]
+  return udpNatTypeName(info.route?.stun_info)
+}
 
-  return ''
+function isPublicServerRoute(info: PeerRoutePair): boolean {
+  return info.route?.feature_flag?.is_public_server ?? false
+}
+
+function shouldAvoidRelayData(info: PeerRoutePair): boolean {
+  return info.route?.feature_flag?.avoid_relay_data ?? false
 }
 
 const peerCount = computed(() => {
@@ -325,24 +299,41 @@ onUnmounted(() => {
 const dialogVisible = ref(false)
 const dialogContent = ref<any>('')
 const dialogHeader = ref('event_log')
+const vpnPortalVisible = ref(false)
+const networkConfig = ref<NetworkConfig>()
+const vpnPortalEnabled = computed(() => props.curNetworkInst?.running
+  && networkConfig.value?.vpn_portal_config !== undefined
+  && networkConfig.value.vpn_portal_config.enabled !== false)
 
-function showVpnPortalConfig() {
-  const my_node_info = myNodeInfo.value
-  if (!my_node_info)
-    return
-
-  const url = 'https://www.wireguardconfig.com/qrcode'
-  dialogContent.value = `${my_node_info.vpn_portal_cfg}\n\n # can generate QR code: ${url}`
-  dialogHeader.value = 'vpn_portal_config'
-  dialogVisible.value = true
-}
+watch(() => props.curNetworkInst?.instance_id, async (instanceId, _, onCleanup) => {
+  let active = true
+  vpnPortalVisible.value = false
+  networkConfig.value = undefined
+  if (!instanceId) return
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => {
+    active = false
+    clearTimeout(refreshTimer)
+  })
+  const refresh = async () => {
+    try {
+      const config = await props.api.get_network_config(instanceId)
+      if (active) networkConfig.value = config
+    } catch (error) {
+      console.error('Failed to load WireGuard settings', error)
+    } finally {
+      if (active) refreshTimer = setTimeout(refresh, 10_000)
+    }
+  }
+  await refresh()
+}, { immediate: true })
 
 function showEventLogs() {
   const detail = props.curNetworkInst?.detail
   if (!detail)
     return
 
-  dialogContent.value = detail.events.map((event: string) => JSON.parse(event))
+  dialogContent.value = detail.events?.map((event: string) => JSON.parse(event)) ?? []
   dialogHeader.value = 'event_log'
   dialogVisible.value = true
 }
@@ -352,10 +343,7 @@ function showEventLogs() {
   <div class="frontend-lib">
     <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" class="w-full h-auto max-h-full"
       :baseZIndex="2000">
-      <ScrollPanel v-if="dialogHeader === 'vpn_portal_config'">
-        <pre>{{ dialogContent }}</pre>
-      </ScrollPanel>
-      <Timeline v-else :value="dialogContent">
+      <Timeline :value="dialogContent">
         <template #opposite="slotProps">
           <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item.time))
           }}</small>
@@ -365,6 +353,9 @@ function showEventLogs() {
         </template>
       </Timeline>
     </Dialog>
+
+    <VpnPortalDialog v-if="vpnPortalVisible && curNetworkInst && vpnPortalEnabled" :key="curNetworkInst.instance_id"
+      :instance="curNetworkInst" :api="api" :readonly="readonly" @close="vpnPortalVisible = false" />
 
     <Card v-if="curNetworkInst?.error_msg">
       <template #title>
@@ -408,7 +399,7 @@ function showEventLogs() {
             </div>
 
             <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
-              <Button severity="info" :label="t('show_vpn_portal_config')" @click="showVpnPortalConfig" />
+              <Button v-if="vpnPortalEnabled" severity="info" :label="t('vpn_portal_devices')" @click="vpnPortalVisible = true" />
               <Button severity="info" :label="t('show_event_log')" @click="showEventLogs" />
             </div>
           </div>
@@ -434,16 +425,16 @@ function showEventLogs() {
             <Column :field="ipFormat" :header="t('virtual_ipv4')" />
             <Column :header="t('hostname')">
               <template #body="slotProps">
-                <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
+                <div v-if="!slotProps.data.route.cost || !isPublicServerRoute(slotProps.data)"
                   v-tooltip="slotProps.data.route.hostname">
                   {{
                     slotProps.data.route.hostname }}
                 </div>
                 <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
-                  <Tag v-if="slotProps.data.route.feature_flag.is_public_server" severity="info" value="Info">
+                  <Tag v-if="isPublicServerRoute(slotProps.data)" severity="info" value="Info">
                     {{ t('status.server') }}
                   </Tag>
-                  <Tag v-if="slotProps.data.route.feature_flag.avoid_relay_data" severity="warn" value="Warn">
+                  <Tag v-if="shouldAvoidRelayData(slotProps.data)" severity="warn" value="Warn">
                     {{ t('status.relay') }}
                   </Tag>
                 </div>

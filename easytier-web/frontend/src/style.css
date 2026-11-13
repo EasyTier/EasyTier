@@ -50,3 +50,4 @@
 .device-manage-drawer {
   padding-top: env(safe-area-inset-top, 0px);
 }
+html.app-dark { color-scheme: dark; }

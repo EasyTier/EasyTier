@@ -1,6 +1,7 @@
 name: EasyTier Mobile
 
 on:
+  workflow_dispatch:
   push:
     branches: ["develop", "main", "releases/**"]
   pull_request:
@@ -8,7 +9,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A new PR or branch push must not cancel a full build.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -21,38 +23,59 @@ defaults:
 
 jobs:
   pre_job:
-    # continue-on-error: true # Uncomment once integration is finished
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    # Map a step output to a job output
+    env:
+      RELEVANT_PATHS: >-
+        ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
+        "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "easytier/**",
+        "easytier-core/**", "easytier-proto/**", "easytier-rpc-build/**",
+        "easytier-gui/**", "tauri-plugin-vpnservice/**",
+        "easytier-web/frontend-lib/**", ".github/workflows/mobile.yml",
+        ".github/actions/**"]
     outputs:
-      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
+      full_build: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'releases/') }}
+      # Release builds must run even if they only change release metadata.
+      should_skip: >-
+        ${{
+          (
+            steps.skip_check.outputs.should_skip == 'true' ||
+            (
+              github.event_name == 'pull_request' &&
+              steps.path_filter.outputs.relevant != 'true'
+            )
+          ) &&
+          github.event_name != 'workflow_dispatch' &&
+          !startsWith(github.ref_name, 'releases/')
+        }}
     steps:
       - id: skip_check
+        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref_name, 'releases/')
         uses: fkirc/skip-duplicate-actions@v5
         with:
-          # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
-          cancel_others: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", "tauri-plugin-vpnservice/**", ".github/workflows/mobile.yml", ".github/actions/**"]'
+          do_not_skip: '["pull_request", "workflow_dispatch", "schedule", "merge_group"]'
+          paths: ${{ env.RELEVANT_PATHS }}
+
+      - id: path_filter
+        if: >-
+          github.event_name == 'pull_request' &&
+          steps.skip_check.outputs.should_skip != 'true'
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            relevant: ${{ env.RELEVANT_PATHS }}
+
   build-mobile:
     strategy:
       fail-fast: true
       matrix:
-        include:
-          - TARGET: aarch64-linux-android
-            ARCH: aarch64
-          - TARGET: armv7-linux-androideabi
-            ARCH: armv7
-          - TARGET: i686-linux-android
-            ARCH: i686
-          - TARGET: x86_64-linux-android
-            ARCH: x86_64
+        ARCH: ${{ fromJSON(needs.pre_job.outputs.full_build == 'true' && '["aarch64", "armv7", "i686", "x86_64"]' || '["aarch64"]') }}
     runs-on: ubuntu-latest
     env:
       NAME: easytier
-      TARGET: ${{ matrix.TARGET }}
+      TARGET: ${{ matrix.ARCH == 'armv7' && 'armv7-linux-androideabi' || format('{0}-linux-android', matrix.ARCH) }}
       ARCH: ${{ matrix.ARCH }}
       OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
     needs: pre_job
@@ -72,7 +95,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          cmdline-tools-version: 12.0
+          cmdline-tools-version: '11076708'
           packages: 'build-tools;34.0.0 ndk;26.0.10792818 platform-tools platforms;android-34 '
 
       - name: Setup Android Environment
@@ -84,10 +107,10 @@ jobs:
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
         with:
-          target: ${{ matrix.TARGET }}
+          target: ${{ env.TARGET }}
           gui: false
           pnpm: true
-          pnpm-build-filter: ''
+          pnpm-build-filter: easytier-gui...
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
@@ -95,15 +118,22 @@ jobs:
           # The prefix cache key, this can be changed to start a new cache manually.
           # default: "v0-rust"
           prefix-key: ""
-          shared-key: "gui-registry"
-          cache-targets: "false"
+          shared-key: mobile-${{ env.TARGET }}-${{ needs.pre_job.outputs.full_build }}
+          cache-targets: "true"
+          save-if: ${{ github.event_name != 'pull_request' }}
+
+      - name: Check Android ARM64
+        if: needs.pre_job.outputs.full_build != 'true'
+        run: cargo check --locked --lib --target "$TARGET" --package easytier-gui --features custom-protocol
 
       - name: Build
+        if: needs.pre_job.outputs.full_build == 'true'
         run: |
           cd easytier-gui
           pnpm tauri android build --apk --target "$ARCH" --split-per-abi
 
       - name: Collect artifact
+        if: needs.pre_job.outputs.full_build == 'true'
         run: |
           mkdir -p ./artifacts/objects/
           mv easytier-gui/src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk ./artifacts/objects/
@@ -118,6 +148,7 @@ jobs:
           rm -rf ./artifacts/objects/
 
       - name: Archive artifact
+        if: needs.pre_job.outputs.full_build == 'true'
         uses: actions/upload-artifact@v5
         with:
           name: easytier-mobile-android-${{ matrix.ARCH }}
@@ -127,8 +158,8 @@ jobs:
   mobile-result:
     runs-on: ubuntu-latest
     needs: [ pre_job, build-mobile ]
-    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    if: ${{ always() }}
     steps:
       - name: Mark result as failed
-        if: contains(needs.*.result, 'failure')
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1

@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package easytier;
+
+import "google/protobuf/descriptor.proto";
+
+// The name the management API spells a flag with, where it differs from the
+// flag's own, and whether that field is the flag's negation.
+message ApiSpelling {
+  string field = 1;
+  bool negate = 2;
+}
+
+// What a flag is worth and how the layers around it name it.
+//
+// `default` holds the value the core runs for a flag a configuration does not
+// state, written the way the flag's own type reads; an `optional` flag leaves
+// it out, which is what "unset" means. A form has a non-boolean control for
+// `form`; boolean flags need no marker, since the type says so.
+message FlagMeta {
+  optional string default = 1;
+  ApiSpelling api = 2;
+  bool form = 3;
+  bool deprecated = 4;
+}
+
+extend google.protobuf.FieldOptions {
+  FlagMeta flag = 50001;
+}

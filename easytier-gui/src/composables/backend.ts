@@ -1,7 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
+import { type } from '@tauri-apps/plugin-os'
 import { Api, NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
 import { type ConfigSource, normalizeConfigSource } from './config_source'
+import type { OperationOutcome, ManagementStatus } from './management_status'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type ValidateConfigResponse = Api.ValidateConfigResponse
@@ -21,7 +23,7 @@ interface StoredGuiConfig {
   source: ConfigSource
 }
 
-function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
+export function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
   const parsed: unknown = JSON.parse(raw || '[]')
   if (!Array.isArray(parsed)) {
     return []
@@ -59,19 +61,52 @@ export async function generateNetworkConfig(tomlConfig: string) {
 }
 
 export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
-  return invoke('run_network_instance', { cfg: NetworkTypes.toBackendNetworkConfig(cfg), save })
+  return invoke<OperationOutcome>('run_network_instance', { cfg: NetworkTypes.toBackendNetworkConfig(cfg), save })
+}
+
+export async function getManagementStatus() {
+  return invoke<ManagementStatus>('get_management_status')
 }
 
 export async function collectNetworkInfo(instanceId: string) {
   return await invoke<Api.CollectNetworkInfoResponse>('collect_network_info', { instanceId })
 }
 
+export async function getVpnPortalInfo(instanceId: string) {
+  const info = await invoke<NetworkTypes.VpnPortalInfo | undefined>('get_vpn_portal_info', { instanceId })
+  return info ? NetworkTypes.normalizeVpnPortalInfo(info) : undefined
+}
+
+export async function addVpnPortalClient(instanceId: string, client: { name: string, virtual_ip: string, groups: string[] }) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'add', name: client.name, virtualIp: client.virtual_ip, groups: client.groups })
+}
+
+export async function removeVpnPortalClient(instanceId: string, name: string) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'remove', name })
+}
+
+export async function clearVpnPortalClients(instanceId: string) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'clear' })
+}
+
 export async function setLoggingLevel(level: string) {
   return await invoke('set_logging_level', { level })
 }
 
-export async function setTunFd(fd: number) {
-  return await invoke('set_tun_fd', { fd })
+export interface MobileTunConfig {
+  instance_ids: string[]
+  addresses: string[]
+  routes: string[]
+  dns?: string | null
+  rejected: { instance_id: string, error: string }[]
+}
+
+export async function getMobileTunConfig(instanceIds: string[]) {
+  return await invoke<MobileTunConfig>('get_mobile_tun_config', { instanceIds })
+}
+
+export async function setTunFd(fd: number, instanceIds?: string[]) {
+  return await invoke<MobileTunConfig>('set_tun_fd', { fd, instanceIds })
 }
 
 export async function getEasytierVersion() {
@@ -83,11 +118,11 @@ export async function listNetworkInstanceIds() {
 }
 
 export async function deleteNetworkInstance(instanceId: string) {
-  return await invoke('remove_network_instance', { instanceId })
+  return await invoke<OperationOutcome>('remove_network_instance', { instanceId })
 }
 
 export async function updateNetworkConfigState(instanceId: string, disabled: boolean) {
-  return await invoke('update_network_config_state', { instanceId, disabled })
+  return await invoke<OperationOutcome>('update_network_config_state', { instanceId, disabled })
 }
 
 export async function saveNetworkConfig(cfg: NetworkConfig) {
@@ -104,13 +139,13 @@ export async function getConfig(instanceId: string) {
 }
 
 export async function sendConfigs(enabledNetworks: string[]) {
-  const networkList = parseStoredConfigs(localStorage.getItem('networkList'))
+  const networkList = type() === 'android' ? [] : parseStoredConfigs(localStorage.getItem('networkList'))
   return await invoke('load_configs', {
     configs: networkList.map(({ config, source }) => ({
       config: NetworkTypes.toBackendNetworkConfig(config),
       source,
     })),
-    enabledNetworks
+    enabledNetworks,
   })
 }
 

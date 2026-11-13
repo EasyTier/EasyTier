@@ -16,6 +16,8 @@ RUN ARTIFACT_ARCH=""; \
         ARTIFACT_ARCH="aarch64"; \
     elif [ "$TARGETPLATFORM" = "linux/riscv64" ]; then \
         ARTIFACT_ARCH="riscv64"; \
+    elif [ "$TARGETPLATFORM" = "linux/ppc64le" ]; then \
+        ARTIFACT_ARCH="ppc64le"; \
     else \
         echo "Unsupported architecture: $TARGETPLATFORM"; \
         exit 1; \

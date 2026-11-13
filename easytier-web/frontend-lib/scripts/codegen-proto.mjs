@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const protoRoot = resolve(root, '../../easytier/src/proto')
+const protoRoot = resolve(root, '../../easytier-proto/proto')
 const generatedRoot = resolve(root, 'src/generated')
 const outDir = resolve(generatedRoot, 'proto')
 const nodeBinDir = resolve(root, 'node_modules/.bin')
@@ -15,7 +15,9 @@ const protocWrapper = require.resolve('@protobuf-ts/protoc/protoc.js')
 const protobufTsPluginRoot = dirname(require.resolve('@protobuf-ts/plugin/package.json'))
 
 const protoFiles = [
+  'annotations.proto',
   'common.proto',
+  'core_config.proto',
   'acl.proto',
   'api_instance.proto',
   'api_manage.proto',
