@@ -5,14 +5,15 @@ use std::{
 };
 
 use futures::{SinkExt, Stream, StreamExt};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::task::JoinHandle;
 
 use crate::{
     foundation::time::{Duration, Instant, sleep_until, timeout},
     packet::ZCPacket,
     tunnel::{
-        StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream, filter::TunnelFilter,
-        mpsc::MpscTunnelSender,
+        StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
+        filter::TunnelFilter,
+        mpsc::{MpscTunnelReceiver, MpscTunnelSender},
     },
 };
 
@@ -41,11 +42,11 @@ impl PeerConnFecIo {
         fec: Arc<PeerConnFec>,
     ) -> Self {
         let (stream, sink) = tunnel.split();
-        let (sender, receiver) = mpsc::channel(32);
+        let (sender, receiver) = MpscTunnelReceiver::channel(true);
         let filter = Arc::new(filter);
         let task = tokio::spawn(writer(receiver, sink, filter.clone(), fec.clone()));
         Self {
-            sender: Some(MpscTunnelSender::new(sender)),
+            sender: Some(sender),
             stream: Some(Box::pin(ReceiveStream {
                 stream,
                 filter,
@@ -111,7 +112,7 @@ async fn write_one(
 }
 
 async fn writer<F: TunnelFilter + 'static>(
-    mut receiver: mpsc::Receiver<ZCPacket>,
+    mut receiver: MpscTunnelReceiver,
     mut sink: Pin<Box<dyn ZCPacketSink>>,
     filter: Arc<F>,
     fec: Arc<PeerConnFec>,
@@ -175,6 +176,7 @@ async fn writer<F: TunnelFilter + 'static>(
         tracing::debug!(?error, "UDP FEC writer stopped");
     }
     receiver.close();
+    drop(receiver);
     fec.close();
     let _ = timeout(Duration::from_secs(5), sink.close()).await;
 }

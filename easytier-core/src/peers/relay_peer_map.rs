@@ -226,6 +226,30 @@ impl RelayPeerMap {
 
     pub async fn send_msg(
         self: &Arc<Self>,
+        msg: ZCPacket,
+        dst_peer_id: PeerId,
+        policy: NextHopPolicy,
+    ) -> Result<(), Error> {
+        if self.is_secure_mode_enabled()
+            && msg
+                .peer_manager_header()
+                .is_some_and(|hdr| hdr.from_peer_id.get() == self.my_peer_id)
+        {
+            // Relay encryption assigns session sequence numbers before enqueue.
+            // Keep the original per-packet admission here: pre-encrypting a
+            // whole RPC can move its head outside the shared replay window
+            // when another relay send or direct connection overtakes it.
+            for packet in msg.into_batch() {
+                self.send_msg_inner(packet, dst_peer_id, policy.clone())
+                    .await?;
+            }
+            return Ok(());
+        }
+        self.send_msg_inner(msg, dst_peer_id, policy).await
+    }
+
+    async fn send_msg_inner(
+        self: &Arc<Self>,
         mut msg: ZCPacket,
         dst_peer_id: PeerId,
         policy: NextHopPolicy,
@@ -802,6 +826,8 @@ mod tests {
         remote: StdMutex<Option<Weak<RelayPeerMap>>>,
         remote_pubkey: Vec<u8>,
         ack_policies: StdMutex<Vec<NextHopPolicy>>,
+        packets: StdMutex<Vec<ZCPacket>>,
+        packet_gate: StdMutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     }
 
     impl TestRelayTransport {
@@ -810,11 +836,20 @@ mod tests {
                 remote: StdMutex::new(None),
                 remote_pubkey,
                 ack_policies: StdMutex::new(Vec::new()),
+                packets: StdMutex::new(Vec::new()),
+                packet_gate: StdMutex::new(None),
             }
         }
 
         fn set_remote(&self, remote: &Arc<RelayPeerMap>) {
             *self.remote.lock().unwrap() = Some(Arc::downgrade(remote));
+        }
+
+        fn pause_next_packet(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+            let (entered_tx, entered_rx) = oneshot::channel();
+            let (resume_tx, resume_rx) = oneshot::channel();
+            *self.packet_gate.lock().unwrap() = Some((entered_tx, resume_rx));
+            (entered_rx, resume_tx)
         }
     }
 
@@ -835,6 +870,17 @@ mod tests {
             policy: NextHopPolicy,
         ) -> Result<(), Error> {
             let packet_type = msg.peer_manager_header().unwrap().packet_type;
+            if packet_type != PacketType::RelayHandshake as u8
+                && packet_type != PacketType::RelayHandshakeAck as u8
+            {
+                let gate = self.packet_gate.lock().unwrap().take();
+                if let Some((entered, resume)) = gate {
+                    entered.send(()).unwrap();
+                    resume.await.unwrap();
+                }
+                self.packets.lock().unwrap().push(msg);
+                return Ok(());
+            }
             if packet_type == PacketType::RelayHandshakeAck as u8 {
                 self.ack_policies.lock().unwrap().push(policy.clone());
                 if matches!(policy, NextHopPolicy::LeastHop) {
@@ -873,6 +919,33 @@ mod tests {
             },
         };
         (Arc::new(context), public.as_bytes().to_vec())
+    }
+
+    fn relay_test_pair() -> (
+        Arc<RelayPeerMap>,
+        Arc<RelayPeerMap>,
+        Arc<TestRelayTransport>,
+        Arc<TestRelayTransport>,
+    ) {
+        let (context_a, pubkey_a) = relay_test_context(1);
+        let (context_b, pubkey_b) = relay_test_context(2);
+        let transport_a = Arc::new(TestRelayTransport::new(pubkey_b));
+        let transport_b = Arc::new(TestRelayTransport::new(pubkey_a));
+        let relay_a = RelayPeerMap::new(
+            transport_a.clone(),
+            context_a,
+            1,
+            Arc::new(PeerSessionStore::new()),
+        );
+        let relay_b = RelayPeerMap::new(
+            transport_b.clone(),
+            context_b,
+            2,
+            Arc::new(PeerSessionStore::new()),
+        );
+        transport_a.set_remote(&relay_b);
+        transport_b.set_remote(&relay_a);
+        (relay_a, relay_b, transport_a, transport_b)
     }
 
     #[derive(Default)]
@@ -945,24 +1018,7 @@ mod tests {
 
     #[tokio::test]
     async fn latency_first_handshake_returns_ack_over_least_cost_route() {
-        let (context_a, pubkey_a) = relay_test_context(1);
-        let (context_b, pubkey_b) = relay_test_context(2);
-        let transport_a = Arc::new(TestRelayTransport::new(pubkey_b));
-        let transport_b = Arc::new(TestRelayTransport::new(pubkey_a));
-        let relay_a = RelayPeerMap::new(
-            transport_a.clone(),
-            context_a,
-            1,
-            Arc::new(PeerSessionStore::new()),
-        );
-        let relay_b = RelayPeerMap::new(
-            transport_b.clone(),
-            context_b,
-            2,
-            Arc::new(PeerSessionStore::new()),
-        );
-        transport_a.set_remote(&relay_b);
-        transport_b.set_remote(&relay_a);
+        let (relay_a, relay_b, _, transport_b) = relay_test_pair();
 
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -982,6 +1038,161 @@ mod tests {
                 .iter()
                 .all(|policy| matches!(policy, NextHopPolicy::LeastCost))
         );
+    }
+
+    #[tokio::test]
+    async fn secure_relay_splits_batches_before_pending_and_established_sessions() {
+        let (relay_a, relay_b, transport_a, _transport_b) = relay_test_pair();
+
+        for pending in [true, false] {
+            let payloads: Vec<_> = (0..207u32)
+                .map(|sequence| {
+                    let mut payload = vec![u8::from(pending); 1024];
+                    payload[..4].copy_from_slice(&sequence.to_le_bytes());
+                    payload
+                })
+                .collect();
+            let batch = ZCPacket::batch(
+                payloads
+                    .iter()
+                    .map(|payload| {
+                        let mut packet = ZCPacket::new_with_payload(payload);
+                        packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+                        packet
+                    })
+                    .collect(),
+            );
+            if pending {
+                // Preserve the existing per-packet pending limit while the
+                // handshake is unavailable, including its overflow behavior.
+                let guard = relay_a.get_handshake_lock(2).lock_owned().await;
+                relay_a
+                    .send_msg(batch, 2, NextHopPolicy::LeastCost)
+                    .await
+                    .unwrap();
+                assert!(!relay_a.has_session_without_touch(2));
+                {
+                    let queued = relay_a.pending_packets.get(&2).unwrap();
+                    assert_eq!(queued.len(), MAX_PENDING_PACKETS_PER_PEER);
+                    assert!(queued.iter().all(|(packet, _)| packet.batch_len() == 1));
+                }
+                assert!(transport_a.packets.lock().unwrap().is_empty());
+                drop(guard);
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    relay_a.handshake_session(2, NextHopPolicy::LeastCost, None),
+                )
+                .await
+                .expect("pending relay batch handshake timed out")
+                .unwrap();
+            } else {
+                assert!(relay_a.has_session_without_touch(2));
+                relay_a
+                    .send_msg(batch, 2, NextHopPolicy::LeastCost)
+                    .await
+                    .unwrap();
+            }
+            assert!(!relay_a.pending_packets.contains_key(&2));
+            let packets = {
+                let mut packets = transport_a.packets.lock().unwrap();
+                std::mem::take(&mut *packets)
+            };
+            let expected_len = if pending {
+                MAX_PENDING_PACKETS_PER_PEER
+            } else {
+                payloads.len()
+            };
+            assert_eq!(packets.len(), expected_len);
+            let mut received = 0;
+            for (sequence, mut packet) in packets.into_iter().enumerate() {
+                assert_eq!(packet.batch_len(), 1);
+                let header = packet.peer_manager_header().unwrap();
+                assert_eq!(header.from_peer_id.get(), 1);
+                assert_eq!(header.to_peer_id.get(), 2);
+                assert_eq!(header.packet_type, PacketType::RpcReq as u8);
+                assert!(header.is_encrypted());
+                assert!(relay_b.decrypt_if_needed(&mut packet).await.unwrap());
+                assert!(!packet.peer_manager_header().unwrap().is_encrypted());
+                assert_eq!(packet.payload(), payloads[sequence]);
+                received += 1;
+            }
+            assert_eq!(received, expected_len);
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_relay_batch_does_not_preallocate_the_replay_window() {
+        for direct in [false, true] {
+            let (relay_a, relay_b, transport_a, _transport_b) = relay_test_pair();
+            relay_a
+                .handshake_session(2, NextHopPolicy::LeastCost, None)
+                .await
+                .unwrap();
+            let batch = ZCPacket::batch(
+                (0u32..300)
+                    .map(|sequence| {
+                        let mut packet = ZCPacket::new_with_payload(&sequence.to_le_bytes());
+                        packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+                        packet
+                    })
+                    .collect(),
+            );
+            // Hold the first relay enqueue after encryption, then let another
+            // sender sharing the same session reach the receiver first.
+            let (entered, resume) = transport_a.pause_next_packet();
+            let sender = relay_a.clone();
+            let sending =
+                tokio::spawn(
+                    async move { sender.send_msg(batch, 2, NextHopPolicy::LeastCost).await },
+                );
+            tokio::time::timeout(Duration::from_secs(1), entered)
+                .await
+                .unwrap()
+                .unwrap();
+
+            let mut overtaking = ZCPacket::new_with_payload(b"overtaking");
+            overtaking.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+            if direct {
+                // PeerConn's send filter uses this same store entry and only
+                // allocates its nonce immediately before an individual send.
+                let session = relay_a
+                    .peer_session_store
+                    .get(&SessionKey::new("test".to_owned(), 2))
+                    .unwrap();
+                session.encrypt_payload(1, 2, &mut overtaking).unwrap();
+                transport_a
+                    .send_msg_to_next_hop(overtaking, 2, NextHopPolicy::LeastCost)
+                    .await
+                    .unwrap();
+            } else {
+                relay_a
+                    .send_msg(overtaking, 2, NextHopPolicy::LeastCost)
+                    .await
+                    .unwrap();
+            }
+            let mut overtaking = transport_a.packets.lock().unwrap().pop().unwrap();
+            assert!(relay_b.decrypt_if_needed(&mut overtaking).await.unwrap());
+            assert_eq!(overtaking.payload(), b"overtaking");
+
+            resume.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), sending)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let packets = std::mem::take(&mut *transport_a.packets.lock().unwrap());
+            let mut received = 0;
+            for (sequence, mut packet) in packets
+                .into_iter()
+                .flat_map(ZCPacket::into_batch)
+                .enumerate()
+            {
+                assert!(relay_b.decrypt_if_needed(&mut packet).await.unwrap());
+                assert_eq!(packet.payload(), (sequence as u32).to_le_bytes());
+                received += 1;
+            }
+            assert_eq!(received, 300);
+        }
     }
 }
 

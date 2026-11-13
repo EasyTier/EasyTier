@@ -164,8 +164,7 @@ impl PeerRpcManagerTransport for RpcTransport {
             // if dst is directly connected, it's must not public server
             .unwrap_or(!peers.has_peer(dst_peer_id));
         if !is_dst_peer_public_server && !self.is_secure_mode_enabled {
-            self.encryptor
-                .encrypt(&mut msg)
+            msg.try_for_each_packet_mut(|packet| self.encryptor.encrypt(packet))
                 .with_context(|| "encrypt failed")?;
         }
         // send to self and this packet will be forwarded in peer_recv loop
@@ -3083,7 +3082,7 @@ impl PeerPacketRouter {
         disable_relay_data: bool,
         ingress: PeerPacketIngress,
     ) {
-        let buf_len = ret.buf_len();
+        let buf_len = ret.batch_buf_len();
         let destination_is_attached = ret
             .peer_manager_header()
             .is_some_and(|header| self.peers.has_direct_attached_peer(header.to_peer_id.get()));
@@ -3103,7 +3102,6 @@ impl PeerPacketRouter {
         let from_peer_id = hdr.from_peer_id.get();
         let to_peer_id = hdr.to_peer_id.get();
         let packet_type = hdr.packet_type;
-        let is_encrypted = hdr.is_encrypted();
         if to_peer_id != self.my_peer_id {
             if drop_relay_data {
                 let ingress_connection = ingress.peer_connection();
@@ -3139,6 +3137,13 @@ impl PeerPacketRouter {
             }
 
             hdr.forward_counter += 1;
+            let forward_counter = hdr.forward_counter;
+            let latency_first = hdr.is_latency_first();
+            ret.for_each_packet_mut(|packet| {
+                let header = packet.mut_peer_manager_header().unwrap();
+                header.forward_counter = forward_counter;
+                header.set_latency_first(latency_first);
+            });
 
             if from_peer_id == self.my_peer_id {
                 self.counters.compress_tx_bytes_before.add(buf_len as u64);
@@ -3158,18 +3163,22 @@ impl PeerPacketRouter {
 
                 self.counters
                     .compress_tx_bytes_after
-                    .add(ret.buf_len() as u64);
-                self.counters.self_tx_bytes.add(ret.buf_len() as u64);
-                self.counters.self_tx_packets.inc();
+                    .add(ret.batch_buf_len() as u64);
+                self.counters.self_tx_bytes.add(ret.batch_buf_len() as u64);
+                self.counters.self_tx_packets.add(ret.batch_len() as u64);
             } else {
                 match traffic_kind(packet_type) {
                     TrafficKind::Data => {
                         self.counters.forward_data_tx_bytes.add(buf_len as u64);
-                        self.counters.forward_data_tx_packets.inc();
+                        self.counters
+                            .forward_data_tx_packets
+                            .add(ret.batch_len() as u64);
                     }
                     TrafficKind::Control => {
                         self.counters.forward_control_tx_bytes.add(buf_len as u64);
-                        self.counters.forward_control_tx_packets.inc();
+                        self.counters
+                            .forward_control_tx_packets
+                            .add(ret.batch_len() as u64);
                     }
                 }
             }
@@ -3194,62 +3203,73 @@ impl PeerPacketRouter {
                 tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
             }
         } else {
-            if packet_type == PacketType::RelayHandshake as u8
-                || packet_type == PacketType::RelayHandshakeAck as u8
-            {
-                let _ = self.relay_peer_map.handle_handshake_packet(ret).await;
+            for packet in ret.into_batch() {
+                self.handle_local_packet(packet).await;
+            }
+        }
+    }
+
+    async fn handle_local_packet(&self, mut ret: ZCPacket) {
+        let buf_len = ret.buf_len();
+        let header = ret.peer_manager_header().unwrap();
+        let packet_type = header.packet_type;
+        let from_peer_id = header.from_peer_id.get();
+        let is_encrypted = header.is_encrypted();
+        if packet_type == PacketType::RelayHandshake as u8
+            || packet_type == PacketType::RelayHandshakeAck as u8
+        {
+            let _ = self.relay_peer_map.handle_handshake_packet(ret).await;
+            return;
+        }
+        if !self.secure_mode_enabled {
+            if let Err(e) = self.encryptor.decrypt(&mut ret) {
+                tracing::error!(?e, "decrypt failed");
                 return;
             }
-            if !self.secure_mode_enabled {
-                if let Err(e) = self.encryptor.decrypt(&mut ret) {
-                    tracing::error!(?e, "decrypt failed");
+        } else if is_encrypted {
+            match self.relay_peer_map.decrypt_if_needed(&mut ret).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::error!("secure session not found");
                     return;
                 }
-            } else if is_encrypted {
-                match self.relay_peer_map.decrypt_if_needed(&mut ret).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        tracing::error!("secure session not found");
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::error!(?e, "secure decrypt failed");
-                        return;
-                    }
+                Err(e) => {
+                    tracing::error!(?e, "secure decrypt failed");
+                    return;
                 }
             }
-
-            self.counters.self_rx_bytes.add(buf_len as u64);
-            self.counters.self_rx_packets.inc();
-            self.traffic_metrics
-                .record_rx(from_peer_id, packet_type, buf_len as u64)
-                .await;
-            self.counters.compress_rx_bytes_before.add(buf_len as u64);
-
-            let compressor = DefaultCompressor {};
-            if let Err(e) = compressor.decompress(&mut ret).await {
-                tracing::error!(?e, "decompress failed");
-                return;
-            }
-
-            self.counters
-                .compress_rx_bytes_after
-                .add(ret.buf_len() as u64);
-
-            if !self.acl_filter.process_packet_with_acl(
-                &ret,
-                true,
-                self.context.ipv4().map(|x| x.address()),
-                |dst| self.context.is_ip_local_ipv6(&dst),
-                self.route.as_ref(),
-            ) {
-                return;
-            }
-
-            tracing::trace!(?ret, "try_process_packet_from_peer");
-            let pipelines = self.peer_packet_process_pipeline.load_full();
-            process_peer_packet(&pipelines, ret).await;
         }
+
+        self.counters.self_rx_bytes.add(buf_len as u64);
+        self.counters.self_rx_packets.inc();
+        self.traffic_metrics
+            .record_rx(from_peer_id, packet_type, buf_len as u64)
+            .await;
+        self.counters.compress_rx_bytes_before.add(buf_len as u64);
+
+        let compressor = DefaultCompressor {};
+        if let Err(e) = compressor.decompress(&mut ret).await {
+            tracing::error!(?e, "decompress failed");
+            return;
+        }
+
+        self.counters
+            .compress_rx_bytes_after
+            .add(ret.buf_len() as u64);
+
+        if !self.acl_filter.process_packet_with_acl(
+            &ret,
+            true,
+            self.context.ipv4().map(|x| x.address()),
+            |dst| self.context.is_ip_local_ipv6(&dst),
+            self.route.as_ref(),
+        ) {
+            return;
+        }
+
+        tracing::trace!(?ret, "try_process_packet_from_peer");
+        let pipelines = self.peer_packet_process_pipeline.load_full();
+        process_peer_packet(&pipelines, ret).await;
     }
 }
 
@@ -3349,14 +3369,17 @@ pub(crate) async fn try_handle_foreign_network_packet(
     let foreign_network_my_peer_id =
         foreign_network_manager.get_network_peer_id(&foreign_network_name);
 
-    let buf_len = packet.buf_len();
+    let buf_len = packet.batch_buf_len();
+    let packet_count = packet.batch_len() as u64;
     let label_set =
         LabelSet::new().with_label_type(LabelType::NetworkName(foreign_network_name.clone()));
     let add_counter = move |bytes_metric, packets_metric| {
         stats_manager
             .get_counter(bytes_metric, label_set.clone())
             .add(buf_len as u64);
-        stats_manager.get_counter(packets_metric, label_set).inc();
+        stats_manager
+            .get_counter(packets_metric, label_set)
+            .add(packet_count);
     };
 
     // NOTICE: the to peer id is modified by the src from foreign network my peer id to the origin my peer id
@@ -3402,11 +3425,13 @@ pub(crate) async fn try_handle_foreign_network_packet(
         );
 
         // modify the to_peer id from foreign network my peer id to the origin my peer id
-        packet
-            .mut_peer_manager_header()
-            .unwrap()
-            .to_peer_id
-            .set(to_peer_id);
+        packet.for_each_packet_mut(|packet| {
+            packet
+                .mut_peer_manager_header()
+                .unwrap()
+                .to_peer_id
+                .set(to_peer_id);
+        });
 
         // packet is generated from foreign network mgr and should be forward to other peer
         if let Err(e) = peer_map
@@ -3524,7 +3549,8 @@ pub(crate) async fn send_msg_internal(
     let policy = get_next_hop_policy(msg.peer_manager_header().unwrap().is_latency_first());
     let is_latency_first = msg.peer_manager_header().unwrap().is_latency_first();
     let packet_type = msg.peer_manager_header().unwrap().packet_type;
-    let msg_len = msg.buf_len() as u64;
+    let msg_len = msg.batch_buf_len() as u64;
+    let packet_count = msg.batch_len() as u64;
     let latency_first_gateway = if is_latency_first {
         peers
             .get_gateway_peer_id(dst_peer_id, policy.clone())
@@ -3578,7 +3604,9 @@ pub(crate) async fn send_msg_internal(
     if send_result.is_ok()
         && let Some(metrics) = direct_tx_metrics
     {
-        metrics.record_tx(dst_peer_id, packet_type, msg_len).await;
+        metrics
+            .record_tx_batch(dst_peer_id, packet_type, msg_len, packet_count)
+            .await;
     }
 
     send_result

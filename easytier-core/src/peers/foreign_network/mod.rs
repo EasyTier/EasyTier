@@ -1321,7 +1321,8 @@ impl ForeignNetworkManager {
                 .peer_manager_header()
                 .map(|hdr| hdr.packet_type)
                 .unwrap_or(0);
-            let msg_len = msg.buf_len() as u64;
+            let msg_len = msg.batch_buf_len() as u64;
+            let packet_count = msg.batch_len() as u64;
             let send_result = entry
                 .peer_map
                 .send_msg(msg, dst_peer_id, NextHopPolicy::LeastHop)
@@ -1329,7 +1330,7 @@ impl ForeignNetworkManager {
             if send_result.is_ok() {
                 entry
                     .traffic_metrics
-                    .record_tx(dst_peer_id, packet_type, msg_len)
+                    .record_tx_batch(dst_peer_id, packet_type, msg_len, packet_count)
                     .await;
             }
             send_result
@@ -1458,8 +1459,9 @@ impl ForeignNetworkPacketRouter {
             counters,
         } = self;
 
-        while let Ok(mut zc_packet) = recv_packet_from_chan(&mut packet_recv).await {
-            let buf_len = zc_packet.buf_len();
+        while let Ok(zc_packet) = recv_packet_from_chan(&mut packet_recv).await {
+            let buf_len = zc_packet.batch_buf_len();
+            let packet_count = zc_packet.batch_len() as u64;
             let Some(hdr) = zc_packet.peer_manager_header() else {
                 tracing::warn!("invalid packet, skip");
                 continue;
@@ -1471,49 +1473,58 @@ impl ForeignNetworkPacketRouter {
             let to_peer_id = hdr.to_peer_id.get();
             let is_local_delivery = to_peer_id == my_node_id;
             let is_locally_originated = from_peer_id == my_node_id;
-            if is_local_delivery && !is_locally_originated {
-                traffic_metrics
-                    .record_rx(from_peer_id, packet_type, buf_len as u64)
-                    .await;
-            }
             if is_local_delivery {
                 if packet_type == PacketType::RelayHandshake as u8
                     || packet_type == PacketType::RelayHandshakeAck as u8
                 {
+                    if !is_locally_originated {
+                        traffic_metrics
+                            .record_rx(from_peer_id, packet_type, buf_len as u64)
+                            .await;
+                    }
                     let _ = relay_peer_map.handle_handshake_packet(zc_packet).await;
                     continue;
                 }
 
-                if relay_peer_map.is_secure_mode_enabled() && hdr.is_encrypted() {
-                    match relay_peer_map.decrypt_if_needed(&mut zc_packet).await {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            tracing::error!("secure session not found");
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::error!(?e, "secure decrypt failed");
-                            continue;
+                for mut zc_packet in zc_packet.into_batch() {
+                    let buf_len = zc_packet.buf_len();
+                    if !is_locally_originated {
+                        traffic_metrics
+                            .record_rx(from_peer_id, packet_type, buf_len as u64)
+                            .await;
+                    }
+                    let hdr = zc_packet.peer_manager_header().unwrap();
+                    if relay_peer_map.is_secure_mode_enabled() && hdr.is_encrypted() {
+                        match relay_peer_map.decrypt_if_needed(&mut zc_packet).await {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                tracing::error!("secure session not found");
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::error!(?e, "secure decrypt failed");
+                                continue;
+                            }
                         }
                     }
-                }
 
-                if packet_type == PacketType::TaRpc as u8
-                    || packet_type == PacketType::RpcReq as u8
-                    || packet_type == PacketType::RpcResp as u8
-                {
-                    counters.rx_bytes.add(buf_len as u64);
-                    counters.rx_packets.inc();
-                    rpc_sender.send(zc_packet).unwrap();
-                    continue;
+                    if packet_type == PacketType::TaRpc as u8
+                        || packet_type == PacketType::RpcReq as u8
+                        || packet_type == PacketType::RpcResp as u8
+                    {
+                        counters.rx_bytes.add(buf_len as u64);
+                        counters.rx_packets.inc();
+                        rpc_sender.send(zc_packet).unwrap();
+                        continue;
+                    }
+                    tracing::trace!(
+                        ?packet_type,
+                        ?len,
+                        ?from_peer_id,
+                        ?to_peer_id,
+                        "ignore packet in foreign network"
+                    );
                 }
-                tracing::trace!(
-                    ?packet_type,
-                    ?len,
-                    ?from_peer_id,
-                    ?to_peer_id,
-                    "ignore packet in foreign network"
-                );
             } else {
                 if is_relay_data_packet_type(packet_type) {
                     let disable_relay_data = parent_context.disable_relay_data();
@@ -1538,11 +1549,15 @@ impl ForeignNetworkPacketRouter {
                 match traffic_kind(packet_type) {
                     TrafficKind::Data => {
                         counters.forward_data_bytes.add(buf_len as u64);
-                        counters.forward_data_packets.inc();
+                        counters
+                            .forward_data_packets
+                            .add(zc_packet.batch_len() as u64);
                     }
                     TrafficKind::Control => {
                         counters.forward_control_bytes.add(buf_len as u64);
-                        counters.forward_control_packets.inc();
+                        counters
+                            .forward_control_packets
+                            .add(zc_packet.batch_len() as u64);
                     }
                 }
 
@@ -1563,7 +1578,12 @@ impl ForeignNetworkPacketRouter {
                                 );
                             } else if is_locally_originated {
                                 traffic_metrics
-                                    .record_tx(to_peer_id, packet_type, buf_len as u64)
+                                    .record_tx_batch(
+                                        to_peer_id,
+                                        packet_type,
+                                        buf_len as u64,
+                                        packet_count,
+                                    )
                                     .await;
                             }
                         } else if let Err(e) = peer_map.send_msg_directly(zc_packet, peer_id).await
@@ -1574,7 +1594,12 @@ impl ForeignNetworkPacketRouter {
                             );
                         } else if is_locally_originated {
                             traffic_metrics
-                                .record_tx(to_peer_id, packet_type, buf_len as u64)
+                                .record_tx_batch(
+                                    to_peer_id,
+                                    packet_type,
+                                    buf_len as u64,
+                                    packet_count,
+                                )
                                 .await;
                         }
                     }
@@ -1594,7 +1619,12 @@ impl ForeignNetworkPacketRouter {
                             tracing::error!("send packet to peer with pm failed: {:?}", e);
                         } else if is_locally_originated {
                             traffic_metrics
-                                .record_tx(to_peer_id, packet_type, buf_len as u64)
+                                .record_tx_batch(
+                                    to_peer_id,
+                                    packet_type,
+                                    buf_len as u64,
+                                    packet_count,
+                                )
                                 .await;
                         }
                     }

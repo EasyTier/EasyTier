@@ -372,7 +372,8 @@ impl PeerConn {
             (io.get_stream(), io.get_sink(), Box::new(io))
         } else {
             let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
-            let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
+            let mut mpsc_tunnel =
+                MpscTunnel::new_peer_conn(peer_conn_tunnel, Duration::from_secs(7));
             (
                 mpsc_tunnel.get_stream(),
                 mpsc_tunnel.get_sink(),

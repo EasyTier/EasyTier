@@ -565,9 +565,73 @@ pub struct ZCPacket {
     packet_type: ZCPacketType,
     /// Local scheduling metadata; never serialized into a tunnel packet.
     pub(crate) flow_key: Option<FlowKey>,
+    /// Remaining RPC fragments, kept together only until the connection writer.
+    /// Box the Vec header so ordinary packets only carry one extra pointer.
+    #[allow(clippy::box_collection)]
+    batch: Option<Box<Vec<ZCPacket>>>,
 }
 
 impl ZCPacket {
+    /// Keep a locally generated RPC in one queue entry without changing its wire format.
+    pub(crate) fn batch(mut packets: Vec<Self>) -> Self {
+        let mut first = packets.remove(0);
+        debug_assert!(first.batch.is_none());
+        if !packets.is_empty() {
+            debug_assert!(packets.iter().all(|packet| packet.batch.is_none()));
+            first.batch = Some(Box::new(packets));
+        }
+        first
+    }
+
+    pub(crate) fn into_batch(mut self) -> impl Iterator<Item = Self> {
+        let rest = self.batch.take().map(|rest| *rest).unwrap_or_default();
+        std::iter::once(self).chain(rest)
+    }
+
+    pub(crate) fn take_batch(&mut self) -> std::vec::IntoIter<Self> {
+        self.batch
+            .take()
+            .map(|rest| *rest)
+            .unwrap_or_default()
+            .into_iter()
+    }
+
+    pub(crate) fn batch_len(&self) -> usize {
+        1 + self.batch.as_ref().map_or(0, |rest| rest.len())
+    }
+
+    pub(crate) fn batch_buf_len(&self) -> usize {
+        self.buf_len()
+            + self
+                .batch
+                .as_ref()
+                .map_or(0, |rest| rest.iter().map(ZCPacket::buf_len).sum::<usize>())
+    }
+
+    pub(crate) fn for_each_packet_mut(&mut self, mut f: impl FnMut(&mut Self)) {
+        let mut rest = self.batch.take();
+        f(self);
+        if let Some(rest) = &mut rest {
+            for packet in rest.iter_mut() {
+                f(packet);
+            }
+        }
+        self.batch = rest;
+    }
+
+    pub(crate) fn try_for_each_packet_mut<E>(
+        &mut self,
+        mut f: impl FnMut(&mut Self) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut result = Ok(());
+        self.for_each_packet_mut(|packet| {
+            if result.is_ok() {
+                result = f(packet);
+            }
+        });
+        result
+    }
+
     fn bytes_from_offset(&self, offset: usize) -> Option<&[u8]> {
         self.inner.get(offset..)
     }
@@ -581,6 +645,7 @@ impl ZCPacket {
             inner: BytesMut::new(),
             packet_type: ZCPacketType::NIC,
             flow_key: None,
+            batch: None,
         }
     }
 
@@ -589,6 +654,7 @@ impl ZCPacket {
             inner: buf,
             packet_type,
             flow_key: None,
+            batch: None,
         }
     }
 
@@ -637,6 +703,13 @@ impl ZCPacket {
 
         ret.fill_peer_manager_hdr(0, 0, PacketType::ForeignNetworkPacket as u8);
         ret.flow_key = foreign_zc_packet.flow_key;
+        ret.batch = foreign_zc_packet.batch.as_ref().map(|rest| {
+            Box::new(
+                rest.iter()
+                    .map(|packet| Self::new_for_foreign_network(network_name, dst_peer_id, packet))
+                    .collect(),
+            )
+        });
 
         ret
     }
@@ -745,15 +818,17 @@ impl ZCPacket {
     }
 
     pub fn fill_peer_manager_hdr(&mut self, from_peer_id: u32, to_peer_id: u32, packet_type: u8) {
-        let payload_len = self.payload_len();
-        let hdr = self.mut_peer_manager_header().unwrap();
-        hdr.from_peer_id.set(from_peer_id);
-        hdr.to_peer_id.set(to_peer_id);
-        hdr.packet_type = packet_type;
-        hdr.flags = 0;
-        hdr.forward_counter = 1;
-        hdr.reserved = 0;
-        hdr.len.set(payload_len as u32);
+        self.for_each_packet_mut(|packet| {
+            let payload_len = packet.payload_len();
+            let hdr = packet.mut_peer_manager_header().unwrap();
+            hdr.from_peer_id.set(from_peer_id);
+            hdr.to_peer_id.set(to_peer_id);
+            hdr.packet_type = packet_type;
+            hdr.flags = 0;
+            hdr.forward_counter = 1;
+            hdr.reserved = 0;
+            hdr.len.set(payload_len as u32);
+        });
     }
 
     pub fn tunnel_payload(&self) -> &[u8] {
@@ -814,6 +889,7 @@ impl ZCPacket {
             buf.extend_from_slice(tunnel_payload);
             let mut packet = Self::new_from_buf(buf, target_packet_type);
             packet.flow_key = self.flow_key;
+            packet.batch = self.batch.take();
             return packet;
         }
 
@@ -823,6 +899,10 @@ impl ZCPacket {
     }
 
     pub fn into_bytes(self) -> Bytes {
+        debug_assert!(
+            self.batch.is_none(),
+            "expand RPC batch before serialization"
+        );
         self.inner.freeze()
     }
 
@@ -875,6 +955,7 @@ impl ZCPacket {
     }
 
     pub fn foreign_network_packet(mut self) -> Self {
+        let batch = self.batch.take();
         let hdr = self.foreign_network_hdr().unwrap();
         let foreign_hdr_len = hdr.get_header_len();
 
@@ -886,6 +967,14 @@ impl ZCPacket {
             ZCPacketType::DummyTunnel,
         );
         packet.flow_key = self.flow_key;
+        packet.batch = batch.map(|rest| {
+            Box::new(
+                (*rest)
+                    .into_iter()
+                    .map(Self::foreign_network_packet)
+                    .collect(),
+            )
+        });
         packet
     }
 
@@ -922,6 +1011,52 @@ mod tests {
             let bytes = self.bytes_from_offset(offset)?;
             TCPTunnelHeader::ref_from_prefix(bytes)
         }
+    }
+
+    #[cfg(feature = "aes-gcm")]
+    #[test]
+    fn rpc_batch_foreign_wrapping_preserves_each_wire_packet() {
+        let packets: Vec<_> = (0u32..207)
+            .map(|index| {
+                let mut packet = ZCPacket::new_with_payload(&index.to_le_bytes());
+                packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+                packet
+            })
+            .collect();
+        let expected: Vec<_> = packets
+            .iter()
+            .map(|packet| packet.tunnel_payload().to_vec())
+            .collect();
+        let mut batch = ZCPacket::batch(packets);
+        let encryptor = crate::tunnel::encrypt::create_encryptor("aes-gcm", [1; 16], [2; 32]);
+        batch
+            .try_for_each_packet_mut(|packet| encryptor.encrypt(packet))
+            .unwrap();
+        let mut wrapped = ZCPacket::new_for_foreign_network(&"foreign".to_owned(), 2, &batch);
+        wrapped.fill_peer_manager_hdr(10, 20, PacketType::ForeignNetworkPacket as u8);
+        assert_eq!(wrapped.batch_len(), 207);
+        for packet in wrapped.clone().into_batch() {
+            let header = packet.peer_manager_header().unwrap();
+            assert_eq!(header.from_peer_id.get(), 10);
+            assert_eq!(header.to_peer_id.get(), 20);
+            assert_eq!(
+                packet.foreign_network_inner_packet_type(),
+                Some(PacketType::RpcReq as u8)
+            );
+        }
+        let restored: Vec<_> = wrapped
+            .foreign_network_packet()
+            .into_batch()
+            .map(|mut packet| {
+                assert!(packet.peer_manager_header().unwrap().is_encrypted());
+                encryptor.decrypt(&mut packet).unwrap();
+                packet
+                    .convert_type(ZCPacketType::TCP)
+                    .tunnel_payload()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(restored, expected);
     }
 
     #[test]
