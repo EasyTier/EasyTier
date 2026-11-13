@@ -26,6 +26,14 @@ function normalizeRpcListenPort(port: unknown): number {
 onMounted(async () => {
   defaultConfigDir.value = await join(await appConfigDir(), 'config.d')
   defaultLogDir.value = await appLogDir()
+
+  // the mode watch may have run before these defaults resolved (e.g. when the
+  // dialog is opened with service mode preselected), leaving the fields empty.
+  if (model.value.mode === 'service') {
+    const serviceModel = model.value as ServiceMode
+    serviceModel.config_dir = serviceModel.config_dir || defaultConfigDir.value
+    serviceModel.file_log_dir = serviceModel.file_log_dir || defaultLogDir.value
+  }
 })
 
 const modeOptions = computed(() => [

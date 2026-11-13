@@ -1,15 +1,29 @@
+#[cfg(feature = "logging")]
+pub(crate) mod cli_event_logger;
+pub(crate) mod composition;
+pub(crate) mod config;
+#[cfg(feature = "management")]
+pub(crate) mod config_storage;
 pub mod dns_server;
-#[allow(clippy::module_inception)]
-pub mod instance;
+pub mod factory;
+pub mod host;
+mod runtime_executor;
+pub(crate) mod runtime_host;
+#[cfg(test)]
+pub(crate) mod test_instance;
+#[cfg(feature = "upnp")]
+pub(crate) mod udp_hole_punch;
 
-pub mod listeners;
+pub(crate) mod listeners;
 
-mod public_ipv6_provider;
+#[cfg(feature = "public-ipv6-provider")]
+pub(crate) mod public_ipv6_provider;
 
-pub mod proxy_cidrs_monitor;
+#[cfg(feature = "tun")]
+pub mod shared_virtual_nic;
 
 #[cfg(feature = "tun")]
 pub mod virtual_nic;
 
-#[cfg(any(windows, test))]
+#[cfg(any(all(windows, feature = "tun"), test))]
 pub(crate) mod windows_udp_broadcast;

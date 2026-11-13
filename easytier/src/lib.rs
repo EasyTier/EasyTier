@@ -1,51 +1,29 @@
-#![allow(dead_code)]
-
 use std::io;
 
 use clap::Command;
 use clap_complete::{Generator, Shell};
 
-// When the `hotpath` feature is off, alias the current crate as `hotpath` so
-// call sites keep using `hotpath::...` paths, and provide a local no-op shim
-// for the profiling macros. This keeps `hotpath` an optional dependency: the
-// profiler is absent from the dependency graph entirely in default builds.
-#[cfg(not(feature = "hotpath"))]
-extern crate self as hotpath;
-#[cfg(not(feature = "hotpath"))]
-mod hotpath_off;
-
-// When the `hotpath` feature is off, expose a local `instant` module backed by
-// `quanta::Instant` so call sites can uniformly write `use hotpath::instant::Instant;`
-// regardless of whether the feature is enabled. With the feature on, the real
-// `hotpath` crate provides the same path (also `quanta::Instant` on Linux), so
-// the two modes resolve to the identical type.
-#[cfg(not(feature = "hotpath"))]
-pub mod instant {
-    pub type Instant = quanta::Instant;
-}
-
-// Re-export `Instant` at the crate root so public APIs that expose it
-// (e.g. `Route::get_peer_info_last_update_time`) reference a deliberate
-// public type rather than leaking an inaccessible one.
-pub use hotpath::instant::Instant;
-
 mod arch;
 mod gateway;
+mod host_runtime;
 pub mod instance;
-mod peer_center;
 mod vpn_portal;
 
 pub mod common;
-pub mod connector;
+#[cfg(feature = "management")]
 pub mod core;
-pub mod instance_manager;
-pub mod launcher;
-pub mod peers;
+#[cfg(feature = "upnp")]
+pub(crate) mod igd_next;
 pub mod proto;
+#[cfg(feature = "management-rpc")]
 pub mod rpc_service;
+#[cfg(feature = "management")]
 pub mod service_manager;
+pub(crate) mod socket;
+pub mod socket_protector;
 pub mod tunnel;
 pub mod utils;
+#[cfg(feature = "web-client")]
 pub mod web_client;
 
 #[cfg(test)]

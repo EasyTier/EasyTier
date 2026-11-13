@@ -1,24 +1,30 @@
 import { IPv4, IPv6 } from 'ip-num/IPNumber'
 import { Ipv4Addr, Ipv4Inet, Ipv6Addr } from '../types/network'
 
-export function ipv4ToString(ip: Ipv4Addr) {
-    return IPv4.fromNumber(ip.addr).toString()
+export function ipv4ToString(ip: Ipv4Addr | null | undefined) {
+    if (!ip) {
+        return ''
+    }
+    return IPv4.fromNumber(ip.addr ?? 0).toString()
 }
 
 export function ipv4InetToString(ip: Ipv4Inet | undefined) {
     if (ip?.address === undefined) {
         return 'undefined'
     }
-    return `${ipv4ToString(ip.address)}/${ip.network_length}`
+    return `${ipv4ToString(ip.address)}/${ip.network_length ?? 0}`
 }
 
-export function ipv6ToString(ip: Ipv6Addr) {
+export function ipv6ToString(ip: Ipv6Addr | null | undefined) {
+    if (!ip) {
+        return ''
+    }
     return IPv6.fromBigInt(
-        (BigInt(ip.part1) << BigInt(96))
-        + (BigInt(ip.part2) << BigInt(64))
-        + (BigInt(ip.part3) << BigInt(32))
-        + BigInt(ip.part4),
-    )
+        (BigInt(ip.part1 ?? 0) << BigInt(96))
+        + (BigInt(ip.part2 ?? 0) << BigInt(64))
+        + (BigInt(ip.part3 ?? 0) << BigInt(32))
+        + BigInt(ip.part4 ?? 0),
+    ).toString()
 }
 
 function toHexString(uint64: bigint, padding = 9): string {
@@ -43,14 +49,31 @@ function uint32ToUuid(part1: number, part2: number, part3: number, part4: number
 }
 
 export interface UUID {
-    part1: number;
-    part2: number;
-    part3: number;
-    part4: number;
+    part1?: number;
+    part2?: number;
+    part3?: number;
+    part4?: number;
 }
 
-export function UuidToStr(uuid: UUID): string {
-    return uint32ToUuid(uuid.part1, uuid.part2, uuid.part3, uuid.part4);
+export function UuidToStr(uuid: UUID | null | undefined): string {
+    if (!uuid) {
+        return '';
+    }
+    return uint32ToUuid(uuid.part1 ?? 0, uuid.part2 ?? 0, uuid.part3 ?? 0, uuid.part4 ?? 0);
+}
+
+export function StrToUuid(uuid: string): UUID {
+    const hex = uuid.replace(/-/g, '');
+    if (!/^[0-9a-fA-F]{32}$/.test(hex)) {
+        throw new Error(`Invalid UUID: ${uuid}`);
+    }
+
+    return {
+        part1: Number.parseInt(hex.slice(0, 8), 16),
+        part2: Number.parseInt(hex.slice(8, 16), 16),
+        part3: Number.parseInt(hex.slice(16, 24), 16),
+        part4: Number.parseInt(hex.slice(24, 32), 16),
+    };
 }
 
 export interface Location {
@@ -59,8 +82,15 @@ export interface Location {
     region: string | undefined;
 }
 
+export interface DeviceNetwork {
+    network_id: string;
+    display_name: string;
+    network_name: string;
+}
+
 export interface DeviceInfo {
     hostname: string;
+    alias?: string;
     remark?: string;
     public_ip: string;
     running_network_count: number;
@@ -69,7 +99,9 @@ export interface DeviceInfo {
     running_network_instances?: Array<string>;
     machine_id: string;
     location: Location | undefined;
-    online: boolean;
+    networks?: Array<DeviceNetwork>;
+    online?: boolean;
+    last_seen?: string;
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
@@ -78,6 +110,7 @@ export function buildDeviceInfo(device: any): DeviceInfo {
     const runningNetworkInstances = (info?.running_network_instances ?? []).map((instance: any) => UuidToStr(instance));
     let dev_info: DeviceInfo = {
         hostname: info?.hostname ?? device.hostname ?? machineId,
+        alias: device.alias || undefined,
         remark: device.remark ?? undefined,
         public_ip: device.client_url ?? '',
         running_network_instances: runningNetworkInstances,
@@ -86,7 +119,9 @@ export function buildDeviceInfo(device: any): DeviceInfo {
         easytier_version: info?.easytier_version ?? device.easytier_version ?? '',
         machine_id: machineId,
         location: device.location,
+        networks: device.networks ?? [],
         online: device.online ?? !!info,
+        last_seen: device.last_seen,
     };
 
     return dev_info;

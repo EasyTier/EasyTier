@@ -9,6 +9,14 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
 
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C",
+    "opt-level=z",
+    "--cfg",
+    'getrandom_backend="wasm_js"',
+]
+
 # region
 
 # region CI
@@ -35,6 +43,9 @@ rustflags = ["-C", "target-feature=+crt-static"]
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.loongarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.powerpc64le-unknown-linux-musl]
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.mipsel-unknown-linux-musl]

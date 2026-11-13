@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "wasi-relay",
+  "main": "example/worker.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": true
+    }
+  ],
+  "vars": {
+    "EASYTIER_OBJECT_NAME": "primary",
+    "EASYTIER_NETWORK_NAME": "cf-wasi",
+    "EASYTIER_NETWORK_SECRET": "cf-wasi-test",
+    "EASYTIER_ENABLE_ENCRYPTION": "false"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EASYTIER_CORE",
+        "class_name": "EasyTierCoreObject"
+      }
+    ]
+  },
+  "exports": {
+    "EasyTierCoreObject": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

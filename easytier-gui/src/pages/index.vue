@@ -3,20 +3,35 @@
 import { type } from '@tauri-apps/plugin-os'
 
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { open } from '@tauri-apps/plugin-shell'
 import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
 import { useTray } from '~/composables/tray'
-import { initMobileVpnService } from '~/composables/mobile_vpn'
+import {
+  consumePendingMobileVpnTileAction,
+  initMobileVpnService,
+  setMobileVpnTileActionHandler,
+  setMobileVpnErrorHandler,
+  syncMobileVpnService,
+} from '~/composables/mobile_vpn'
+import { executeVpnTileAction } from '~/composables/mobile_vpn_tile'
+import { bootstrapAndroidManagement } from '~/composables/android_management'
 import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
-import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
+import {
+  saveLastNetworkInstanceId,
+  loadLastNetworkInstanceId,
+  loadVpnTileStoppedInstanceIds,
+  saveVpnTileStoppedInstanceIds,
+} from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus, getManagementStatus } from '~/composables/backend'
+import { managementWarningDetails, type OperationOutcome } from '~/composables/management_status'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
@@ -26,12 +41,23 @@ const currentMode = ref<Mode>({ mode: 'normal' })
 const editingMode = ref<Mode>({ mode: 'normal' })
 const isModeSaving = ref(false)
 const manualDisconnect = ref(false)
+const managementReady = ref(type() !== 'android')
 
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
 
+const showAutostartHint = ref(false)
+
 async function openModeDialog() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  editingMode.value = JSON.parse(JSON.stringify(currentMode.value))
+  showAutostartHint.value = false
+  modeDialogVisible.value = true
+}
+
+async function openAutostartDialog() {
+  editingMode.value = JSON.parse(JSON.stringify(currentMode.value))
+  editingMode.value.mode = 'service'
+  showAutostartHint.value = true
   modeDialogVisible.value = true
 }
 
@@ -203,7 +229,15 @@ async function initWithMode(mode: Mode) {
     initWebClient(mode.config_server_url)
   }
   currentMode.value = mode
-  saveMode(mode)
+  try {
+    await saveMode(mode)
+  } catch (error) {
+    if (type() !== 'android') {
+      throw error
+    }
+    // The mode is already applied; a preference write must not abort VPN setup.
+    reportManagementWarning({ runtime_applied: true, persistence_warning: String(error) })
+  }
   clientRunning.value = await isClientRunning()
 }
 
@@ -211,17 +245,42 @@ onMounted(async () => {
   const cleanupFns: Array<() => void> = []
 
   if (type() === 'android') {
+    setMobileVpnErrorHandler(error => toast.add({ severity: 'error', summary: t('error'), detail: error, life: 10000 }))
+    cleanupFns.push(() => setMobileVpnErrorHandler())
+    try {
+      await bootstrapAndroidManagement()
+      managementReady.value = true
+    } catch (error) {
+      toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 10000 })
+      return
+    }
     try {
       await initMobileVpnService()
-      console.error("easytier init vpn service done")
     } catch (e: any) {
       console.error("easytier init vpn service failed", e)
     }
   }
 
   cleanupFns.push(await listenGlobalEvents())
+  cleanupFns.push(await listen<OperationOutcome>('management_warning', event => reportManagementWarning(event.payload)))
   currentMode.value = loadMode()
-  await initWithMode(currentMode.value);
+  try {
+    await initWithMode(currentMode.value);
+  } catch (error) {
+    toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 10000 })
+    return
+  }
+
+  if (type() === 'android') {
+    setMobileVpnTileActionHandler(handleMobileVpnTileAction)
+    cleanupFns.push(() => setMobileVpnTileActionHandler())
+    try {
+      await consumePendingMobileVpnTileAction()
+      await syncMobileVpnService()
+    } catch (e: any) {
+      console.error("easytier sync vpn service failed", e)
+    }
+  }
 
   onUnmounted(() => {
     cleanupFns.forEach(unlisten => unlisten())
@@ -230,18 +289,69 @@ onMounted(async () => {
 
 useTray(true)
 let toast = useToast();
+let lastManagementWarning = ''
+function reportManagementWarning(outcome: OperationOutcome) {
+  const detail = managementWarningDetails(outcome, key => t(key))
+  if (detail && detail !== lastManagementWarning) {
+    toast.add({ severity: 'warn', summary: t('management_warning'), detail, life: 10000 })
+  }
+  lastManagementWarning = detail
+}
 
 const remoteClient = computed(() => new GUIRemoteClient());
 const instanceId = ref<string | undefined>(undefined);
 const clientRunning = ref(false);
 
-watch(instanceId, (newVal) => {
+async function handleMobileVpnTileAction(action: 'start' | 'stop') {
+  try {
+    const result = await executeVpnTileAction(action, remoteClient.value, {
+      lastInstanceId: loadLastNetworkInstanceId(),
+      stoppedInstanceIds: loadVpnTileStoppedInstanceIds(),
+      saveStoppedInstanceIds: saveVpnTileStoppedInstanceIds,
+      syncVpnService: syncMobileVpnService,
+    })
+
+    if (!result.instanceId) {
+      toast.add({
+        severity: 'warn',
+        summary: t('vpn_tile_no_network'),
+        detail: t('vpn_tile_no_network_description'),
+        life: 5000,
+      })
+      return
+    }
+
+    instanceId.value = result.instanceId
+    await saveLastNetworkInstanceId(result.instanceId)
+    toast.add({
+      severity: action === 'start' ? 'success' : 'secondary',
+      summary: t(action === 'start' ? 'vpn_tile_started' : 'vpn_tile_stopped'),
+      life: 3000,
+    })
+  }
+  catch (error) {
+    console.error('VPN tile action failed', action, error)
+    toast.add({
+      severity: 'error',
+      summary: t('error'),
+      detail: t('vpn_tile_action_failed', { error: String(error) }),
+      life: 8000,
+    })
+  }
+}
+
+watch(instanceId, async (newVal) => {
   if (newVal) {
-    saveLastNetworkInstanceId(newVal);
+    try {
+      await saveLastNetworkInstanceId(newVal);
+    } catch (error) {
+      toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 8000 })
+    }
   }
 });
 
 watch(clientRunning, async (newVal, oldVal) => {
+  if (!managementReady.value) return
   if (!newVal && oldVal) {
     if (manualDisconnect.value) {
       manualDisconnect.value = false
@@ -257,10 +367,18 @@ watch(clientRunning, async (newVal, oldVal) => {
 })
 
 onMounted(async () => {
-  clientRunning.value = await isClientRunning().catch(() => false)
+  if (managementReady.value) {
+    clientRunning.value = await isClientRunning().catch(() => false)
+  }
   const timer = setInterval(async () => {
+    if (!managementReady.value) return
     try {
       clientRunning.value = await isClientRunning()
+      if (clientRunning.value) {
+        // Recover warnings even if a lifecycle event was missed during UI attachment.
+        const status = await getManagementStatus().catch(() => undefined)
+        if (status) reportManagementWarning(status.last_outcome)
+      }
     } catch (e) {
       clientRunning.value = false
       console.error("Error checking client running status", e)
@@ -272,16 +390,13 @@ onMounted(async () => {
   })
 })
 async function reconnectClient() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()));
+  editingMode.value = JSON.parse(JSON.stringify(currentMode.value));
   await onModeSave()
 }
 
 onMounted(async () => {
   window.setTimeout(async () => {
-    await setTrayMenu([
-      await MenuItemShow(t('tray.show')),
-      await MenuItemExit(t('tray.exit')),
-    ])
+    await setTrayMenu({ show: t('tray.show'), quit: t('tray.exit') })
   }, 1000)
 })
 
@@ -336,16 +451,19 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     icon: 'pi pi-language',
     command: async () => {
       await I18nUtils.loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
-      await setTrayMenu([
-        await MenuItemShow(t('tray.show')),
-        await MenuItemExit(t('tray.exit')),
-      ])
+      await setTrayMenu({ show: t('tray.show'), quit: t('tray.exit') })
     },
   },
   {
     label: () => `${t('mode.switch_mode')}: ${t('mode.' + currentMode.value.mode)}`,
     icon: 'pi pi-sync',
     command: openModeDialog,
+    visible: () => type() !== 'android',
+  },
+  {
+    label: () => t('mode.autostart'),
+    icon: 'pi pi-clock',
+    command: openAutostartDialog,
     visible: () => type() !== 'android',
   },
   {
@@ -382,7 +500,7 @@ async function connectRpcClient(isNormalMode: boolean, url?: string) {
 }
 
 async function openConfigServerDialog() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  editingMode.value = JSON.parse(JSON.stringify(currentMode.value))
   configServerDialogVisible.value = true
 }
 async function onConfigServerSave() {
@@ -445,6 +563,9 @@ const configServerConnectionStatus = computed(() => {
       <About />
     </Dialog>
     <Dialog v-model:visible="modeDialogVisible" modal :header="t('mode.switch_mode')" :style="{ width: '50vw' }">
+      <Message v-if="showAutostartHint" severity="info" :closable="false" class="mb-4">
+        {{ t('mode.autostart_hint') }}
+      </Message>
       <ModeSwitcher v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
       <template #footer>
         <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="modeDialogVisible = false" text />

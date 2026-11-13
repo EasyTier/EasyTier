@@ -1,0 +1,259 @@
+mod flags;
+mod rpc;
+
+use crate::rpc::ServiceGenerator;
+use std::{env, path::PathBuf};
+
+#[cfg(target_os = "windows")]
+use std::io::Cursor;
+#[cfg(target_os = "windows")]
+use std::path::Path;
+
+#[cfg(target_os = "windows")]
+fn check_protoc_exist() -> Option<PathBuf> {
+    let path = env::var_os("PROTOC").map(PathBuf::from);
+    if path.is_some() && path.as_ref().unwrap().exists() {
+        return path;
+    }
+
+    let path = env::var_os("PATH").unwrap_or_default();
+    for p in env::split_paths(&path) {
+        let p = p.join("protoc.exe");
+        if p.exists() && p.is_file() {
+            return Some(p);
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn get_cargo_target_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    let profile = env::var("PROFILE")?;
+    let mut target_dir = None;
+    let mut sub_path = out_dir.as_path();
+    while let Some(parent) = sub_path.parent() {
+        if parent.ends_with(&profile) {
+            target_dir = Some(parent);
+            break;
+        }
+        sub_path = parent;
+    }
+    let target_dir = target_dir.ok_or("not found")?;
+    Ok(target_dir.to_path_buf())
+}
+
+#[cfg(target_os = "windows")]
+fn download_protoc() -> PathBuf {
+    let out_dir = get_cargo_target_dir().unwrap().join("protobuf");
+    let fname = out_dir.join("bin/protoc.exe");
+    if fname.exists() {
+        println!("cargo:info=use existing protoc: {:?}", fname);
+        return fname;
+    }
+
+    println!("cargo:info=need download protoc, please wait...");
+
+    let url = "https://github.com/protocolbuffers/protobuf/releases/download/v26.0-rc1/protoc-26.0-rc-1-win64.zip";
+    let response = reqwest::blocking::get(url).unwrap();
+    println!("{:?}", response);
+    let mut content = response
+        .bytes()
+        .map(|v| v.to_vec())
+        .map(Cursor::new)
+        .map(zip::ZipArchive::new)
+        .unwrap()
+        .unwrap();
+    content.extract(out_dir).unwrap();
+
+    fname
+}
+
+/// Locate the well-known types include directory (containing
+/// `google/protobuf/descriptor.proto`) that ships with a protoc release
+/// next to the binary: `bin/protoc.exe` -> sibling `include/` directory.
+#[cfg(target_os = "windows")]
+fn bundled_protoc_include(protoc: &Path) -> Option<PathBuf> {
+    let include = protoc.parent()?.parent()?.join("include");
+    include
+        .join("google/protobuf/descriptor.proto")
+        .is_file()
+        .then_some(include)
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_protoc_for_windows() {
+    // Preserve an explicit include directory even when protoc is found on PATH
+    // or downloaded. Only infer the bundled directory when it is not configured.
+    let protoc_include = env::var_os("PROTOC_INCLUDE").map(PathBuf::from);
+    if env::var_os("PROTOC").is_some() && protoc_include.is_some() {
+        return;
+    }
+
+    if let Some(path) = check_protoc_exist() {
+        if let Some(include) = protoc_include
+            .clone()
+            .or_else(|| bundled_protoc_include(&path))
+        {
+            println!("cargo:info=use os existing protoc: {:?}", path);
+            unsafe {
+                env::set_var("PROTOC", path);
+                env::set_var("PROTOC_INCLUDE", include);
+            }
+            return;
+        }
+        println!(
+            "cargo:info=protoc {:?} has no bundled include dir, falling back to download",
+            path
+        );
+    }
+
+    let protoc_path = download_protoc();
+    let include = protoc_include
+        .or_else(|| bundled_protoc_include(&protoc_path))
+        .expect("downloaded protoc zip should contain include dir");
+    unsafe {
+        env::set_var("PROTOC", protoc_path);
+        env::set_var("PROTOC_INCLUDE", include);
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    ensure_protoc_for_windows();
+
+    let proto_files_reflect = ["proto/peer_rpc.proto", "proto/common.proto"];
+
+    let proto_files = [
+        "proto/core_peer.proto",
+        "proto/core_config.proto",
+        "proto/error.proto",
+        "proto/tests.proto",
+        "proto/api_instance.proto",
+        "proto/api_logger.proto",
+        "proto/api_config.proto",
+        "proto/api_manage.proto",
+        "proto/web.proto",
+        "proto/magic_dns.proto",
+        "proto/acl.proto",
+    ];
+
+    for proto_file in proto_files.iter().chain(proto_files_reflect.iter()) {
+        println!("cargo:rerun-if-changed={proto_file}");
+    }
+
+    let out = PathBuf::from(env::var("OUT_DIR")?);
+
+    let mut config = prost_build::Config::new();
+    if env::var_os("CARGO_FEATURE_JSON_RPC").is_some() {
+        config
+            .extern_path(".google.protobuf.Any", "::prost_wkt_types::Any")
+            .extern_path(".google.protobuf.Timestamp", "::prost_wkt_types::Timestamp")
+            .extern_path(".google.protobuf.Value", "::prost_wkt_types::Value");
+    } else {
+        config
+            .extern_path(".google.protobuf.Any", "::prost_types::Any")
+            .extern_path(".google.protobuf.Timestamp", "::prost_types::Timestamp")
+            .extern_path(".google.protobuf.Value", "::prost_types::Value");
+    }
+    config
+        .file_descriptor_set_path(out.join("descriptors.bin"))
+        .service_generator(Box::new(ServiceGenerator::default()))
+        .btree_map(["."])
+        .skip_debug([
+            ".common.Ipv4Addr",
+            ".common.Ipv6Addr",
+            ".common.UUID",
+            ".api.manage.ManagedCredentialConfig",
+            ".api.manage.VpnPortalConfig",
+        ])
+        .type_attribute(
+            ".common.CompressionAlgoPb",
+            "#[derive(strum::EnumString, strum::Display)]",
+        )
+        .type_attribute(
+            ".common.CompressionAlgoPb",
+            "#[strum(ascii_case_insensitive)]",
+        )
+        .field_attribute(".common.CompressionAlgoPb.Invalid", "#[strum(disabled)]");
+
+    let repeated_types = [
+        ".common.RepeatedString",
+        ".core_config.RepeatedDnsZoneConfigRaw",
+        ".core_config.RepeatedDnsRecordRaw",
+    ];
+    for ty in repeated_types {
+        config
+            .type_attribute(ty, "#[derive(serde::Serialize, serde::Deserialize)]")
+            .type_attribute(ty, "#[serde(transparent)]");
+    }
+
+    let mut descriptor_set = config.load_fds(&proto_files, &["proto/"])?;
+    // What protoc wrote (this set carries every file, imports included), read
+    // before anything else may touch it: the annotations are extension fields,
+    // which a prost-types round-trip drops.
+    let annotated = std::fs::read(out.join("descriptors.bin"))?;
+
+    {
+        let common = descriptor_set
+            .file
+            .iter_mut()
+            .find(|file| file.package.as_deref() == Some("common"))
+            .unwrap();
+        let flags = common
+            .message_type
+            .iter()
+            .find(|message| message.name.as_deref() == Some("Flags"))
+            .unwrap();
+        config
+            .type_attribute(".common.Flags", "#[optionize::optionized]")
+            .type_attribute(".common.Flags", "#[optionize(object = FlagsPatch)]");
+
+        let flattened = flags
+            .field
+            .iter()
+            .filter(|field| field.proto3_optional())
+            .map(|field| field.name().to_owned());
+        for name in flattened {
+            config.field_attribute(format!(".common.Flags.{name}"), "#[optionize(flatten)]");
+        }
+
+        let mut patch = flags.clone();
+        patch.name = Some("FlagsPatch".to_owned());
+        // Proto3 spells `optional` as one synthetic one-of per field.
+        let oneofs = patch
+            .field
+            .iter()
+            .map(|field| prost_types::OneofDescriptorProto {
+                name: Some(format!("_{}", field.name())),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        patch.oneof_decl = oneofs;
+        for (index, field) in patch.field.iter_mut().enumerate() {
+            field.proto3_optional = Some(true);
+            field.label = Some(prost_types::field_descriptor_proto::Label::Optional as i32);
+            field.oneof_index = Some(index as i32);
+        }
+        common.message_type.push(patch);
+
+        config.disable_comments([".common.FlagsPatch"]);
+    }
+
+    let descriptors = prost::Message::encode_to_vec(&descriptor_set);
+
+    config.file_descriptor_set_path(out.join("file_descriptor_set.bin"));
+    config.compile_protos(&proto_files_reflect, &["proto/"])?;
+    config.compile_fds(descriptor_set)?;
+    flags::write(&annotated, &out)?;
+
+    pbjson_build::Builder::new()
+        .register_descriptors(&descriptors)?
+        .preserve_proto_field_names()
+        .exclude(repeated_types)
+        .btree_map(["."])
+        .build(&["."])?;
+
+    Ok(())
+}

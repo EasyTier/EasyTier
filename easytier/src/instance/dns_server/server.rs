@@ -1,23 +1,26 @@
 use anyhow::{Context, Result};
-use hickory_proto::op::Edns;
 use hickory_proto::rr;
-use hickory_proto::rr::LowerName;
+use hickory_proto::rr::{LowerName, RecordType};
 use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_server::ServerFuture;
-use hickory_server::authority::{AuthorityObject, Catalog, ZoneType};
-use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::authority::{
+    AuthLookup, Authority, Catalog, LookupControlFlow, LookupOptions, LookupRecords,
+    MessageRequest, UpdateResult, ZoneType,
+};
+use hickory_server::server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo};
 use hickory_server::store::forwarder::ForwardConfig;
 use hickory_server::store::{forwarder::ForwardAuthority, in_memory::InMemoryAuthority};
-use std::io;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tokio::task::JoinSet;
+use tokio::sync::RwLock;
+#[cfg(test)]
+use tokio::sync::RwLockReadGuard;
 
 use crate::common::dns::get_default_resolver_config;
 
@@ -26,10 +29,134 @@ use super::config::{GeneralConfig, Record, RunConfig};
 pub struct Server {
     server: ServerFuture<CatalogRequestHandler>,
     catalog: Arc<RwLock<Catalog>>,
+    local_zones: LocalZones,
     general_config: GeneralConfig,
     udp_local_addr: Option<SocketAddr>,
-    tcp_local_addr: Option<SocketAddr>,
-    tasks: JoinSet<()>,
+}
+
+type LocalZones = Arc<RwLock<BTreeMap<LowerName, Arc<InMemoryAuthority>>>>;
+
+struct LocalAuthority {
+    inner: Arc<InMemoryAuthority>,
+    zones: LocalZones,
+}
+
+#[async_trait::async_trait]
+impl Authority for LocalAuthority {
+    type Lookup = AuthLookup;
+
+    fn zone_type(&self) -> ZoneType {
+        self.inner.zone_type()
+    }
+
+    fn is_axfr_allowed(&self) -> bool {
+        self.inner.is_axfr_allowed()
+    }
+
+    async fn update(&self, update: &MessageRequest) -> UpdateResult<bool> {
+        self.inner.update(update).await
+    }
+
+    fn origin(&self) -> &LowerName {
+        self.inner.origin()
+    }
+
+    async fn lookup(
+        &self,
+        name: &LowerName,
+        record_type: RecordType,
+        options: LookupOptions,
+    ) -> LookupControlFlow<Self::Lookup> {
+        let result = self.inner.lookup(name, record_type, options).await;
+        if !matches!(record_type, RecordType::A | RecordType::AAAA) {
+            return result;
+        }
+        let LookupControlFlow::Continue(Ok(AuthLookup::Records {
+            answers: LookupRecords::Records { records, .. },
+            ..
+        })) = &result
+        else {
+            return result;
+        };
+        if records.record_type() != RecordType::CNAME {
+            return result;
+        }
+
+        // Hickory puts CNAME targets in ADDITIONAL. Follow only the actual
+        // address chain, selecting the most specific local zone at each hop.
+        let zones = self.zones.read().await;
+        let mut records = records.clone();
+        let mut chain = Vec::new();
+        let mut visited = HashSet::from([name.clone()]);
+        loop {
+            let Some(target) = records
+                .records_without_rrsigs()
+                .next()
+                .and_then(|record| record.data().as_cname())
+                .map(|cname| LowerName::from(&cname.0))
+            else {
+                return result;
+            };
+            if !visited.insert(target.clone()) {
+                return result;
+            }
+            chain.push(records);
+
+            let mut origin = target.clone();
+            let authority = loop {
+                if let Some(authority) = zones.get(&origin) {
+                    break authority;
+                }
+                if origin.is_root() {
+                    return result;
+                }
+                origin = origin.base_name();
+            };
+            let LookupControlFlow::Continue(Ok(AuthLookup::Records {
+                answers:
+                    LookupRecords::Records {
+                        records: answer, ..
+                    },
+                ..
+            })) = authority.lookup(&target, record_type, options).await
+            else {
+                // Preserve the original partial answer for unresolved chains.
+                return result;
+            };
+            records = answer;
+            if records.record_type() == record_type {
+                chain.push(records);
+                return LookupControlFlow::Continue(Ok(AuthLookup::answers(
+                    LookupRecords::many(options, chain),
+                    None,
+                )));
+            }
+            if records.record_type() != RecordType::CNAME {
+                return result;
+            }
+        }
+    }
+
+    async fn search(
+        &self,
+        request: RequestInfo<'_>,
+        options: LookupOptions,
+    ) -> LookupControlFlow<Self::Lookup> {
+        let query = request.query;
+        if matches!(query.query_type(), RecordType::A | RecordType::AAAA) {
+            self.lookup(query.name(), query.query_type(), options).await
+        } else {
+            self.inner.search(request, options).await
+        }
+    }
+
+    async fn get_nsec_records(
+        &self,
+        name: &LowerName,
+        options: LookupOptions,
+    ) -> LookupControlFlow<Self::Lookup> {
+        self.inner.get_nsec_records(name, options).await
+    }
 }
 
 struct CatalogRequestHandler {
@@ -57,16 +184,29 @@ impl RequestHandler for CatalogRequestHandler {
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
-        self.catalog
-            .read()
-            .await
-            .handle_request(request, response_handle)
-            .await
+        handle_request(&self.catalog, request, response_handle).await
     }
 }
 
-pub fn build_authority(domain: &str, records: &[Record]) -> Result<InMemoryAuthority> {
-    let zone = rr::Name::from_str(domain)?;
+async fn handle_request<R: ResponseHandler>(
+    catalog: &RwLock<Catalog>,
+    request: &Request,
+    response_handle: R,
+) -> ResponseInfo {
+    let mut selected = Catalog::new();
+    if let Ok(info) = request.request_info() {
+        let name = info.query.name();
+        if let Some(authorities) = catalog.read().await.find(name).cloned() {
+            selected.upsert(name.clone(), authorities);
+        }
+    }
+    // Only authority selection needs the shared index. Upstream I/O must not
+    // hold its lock or delay publication of a new batch.
+    selected.handle_request(request, response_handle).await
+}
+
+pub fn build_authority(origin: &rr::LowerName, records: &[Record]) -> Result<InMemoryAuthority> {
+    let zone = rr::Name::from(origin);
     let mut authority = InMemoryAuthority::empty(zone, ZoneType::Primary, false);
     for record in records.iter() {
         let r = record.try_into()?;
@@ -82,10 +222,22 @@ impl Server {
 
     fn try_new(config: RunConfig) -> Result<Self> {
         let mut catalog = Catalog::new();
+        let mut authorities = BTreeMap::new();
         for (domain, records) in config.zones().iter() {
             let zone = rr::Name::from_str(domain.as_str())?;
-            let authroty = build_authority(domain, records)?;
-            catalog.upsert(zone.clone().into(), vec![Arc::new(authroty)]);
+            let lower = zone.clone().into();
+            let authority = Arc::new(build_authority(&lower, records)?);
+            authorities.insert(lower, authority);
+        }
+        let local_zones = Arc::new(RwLock::new(authorities.clone()));
+        for (origin, inner) in authorities {
+            catalog.upsert(
+                origin,
+                vec![Arc::new(LocalAuthority {
+                    inner,
+                    zones: local_zones.clone(),
+                })],
+            );
         }
 
         // use forwarder authority for the root zone
@@ -122,19 +274,15 @@ impl Server {
         Ok(Self {
             server,
             catalog,
+            local_zones,
             general_config: config.general().clone(),
             udp_local_addr: None,
-            tcp_local_addr: None,
-            tasks: JoinSet::new(),
         })
     }
 
+    #[cfg(test)]
     pub fn udp_local_addr(&self) -> Option<SocketAddr> {
         self.udp_local_addr
-    }
-
-    pub fn tcp_local_addr(&self) -> Option<SocketAddr> {
-        self.tcp_local_addr
     }
 
     pub async fn register_udp_socket(&mut self, address: String) -> Result<SocketAddr> {
@@ -185,7 +333,6 @@ impl Server {
             let tcp_listener = TcpListener::bind(address.clone())
                 .await
                 .with_context(|| format!("DNS Server failed to bind TCP address {}", address))?;
-            self.tcp_local_addr = Some(tcp_listener.local_addr()?);
             self.server
                 .register_listener(tcp_listener, Duration::from_secs(5));
         }
@@ -198,60 +345,57 @@ impl Server {
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn shutdown(&mut self) -> Result<()> {
         self.server.shutdown_gracefully().await?;
         Ok(())
     }
 
-    pub async fn upsert(&self, name: LowerName, authority: Arc<dyn AuthorityObject>) {
-        self.catalog.write().await.upsert(name, vec![authority]);
+    pub async fn local_origins(&self) -> BTreeSet<LowerName> {
+        self.local_zones.read().await.keys().cloned().collect()
     }
 
-    pub async fn remove(&self, name: &LowerName) -> Option<Vec<Arc<dyn AuthorityObject>>> {
-        self.catalog.write().await.remove(name)
-    }
-
-    pub async fn update<R: ResponseHandler>(
+    /// Publishes a complete batch under the same Catalog write lock used by
+    /// authority selection. Keep the local CNAME lookup index in the same batch.
+    pub async fn replace_zones(
         &self,
-        update: &Request,
-        response_edns: Option<Edns>,
-        response_handle: R,
-    ) -> io::Result<ResponseInfo> {
-        self.catalog
-            .write()
-            .await
-            .update(update, response_edns, response_handle)
-            .await
+        replacements: BTreeMap<LowerName, Arc<InMemoryAuthority>>,
+        removals: BTreeSet<LowerName>,
+    ) {
+        let mut catalog = self.catalog.write().await;
+        let mut local_zones = self.local_zones.write().await;
+        for name in removals {
+            catalog.remove(&name);
+            local_zones.remove(&name);
+        }
+        for (name, authority) in replacements {
+            local_zones.insert(name.clone(), authority.clone());
+            catalog.upsert(
+                name,
+                vec![Arc::new(LocalAuthority {
+                    inner: authority,
+                    zones: self.local_zones.clone(),
+                })],
+            );
+        }
     }
 
-    pub async fn contains(&self, name: &LowerName) -> bool {
-        self.catalog.read().await.contains(name)
-    }
-
-    pub async fn lookup<R: ResponseHandler>(
+    pub async fn handle_request<R: ResponseHandler>(
         &self,
         request: &Request,
-        response_edns: Option<Edns>,
         response_handle: R,
     ) -> ResponseInfo {
-        self.catalog
-            .read()
-            .await
-            .lookup(request, response_edns, response_handle)
-            .await
+        handle_request(&self.catalog, request, response_handle).await
     }
 
+    #[cfg(test)]
     pub async fn read_catalog(&self) -> RwLockReadGuard<'_, Catalog> {
         self.catalog.read().await
-    }
-
-    pub async fn write_catalog(&self) -> RwLockWriteGuard<'_, Catalog> {
-        self.catalog.write().await
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::instance::dns_server::config::{
         GeneralConfigBuilder, RecordBuilder, RecordType, RunConfigBuilder,
@@ -332,6 +476,99 @@ mod tests {
         let expected_record: rr::Record = configured_record.try_into()?;
         assert_eq!(response.answers().first().unwrap(), &expected_record);
 
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    pub(in crate::instance::dns_server) async fn forwarding_server(
+        upstream: SocketAddr,
+    ) -> Result<Server> {
+        use hickory_proto::xfer::Protocol;
+        use hickory_resolver::config::NameServerConfig;
+
+        let config = RunConfigBuilder::default()
+            .general(
+                GeneralConfigBuilder::default()
+                    .listen_udp("127.0.0.1:0")
+                    .build()?,
+            )
+            .build()?;
+        let server = Server::new(config);
+        let mut options = ResolverOpts::default();
+        options.timeout = Duration::from_secs(10);
+        options.attempts = 1;
+        let forwarder = ForwardAuthority::builder_with_config(
+            ForwardConfig {
+                name_servers: vec![NameServerConfig::new(upstream, Protocol::Udp)].into(),
+                options: Some(options),
+            },
+            TokioConnectionProvider::default(),
+        )
+        .build()
+        .map_err(anyhow::Error::msg)?;
+        server
+            .catalog
+            .write()
+            .await
+            .upsert(".".parse()?, vec![Arc::new(forwarder)]);
+        Ok(server)
+    }
+
+    #[tokio::test]
+    async fn slow_forwarding_does_not_block_catalog_publication_or_local_queries() -> Result<()> {
+        use hickory_proto::op::{Message, Query, ResponseCode};
+
+        async fn query(address: SocketAddr, name: &str) -> Result<Message> {
+            let socket = UdpSocket::bind("127.0.0.1:0").await?;
+            let mut request = Message::new();
+            request.set_recursion_desired(true);
+            request.add_query(Query::query(name.parse()?, rr::RecordType::A));
+            socket.send_to(&request.to_vec()?, address).await?;
+            let mut response = [0; 4096];
+            let length = socket.recv(&mut response).await?;
+            Ok(Message::from_vec(&response[..length])?)
+        }
+
+        let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+        let mut server = forwarding_server(upstream.local_addr()?).await?;
+        server.run().await?;
+        let address = server.udp_local_addr().unwrap();
+        let forwarding = tokio::spawn(query(address, "slow.example.org."));
+        let mut packet = [0; 4096];
+        let (length, source) =
+            tokio::time::timeout(Duration::from_secs(1), upstream.recv_from(&mut packet)).await??;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let origin = "local.test.".parse()?;
+            let record = RecordBuilder::default()
+                .rr_type(RecordType::A)
+                .name("svc.local.test.".to_owned())
+                .value("192.0.2.8".to_owned())
+                .ttl(Duration::from_secs(42))
+                .build()?;
+            server
+                .replace_zones(
+                    BTreeMap::from([(
+                        origin,
+                        Arc::new(build_authority(&"local.test.".parse()?, &[record])?),
+                    )]),
+                    BTreeSet::new(),
+                )
+                .await;
+            let response = query(address, "svc.local.test.").await?;
+            assert_eq!(response.answers().len(), 1);
+            assert_eq!(response.answers()[0].ttl(), 42);
+            assert!(!forwarding.is_finished());
+            anyhow::Ok(())
+        })
+        .await??;
+
+        let mut response = Message::from_vec(&packet[..length])?;
+        response
+            .set_message_type(hickory_proto::op::MessageType::Response)
+            .set_response_code(ResponseCode::NXDomain);
+        upstream.send_to(&response.to_vec()?, source).await?;
+        assert_eq!(forwarding.await??.response_code(), ResponseCode::NXDomain);
         server.shutdown().await?;
         Ok(())
     }

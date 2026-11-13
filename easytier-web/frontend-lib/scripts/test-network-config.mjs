@@ -20,12 +20,13 @@ const {
   DEFAULT_NETWORK_CONFIG,
   NetworkingMethod,
   normalizeNetworkConfig,
+  normalizeVpnPortalInfo,
   toBackendNetworkConfig,
 } = NetworkTypes
 
 const BOOLEAN_CONFIG_FIELDS = [
   'dhcp',
-  'enable_vpn_portal',
+  'dhcpv6',
   'advanced_settings',
   'latency_first',
   'use_smoltcp',
@@ -58,6 +59,14 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_relay_data',
   'enable_udp_broadcast_relay',
   'disable_tcp_hole_punching',
+]
+
+const LEGACY_NETWORK_CONFIG_FIELDS = [
+  'enable_vpn_portal',
+  'vpn_portal_listen_port',
+  'vpn_portal_client_network_addr',
+  'vpn_portal_client_network_len',
+  'tld_dns_zone',
 ]
 
 function readGeneratedNetworkConfigFields() {
@@ -106,6 +115,9 @@ function allFieldFixture() {
     ...DEFAULT_NETWORK_CONFIG(),
     instance_id: '11111111-2222-3333-4444-555555555555',
     dhcp: false,
+    dhcp_ipv4_cidr: '10.9.8.0/25',
+    dhcpv6: true,
+    dhcp_ipv6_cidr: 'fd12::/64',
     virtual_ipv4: '10.9.8.7',
     network_length: 25,
     hostname: 'frontend-e2e',
@@ -114,11 +126,22 @@ function allFieldFixture() {
     networking_method: NetworkingMethod.Manual,
     public_server_url: 'tcp://public.example:11010',
     peer_urls: [' tcp://peer-a:11010 ', '', 'udp://peer-b:11010'],
+    peers: [
+      {
+        uri: 'tcp://peer-a:11010',
+        peer_public_key: 'peer-a-public-key',
+      },
+    ],
     proxy_cidrs: ['10.10.0.0/16', '192.168.2.0/24->10.99.0.0/24'],
-    enable_vpn_portal: true,
-    vpn_portal_listen_port: 23000,
-    vpn_portal_client_network_addr: '10.88.0.0',
-    vpn_portal_client_network_len: 24,
+    vpn_portal_config: {
+      wireguard_listen: '0.0.0.0:23000',
+      wireguard_private_key: 'portal-private-key',
+      clients: [{
+        name: 'phone-a',
+        virtual_ip: '10.9.8.10',
+        groups: ['ops'],
+      }],
+    },
     advanced_settings: true,
     listener_urls: ['tcp://0.0.0.0:12010', 'udp://0.0.0.0:12010'],
     latency_first: true,
@@ -146,6 +169,14 @@ function allFieldFixture() {
     mtu: 1280,
     mapped_listeners: ['tcp://127.0.0.1:13010'],
     enable_magic_dns: true,
+    dns: { zone: [{
+      origin: 'example.test.',
+      ttl: 0,
+      records: [
+        { name: 'nas', type: 'A', value: '192.0.2.1' },
+        { name: 'info', type: 'TXT', ttl: 0, value: String.raw`"quote\" slash\\ ;" "" "tail"` },
+      ],
+    }] },
     enable_private_mode: true,
     enable_quic_proxy: true,
     disable_quic_input: true,
@@ -218,8 +249,20 @@ function allFieldFixture() {
       },
     },
     credential_file: '/tmp/easytier-credential.toml',
+    managed_credentials: [
+      {
+        credential_id: 'managed-credential',
+        credential_secret: 'managed-secret',
+        groups: ['ops'],
+        allow_relay: true,
+        allowed_proxy_cidrs: ['10.30.0.0/16'],
+        expiry_unix: '1791971218',
+        reusable: true,
+      },
+    ],
     lazy_p2p: true,
     need_p2p: true,
+    prefer_peer_relay: true,
     instance_recv_bps_limit: '9007199254740993',
     disable_upnp: true,
     ipv6_public_addr_provider: true,
@@ -233,6 +276,7 @@ function allFieldFixture() {
 
 function assertFixtureCoversGeneratedFields() {
   const generatedFields = readGeneratedNetworkConfigFields()
+    .filter((field) => !LEGACY_NETWORK_CONFIG_FIELDS.includes(field))
   const fixtureFields = new Set(Object.keys(allFieldFixture()))
   const missing = generatedFields.filter((field) => !fixtureFields.has(field))
 
@@ -252,15 +296,21 @@ function assertFullFieldRoundTrip() {
   const backend = toBackendNetworkConfig(normalized)
   expectNoCamelCaseKeys(backend)
 
-  for (const field of readGeneratedNetworkConfigFields()) {
+  for (const field of readGeneratedNetworkConfigFields()
+    .filter((field) => !LEGACY_NETWORK_CONFIG_FIELDS.includes(field))) {
     assert.ok(field in backend, `backend JSON should include fixture field ${field}`)
   }
 
   assert.equal(backend.networking_method, 'Manual')
   assert.equal(backend.public_server_url, '')
   assert.deepEqual(backend.peer_urls, ['tcp://peer-a:11010', 'udp://peer-b:11010'])
+  assert.equal(backend.peers[0].peer_public_key, 'peer-a-public-key')
+  assert.deepEqual(backend.peers[1], { uri: 'udp://peer-b:11010' })
   assert.equal(backend.data_compress_algo, 'Zstd')
   assert.equal(backend.instance_recv_bps_limit, '9007199254740993')
+  assert.equal(backend.vpn_portal_config.wireguard_listen, '0.0.0.0:23000')
+  assert.equal(backend.vpn_portal_config.clients[0].name, 'phone-a')
+  assert.deepEqual(backend.vpn_portal_config.clients[0].groups, ['ops'])
   assert.equal(backend.secure_mode.enabled, true)
   assert.equal(backend.secure_mode.local_private_key, 'private-key')
   assert.equal(backend.acl.acl_v1.chains[0].chain_type, 'Forward')
@@ -269,6 +319,38 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.acl.acl_v1.chains[0].rules[0].action, 'Allow')
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
+}
+
+function assertLegacyVpnPortalFieldsReachBackendValidation() {
+  const backend = toBackendNetworkConfig({
+    ...DEFAULT_NETWORK_CONFIG(),
+    enable_vpn_portal: true,
+    vpn_portal_listen_port: 22022,
+    vpn_portal_client_network_addr: '10.88.0.0',
+    vpn_portal_client_network_len: 24,
+  })
+
+  assert.equal(backend.enable_vpn_portal, true)
+  assert.equal(backend.vpn_portal_listen_port, 22022)
+  assert.equal(backend.vpn_portal_client_network_addr, '10.88.0.0')
+  assert.equal(backend.vpn_portal_client_network_len, 24)
+}
+
+function assertVpnPortalRpcJsonNormalization() {
+  const info = normalizeVpnPortalInfo({
+    vpn_type: 'wireguard',
+    listener: '0.0.0.0:22022',
+    clients: [{
+      name: 'phone-a',
+      virtual_ip: '10.9.8.10',
+      groups: ['ops'],
+      state: 'VPN_PORTAL_CLIENT_STATE_ONLINE',
+      client_config: '[Interface]',
+    }],
+  })
+
+  assert.equal(info.clients[0].state, 3)
+  assert.deepEqual(info.connected_clients, [])
 }
 
 function assertBooleanFieldValuesPreserved() {
@@ -415,6 +497,59 @@ function assertNetworkingMethodNormalization() {
   })
 
   assert.deepEqual(missing.peer_urls, ['tcp://one', 'udp://two'])
+
+  const publicServerMissingUrl = normalizeNetworkConfig({
+    ...DEFAULT_NETWORK_CONFIG(),
+    networking_method: 'PublicServer',
+    public_server_url: '',
+    peer_urls: ['tcp://manual.example:11010'],
+  })
+
+  assert.deepEqual(publicServerMissingUrl.peer_urls, [])
+}
+
+function assertPeerPublicKeysPreserved() {
+  const normalized = normalizeNetworkConfig({
+    ...DEFAULT_NETWORK_CONFIG(),
+    peer_urls: [],
+    peers: [
+      {
+        uri: ' tcp://peer-a:11010 ',
+        peer_public_key: 'peer-a-public-key',
+      },
+    ],
+  })
+
+  assert.deepEqual(normalized.peer_urls, ['tcp://peer-a:11010'])
+  assert.deepEqual(normalized.peers, [
+    {
+      uri: 'tcp://peer-a:11010',
+      peer_public_key: 'peer-a-public-key',
+    },
+  ])
+
+  const unchangedUrl = toBackendNetworkConfig({
+    ...normalized,
+    peer_urls: ['tcp://peer-a:11010', 'tcp://peer-b:11010'],
+  })
+
+  assert.equal(unchangedUrl.peers[0].peer_public_key, 'peer-a-public-key')
+  assert.deepEqual(unchangedUrl.peers[1], { uri: 'tcp://peer-b:11010' })
+
+  const changedUrl = toBackendNetworkConfig({
+    ...normalized,
+    peer_urls: ['tcp://peer-c:11010'],
+  })
+
+  assert.deepEqual(changedUrl.peers, [{ uri: 'tcp://peer-c:11010' }])
+
+  const clearedUrls = toBackendNetworkConfig({
+    ...normalized,
+    peer_urls: [],
+  })
+
+  assert.deepEqual(clearedUrls.peer_urls ?? [], [])
+  assert.deepEqual(clearedUrls.peers ?? [], [])
 }
 
 function assertNumberBoundaries() {
@@ -465,14 +600,45 @@ function assertNumberBoundaries() {
 const tests = [
   assertFixtureCoversGeneratedFields,
   assertFullFieldRoundTrip,
+  assertLegacyVpnPortalFieldsReachBackendValidation,
+  assertVpnPortalRpcJsonNormalization,
   assertBooleanFieldValuesPreserved,
   assertEnumCompatibility,
   assertAclDefaultsAndExplicitZero,
   assertNetworkingMethodNormalization,
+  assertPeerPublicKeysPreserved,
   assertNumberBoundaries,
 ]
 
 for (const test of tests) {
   test()
   console.log(`ok ${test.name}`)
+}
+
+// A collection wrapper, including an empty one, must survive form normalization.
+for (const dns of [
+  undefined,
+  {},
+  { domain: 'mesh.test.' },
+  { zone: [] },
+  { domain: 'mesh.test.', zone: [{ origin: 'example.test.' }] },
+  { zone: [{ origin: 'example.test.', ttl: 0, records: [] }] },
+  { zone: [{ origin: 'example.test.', records: [
+    { name: '@', type: 'MX', value: '10 mail' },
+    { name: 'info', type: 'TXT', value: '"first" "" "second"' },
+  ] }] },
+]) {
+  const normalized = normalizeNetworkConfig({ ...DEFAULT_NETWORK_CONFIG(), dns });
+  const backend = toBackendNetworkConfig(normalized);
+  const restored = normalizeNetworkConfig(backend);
+  assert.deepEqual(restored.dns, normalized.dns);
+  assert.equal(restored.dns !== undefined, dns !== undefined);
+  assert.equal(restored.dns?.domain, dns?.domain);
+  assert.equal(restored.dns?.zone !== undefined, dns?.zone !== undefined);
+  const before = dns?.zone?.[0];
+  const after = restored.dns?.zone?.[0];
+  if (before) {
+    assert.equal(after.records !== undefined, before.records !== undefined);
+    assert.equal(after.ttl, before.ttl);
+  }
 }

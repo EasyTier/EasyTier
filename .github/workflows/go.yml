@@ -1,0 +1,44 @@
+name: EasyTier Go
+
+on:
+  push:
+    branches: ["develop", "main", "releases/**"]
+    paths:
+      - "easytier-go/**"
+      - ".github/workflows/go.yml"
+  pull_request:
+    branches: ["develop", "main"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "easytier-go/**"
+      - ".github/workflows/go.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test Go modules
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            easytier-go/go.sum
+            easytier-go/examples/tun/go.sum
+
+      - name: Test main module
+        working-directory: easytier-go
+        run: go test ./...
+
+      - name: Test TUN example module
+        working-directory: easytier-go/examples/tun
+        run: go test ./...
