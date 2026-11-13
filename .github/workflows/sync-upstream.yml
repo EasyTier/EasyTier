@@ -1,0 +1,290 @@
+name: Sync Upstream
+
+# 自动跟进上游 EasyTier/EasyTier：
+#   1. 抓取上游分支，用 merge（--no-ff）合进本仓库 main，本地提交的哈希保持不变（不 rebase）；
+#   2. 冲突先自动处理：.github/sync/keep-local.txt 里列出的文件取本地版本，
+#      Cargo.lock 取上游版本后由 cargo 补齐（保留原有版本号，只补缺失项）；
+#   3. 仍然有冲突，就把「带冲突标记的合并提交」推到 sync/upstream，开草稿 PR 交给人处理；
+#   4. 合并干净时先校验 Cargo.lock 与各 Cargo.toml 对齐，通过才推 main。
+#
+# 推送必须用 PAT（仓库 secret：SYNC_TOKEN）：
+#   - GITHUB_TOKEN 不能创建/更新 .github/workflows/*，上游一旦改动 workflow，push 会被直接拒绝；
+#   - GITHUB_TOKEN 推送产生的 push 事件不会再触发其他 workflow，main 上的 EasyTier Test 不会跑；
+#   - 换成 PAT 推送后，合并结果会照常触发 test.yml，编译/测试挂了第一时间能看到。
+#
+# fork 的定时任务默认是关闭的，需要在 Actions 页手动启用一次；
+# GitHub 还会在仓库 60 天没有活动时自动停掉 schedule，手动 workflow_dispatch 一次即可恢复。
+
+on:
+  schedule:
+    # 每天 UTC 19:30（北京时间 03:30），上游当天的开发时段基本结束
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_repository:
+        description: 上游仓库（owner/repo）
+        required: false
+        default: EasyTier/EasyTier
+      upstream_branch:
+        description: 上游分支
+        required: false
+        default: main
+      apply:
+        description: 真正写入（取消勾选只做预演，不改动任何分支）
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: ${{ inputs.upstream_repository || 'EasyTier/EasyTier' }}
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'main' }}
+  TARGET_BRANCH: main
+  CONFLICT_BRANCH: sync/upstream
+
+jobs:
+  sync:
+    name: Merge upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      status: ${{ steps.sync.outputs.status }}
+      incoming_commits: ${{ steps.sync.outputs.incoming_commits }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+      conflicted_count: ${{ steps.sync.outputs.conflicted_count }}
+    env:
+      # inputs.apply 是 boolean，用 API 派发时可能被传成字符串，两种都认
+      SYNC_APPLY: ${{ github.event_name == 'schedule' || inputs.apply == true || inputs.apply == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # 合并后要用 cargo 补齐 Cargo.lock、并校验 Cargo.lock 与 Cargo.toml 对齐
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ''
+
+      - name: Configure git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Merge upstream
+        id: sync
+        run: |
+          set -euo pipefail
+
+          upstream_ref="refs/remotes/upstream/${UPSTREAM_BRANCH}"
+          git fetch --no-tags --prune \
+            "https://github.com/${UPSTREAM_REPOSITORY}.git" \
+            "+refs/heads/${UPSTREAM_BRANCH}:${upstream_ref}"
+
+          upstream_sha=$(git rev-parse --short "$upstream_ref")
+          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$upstream_ref" HEAD; then
+            echo "status=up-to-date" >> "$GITHUB_OUTPUT"
+            echo "上游 ${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}（${upstream_sha}）的提交都已经在 ${TARGET_BRANCH} 上，无需合并。"
+            exit 0
+          fi
+
+          incoming=$(git rev-list --count "HEAD..${upstream_ref}")
+          echo "incoming_commits=${incoming}" >> "$GITHUB_OUTPUT"
+          echo "上游新增 ${incoming} 个提交（最新 ${upstream_sha}）"
+          git log --oneline --no-decorate --reverse "HEAD..${upstream_ref}" > "$RUNNER_TEMP/incoming.txt"
+
+          conflicted_paths() {
+            git diff --name-only --diff-filter=U
+          }
+
+          # 1) keep-local.txt 里列出的文件，冲突时一律取本地版本
+          apply_keep_local() {
+            local line pattern file
+            [ -f .github/sync/keep-local.txt ] || return 0
+            while IFS= read -r line; do
+              pattern="${line%%#*}"
+              pattern="$(printf '%s' "$pattern" | tr -d '[:space:]')"
+              [ -n "$pattern" ] || continue
+              while IFS= read -r file; do
+                [ -n "$file" ] || continue
+                if [[ "$file" == $pattern ]]; then
+                  echo "本地优先：${file}"
+                  git checkout --ours -- "$file"
+                  git add -- "$file"
+                fi
+              done < <(conflicted_paths)
+            done < .github/sync/keep-local.txt
+          }
+
+          merge_subject="chore(sync): 合并上游 ${UPSTREAM_REPOSITORY}@${upstream_sha}"
+          status=merged
+
+          if git merge --no-ff --no-commit "$upstream_ref" > "$RUNNER_TEMP/merge.log" 2>&1; then
+            echo "自动合并干净，没有冲突。"
+          else
+            cat "$RUNNER_TEMP/merge.log"
+            initial=$(conflicted_paths | grep -c . || true)
+            apply_keep_local
+
+            # 2) Cargo.lock 交给 cargo 补齐：先取上游版本，再让 cargo 补上本地新增/改动的依赖。
+            #    不直接用 cargo generate-lockfile，那会把所有依赖都重新解析到最新版本。
+            if conflicted_paths | grep -qx 'Cargo.lock'; then
+              echo "Cargo.lock 冲突：取上游版本后由 cargo 补齐"
+              git checkout --theirs -- Cargo.lock
+              git add -- Cargo.lock
+              cargo metadata --format-version 1 > /dev/null
+              git add -- Cargo.lock
+            fi
+
+            remaining=$(conflicted_paths | grep -c . || true)
+            if [ "$remaining" -gt 0 ]; then
+              status=conflict
+              conflicted_paths > "$RUNNER_TEMP/conflicted-files.txt"
+              echo "conflicted_count=${remaining}" >> "$GITHUB_OUTPUT"
+              echo "::warning::${remaining} 个文件需要人工解决冲突"
+            elif [ "$initial" -eq 0 ]; then
+              echo "::error::git merge 失败，但没有任何冲突文件，请查看上面的输出"
+              git merge --abort || true
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          if [ "$status" = "conflict" ]; then
+            # 冲突标记照样提交到 sync/upstream，方便在 PR 里逐块确认
+            count=$(grep -c . "$RUNNER_TEMP/conflicted-files.txt")
+            git add -A
+            git commit --no-verify -q -m "${merge_subject}（${count} 个文件待人工解决冲突）"
+          else
+            git commit --no-verify -q -m "$merge_subject"
+            # 合并干净也要确认锁文件和 Cargo.toml 对得上，否则 main 上的构建会直接挂
+            if ! cargo metadata --locked --format-version 1 > /dev/null 2> "$RUNNER_TEMP/cargo-metadata.log"; then
+              cat "$RUNNER_TEMP/cargo-metadata.log"
+              status=blocked
+            fi
+          fi
+
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          echo "同步结果：${status}"
+
+      - name: Write job summary
+        if: always()
+        env:
+          SYNC_STATUS: ${{ steps.sync.outputs.status }}
+          INCOMING_COMMITS: ${{ steps.sync.outputs.incoming_commits }}
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## 上游同步结果：${SYNC_STATUS:-未执行}"
+            echo
+            echo "- 上游：\`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\`（最新 \`${UPSTREAM_SHA:-unknown}\`）"
+            echo "- 新增提交数：${INCOMING_COMMITS:-0}"
+            echo "- 是否写入：${SYNC_APPLY}"
+            if [ -s "$RUNNER_TEMP/conflicted-files.txt" ]; then
+              echo "- 待人工解决冲突 $(grep -c . "$RUNNER_TEMP/conflicted-files.txt") 个文件："
+              sed 's/^/  - `/; s/$/`/' "$RUNNER_TEMP/conflicted-files.txt"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$RUNNER_TEMP/incoming.txt" ]; then
+            {
+              echo
+              echo "<details><summary>上游提交</summary>"
+              echo
+              tail -n 50 "$RUNNER_TEMP/incoming.txt" | sed 's/^/- /'
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Verify push token
+        if: steps.sync.outputs.status != 'up-to-date' && env.SYNC_APPLY == 'true'
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::缺少 SYNC_TOKEN。上游提交会改动 .github/workflows/*，GITHUB_TOKEN 没有 workflows 权限，push 会被拒绝。请创建带 repo + workflow 权限的 PAT，保存为仓库 secret SYNC_TOKEN。"
+            exit 1
+          fi
+
+      - name: Push merged commit
+        if: steps.sync.outputs.status == 'merged' && env.SYNC_APPLY == 'true'
+        run: git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: Publish pull request
+        if: (steps.sync.outputs.status == 'conflict' || steps.sync.outputs.status == 'blocked') && env.SYNC_APPLY == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          STATUS: ${{ steps.sync.outputs.status }}
+          INCOMING_COMMITS: ${{ steps.sync.outputs.incoming_commits }}
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/sync-upstream-pr-body.md"
+
+          {
+            printf '上游 `%s@%s` 有 **%s** 个新提交，\n' "$UPSTREAM_REPOSITORY" "$UPSTREAM_BRANCH" "$INCOMING_COMMITS"
+          } > "$body"
+
+          if [ "$STATUS" = "blocked" ]; then
+            printf '自动合并到 `%s` 后 `cargo metadata --locked` 检查没通过。\n\n' "$TARGET_BRANCH" >> "$body"
+            printf -- '- 上游最新提交：`%s`\n' "$UPSTREAM_SHA" >> "$body"
+            printf -- '- 原因：`Cargo.lock` 与各 `Cargo.toml` 对不上，合并进来的依赖没进锁文件\n' >> "$body"
+            printf -- '- 处理：解决下面的问题后本地执行 `cargo metadata` 让 cargo 补齐 `Cargo.lock`，一起提交\n\n' >> "$body"
+            title="⚠️ 上游同步：$(date -u +%Y%m%d) 锁文件与依赖不一致"
+          else
+            printf '自动合并到 `%s` 时在 **%s** 个文件上产生了冲突。\n\n' "$TARGET_BRANCH" "$(grep -c . "$RUNNER_TEMP/conflicted-files.txt")" >> "$body"
+            printf -- '- 上游最新提交：`%s`\n' "$UPSTREAM_SHA" >> "$body"
+            printf -- '- 合并方式：`git merge --no-ff`，冲突标记已保留在这条分支上\n\n' >> "$body"
+            printf '## 需要人工解决的文件\n\n' >> "$body"
+            sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicted-files.txt" >> "$body"
+            title="⚠️ 上游同步：$(date -u +%Y%m%d) 有文件需要人工解决冲突"
+          fi
+
+          {
+            printf '\n## 本地处理\n\n'
+            printf '```bash\n'
+            printf 'git fetch origin %s\n' "$CONFLICT_BRANCH"
+            printf 'git switch -c %s origin/%s   # 本地已有分支就直接 switch\n' "$CONFLICT_BRANCH" "$CONFLICT_BRANCH"
+            printf '# 逐个文件解决 <<<<<<< / ======= / >>>>>>> 标记\n'
+            printf 'cargo metadata --locked\n'
+            printf 'cargo check -p easytier-web\n'
+            printf 'pnpm -C easytier-web/frontend install && pnpm -C easytier-web/frontend build\n'
+            printf 'git commit -am "chore(sync): 处理上游同步"\n'
+            printf 'git push origin %s\n' "$CONFLICT_BRANCH"
+            printf '```\n\n'
+            printf '去掉草稿状态后合并这条 PR，`%s` 上会正常触发 EasyTier Test。\n' "$TARGET_BRANCH"
+            printf '\n同步运行日志：[%s](%s)\n' "$GITHUB_RUN_ID" "$RUN_URL"
+            printf '\n<details><summary>上游提交</summary>\n\n'
+            tail -n 50 "$RUNNER_TEMP/incoming.txt" | sed 's/^/- /'
+            printf '\n</details>\n'
+          } >> "$body"
+
+          # 上一次的 PR 还挂着时不要覆盖分支，避免冲掉正在进行的解决工作
+          existing=$(gh pr list --head "$CONFLICT_BRANCH" --state open --json number \
+            --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr comment "$existing" --body-file "$body"
+            echo "已有待处理的 PR #$existing，本次只追加说明，不覆盖分支。"
+            exit 0
+          fi
+
+          git push --force origin "HEAD:refs/heads/${CONFLICT_BRANCH}"
+          gh pr create \
+            --draft \
+            --base "$TARGET_BRANCH" \
+            --head "$CONFLICT_BRANCH" \
+            --title "$title" \
+            --body-file "$body"

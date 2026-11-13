@@ -1,0 +1,13 @@
+# 上游同步时，冲突了就一律保留本仓库版本的文件（git checkout --ours）。
+#
+# 一行一个 glob，支持 * 和 ?；# 之后是注释。
+# 只对「合并产生冲突」的文件生效，上游没动过的文件不受影响。
+#
+# 例子（按需打开）：
+#   easytier-web/frontend-lib/src/locales/cn.yaml   # 本地补的中文文案比上游全
+#   docs/**                                          # 本地文档只维护自己那一份
+#
+# 下面两个是本仓库自有的同步设施，上游没有同名文件，列在这里只是防止将来被覆盖。
+
+.github/workflows/sync-upstream.yml
+.github/sync/**
