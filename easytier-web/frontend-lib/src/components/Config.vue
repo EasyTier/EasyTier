@@ -87,7 +87,9 @@ const { t } = useI18n()
 
 const listenerExcludedProtos = new Set(['http', 'https', 'txt', 'srv'])
 const listenerProtos: { [proto: string]: number } = Object.fromEntries(
-  Object.entries(protos).filter(([proto]) => !listenerExcludedProtos.has(proto))
+  Object.entries(protos)
+    .filter(([proto]) => !listenerExcludedProtos.has(proto))
+    .map(([proto]) => [proto, 0])
 )
 
 const inetSuggestions = ref([''])
@@ -452,7 +454,7 @@ function removeVpnPortalClient(index: number) {
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
-                  <UrlListInput v-model="curNetwork.listener_urls" :protos="listenerProtos"
+                  <UrlListInput v-model="curNetwork.listener_urls" :protos="listenerProtos" :portless-protos="[]"
                     :add-label="t('add_listener_url')" placeholder="0.0.0.0" />
                 </div>
               </div>
