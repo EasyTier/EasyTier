@@ -551,6 +551,7 @@ const configServerConnectionStatus = computed(() => {
     <Menu ref="log_menu" :model="log_menu_items_popup" :popup="true" />
 
     <RemoteManagement v-if="clientRunning" class="flex-1 overflow-y-auto" :api="remoteClient"
+      :copy-text="writeText"
       :pause-auto-refresh="isModeSaving" v-model:instance-id="instanceId" />
     <div v-else class="empty-state flex-1 flex flex-col items-center py-12">
       <i class="pi pi-server text-5xl text-secondary mb-4 opacity-50"></i>
