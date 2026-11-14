@@ -228,6 +228,16 @@ pub struct FeatureFlags {
         help = t!("cli.allow_auto_create_user").to_string()
     )]
     pub allow_auto_create_user: bool,
+
+    /// Reject the legacy username-as-token enrollment path; only issued
+    /// device tokens can then register.
+    #[arg(
+        long,
+        env = "ET_DISALLOW_USERNAME_TOKENS",
+        default_value = "false",
+        help = t!("cli.disallow_username_tokens").to_string()
+    )]
+    pub disallow_username_tokens: bool,
 }
 
 impl LoggingConfigLoader for &Cli {
@@ -344,11 +354,13 @@ async fn main() {
     );
     let central_mode = !webhook_config.has_external_endpoint();
     if central_mode {
-        webhook_config =
-            webhook_config.with_handler(Arc::new(central_network::device_auth::DeviceAuth::new(
+        webhook_config = webhook_config.with_handler(Arc::new(
+            central_network::device_auth::DeviceAuth::new(
                 db.clone(),
                 feature_flags.allow_auto_create_user,
-            )));
+            )
+            .with_disallow_username_tokens(feature_flags.disallow_username_tokens),
+        ));
     } else if cli.gateway_peer_url.is_some() {
         eprintln!("Gateway requires central network mode; remove --webhook-url");
         std::process::exit(2);
