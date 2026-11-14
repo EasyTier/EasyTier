@@ -2643,6 +2643,7 @@ dependencies = [
  "winreg 0.56.0",
  "x25519-dalek 2.0.1",
  "xmltree",
+ "zbus",
  "zerocopy 0.7.35",
 ]
 
@@ -12395,6 +12396,7 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",

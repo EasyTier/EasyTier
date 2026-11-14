@@ -18,7 +18,7 @@ use windows::Win32::{
 use windows::core::PWSTR;
 use winreg::{
     RegKey,
-    enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE},
+    enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_READ, KEY_WRITE},
 };
 
 use super::{Error, IfConfiguerTrait};
@@ -397,7 +397,7 @@ impl RegistryManager {
     pub fn open_interface_key(interface_guid: &str, prefix: &str) -> io::Result<RegKey> {
         let path = format!(r"{}{}", prefix, interface_guid);
         let hkey_local_machine = RegKey::predef(HKEY_LOCAL_MACHINE);
-        hkey_local_machine.open_subkey_with_flags(&path, KEY_WRITE)
+        hkey_local_machine.open_subkey_with_flags(&path, KEY_WRITE | KEY_QUERY_VALUE)
     }
 
     // 禁用动态 DNS 更新

@@ -1970,6 +1970,15 @@ virtual_ip = "10.82.0.2/24"
         runtime_host.shutdown_started.notified().await;
         deletion.abort();
         assert!(deletion.await.unwrap_err().is_cancelled());
+        // A concurrent process shutdown sees no registered instance to stop,
+        // but must still wait for the deletion's resource cleanup.
+        assert!(
+            instances
+                .retain_network_instances(&[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         let mut wait = tokio::spawn({
             let instances = instances.clone();

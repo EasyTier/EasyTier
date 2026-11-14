@@ -16,6 +16,10 @@ pub struct RunConfig {
     #[builder(default = Vec::new())]
     #[serde(default)]
     excluded_forward_nameservers: Vec<IpAddr>,
+
+    #[builder(default = false)]
+    #[serde(default)]
+    defer_system_forwarder: bool,
 }
 
 impl RunConfig {
@@ -29,6 +33,10 @@ impl RunConfig {
 
     pub fn excluded_forward_nameservers(&self) -> &Vec<IpAddr> {
         &self.excluded_forward_nameservers
+    }
+
+    pub fn defer_system_forwarder(&self) -> bool {
+        self.defer_system_forwarder
     }
 }
 
