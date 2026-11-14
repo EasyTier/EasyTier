@@ -22,6 +22,7 @@ use cidr::IpCidr;
 use clap::{
     Arg, ArgMatches, CommandFactory, FromArgMatches, Parser, builder::TypedValueParser as _,
 };
+use easytier_core::config::PrivateGroupConfig;
 use easytier_core::config::{DhcpConfig, EncryptionAlgorithm, normalize_secure_mode_config};
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
@@ -161,6 +162,32 @@ struct Cli {
     disable_env_parsing: bool,
 }
 
+/// Parse a CLI private-group entry in the form `NAME[#SECRET]`.
+/// The secret part is optional; entries without one admit foreign networks
+/// by name alone when private mode is enabled.
+fn parse_private_group_opt(raw: &str) -> anyhow::Result<PrivateGroupConfig> {
+    let raw = raw.trim();
+    anyhow::ensure!(!raw.is_empty(), "private-group entry cannot be empty");
+    match raw.split_once('#') {
+        Some((name, secret)) => {
+            let name = name.trim();
+            anyhow::ensure!(
+                !name.is_empty(),
+                "private-group entry {:?} has an empty network name",
+                raw
+            );
+            Ok(PrivateGroupConfig {
+                network_name: name.to_string(),
+                network_secret: Some(secret.trim().to_string()),
+            })
+        }
+        None => Ok(PrivateGroupConfig {
+            network_name: raw.to_string(),
+            network_secret: None,
+        }),
+    }
+}
+
 #[derive(Parser, Debug, Default, PartialEq, Eq)]
 struct NetworkOptions {
     /// Filled in from the flag arguments the schema implies.
@@ -180,6 +207,13 @@ struct NetworkOptions {
         help = t!("core_clap.network_secret").to_string(),
     )]
     network_secret: Option<String>,
+
+    #[arg(
+        long = "private-group",
+        value_name = "NAME[#SECRET]",
+        help = t!("core_clap.private_group").to_string()
+    )]
+    private_group: Option<Vec<String>>,
 
     #[arg(
         short,
@@ -728,6 +762,14 @@ impl NetworkOptions {
             cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret));
         } else {
             cfg.set_network_identity(NetworkIdentity::new_credential(network_name));
+        }
+
+        if let Some(groups) = &self.private_group {
+            let mut parsed = Vec::new();
+            for raw in groups {
+                parsed.push(parse_private_group_opt(raw)?);
+            }
+            cfg.set_private_groups(parsed);
         }
 
         if let Some(dhcp) = self.dhcp {
