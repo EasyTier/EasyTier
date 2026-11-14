@@ -121,6 +121,9 @@ logging_copy_dir: Copy Log Path
 vpn_tile_no_network: No configured network
 vpn_tile_no_network_description: Configure a network in EasyTier before using the VPN tile.
 vpn_tile_started: VPN network started
+management_warning: Network management warning
+management_persistence_warning: Configuration could not be saved; this does not undo the runtime operation
+management_reconciliation_warning: Runtime or VPN state needs reconciliation
 vpn_tile_stopped: VPN network stopped
 vpn_tile_action_failed: 'VPN tile action failed: {error}'
 disable_auto_launch: Disable Launch on Reboot

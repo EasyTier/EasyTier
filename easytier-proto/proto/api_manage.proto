@@ -113,6 +113,9 @@ message NetworkConfig {
   optional bool dhcpv6 = 75;
   optional string dhcp_ipv6_cidr = 76;
   core_config.DnsConfigRaw dns = 77;
+  optional bool enable_udp_fec = 78;
+  optional bool enable_udp_fec_kcp = 79;
+  optional bool enable_udp_fec_quic = 80;
 }
 
 message ManagedCredentialConfig {

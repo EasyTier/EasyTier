@@ -102,6 +102,9 @@ where
         if let Some(hostname) = patch.hostname {
             candidate.set_hostname(Some(hostname));
         }
+        if let Some(dns) = &patch.dns {
+            patch_dns(&candidate, dns)?;
+        }
         if let Some(ipv4) = patch.ipv4
             && !candidate.get_dhcp()
         {
@@ -252,6 +255,26 @@ where
     }
     #[cfg(not(feature = "public-ipv6-provider"))]
     let _ = provider_config_changed;
+    Ok(())
+}
+
+fn patch_dns(
+    candidate: &TomlConfig,
+    patch: &easytier_proto::core_config::DnsConfigRaw,
+) -> anyhow::Result<()> {
+    if patch.zone.is_none() && patch.domain.is_none() {
+        return Ok(());
+    }
+
+    let mut dns = candidate.get_dns().unwrap_or_default();
+    if let Some(zones) = &patch.zone {
+        dns.zone = Some(zones.clone());
+    }
+    if let Some(domain) = &patch.domain {
+        dns.domain = Some(domain.clone());
+    }
+    crate::config::dns::compile_dns(&dns)?;
+    candidate.set_dns(Some(dns));
     Ok(())
 }
 
@@ -724,5 +747,99 @@ mod tests {
                 .to_string()
                 .contains("invalid VPN portal client virtual CIDR")
         );
+    }
+}
+
+#[cfg(test)]
+mod dns_tests {
+    use super::*;
+
+    #[test]
+    fn dns_patch_preserves_omissions_and_replaces_complete_zone_list() {
+        use easytier_proto::core_config::DnsConfigRaw;
+
+        let absent = TomlConfig::default();
+        patch_dns(&absent, &DnsConfigRaw::default()).unwrap();
+        assert!(absent.get_dns().is_none());
+
+        let config = TomlConfig::new_from_str(
+            "[dns]\ndomain = 'mesh.test'\n[[dns.zone]]\norigin = 'records.test'\nrecords = [{name = 'host', type = 'A', value = '10.0.0.1'}]",
+        )
+        .unwrap();
+        let original = config.get_dns().unwrap();
+        patch_dns(&config, &DnsConfigRaw::default()).unwrap();
+        assert_eq!(config.get_dns(), Some(original.clone()));
+        patch_dns(
+            &config,
+            &DnsConfigRaw {
+                domain: Some("new.test".to_owned()),
+                zone: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(config.get_dns().unwrap().zone, original.zone);
+        let replacement = easytier_proto::core_config::DnsZoneConfigRaw {
+            origin: "new-origin.test".to_owned(),
+            ..Default::default()
+        };
+        patch_dns(
+            &config,
+            &DnsConfigRaw {
+                domain: None,
+                zone: Some(vec![replacement.clone()].into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(config.get_dns().unwrap().zone.unwrap().items, [replacement]);
+        patch_dns(
+            &config,
+            &DnsConfigRaw {
+                domain: None,
+                zone: Some(Default::default()),
+            },
+        )
+        .unwrap();
+        let cleared = config.get_dns().unwrap();
+        assert_eq!(cleared.domain.as_deref(), Some("new.test"));
+        assert!(cleared.zone.as_ref().unwrap().items.is_empty());
+        for domain in ["", "."] {
+            assert!(
+                patch_dns(
+                    &config,
+                    &DnsConfigRaw {
+                        domain: Some(domain.to_owned()),
+                        zone: None,
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(config.get_dns(), Some(cleared.clone()));
+        }
+        assert!(
+            patch_dns(
+                &config,
+                &DnsConfigRaw {
+                    domain: None,
+                    zone: Some(
+                        vec![easytier_proto::core_config::DnsZoneConfigRaw {
+                            origin: "bad.test".to_owned(),
+                            records: Some(
+                                vec![easytier_proto::core_config::DnsRecordRaw {
+                                    name: "host".to_owned(),
+                                    r#type: easytier_proto::core_config::DnsRecordType::A as i32,
+                                    value: Some("not-an-ip".to_owned()),
+                                    ..Default::default()
+                                }]
+                                .into(),
+                            ),
+                            ..Default::default()
+                        }]
+                        .into()
+                    ),
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(config.get_dns(), Some(cleared));
     }
 }

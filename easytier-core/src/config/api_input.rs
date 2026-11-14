@@ -85,6 +85,9 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.disable_relay_data = flags.disable_relay_data;
     result.prefer_peer_relay = flags.prefer_peer_relay;
     result.enable_udp_broadcast_relay = flags.enable_udp_broadcast_relay;
+    result.enable_udp_fec = flags.enable_udp_fec;
+    result.enable_udp_fec_kcp = flags.enable_udp_fec_kcp;
+    result.enable_udp_fec_quic = flags.enable_udp_fec_quic;
     result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
     result.enable_magic_dns = flags.accept_dns;
     #[allow(deprecated)]
@@ -554,6 +557,9 @@ impl NetworkConfigExt for NetworkConfig {
             disable_relay_data: self.disable_relay_data,
             prefer_peer_relay: self.prefer_peer_relay,
             enable_udp_broadcast_relay: self.enable_udp_broadcast_relay,
+            enable_udp_fec: self.enable_udp_fec,
+            enable_udp_fec_kcp: self.enable_udp_fec_kcp,
+            enable_udp_fec_quic: self.enable_udp_fec_quic,
             disable_sym_hole_punching: self.disable_sym_hole_punching,
             instance_recv_bps_limit: self.instance_recv_bps_limit,
             ..Default::default()
@@ -754,7 +760,7 @@ origin = 'example.test.'
 ttl = 60
 records = [
     { name = '@', type = 'MX', value = '10 mail' },
-    { name = 'info', type = 'TXT', ttl = 0, txt = { segments = ['quote" slash\ ;', '', 'tail'] } },
+    { name = 'info', type = 'TXT', ttl = 0, value = '"quote\" slash\\ ;" "" "tail"' },
 ]
 "#,
         ] {
@@ -825,7 +831,7 @@ records = [
             "[[dns.zone]]\norigin = 'example.test.'\nttl = -1\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'A', value = '192.0.2.1', txt = { segments = ['x'] } }]\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'UNKNOWN', value = 'x' }]\n",
-            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'TXT', value = 'x' }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'TXT', value = '' }]\n",
             "[[dns.zone]]\norigin = 'example.test.'\nrecords = ['@ IN A 192.0.2.1']\n",
         ] {
             assert!(
@@ -837,6 +843,7 @@ records = [
 
     #[test]
     fn dns_alpn_errors_use_file_and_management_field_paths() {
+        let long_alpn = format!("1 . \"alpn=a ( {})\"", "b ".repeat(1500));
         for kind in ["HTTPS", "SVCB"] {
             for (value, valid) in [
                 ("1 . alpn=,", false),
@@ -848,15 +855,19 @@ records = [
                 (r#"1 . "alpn=;h2""#, false),
                 (r#"1 . "alpn= h2""#, false),
                 (r#"1 . alpn=\"unterminated"#, false),
+                ("1 . alpn=\\\"\\\\\u{0663}ab\\\"", false),
+                ("1 . alpn=\"\\\"\\\\\u{0663}ab\\\"\"", false),
                 ("1 . alpn=\"", false),
                 ("1 . port=\"", false),
                 (r#"1 target key65400="unterminated"#, false),
                 (r#"1 target key65400="tail\""#, false),
                 ("1 target alpn=h2,h3 port=443", true),
+                ("1 target alpn=h\u{0663} port=443", true),
                 (r#"1 target alpn="h2,h3" port=443"#, true),
                 (r#"1 target alpn="f\\\\oo\,bar,h2" port=443"#, true),
                 (r"1 target alpn=\, port=443", true),
                 ("1 target alpn=h2, port=443", true),
+                (long_alpn.as_str(), true),
                 (r#"1 target key65400="complete""#, true),
                 (r#"1 target key65400="tail\\""#, true),
             ] {
@@ -904,6 +915,62 @@ records = [
         NetworkConfig {
             networking_method: Some(NetworkingMethod::Standalone as i32),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn udp_fec_flags_preserve_presence_through_api_and_toml() {
+        let values = |config: &NetworkConfig| {
+            [
+                config.enable_udp_fec,
+                config.enable_udp_fec_kcp,
+                config.enable_udp_fec_quic,
+            ]
+        };
+        for enabled in [
+            [None; 3],
+            [Some(false); 3],
+            [Some(true); 3],
+            [Some(true), None, None],
+            [None, Some(true), None],
+            [None, None, Some(true)],
+            [Some(true), Some(false), Some(true)],
+        ] {
+            let input = NetworkConfig {
+                enable_udp_fec: enabled[0],
+                enable_udp_fec_kcp: enabled[1],
+                enable_udp_fec_quic: enabled[2],
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            let patch = config.get_flags_patch();
+            assert_eq!(
+                [
+                    patch.enable_udp_fec,
+                    patch.enable_udp_fec_kcp,
+                    patch.enable_udp_fec_quic,
+                ],
+                enabled
+            );
+            let flags = config.get_flags();
+            assert_eq!(
+                [
+                    flags.enable_udp_fec,
+                    flags.enable_udp_fec_kcp,
+                    flags.enable_udp_fec_quic,
+                ],
+                enabled.map(|value| value.unwrap_or(false))
+            );
+            #[cfg(feature = "config-write")]
+            {
+                let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+                assert_eq!(
+                    values(&NetworkConfig::new_from_config(restored).unwrap()),
+                    enabled
+                );
+            }
+            let output = NetworkConfig::new_from_config(config).unwrap();
+            assert_eq!(values(&output), enabled);
         }
     }
 

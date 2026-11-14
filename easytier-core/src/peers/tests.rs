@@ -57,6 +57,16 @@ impl PeerConn {
     }
 }
 
+fn secure_mode_config(peer_key: u8) -> crate::proto::common::SecureModeConfig {
+    let private = StaticSecret::from([peer_key; 32]);
+    let public = PublicKey::from(&private);
+    crate::proto::common::SecureModeConfig {
+        enabled: true,
+        local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+        local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+    }
+}
+
 #[tokio::test]
 async fn peer_conn_handshake_over_memory_tunnel() {
     let peer_session_store = Arc::new(PeerSessionStore::new());
@@ -78,6 +88,67 @@ async fn peer_conn_handshake_over_memory_tunnel() {
     assert_eq!(server.get_peer_id(), 1);
     assert_eq!(client.get_conn_info().features, ["liveness-echo-v1"]);
     assert_eq!(server.get_conn_info().features, ["liveness-echo-v1"]);
+}
+
+#[tokio::test]
+async fn peer_conn_handshake_anonymizes_foreign_network_names() {
+    for (client_secure, server_secure) in [(false, false), (false, true), (true, true)] {
+        for (client_name, expected_reply) in
+            [("", "fg-"), ("foreign", "fg-foreign"), ("net", "net")]
+        {
+            let client_identity = if client_name == "net" {
+                NetworkIdentity::new(client_name.to_owned(), "secret".to_owned())
+            } else {
+                // No name or secret is required to send a valid plaintext request:
+                // the client sends a 32-byte all-zero digest without a secret.
+                NetworkIdentity::new_credential(client_name.to_owned())
+            };
+            let mut client_ctx = NoopPeerContext::new(client_identity);
+            let mut server_ctx =
+                NoopPeerContext::new(NetworkIdentity::new("net".to_owned(), "secret".to_owned()));
+            if client_secure {
+                client_ctx = client_ctx.with_secure_mode(secure_mode_config(1));
+            }
+            if server_secure {
+                server_ctx = server_ctx.with_secure_mode(secure_mode_config(2));
+            }
+
+            let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+            let mut client = PeerConn::new(
+                1,
+                Arc::new(client_ctx),
+                client_tunnel,
+                Arc::new(PeerSessionStore::new()),
+            );
+            let mut server = PeerConn::new(
+                2,
+                Arc::new(server_ctx),
+                server_tunnel,
+                Arc::new(PeerSessionStore::new()),
+            );
+            let (client_ret, server_ret) = timeout(Duration::from_secs(1), async {
+                tokio::join!(
+                    client.do_handshake_as_client(),
+                    server.do_handshake_as_server()
+                )
+            })
+            .await
+            .expect("memory tunnel handshake should complete");
+
+            client_ret.unwrap();
+            server_ret.unwrap();
+            assert_eq!(
+                client.get_network_identity().network_name,
+                expected_reply,
+                "client_name={client_name:?}, client_secure={client_secure}, server_secure={server_secure}",
+            );
+            assert_eq!(server.get_network_identity().network_name, client_name);
+            assert_eq!(
+                !client.get_conn_info().noise_remote_static_pubkey.is_empty(),
+                client_secure,
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -133,19 +204,13 @@ async fn peer_recv_limit_drops_excess_data_without_blocking_ping() {
 #[tokio::test]
 async fn peer_conn_noise_handshake_advertises_liveness_echo() {
     fn context(peer_key: u8) -> Arc<NoopPeerContext> {
-        let private = StaticSecret::from([peer_key; 32]);
-        let public = PublicKey::from(&private);
         Arc::new(
             NoopPeerContext::new(NetworkIdentity {
                 network_name: "net".to_owned(),
                 network_secret: Some("secret".to_owned()),
                 network_secret_digest: None,
             })
-            .with_secure_mode(crate::proto::common::SecureModeConfig {
-                enabled: true,
-                local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
-                local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
-            }),
+            .with_secure_mode(secure_mode_config(peer_key)),
         )
     }
 

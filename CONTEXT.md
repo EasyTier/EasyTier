@@ -112,6 +112,30 @@ data plane. The Cloudflare Adapter is an inbound-only relay hosted by one named
 Durable Object. Their public configuration exposes only capabilities each Host
 can execute; guest ABI details and serialized TOML remain internal.
 
+## UDP FEC
+
+The `peers/conn/fec` Module owns optional connection-local erasure recovery
+for native UDP. Its Interface is the existing handshake feature and the
+`enable_udp_fec` flag; either endpoint can request bidirectional protection
+when both support it. KCP and QUIC proxy packets require their respective
+`enable_udp_fec_kcp` and `enable_udp_fec_quic` flags. Its I/O Adapter encodes
+after the existing send filters and restores before the receive filters.
+The Module owns a bounded sliding coding window, batch deadlines, incremental
+decoding and delivery deduplication. Independent FEC frames share the byte-8
+discriminator position with ordinary peer packets; ordinary packet types
+must stay below 64. UDP sessions remain ordinary transports.
+The Implementation neither interprets inner traffic nor introduces feedback,
+congestion actions or an independent security protocol. See
+[the wire and lifecycle contract](docs/udp-fec-design.md).
+Performance validation separates erasure recovery from congestion: the
+2026-10-29 diagnosis traced TCP variance to pre-rate bursts overflowing a
+128-packet queue. Test-side pacing removed queue loss without changing FEC,
+but does not establish product pacing policy or replace the failed A/B gate.
+Follow-up TUN/UDP accounting found the largest burst already present at TUN;
+the sender path spread it out. This does not isolate receiver recovery or
+ACK feedback, and does not justify changing the coding or repair trigger.
+See the performance evidence and comparison rules in the same design document.
+
 ## Web configuration consumers
 
 Central network management and an external Console are alternative consumers

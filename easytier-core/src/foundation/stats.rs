@@ -169,6 +169,25 @@ pub enum MetricName {
     /// Traffic packets forwarded for foreign network, forward
     TrafficPacketsForeignForwardForwarded,
 
+    /// FEC source frames accepted by the UDP tunnel sink
+    UdpFecSourcePacketsTx,
+    /// FEC source frame bytes accepted by the UDP tunnel sink
+    UdpFecSourceBytesTx,
+    /// FEC repair frames accepted by the UDP tunnel sink
+    UdpFecRepairPacketsTx,
+    /// FEC repair frame bytes accepted by the UDP tunnel sink
+    UdpFecRepairBytesTx,
+    /// Valid FEC source frames received, including duplicate originals
+    UdpFecSourcePacketsRx,
+    /// Received FEC source frame bytes, excluding the UDP tunnel header
+    UdpFecSourceBytesRx,
+    /// Valid FEC repair frames received
+    UdpFecRepairPacketsRx,
+    /// Received FEC repair frame bytes, excluding the UDP tunnel header
+    UdpFecRepairBytesRx,
+    /// Deduplicated packets restored before connection filtering
+    UdpFecPacketsRecovered,
+
     /// Bytes accepted from one VPN portal client into the mesh
     VpnPortalClientBytesTx,
     /// Bytes delivered from the mesh to one VPN portal client
@@ -268,6 +287,16 @@ impl fmt::Display for MetricName {
             MetricName::TrafficPacketsForeignForwardForwarded => {
                 write!(f, "traffic_packets_foreign_forward_forwarded")
             }
+
+            MetricName::UdpFecSourcePacketsTx => write!(f, "udp_fec_source_packets_tx"),
+            MetricName::UdpFecSourceBytesTx => write!(f, "udp_fec_source_bytes_tx"),
+            MetricName::UdpFecRepairPacketsTx => write!(f, "udp_fec_repair_packets_tx"),
+            MetricName::UdpFecRepairBytesTx => write!(f, "udp_fec_repair_bytes_tx"),
+            MetricName::UdpFecSourcePacketsRx => write!(f, "udp_fec_source_packets_rx"),
+            MetricName::UdpFecSourceBytesRx => write!(f, "udp_fec_source_bytes_rx"),
+            MetricName::UdpFecRepairPacketsRx => write!(f, "udp_fec_repair_packets_rx"),
+            MetricName::UdpFecRepairBytesRx => write!(f, "udp_fec_repair_bytes_rx"),
+            MetricName::UdpFecPacketsRecovered => write!(f, "udp_fec_packets_recovered"),
 
             MetricName::VpnPortalClientBytesTx => write!(f, "vpn_portal_client_bytes_tx"),
             MetricName::VpnPortalClientBytesRx => write!(f, "vpn_portal_client_bytes_rx"),

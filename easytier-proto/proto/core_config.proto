@@ -102,14 +102,8 @@ message DnsRecordRaw {
   string name = 1;
   DnsRecordType type = 2;
   optional uint32 ttl = 3;
-  oneof data {
-    // One RDATA in presentation format, without an owner, TTL, class or type.
-    string value = 4;
-    DnsTxtData txt = 5;
-  }
-}
-
-message DnsTxtData {
-  // One UTF-8 character-string per segment, without DNS text escaping.
-  repeated string segments = 1;
+  // One RDATA in presentation format, without an owner, TTL, class or type.
+  optional string value = 4;
+  reserved 5;
+  reserved "txt";
 }
