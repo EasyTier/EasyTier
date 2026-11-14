@@ -13,6 +13,7 @@ const props = defineProps<{
     api: Api.RemoteClient;
     newConfigGenerator?: () => NetworkTypes.NetworkConfig;
     pauseAutoRefresh?: boolean;
+    copyText?: (text: string) => Promise<void>;
 }>();
 
 const instanceId = defineModel('instanceId', {
@@ -588,7 +589,7 @@ onUnmounted(() => {
                 </div>
 
                 <Status v-if="curNetworkInfo && curNetworkInfo.error_msg === ''" v-bind:cur-network-inst="curNetworkInfo"
-                    :api="api" :readonly="!currentNetworkControl.editable.value"
+                    :api="api" :readonly="!currentNetworkControl.editable.value" :copy-text="copyText"
                     class="mb-4">
                 </Status>
                 <Message v-else-if="curNetworkInfo?.error_msg" severity="error" class="mb-4">{{
