@@ -517,6 +517,16 @@ impl SystemConfig for ResolvConfConfigurator {
 
     fn original_resolv_conf(&self) -> io::Result<Option<String>> {
         let mut state = self.state.lock().unwrap();
+        if state.applied.is_none() && state.recovery.is_none() {
+            let current = ResolverFile::read(&self.path)?;
+            if !current.is_managed() {
+                // Reading upstreams does not require permission to create recovery
+                // state. set_dns repeats the identity check under the takeover lock.
+                Self::validate_original(&current.content)?;
+                state.original = Some(current);
+                return Ok(state.original.as_ref().map(|file| file.content.clone()));
+            }
+        }
         if state.recovery.is_none() {
             let parent = self
                 .path
@@ -572,13 +582,27 @@ impl SystemConfig for ResolvConfConfigurator {
             ));
         }
         let mut state = self.state.lock().unwrap();
-        let original = state.original.as_ref().ok_or_else(|| {
-            io::Error::other("Original DNS must be loaded before resolv.conf takeover")
-        })?;
-        let recovery = state
-            .recovery
-            .as_ref()
-            .ok_or_else(|| io::Error::other("System DNS lock is not held"))?;
+        if state.original.is_none() {
+            return Err(io::Error::other(
+                "Original DNS must be loaded before resolv.conf takeover",
+            ));
+        }
+        if state.recovery.is_none() {
+            let parent = self
+                .path
+                .parent()
+                .ok_or_else(|| io::Error::other("resolv.conf has no parent directory"))?;
+            state.recovery = Some(RecoveryStore::open(parent)?);
+            self.recover(state.recovery.as_ref().unwrap())?;
+            let current = ResolverFile::read(&self.path)?;
+            if state.original.as_ref() != Some(&current) {
+                return Err(io::Error::other(
+                    "resolv.conf changed outside EasyTier; reload original DNS before takeover",
+                ));
+            }
+        }
+        let original = state.original.as_ref().unwrap();
+        let recovery = state.recovery.as_ref().unwrap();
         let content = Self::desired_content(&original.content, cfg)?;
         let expected = state.applied.as_ref().unwrap_or(original);
         if state.applied.is_some() {
@@ -800,6 +824,40 @@ mod tests {
     }
 
     #[test]
+    fn clean_original_is_readable_without_recovery_storage() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resolv.conf");
+        let original = "nameserver 192.0.2.53\nsearch lan.test\n";
+        fs::write(&path, original)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444))?;
+        fs::write(directory.path().join(".easytier-dns"), "not a directory")?;
+        let configurator = ResolvConfConfigurator::new(path.clone());
+        assert_eq!(
+            configurator.original_resolv_conf()?,
+            Some(original.to_owned())
+        );
+        assert!(configurator.set_dns(&config()).is_err());
+        assert_eq!(fs::read_to_string(path)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn managed_original_still_requires_recovery_storage() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resolv.conf");
+        let managed = format!(
+            "{HEADER}{OWNER_PREFIX}{}\nnameserver 100.100.100.101\n",
+            uuid::Uuid::new_v4()
+        );
+        fs::write(&path, &managed)?;
+        fs::write(directory.path().join(".easytier-dns"), "not a directory")?;
+        let configurator = ResolvConfConfigurator::new(path.clone());
+        assert!(configurator.original_resolv_conf().is_err());
+        assert_eq!(fs::read_to_string(path)?, managed);
+        Ok(())
+    }
+
+    #[test]
     fn host_lock_excludes_another_owner_and_keeps_the_same_inode() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("resolv.conf");
@@ -807,11 +865,12 @@ mod tests {
         let first = ResolvConfConfigurator::new(path.clone());
         let second = ResolvConfConfigurator::new(path.clone());
         first.original_resolv_conf()?;
+        second.original_resolv_conf()?;
+        first.set_dns(&config())?;
         let lock = directory.path().join(".easytier-dns/lock");
         let inode = fs::metadata(&lock)?.ino();
         assert!(second.original_resolv_conf().is_err());
-        first.set_dns(&config())?;
-        assert!(second.original_resolv_conf().is_err());
+        assert!(second.set_dns(&config()).is_err());
         first.close()?;
         second.original_resolv_conf()?;
         second.set_dns(&config())?;
@@ -856,7 +915,10 @@ mod tests {
         configurator.original_resolv_conf()?;
         let original_inode = fs::metadata(&path)?.ino();
         {
-            let state = configurator.state.lock().unwrap();
+            let mut state = configurator.state.lock().unwrap();
+            assert!(state.recovery.is_none());
+            // Model the lock acquired at the start of set_dns before the crash.
+            state.recovery = Some(RecoveryStore::open(directory.path())?);
             let recovery = state.recovery.as_ref().unwrap();
             let original = state.original.as_ref().unwrap();
             let temporary = format!("resolver-{}", uuid::Uuid::new_v4());
@@ -876,6 +938,16 @@ mod tests {
         drop(configurator);
         let restarted = ResolvConfConfigurator::new(path.clone());
         restarted.original_resolv_conf()?;
+        assert_eq!(fs::read_to_string(&path)?, original);
+        assert_eq!(
+            fs::read_dir(directory.path().join(".easytier-dns"))?.count(),
+            3,
+        );
+        let mut rejected = config();
+        rejected.nameservers.push("192.0.2.53".to_owned());
+        // The first set reconciles recovery before rejecting this self-loop,
+        // so the pending record is cleaned without publishing the pending file.
+        assert!(restarted.set_dns(&rejected).is_err());
         assert_eq!(fs::read_to_string(path)?, original);
         assert_eq!(
             fs::metadata(directory.path().join("resolv.conf"))?.ino(),

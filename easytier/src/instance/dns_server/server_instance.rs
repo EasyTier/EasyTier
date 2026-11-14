@@ -1199,6 +1199,51 @@ mod tests {
             }
         }
 
+        #[cfg(target_os = "linux")]
+        #[tokio::test]
+        async fn startup_loads_plain_forwarder_without_recovery_storage() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("resolv.conf");
+            let original = "nameserver 192.0.2.53\nsearch lan.test\n";
+            std::fs::write(&path, original).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+            std::fs::write(directory.path().join(".easytier-dns"), "not a directory").unwrap();
+            let (core, _packets) = build_test_core(get_mock_global_ctx()).await;
+            let mut data = data_with(None).await;
+            data.dns_server = Server::new(
+                RunConfigBuilder::default()
+                    .general(GeneralConfigBuilder::default().build().unwrap())
+                    .defer_system_forwarder(true)
+                    .build()
+                    .unwrap(),
+            );
+            data.system_config = Some(Arc::new(
+                super::super::super::system_config::resolv_conf::ResolvConfConfigurator::new(
+                    path.clone(),
+                ),
+            ));
+            data.system_dns_ready.store(false, Ordering::SeqCst);
+            let data = Arc::new(data);
+            let server = MagicDnsServerInstance::start(
+                StandAloneServer::new(runtime_rpc_listener(rpc_address())),
+                data.clone(),
+                core.packet_plane(),
+                "100.100.100.0/24".parse().unwrap(),
+                async { Ok(()) },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                *data.forwarder_resolv_conf.lock().unwrap(),
+                Some(original.to_owned())
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+            server.clean_env().await;
+            core.stop().await;
+        }
+
         fn rpc_address() -> std::net::SocketAddr {
             std::net::TcpListener::bind("127.0.0.1:0")
                 .unwrap()
