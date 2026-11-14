@@ -226,30 +226,6 @@ impl RelayPeerMap {
 
     pub async fn send_msg(
         self: &Arc<Self>,
-        msg: ZCPacket,
-        dst_peer_id: PeerId,
-        policy: NextHopPolicy,
-    ) -> Result<(), Error> {
-        if self.is_secure_mode_enabled()
-            && msg
-                .peer_manager_header()
-                .is_some_and(|hdr| hdr.from_peer_id.get() == self.my_peer_id)
-        {
-            // Relay encryption assigns session sequence numbers before enqueue.
-            // Keep the original per-packet admission here: pre-encrypting a
-            // whole RPC can move its head outside the shared replay window
-            // when another relay send or direct connection overtakes it.
-            for packet in msg.into_batch() {
-                self.send_msg_inner(packet, dst_peer_id, policy.clone())
-                    .await?;
-            }
-            return Ok(());
-        }
-        self.send_msg_inner(msg, dst_peer_id, policy).await
-    }
-
-    async fn send_msg_inner(
-        self: &Arc<Self>,
         mut msg: ZCPacket,
         dst_peer_id: PeerId,
         policy: NextHopPolicy,
@@ -270,10 +246,9 @@ impl RelayPeerMap {
         if self.is_secure_mode_enabled() {
             match self.ensure_session(dst_peer_id, policy.clone()).await {
                 Ok(session) => {
-                    let my_peer_id = self.my_peer_id;
-                    session
-                        .encrypt_payload(my_peer_id, dst_peer_id, &mut msg)
-                        .map_err(|e| Error::RouteError(Some(format!("{e:?}"))))?;
+                    // Allocate sequence numbers only when each fragment reaches
+                    // the connection writer, including after pending flush.
+                    msg.for_each_packet_mut(|packet| packet.peer_session = Some(session.clone()));
                 }
                 Err(_) => {
                     // Handshake in progress, buffer the packet instead of dropping it
@@ -288,8 +263,11 @@ impl RelayPeerMap {
 
     fn buffer_pending_packet(&self, dst_peer_id: PeerId, pkt: ZCPacket, policy: NextHopPolicy) {
         let mut entry = self.pending_packets.entry(dst_peer_id).or_default();
-        if entry.len() < MAX_PENDING_PACKETS_PER_PEER {
-            entry.push((pkt, policy));
+        for packet in pkt.into_batch() {
+            if entry.len() >= MAX_PENDING_PACKETS_PER_PEER {
+                break;
+            }
+            entry.push((packet, policy.clone()));
         }
         // silently drop when buffer is full
     }
@@ -308,12 +286,7 @@ impl RelayPeerMap {
         );
 
         for (mut pkt, policy) in packets {
-            if session
-                .encrypt_payload(self.my_peer_id, dst_peer_id, &mut pkt)
-                .is_err()
-            {
-                continue;
-            }
+            pkt.peer_session = Some(session.clone());
             let _ = self.send_via_next_hop(pkt, dst_peer_id, policy).await;
         }
     }
@@ -798,8 +771,10 @@ mod tests {
 
     use super::*;
     use crate::{
+        peers::conn::peer_conn::PeerSessionTunnelFilter,
         peers::context::{ArcPeerContext, NetworkIdentity, PeerContext},
         proto::common::{Flags, SecureModeConfig},
+        tunnel::filter::TunnelFilter,
     };
 
     struct RelayTestContext {
@@ -827,6 +802,7 @@ mod tests {
         remote_pubkey: Vec<u8>,
         ack_policies: StdMutex<Vec<NextHopPolicy>>,
         packets: StdMutex<Vec<ZCPacket>>,
+        batch_lengths: StdMutex<Vec<usize>>,
         packet_gate: StdMutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     }
 
@@ -837,6 +813,7 @@ mod tests {
                 remote_pubkey,
                 ack_policies: StdMutex::new(Vec::new()),
                 packets: StdMutex::new(Vec::new()),
+                batch_lengths: StdMutex::new(Vec::new()),
                 packet_gate: StdMutex::new(None),
             }
         }
@@ -878,7 +855,13 @@ mod tests {
                     entered.send(()).unwrap();
                     resume.await.unwrap();
                 }
-                self.packets.lock().unwrap().push(msg);
+                self.batch_lengths.lock().unwrap().push(msg.batch_len());
+                let filter = PeerSessionTunnelFilter::new_with_peer(0, false);
+                for packet in msg.into_batch() {
+                    if let Some(packet) = filter.before_send(packet) {
+                        self.packets.lock().unwrap().push(packet);
+                    }
+                }
                 return Ok(());
             }
             if packet_type == PacketType::RelayHandshakeAck as u8 {
@@ -1041,7 +1024,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn secure_relay_splits_batches_before_pending_and_established_sessions() {
+    async fn secure_relay_batches_established_sessions_but_bounds_pending_fragments() {
         let (relay_a, relay_b, transport_a, _transport_b) = relay_test_pair();
 
         for pending in [true, false] {
@@ -1103,9 +1086,19 @@ mod tests {
                 payloads.len()
             };
             assert_eq!(packets.len(), expected_len);
+            let batch_lengths = std::mem::take(&mut *transport_a.batch_lengths.lock().unwrap());
+            assert_eq!(
+                batch_lengths,
+                if pending {
+                    vec![1; MAX_PENDING_PACKETS_PER_PEER]
+                } else {
+                    vec![payloads.len()]
+                }
+            );
             let mut received = 0;
             for (sequence, mut packet) in packets.into_iter().enumerate() {
                 assert_eq!(packet.batch_len(), 1);
+                assert!(packet.peer_session.is_none());
                 let header = packet.peer_manager_header().unwrap();
                 assert_eq!(header.from_peer_id.get(), 1);
                 assert_eq!(header.to_peer_id.get(), 2);
@@ -1137,8 +1130,8 @@ mod tests {
                     })
                     .collect(),
             );
-            // Hold the first relay enqueue after encryption, then let another
-            // sender sharing the same session reach the receiver first.
+            // Pause before queue admission: the whole batch must still have
+            // no sequence numbers when another sender reaches the writer.
             let (entered, resume) = transport_a.pause_next_packet();
             let sender = relay_a.clone();
             let sending =

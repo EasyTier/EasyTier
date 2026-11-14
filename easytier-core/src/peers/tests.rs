@@ -13,7 +13,7 @@ use crate::{
         conn::{
             peer_conn::{PeerConn, PeerConnId},
             peer_map::PeerMap,
-            peer_session::PeerSessionStore,
+            peer_session::{PeerSession, PeerSessionStore},
         },
         context::{NetworkIdentity, PeerContext},
         create_packet_recv_chan,
@@ -91,7 +91,7 @@ async fn peer_conn_handshake_over_memory_tunnel() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn peer_conn_pingpong_continues_while_a_large_rpc_batch_drains() {
+async fn peer_conn_pingpong_continues_while_a_secure_relay_batch_drains() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use futures::{SinkExt, StreamExt};
@@ -148,22 +148,46 @@ async fn peer_conn_pingpong_continues_while_a_large_rpc_batch_drains() {
     server.start_recv_loop(server_tx).await;
     client.start_pingpong();
     server.start_pingpong();
+    let session = Arc::new(PeerSession::new(
+        3,
+        [7; 32],
+        0,
+        0,
+        "aes-gcm".to_owned(),
+        "aes-gcm".to_owned(),
+        None,
+    ));
+    let endpoint = PeerSession::new(
+        1,
+        [7; 32],
+        0,
+        0,
+        "aes-gcm".to_owned(),
+        "aes-gcm".to_owned(),
+        None,
+    );
+    let destination = 3;
     let packets = (0..207u32)
         .map(|sequence| {
             let mut packet = ZCPacket::new_with_payload(&vec![sequence as u8; 1200]);
             packet.mut_payload()[..4].copy_from_slice(&sequence.to_le_bytes());
-            packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+            packet.fill_peer_manager_hdr(1, destination, PacketType::RpcReq as u8);
+            packet.peer_session = Some(session.clone());
             packet
         })
         .collect();
     client.send_msg(ZCPacket::batch(packets)).await.unwrap();
     timeout(Duration::from_secs(100), async {
         for sequence in 0..207u32 {
-            let packet = server_rx.recv().await.unwrap();
+            let mut packet = server_rx.recv().await.unwrap();
             assert_eq!(
                 packet.peer_manager_header().unwrap().packet_type,
                 PacketType::RpcReq as u8
             );
+            assert!(packet.peer_manager_header().unwrap().is_encrypted());
+            endpoint
+                .decrypt_payload(1, destination, &mut packet)
+                .unwrap();
             assert_eq!(packet.payload()[..4], sequence.to_le_bytes());
             assert_eq!(packet.payload()[4..], vec![sequence as u8; 1196]);
             if sequence == 100 {

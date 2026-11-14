@@ -19,6 +19,8 @@ use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 use zerocopy::byteorder::*;
 
+use crate::peers::conn::peer_session::PeerSession;
+
 type DefaultEndian = LittleEndian;
 
 const fn max(a: usize, b: usize) -> usize {
@@ -559,7 +561,7 @@ impl ZCPacketType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ZCPacket {
     inner: BytesMut,
     packet_type: ZCPacketType,
@@ -569,6 +571,20 @@ pub struct ZCPacket {
     /// Box the Vec header so ordinary packets only carry one extra pointer.
     #[allow(clippy::box_collection)]
     batch: Option<Box<Vec<ZCPacket>>>,
+    /// A locally selected relay session; encryption is deferred to the writer.
+    pub(crate) peer_session: Option<std::sync::Arc<PeerSession>>,
+}
+
+impl std::fmt::Debug for ZCPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZCPacket")
+            .field("inner", &self.inner)
+            .field("packet_type", &self.packet_type)
+            .field("flow_key", &self.flow_key)
+            .field("batch", &self.batch)
+            .field("peer_session", &self.peer_session.is_some())
+            .finish()
+    }
 }
 
 impl ZCPacket {
@@ -646,6 +662,7 @@ impl ZCPacket {
             packet_type: ZCPacketType::NIC,
             flow_key: None,
             batch: None,
+            peer_session: None,
         }
     }
 
@@ -655,6 +672,7 @@ impl ZCPacket {
             packet_type,
             flow_key: None,
             batch: None,
+            peer_session: None,
         }
     }
 
@@ -890,6 +908,7 @@ impl ZCPacket {
             let mut packet = Self::new_from_buf(buf, target_packet_type);
             packet.flow_key = self.flow_key;
             packet.batch = self.batch.take();
+            packet.peer_session = self.peer_session.take();
             return packet;
         }
 

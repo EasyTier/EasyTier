@@ -94,7 +94,7 @@ struct NoiseHandshakeResult {
 }
 
 #[derive(Clone)]
-struct PeerSessionTunnelFilter {
+pub(crate) struct PeerSessionTunnelFilter {
     enabled: bool,
     my_peer_id: Arc<AtomicCell<PeerId>>,
     peer_id: Arc<AtomicCell<Option<PeerId>>>,
@@ -102,7 +102,7 @@ struct PeerSessionTunnelFilter {
 }
 
 impl PeerSessionTunnelFilter {
-    fn new_with_peer(my_peer_id: PeerId, enabled: bool) -> Self {
+    pub(crate) fn new_with_peer(my_peer_id: PeerId, enabled: bool) -> Self {
         Self {
             enabled,
             my_peer_id: Arc::new(AtomicCell::new(my_peer_id)),
@@ -138,35 +138,40 @@ impl TunnelFilter for PeerSessionTunnelFilter {
     type FilterOutput = ();
 
     fn before_send(&self, mut data: crate::tunnel::SinkItem) -> Option<crate::tunnel::SinkItem> {
-        if !self.enabled {
+        let relay_session = data.peer_session.take();
+        if !self.enabled && relay_session.is_none() {
             return Some(data);
         }
 
         let Some(hdr) = data.peer_manager_header() else {
+            if relay_session.is_some() {
+                return None;
+            }
             return Some(data);
         };
 
-        if self.should_skip_encrypt(hdr) {
+        if self.should_skip_encrypt(hdr) || hdr.is_encrypted() {
             return Some(data);
         }
 
-        let Some(peer_id) = self.peer_id.load() else {
-            return Some(data);
-        };
-
-        let my_peer_id = self.my_peer_id.load();
-        if my_peer_id != hdr.from_peer_id.get() || hdr.to_peer_id.get() != peer_id {
-            return Some(data);
-        }
-
+        let from_peer_id = hdr.from_peer_id.get();
+        let to_peer_id = hdr.to_peer_id.get();
         let session_guard = self.session.load();
-        let Some(session) = session_guard.as_deref() else {
-            return Some(data);
+        let session = if let Some(session) = relay_session.as_deref() {
+            session
+        } else {
+            if from_peer_id != self.my_peer_id.load() || Some(to_peer_id) != self.peer_id.load() {
+                return Some(data);
+            }
+            let Some(session) = session_guard.as_deref() else {
+                return Some(data);
+            };
+            session
         };
-        if let Err(e) = session.encrypt_payload(my_peer_id, peer_id, &mut data) {
+        if let Err(e) = session.encrypt_payload(from_peer_id, to_peer_id, &mut data) {
             tracing::warn!(
-                ?my_peer_id,
-                ?peer_id,
+                ?from_peer_id,
+                ?to_peer_id,
                 ?e,
                 "PeerSessionTunnelFilter: encrypt failed, dropping packet"
             );
@@ -1618,6 +1623,98 @@ mod fec_tests;
 mod tests {
     use super::*;
     use crate::{peers::test_support::NoopPeerContext, tunnel::ring::create_ring_tunnel_pair};
+
+    #[test]
+    fn relay_session_is_consumed_once_and_invalid_sessions_fail_closed() {
+        let session = Arc::new(PeerSession::new(
+            2,
+            [7; 32],
+            0,
+            0,
+            "aes-gcm".to_owned(),
+            "aes-gcm".to_owned(),
+            None,
+        ));
+        let receiver = PeerSession::new(
+            1,
+            [7; 32],
+            0,
+            0,
+            "aes-gcm".to_owned(),
+            "aes-gcm".to_owned(),
+            None,
+        );
+        let filter = PeerSessionTunnelFilter::new_with_peer(1, true);
+        filter.set_peer_id(2);
+        filter.set_session(session.clone());
+        let mut packet = ZCPacket::new_with_payload(b"relay");
+        packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+        packet.peer_session = Some(session.clone());
+
+        let encrypted = filter.before_send(packet).unwrap();
+        assert!(encrypted.peer_session.is_none());
+        // A route may now be direct. Do not allocate another nonce or encrypt
+        // twice, including when an already encrypted packet is forwarded.
+        let mut encrypted = filter.before_send(encrypted).unwrap();
+        receiver.decrypt_payload(1, 2, &mut encrypted).unwrap();
+        assert_eq!(encrypted.payload(), b"relay");
+
+        let mut packet = ZCPacket::new_with_payload(b"invalid");
+        packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+        packet.peer_session = Some(session.clone());
+        session.invalidate();
+        assert!(filter.before_send(packet).is_none());
+
+        let mut heartbeat = ZCPacket::new_with_payload(b"pong");
+        heartbeat.fill_peer_manager_hdr(1, 2, PacketType::Pong as u8);
+        assert!(filter.before_send(heartbeat).is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_writer_releases_queued_relay_sessions() {
+        use crate::tunnel::ring::{RingTunnel, create_ring_socket_pair};
+
+        let (local, _remote) = create_ring_socket_pair(1);
+        let filter = PeerSessionTunnelFilter::new_with_peer(1, false);
+        let tunnel = MpscTunnel::new_peer_conn(
+            TunnelWithFilter::new(RingTunnel::new(local, None), filter),
+            Duration::from_secs(7),
+        );
+        let session = Arc::new(PeerSession::new(
+            3,
+            [7; 32],
+            0,
+            0,
+            "aes-gcm".to_owned(),
+            "aes-gcm".to_owned(),
+            None,
+        ));
+        let weak = Arc::downgrade(&session);
+        let batch = ZCPacket::batch(
+            (0..207)
+                .map(|_| {
+                    let mut packet = ZCPacket::new_with_payload(b"queued");
+                    packet.fill_peer_manager_hdr(1, 3, PacketType::RpcReq as u8);
+                    packet.peer_session = Some(session.clone());
+                    packet
+                })
+                .collect(),
+        );
+        drop(session);
+        let sender = tunnel.get_sink();
+        sender.send(batch).await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(weak.upgrade().is_some());
+        tokio::time::advance(Duration::from_secs(8)).await;
+        tokio::task::yield_now().await;
+        assert!(weak.upgrade().is_none());
+        let mut packet = ZCPacket::new_with_payload(b"closed");
+        packet.fill_peer_manager_hdr(1, 3, PacketType::RpcReq as u8);
+        assert!(matches!(
+            sender.try_send(packet),
+            Err(TunnelError::Shutdown)
+        ));
+    }
 
     #[tokio::test]
     async fn connection_origin_determines_hole_punch_and_ping_policy() {

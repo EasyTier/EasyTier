@@ -13,7 +13,10 @@ use crate::{
     foundation::time::{Duration, timeout},
     packet::{PacketType, ZCPacket},
     peers::{
-        conn::{fec, peer_session::PeerSessionStore},
+        conn::{
+            fec,
+            peer_session::{PeerSession, PeerSessionStore},
+        },
         context::NetworkIdentity,
         test_support::NoopPeerContext,
     },
@@ -294,15 +297,37 @@ async fn batched_packets_are_filtered_and_delivered_as_individual_frames() {
             payload
         })
         .collect();
-    for noise in [false, true] {
+    for (noise, relay) in [(false, false), (true, false), (false, true), (true, true)] {
         for (enabled, tunnel_type) in [(false, "udp"), (true, "udp"), (false, "tcp")] {
             let (client, server, filters) = connect([enabled; 2], tunnel_type, noise).await;
+            let session = Arc::new(PeerSession::new(
+                3,
+                [7; 32],
+                0,
+                0,
+                "aes-gcm".to_owned(),
+                "aes-gcm".to_owned(),
+                None,
+            ));
+            let endpoint = PeerSession::new(
+                1,
+                [7; 32],
+                0,
+                0,
+                "aes-gcm".to_owned(),
+                "aes-gcm".to_owned(),
+                None,
+            );
+            let destination = if relay { 3 } else { 2 };
             for packet_type in [PacketType::RpcReq, PacketType::Data] {
                 let packets = payloads
                     .iter()
                     .map(|payload| {
                         let mut packet = ZCPacket::new_with_payload(payload);
-                        packet.fill_peer_manager_hdr(1, 2, packet_type as u8);
+                        packet.fill_peer_manager_hdr(1, destination, packet_type as u8);
+                        if relay {
+                            packet.peer_session = Some(session.clone());
+                        }
                         packet
                     })
                     .collect();
@@ -313,15 +338,23 @@ async fn batched_packets_are_filtered_and_delivered_as_individual_frames() {
                 timeout(Duration::from_secs(5), async {
                     let mut received = BTreeSet::new();
                     for _ in &payloads {
-                        let packet = server
+                        let mut packet = server
                             .recv_next_peer_manager_packet(Some(packet_type))
                             .await
                             .unwrap();
                         assert_eq!(packet.batch_len(), 1);
                         let header = packet.peer_manager_header().unwrap();
                         assert_eq!(header.from_peer_id.get(), 1);
-                        assert_eq!(header.to_peer_id.get(), 2);
+                        assert_eq!(header.to_peer_id.get(), destination);
                         assert_eq!(header.packet_type, packet_type as u8);
+                        assert_eq!(header.is_encrypted(), relay);
+                        assert!(packet.peer_session.is_none());
+                        if relay {
+                            endpoint
+                                .decrypt_payload(1, destination, &mut packet)
+                                .unwrap();
+                        }
+                        let header = packet.peer_manager_header().unwrap();
                         assert!(!header.is_encrypted());
                         let sequence =
                             u32::from_le_bytes(packet.payload()[..4].try_into().unwrap()) as usize;
@@ -338,7 +371,7 @@ async fn batched_packets_are_filtered_and_delivered_as_individual_frames() {
             assert_eq!(outgoing.rpc_packets.load(Ordering::Relaxed), payloads.len());
             assert_eq!(
                 outgoing.encrypted_rpc_packets.load(Ordering::Relaxed),
-                if noise { payloads.len() } else { 0 }
+                if noise || relay { payloads.len() } else { 0 }
             );
             assert_eq!(
                 outgoing.sources.load(Ordering::Relaxed),
