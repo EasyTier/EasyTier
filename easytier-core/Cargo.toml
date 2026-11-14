@@ -33,6 +33,7 @@ chrono = { workspace = true, features = ["clock"] }
 cidr = { workspace = true, features = ["serde"] }
 crossbeam-utils.workspace = true
 dashmap.workspace = true
+educe.workspace = true
 bon.workspace = true
 hickory-proto = { version = "0.25.2", default-features = false, features = ["text-parsing"] }
 easytier-proto = { workspace = true, features = ["core"] }

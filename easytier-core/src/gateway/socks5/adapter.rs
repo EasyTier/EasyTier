@@ -11,6 +11,11 @@ use std::{
 
 use tokio::{sync::Mutex, task::JoinSet};
 
+use super::{
+    AcceptAuthentication, AsyncTcpConnector, Config, HostSocks5ServerRuntime, Result, Socks5Socket,
+    SocksError, codec::ReplyError,
+};
+use crate::socket::SocketContext;
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
     foundation::task::reap_joinset_background,
@@ -20,18 +25,13 @@ use crate::{
     },
     host::dns::DnsResolver,
     socket::{
-        SocketContext,
+        BindConfig,
         tcp::{
             TcpListenOptions, TcpSocketPurpose, VirtualTcpListener, VirtualTcpListenerFactory,
             VirtualTcpSocket, VirtualTcpSocketFactory,
         },
         udp::VirtualUdpSocketFactory,
     },
-};
-
-use super::{
-    AcceptAuthentication, AsyncTcpConnector, Config, HostSocks5ServerRuntime, Result, Socks5Socket,
-    SocksError, codec::ReplyError,
 };
 
 struct Socks5DataPlaneConnector<H>
@@ -150,12 +150,16 @@ where
         let Some(bind_addr) = self.runtime_config.snapshot().services.gateway.socks5_bind else {
             return Ok(());
         };
-        let options = TcpListenOptions::socks5(bind_addr);
-        let bind = options
-            .bind
-            .clone()
-            .with_context(self.socket_context.clone());
-        let listener = self.host.bind_tcp(options.with_bind(bind)).await?;
+        let bind = BindConfig {
+            local_addr: Some(bind_addr),
+            need_protect: false,
+            context: self.socket_context.clone(),
+            ..BindConfig::default()
+        };
+        let listener = self
+            .host
+            .bind_tcp(TcpListenOptions::socks5(bind_addr).with_bind(bind))
+            .await?;
         let consumer_lease = self.data_plane.acquire_consumer_lease()?;
 
         self.tasks.lock().unwrap().spawn(reap_joinset_background(

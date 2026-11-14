@@ -146,9 +146,9 @@ impl<'a> Decoder<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::socket::{NetNamespace, SocketContext};
-
     use super::*;
+    use crate::socket::NetNamespace;
+    use crate::socket::SocketContext;
 
     #[test]
     fn query_encoding_has_stable_versioned_layout() {

@@ -17,6 +17,8 @@ use rand::Rng as _;
 use tokio::task::JoinSet;
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     config::{P2pPolicyFlags, PeerId},
     connectivity::{
@@ -40,10 +42,10 @@ use crate::{
         rpc_types::{self, controller::BaseController},
     },
     socket::{
-        IpVersion, SocketContext,
+        IpVersion,
         tcp::{
-            TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
-            VirtualTcpListenerFactory, VirtualTcpSocketFactory,
+            TcpConnectOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory,
+            VirtualTcpSocketFactory,
         },
     },
 };
@@ -223,14 +225,17 @@ where
 {
     let bind_addr = bind_addr_for_port(0, is_v6);
     tracing::trace!(?bind_addr, is_v6, "tcp hole punch select local port");
-    let context = context.with_ip_version(if is_v6 { IpVersion::V6 } else { IpVersion::V4 });
+    let context = SocketContext {
+        ip_version: if is_v6 { IpVersion::V6 } else { IpVersion::V4 },
+        ..context
+    };
     let listener = host
         .bind_tcp(
-            TcpListenOptions::hole_punch(bind_addr).with_bind(
-                TcpBindOptions::default()
-                    .with_context(context)
-                    .with_local_addr(Some(bind_addr)),
-            ),
+            TcpListenOptions::hole_punch(bind_addr).with_bind(BindConfig {
+                context,
+                local_addr: Some(bind_addr),
+                ..BindConfig::default()
+            }),
         )
         .await?;
     let port = listener.local_addr()?.port();
@@ -264,21 +269,26 @@ where
     );
 
     let bind_addr = bind_addr_for_port(local_port, remote_mapped_addr.is_ipv6());
-    let context = context.with_ip_version(if remote_mapped_addr.is_ipv6() {
-        IpVersion::V6
-    } else {
-        IpVersion::V4
-    });
+    let context = SocketContext {
+        ip_version: if remote_mapped_addr.is_ipv6() {
+            IpVersion::V6
+        } else {
+            IpVersion::V4
+        },
+        ..context
+    };
     let requested_url: url::Url = format!("tcp://{remote_mapped_addr}").parse().unwrap();
 
     let start = crate::foundation::time::Instant::now();
     let mut attempts = 0_u32;
     while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
         attempts = attempts.wrapping_add(1);
-        let bind = TcpBindOptions::default()
-            .with_context(context.clone())
-            .with_local_addr(Some(bind_addr))
-            .with_only_v6(true);
+        let bind = BindConfig {
+            context: context.clone(),
+            local_addr: Some(bind_addr),
+            only_v6: true,
+            ..BindConfig::default()
+        };
         let options =
             TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
         if let Ok(Ok(socket)) =
@@ -377,10 +387,15 @@ fn fallback_listener_options(
     socket_context: SocketContext,
     bind_addr: std::net::SocketAddr,
 ) -> TcpListenOptions {
-    let bind = TcpBindOptions::default()
-        .with_context(socket_context.with_ip_version(IpVersion::V4))
-        .with_local_addr(Some(bind_addr))
-        .with_only_v6(true);
+    let bind = BindConfig {
+        context: SocketContext {
+            ip_version: IpVersion::V4,
+            ..socket_context
+        },
+        local_addr: Some(bind_addr),
+        only_v6: true,
+        ..BindConfig::default()
+    };
     TcpListenOptions::hole_punch(bind_addr).with_bind(bind)
 }
 
@@ -1094,9 +1109,11 @@ mod tests {
     #[test]
     fn fallback_listener_normalizes_context_to_ipv4() {
         let bind_addr = "0.0.0.0:23333".parse().unwrap();
-        let context = SocketContext::default()
-            .with_socket_mark(Some(0))
-            .with_netns(Some(crate::socket::NetNamespace::new("test-netns")));
+        let context = SocketContext {
+            socket_mark: Some(0),
+            netns: Some(crate::socket::NetNamespace::new("test-netns")),
+            ..SocketContext::default()
+        };
 
         let options = fallback_listener_options(context, bind_addr);
 

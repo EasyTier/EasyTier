@@ -32,12 +32,12 @@ use crate::{
         DataPlaneUdpSocket,
     },
     socket::{
-        SocketContext,
+        BindConfig, SocketContext,
         tcp::{
             TcpListenOptions, TcpSocketPurpose, VirtualTcpListener, VirtualTcpListenerFactory,
             VirtualTcpSocket, VirtualTcpSocketFactory,
         },
-        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+        udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
     },
 };
 
@@ -368,10 +368,12 @@ where
             } else {
                 PortForwardSocket::Udp(
                     self.host
-                        .bind_udp(
-                            UdpBindOptions::port_forward(cfg.bind_addr)
-                                .with_context(self.socket_context.clone()),
-                        )
+                        .bind_udp(BindConfig {
+                            local_addr: Some(cfg.bind_addr),
+                            need_protect: false,
+                            context: self.socket_context.clone(),
+                            ..BindConfig::default()
+                        })
                         .await?,
                 )
             };
@@ -388,10 +390,10 @@ where
 
     fn tcp_listen_options(&self, bind_addr: SocketAddr) -> TcpListenOptions {
         let options = TcpListenOptions::port_forward(bind_addr);
-        let bind = options
-            .bind
-            .clone()
-            .with_context(self.socket_context.clone());
+        let bind = BindConfig {
+            context: self.socket_context.clone(),
+            ..options.bind.clone()
+        };
         options.with_bind(bind)
     }
 
@@ -802,10 +804,13 @@ where
         if self.data_plane.is_local_virtual_ip(dst_addr.ip()) {
             let socket = self
                 .host
-                .bind_udp(
-                    UdpBindOptions::port_lease("0.0.0.0:0".parse().unwrap())
-                        .with_context(self.socket_context.clone()),
-                )
+                .bind_udp(BindConfig {
+                    local_addr: Some("0.0.0.0:0".parse().unwrap()),
+                    bind_device: Some(String::new()),
+                    need_protect: false,
+                    context: self.socket_context.clone(),
+                    ..BindConfig::default()
+                })
                 .await?;
             Ok(Arc::new(PortForwardUdpFlow::Host(socket)))
         } else {

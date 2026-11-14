@@ -3,6 +3,7 @@ package netstd
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/easytier/easytier/easytier-go/platform"
@@ -29,9 +30,9 @@ func TestSocketFactoryReusesTCPSourcePort(t *testing.T) {
 	sourcePort := unusedTCP4Port(t)
 
 	reuse := true
-	bind := platform.TCPBindOptions{
+	bind := platform.BindConfig{
 		Context:   platform.SocketContext{IPVersion: platform.IPVersionV4},
-		LocalAddr: &net.TCPAddr{IP: net.IPv4zero, Port: sourcePort},
+		LocalAddr: sourceAddr(sourcePort),
 		ReuseAddr: &reuse,
 		ReusePort: true,
 		OnlyV6:    true,
@@ -52,9 +53,9 @@ func TestSocketFactoryAcceptsOnlyV6ForIPv4HolePunchListener(t *testing.T) {
 	listener, err := (SocketFactory{}).ListenTCP(
 		context.Background(),
 		platform.TCPListenOptions{
-			Bind: platform.TCPBindOptions{
+			Bind: platform.BindConfig{
 				Context:   platform.SocketContext{IPVersion: platform.IPVersionV4},
-				LocalAddr: &net.TCPAddr{IP: net.IPv4zero},
+				LocalAddr: sourceAddr(0),
 				OnlyV6:    true,
 			},
 			Purpose: platform.TCPListenHolePunch,
@@ -65,6 +66,14 @@ func TestSocketFactoryAcceptsOnlyV6ForIPv4HolePunchListener(t *testing.T) {
 	}
 	if err := listener.Close(); err != nil {
 		t.Fatalf("close TCP hole punch listener: %v", err)
+	}
+}
+
+func TestSocketFactoryRequiresLocalAddressForTCPListener(t *testing.T) {
+	listener, err := (SocketFactory{}).ListenTCP(context.Background(), platform.TCPListenOptions{})
+	if err == nil {
+		listener.Close()
+		t.Fatal("accepted a TCP listener without a local address")
 	}
 }
 
@@ -90,7 +99,7 @@ func unusedTCP4Port(t *testing.T) int {
 func connectTCP(
 	t *testing.T,
 	server net.Listener,
-	bind platform.TCPBindOptions,
+	bind platform.BindConfig,
 	purpose platform.TCPConnectPurpose,
 ) net.Conn {
 	t.Helper()
@@ -106,4 +115,9 @@ func connectTCP(
 		t.Fatalf("connect TCP socket: %v", err)
 	}
 	return connection
+}
+
+func sourceAddr(port int) *netip.AddrPort {
+	address := netip.AddrPortFrom(netip.IPv4Unspecified(), uint16(port))
+	return &address
 }

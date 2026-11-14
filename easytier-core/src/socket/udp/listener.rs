@@ -11,9 +11,10 @@ use url::Url;
 use crate::socket::{ListenerConnectionCounter, SocketListener};
 
 use super::{
-    UdpBindOptions, UdpSession, UdpSessionLayer, UdpSessionListenRequest, UdpSessionProtocol,
+    UdpSession, UdpSessionLayer, UdpSessionListenRequest, UdpSessionProtocol,
     UdpSessionStunResponder, VirtualUdpSocket, VirtualUdpSocketFactory,
 };
+use crate::socket::BindConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UdpSessionAcceptKind {
@@ -57,9 +58,11 @@ where
     F: VirtualUdpSocketFactory,
 {
     pub fn new(url: Url, local_addr: SocketAddr, factory: Arc<F>) -> Self {
-        let request = UdpSessionListenRequest::new(
-            UdpBindOptions::port_bound_listener(local_addr).with_only_v6(true),
-        );
+        let request = UdpSessionListenRequest::new(BindConfig {
+            local_addr: Some(local_addr),
+            only_v6: true,
+            ..BindConfig::default()
+        });
         Self::new_with_request(url, request, UdpSessionAcceptKind::EasyTierMux, factory)
     }
 

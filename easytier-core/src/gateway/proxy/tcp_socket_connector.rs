@@ -2,15 +2,13 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 
+use super::{tcp_proxy_engine::TcpProxyMode, traits::TcpProxyDestinationConnector};
+use crate::socket::SocketContext;
 use crate::{
     foundation::time::timeout,
-    socket::{
-        SocketContext,
-        tcp::{TcpConnectOptions, VirtualTcpSocketFactory},
-    },
+    socket::tcp::{TcpConnectOptions, VirtualTcpSocketFactory},
 };
-
-use super::{tcp_proxy_engine::TcpProxyMode, traits::TcpProxyDestinationConnector};
+use crate::{socket::BindConfig, socket::IpVersion};
 
 pub struct TcpSocketProxyConnector<F: VirtualTcpSocketFactory> {
     socket_factory: Arc<F>,
@@ -38,19 +36,18 @@ impl<F: VirtualTcpSocketFactory> TcpProxyDestinationConnector for TcpSocketProxy
     async fn connect(&self, _src: SocketAddr, dst: SocketAddr) -> anyhow::Result<Self::DstStream> {
         timeout(
             Duration::from_secs(10),
-            self.socket_factory.connect_tcp(
-                TcpConnectOptions::proxy_nat(dst).with_bind(
-                    crate::socket::tcp::TcpBindOptions::default().with_context(
-                        self.socket_context
-                            .clone()
-                            .with_ip_version(if dst.is_ipv4() {
-                                crate::socket::IpVersion::V4
-                            } else {
-                                crate::socket::IpVersion::V6
-                            }),
-                    ),
-                ),
-            ),
+            self.socket_factory
+                .connect_tcp(TcpConnectOptions::proxy_nat(dst).with_bind(BindConfig {
+                    context: SocketContext {
+                        ip_version: if dst.is_ipv4() {
+                            IpVersion::V4
+                        } else {
+                            IpVersion::V6
+                        },
+                        ..self.socket_context.clone()
+                    },
+                    ..BindConfig::default()
+                })),
         )
         .await?
         .with_context(|| format!("connect to nat dst failed: {dst:?}"))

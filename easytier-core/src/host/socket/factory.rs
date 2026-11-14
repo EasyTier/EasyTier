@@ -1,8 +1,9 @@
 use std::{io, net::SocketAddr, sync::Arc, task::Poll};
 
+use crate::socket::BindConfig;
 use crate::socket::{
     tcp::{TcpConnectOptions, VirtualTcpSocketFactory},
-    udp::{UdpBindOptions, VirtualUdpSocketFactory},
+    udp::VirtualUdpSocketFactory,
 };
 use async_trait::async_trait;
 
@@ -46,11 +47,7 @@ pub trait HostSocketFactoryIo: HostSocketIo {
         operation: HostOperationId,
     ) -> Poll<io::Result<HostTcpConnectResult>>;
 
-    fn submit_udp_bind(
-        &self,
-        operation: HostOperationId,
-        options: &UdpBindOptions,
-    ) -> io::Result<()>;
+    fn submit_udp_bind(&self, operation: HostOperationId, options: &BindConfig) -> io::Result<()>;
 
     fn take_udp_bind(&self, operation: HostOperationId) -> Poll<io::Result<HostUdpBindResult>>;
 }
@@ -106,7 +103,7 @@ where
         ))
     }
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> io::Result<Arc<HostUdpSocket>> {
+    async fn bind_udp(&self, options: BindConfig) -> io::Result<Arc<HostUdpSocket>> {
         let context = options.context.clone();
         let result = self
             .runtime
@@ -145,7 +142,7 @@ where
 {
     type Socket = HostUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         Ok(self.bind_udp(options).await?)
     }
 }
@@ -158,8 +155,9 @@ mod tests {
     };
 
     use crate::socket::{
-        tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocket},
-        udp::{UdpSocketPurpose, UdpSocketSendMeta, VirtualUdpSocket},
+        BindConfig, SocketContext,
+        tcp::{TcpSocketPurpose, VirtualTcpSocket},
+        udp::{UdpSocketSendMeta, VirtualUdpSocket},
     };
 
     use super::*;
@@ -170,7 +168,7 @@ mod tests {
             result: Option<io::Result<HostTcpConnectResult>>,
         },
         Udp {
-            options: UdpBindOptions,
+            options: BindConfig,
             result: Option<io::Result<HostUdpBindResult>>,
         },
     }
@@ -282,7 +280,7 @@ mod tests {
         fn submit_udp_bind(
             &self,
             operation: HostOperationId,
-            options: &UdpBindOptions,
+            options: &BindConfig,
         ) -> io::Result<()> {
             self.creates.lock().unwrap().insert(
                 operation,
@@ -387,12 +385,17 @@ mod tests {
         let (runtime, factory) = test_factory(io.clone());
         let options = TcpConnectOptions {
             remote_addr: "192.0.2.2:11013".parse().unwrap(),
-            bind: TcpBindOptions::default()
-                .with_local_addr(Some("192.0.2.1:0".parse().unwrap()))
-                .with_socket_mark(Some(7))
-                .with_bind_device(Some("host-device".to_owned()))
-                .with_reuse_port(true)
-                .with_need_protect(true),
+            bind: BindConfig {
+                local_addr: Some("192.0.2.1:0".parse().unwrap()),
+                context: SocketContext {
+                    socket_mark: Some(7),
+                    ..SocketContext::default()
+                },
+                bind_device: Some("host-device".to_owned()),
+                reuse_port: true,
+                need_protect: true,
+                ..BindConfig::default()
+            },
             purpose: TcpSocketPurpose::ManualConnect,
         };
         let task = tokio::spawn({
@@ -439,15 +442,17 @@ mod tests {
     async fn forwards_udp_bind_options_and_wraps_completed_handle() {
         let io = Arc::new(TestHostIo::default());
         let (runtime, factory) = test_factory(io.clone());
-        let options = UdpBindOptions {
-            context: crate::socket::SocketContext::default().with_socket_mark(Some(9)),
+        let options = BindConfig {
+            context: SocketContext {
+                socket_mark: Some(9),
+                ..SocketContext::default()
+            },
             need_protect: false,
             local_addr: Some("[::]:11013".parse().unwrap()),
-            bind_device: Some("host-device".to_owned()),
-            reuse_addr: true,
+            bind_device: Some("host-device".into()),
+            reuse_addr: Some(true),
             reuse_port: true,
             only_v6: true,
-            purpose: UdpSocketPurpose::PortBoundListener,
         };
         let task = tokio::spawn({
             let factory = factory.clone();
