@@ -40,7 +40,7 @@ use crate::{
     proto::common::{Flags, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     tunnel::{
-        Tunnel,
+        Tunnel, TunnelError,
         encrypt::{
             Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256,
             validate_algorithm,
@@ -2936,7 +2936,16 @@ impl PeerOutboundPacketRouter {
             Ok(())
         } else {
             tracing::error!(?errs, "send_msg has error");
-            Err(anyhow::anyhow!("send_msg has error: {:?}", errs).into())
+            if errs
+                .iter()
+                .all(|error| matches!(error, Error::Tunnel(TunnelError::BufferFull)))
+            {
+                // Keep congestion distinguishable from fatal send failures,
+                // including when a fanout packet encounters multiple full queues.
+                Err(TunnelError::BufferFull.into())
+            } else {
+                Err(anyhow::anyhow!("send_msg has error: {:?}", errs).into())
+            }
         }
     }
 }
