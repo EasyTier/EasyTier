@@ -73,7 +73,7 @@ use easytier::{
                 WebClientServiceClientFactory,
             },
         },
-        common::{NatType, PortForwardConfigPb, SocketType},
+        common::{NatType, PortForwardConfigPb, SocketType, TunnelInfo},
         peer_rpc::{
             GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory, PeerIdentityType,
             SecureAuthLevel,
@@ -1143,6 +1143,38 @@ mod tests {
     }
 
     #[test]
+    fn peer_conns_keeps_requested_and_resolved_addresses_distinct() {
+        use easytier::proto::common::Url;
+
+        let tunnel = TunnelInfo {
+            remote_addr: Some(Url { url: "tcp://example.com:11010".to_string() }),
+            resolved_remote_addr: Some(Url { url: "tcp://203.0.113.5:11010".to_string() }),
+            ..Default::default()
+        };
+        assert_eq!(
+            peer_conn_remote_addrs(Some(&tunnel)),
+            ("tcp://example.com:11010".to_string(), "tcp://203.0.113.5:11010".to_string())
+        );
+        let unresolved = TunnelInfo {
+            resolved_remote_addr: None,
+            ..tunnel.clone()
+        };
+        assert_eq!(
+            peer_conn_remote_addrs(Some(&unresolved)),
+            ("tcp://example.com:11010".to_string(), "-".to_string())
+        );
+        let resolved_only = TunnelInfo {
+            remote_addr: None,
+            ..tunnel
+        };
+        assert_eq!(
+            peer_conn_remote_addrs(Some(&resolved_only)),
+            ("-".to_string(), "tcp://203.0.113.5:11010".to_string())
+        );
+        assert_eq!(peer_conn_remote_addrs(None), ("-".to_string(), "-".to_string()));
+    }
+
+    #[test]
     fn peer_list_command_still_parses_without_subcommand() {
         let cli = Cli::try_parse_from(["easytier-cli", "peer"]).unwrap();
         assert!(matches!(
@@ -1150,6 +1182,17 @@ mod tests {
             SubCommand::Peer(PeerArgs { sub_command: None })
         ));
     }
+}
+
+fn peer_conn_remote_addrs(tunnel: Option<&TunnelInfo>) -> (String, String) {
+    let display = |addr: Option<&easytier::proto::common::Url>| {
+        addr.map(|url| url.normalized_tunnel_display())
+            .unwrap_or_else(|| "-".to_string())
+    };
+    (
+        display(tunnel.and_then(|info| info.remote_addr.as_ref())),
+        display(tunnel.and_then(|info| info.resolved_remote_addr.as_ref())),
+    )
 }
 
 fn format_proxy_cidrs(value: &str) -> String {
@@ -2078,17 +2121,13 @@ impl<'a> CommandHandler<'a> {
             .collect_instance_results(|handler| Box::pin(handler.fetch_peer_list_data()))
             .await?;
 
-        if *self.output_format == OutputFormat::Json {
-            return self.print_json_results(results);
-        }
-
-        self.print_results(&results, |data| {
+        let rows = results.into_iter().map(|result| result.map(|data| {
             let mut rows: Vec<ConnRow> = Vec::new();
             for pair in &data.peer_routes {
                 let peer = pair.peer.as_ref();
                 let route = pair.route.clone().unwrap_or_default();
                 let peer_id = route.peer_id.to_string();
-                for conn in peer.map(|p| &p.conns).unwrap_or(&vec![]) {
+                for conn in peer.into_iter().flat_map(|p| &p.conns) {
                     let proto = conn
                         .tunnel
                         .as_ref()
@@ -2099,11 +2138,7 @@ impl<'a> CommandHandler<'a> {
                         .as_ref()
                         .and_then(|t| t.display_local_addr())
                         .unwrap_or_else(|| "-".to_string());
-                    let remote = conn
-                        .tunnel
-                        .as_ref()
-                        .and_then(|t| t.display_remote_addr())
-                        .unwrap_or_else(|| "-".to_string());
+                    let (remote, resolved) = peer_conn_remote_addrs(conn.tunnel.as_ref());
                     let stats = conn
                         .stats
                         .as_ref()
@@ -2114,14 +2149,7 @@ impl<'a> CommandHandler<'a> {
                         proto,
                         local_addr: local,
                         remote_addr: remote,
-                        resolved_remote_addr: conn
-                            .tunnel
-                            .as_ref()
-                            .and_then(|t| {
-                                t.effective_remote_addr()
-                                    .map(|u| u.url.clone())
-                            })
-                            .unwrap_or_else(|| "-".to_string()),
+                        resolved_remote_addr: resolved,
                         lat_ms: format!("{:.2}", stats.map(|(_, _, l)| l as f64 / 1000.0).unwrap_or(0.0)),
                         rx_bytes: format_size(stats.map(|(r, _, _)| r).unwrap_or(0), humansize::DECIMAL),
                         tx_bytes: format_size(stats.map(|(_, t, _)| t).unwrap_or(0), humansize::DECIMAL),
@@ -2129,11 +2157,19 @@ impl<'a> CommandHandler<'a> {
                     });
                 }
             }
+            rows
+        })).collect::<Vec<_>>();
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(rows);
+        }
+
+        self.print_results(&rows, |rows| {
             if rows.is_empty() {
                 println!("no peer connections found");
             } else {
                 print_output(
-                    &rows,
+                    rows,
                     self.output_format,
                     &[],
                     &["resolved"],
