@@ -13,7 +13,7 @@ use crate::{
     tunnel::{Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
-fn is_heartbeat(packet: &ZCPacket) -> bool {
+pub(crate) fn is_heartbeat(packet: &ZCPacket) -> bool {
     packet.peer_manager_header().is_some_and(|header| {
         header.packet_type == PacketType::Ping as u8 || header.packet_type == PacketType::Pong as u8
     })
