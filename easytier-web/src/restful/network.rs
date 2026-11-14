@@ -99,6 +99,7 @@ struct ValidateConfigJsonReq {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct SaveNetworkJsonReq {
     config: NetworkConfig,
+    auto_run: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -199,6 +200,11 @@ struct ListMachineItem {
     alias: Option<String>,
     info: Option<HeartbeatRequest>,
     location: Option<Location>,
+    machine_id: uuid::Uuid,
+    hostname: String,
+    remark: Option<String>,
+    easytier_version: String,
+    report_time: String,
     #[serde(default)]
     networks: Vec<DeviceNetworkSummary>,
     #[serde(default)]
@@ -210,6 +216,11 @@ struct ListMachineItem {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListMachineJsonResp {
     machines: Vec<ListMachineItem>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct UpdateDeviceRemarkJsonReq {
+    remark: Option<String>,
 }
 
 pub struct NetworkApi;
@@ -477,10 +488,28 @@ impl NetworkApi {
                     client_url: Some(client_url),
                     online: info.is_some(),
                     last_seen: info.as_ref().map(|info| info.report_time.clone()),
+                    machine_id: info
+                        .as_ref()
+                        .and_then(|info| info.machine_id)
+                        .map(uuid::Uuid::from)
+                        .unwrap_or_default(),
+                    hostname: info
+                        .as_ref()
+                        .map(|info| info.hostname.clone())
+                        .unwrap_or_default(),
+                    remark: None,
+                    easytier_version: info
+                        .as_ref()
+                        .map(|info| info.easytier_version.clone())
+                        .unwrap_or_default(),
+                    report_time: info
+                        .as_ref()
+                        .map(|info| info.report_time.clone())
+                        .unwrap_or_default(),
+                    networks: Vec::new(),
                     info,
                     location,
                     alias: None,
-                    networks: Vec::new(),
                 });
             }
             return Ok(Json(ListMachineJsonResp { machines }));
@@ -494,6 +523,15 @@ impl NetworkApi {
             .list_device_networks(user_id)
             .await
             .map_err(super::central_network::convert_error)?;
+
+        // 备注存在 user_devices 表里，设备离线时也要能带出来
+        let remarks = client_mgr
+            .list_device_by_user_id(user_id)
+            .await
+            .map_err(convert_db_error)?
+            .into_iter()
+            .map(|device| (device.machine_id, device.remark))
+            .collect::<std::collections::HashMap<_, _>>();
 
         let mut machines = Vec::with_capacity(devices.len());
         for device in devices {
@@ -535,16 +573,23 @@ impl NetworkApi {
                     support_dns_config_patch: None,
                 }),
             };
+            let remark = remarks.get(&device.machine_id).cloned().flatten();
+            let report_time = device.last_seen_time.to_rfc3339();
             machines.push(ListMachineItem {
                 client_url,
                 alias: (!device.alias.is_empty()).then_some(device.alias),
                 info,
                 location,
+                machine_id,
+                hostname: device.hostname,
+                remark,
+                easytier_version: device.easytier_version,
+                report_time: report_time.clone(),
                 networks: device_networks
                     .remove(&device.machine_id)
                     .unwrap_or_default(),
                 online,
-                last_seen: Some(device.last_seen_time.to_rfc3339()),
+                last_seen: Some(report_time),
             });
         }
 
@@ -555,6 +600,23 @@ impl NetworkApi {
         });
 
         Ok(Json(ListMachineJsonResp { machines }))
+    }
+
+    async fn handle_update_device_remark(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Path(machine_id): Path<uuid::Uuid>,
+        Json(payload): Json<UpdateDeviceRemarkJsonReq>,
+    ) -> Result<(), HttpHandleError> {
+        let remark = payload.remark.and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
+
+        client_mgr
+            .update_device_remark(Self::get_user_id(&auth_session)?, machine_id, remark)
+            .await
+            .map_err(convert_db_error)
     }
 
     async fn handle_update_network_state(
@@ -633,11 +695,12 @@ impl NetworkApi {
             .invalidate_applied_config_revision(user_id, machine_id)
             .await;
         let result = client_mgr
-            .handle_save_network_config_with_source(
+            .handle_save_network_config_with_source_and_state(
                 (user_id, machine_id),
                 inst_id,
                 payload.config,
                 RuntimeConfigSource::Web,
+                !payload.auto_run.unwrap_or(false),
             )
             .await;
         client_mgr
@@ -834,6 +897,10 @@ impl NetworkApi {
             .route(
                 "/api/v1/machines/{machine-id}/alias",
                 put(Self::handle_update_machine_alias),
+            )
+            .route(
+                "/api/v1/machines/{machine-id}/remark",
+                put(Self::handle_update_device_remark),
             )
             .route(
                 "/api/v1/blocked-devices",
@@ -1072,15 +1139,11 @@ mod tests {
                     .await
                     .unwrap()
                     .0;
-                    let summary = super::super::RestfulServer::handle_get_summary(
-                        auth,
-                        State(probe_manager),
-                        Extension(config),
-                        Extension(service),
-                    )
-                    .await
-                    .unwrap()
-                    .0;
+                    let summary =
+                        super::super::RestfulServer::handle_get_summary(auth, State(probe_manager))
+                            .await
+                            .unwrap()
+                            .0;
                     assert_eq!(summary.device_count, 1);
                     assert_eq!(machines.machines.len(), 1);
                     assert!(machines.machines[0].online);

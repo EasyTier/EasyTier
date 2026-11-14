@@ -370,6 +370,8 @@ web:
     instance_count: "运行实例"
     device_note: "注册过的设备总数"
     online_device_note: "当前在线的设备数量"
+    offline_device_count: "离线设备"
+    offline_device_note: "当前离线或未上报的设备数量"
     delete_device: "删除设备"
     set_alias: "设置别名"
     alias_dialog_title: "设置设备别名"
@@ -466,6 +468,12 @@ web:
     version: 版本
     machine_id: 机器ID
     unknown_location: 未知位置
+    all_statuses: 全部
+    search_placeholder: 搜索主机名或备注
+    remark: 备注
+    remark_placeholder: 添加备注
+    remark_saved: 备注已保存
+
     central_networks: 所属网络
 
   device_management:
@@ -481,6 +489,8 @@ web:
     save_config: 保存配置
     config_saved: 配置已保存
     import_config: 导入配置
+    auto_run_on_online: 设备在线后自动运行网络
+    auto_run_on_online_help: 开启后，设备重新上线时会自动运行该网络。关闭后仅保留配置。
     create_new: 创建新网络
     network_status: 网络状态
     loading_network_status: 正在加载网络状态

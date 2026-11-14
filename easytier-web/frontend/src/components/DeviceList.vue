@@ -178,17 +178,62 @@ const confirmDeleteDevice = async () => {
     }
 };
 
+// 备注保存在 user_devices 表里，设备离线后仍然保留
+const remarkVisible = ref(false);
+const remarkTarget = ref<Utils.DeviceInfo | null>(null);
+const remarkInput = ref('');
+const remarkSaving = ref(false);
+
+const handleSetRemark = (device: Utils.DeviceInfo) => {
+    remarkTarget.value = device;
+    remarkInput.value = device.remark ?? '';
+    remarkVisible.value = true;
+};
+
+const saveRemark = async () => {
+    if (!remarkTarget.value || !api) return;
+    const remark = remarkInput.value.trim() || undefined;
+    if ((remarkTarget.value.remark ?? '') === (remark ?? '')) {
+        remarkVisible.value = false;
+        return;
+    }
+    remarkSaving.value = true;
+    try {
+        await api.update_device_remark(remarkTarget.value.machine_id, remark);
+        remarkTarget.value.remark = remark;
+        remarkVisible.value = false;
+        toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('web.device.remark_saved'), life: 1500 });
+        await loadDevices();
+    } catch (e: any) {
+        toast.add({ severity: 'error', summary: t('web.device.remark'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
+    } finally {
+        remarkSaving.value = false;
+    }
+};
+
+// 在线状态筛选
+const statusFilter = ref<'all' | 'online' | 'offline'>('all');
+const statusFilterOptions = computed(() => [
+    { label: t('web.device.all_statuses'), value: 'all' },
+    { label: t('web.device.online'), value: 'online' },
+    { label: t('web.device.offline'), value: 'offline' },
+]);
+
 // 搜索过滤 + 预排序：离线设备始终排在在线设备之后；列排序交给 DataTable
 const sortedDeviceList = computed(() => {
     const query = search.value.trim().toLocaleLowerCase();
     return (deviceList.value ?? [])
-        .filter(device => `${device.alias ?? ''} ${device.hostname ?? ''} ${device.public_ip ?? ''}`.toLocaleLowerCase().includes(query))
+        .filter(device => statusFilter.value === 'all'
+            || (statusFilter.value === 'online' ? device.online === true : device.online !== true))
+        .filter(device => `${device.alias ?? ''} ${device.hostname ?? ''} ${device.remark ?? ''} ${device.public_ip ?? ''}`.toLocaleLowerCase().includes(query))
         .sort((a, b) => {
             const online = Number(b.online === true) - Number(a.online === true);
             if (online !== 0) return online;
             return (deviceName(a) ?? '').localeCompare(deviceName(b) ?? '');
         });
 });
+
+const filtersActive = computed(() => !!search.value.trim() || statusFilter.value !== 'all');
 
 const locationText = (device: Utils.DeviceInfo) => {
     const parts = [device.location?.country, device.location?.region, device.location?.city].filter(Boolean);
@@ -209,6 +254,8 @@ const locationText = (device: Utils.DeviceInfo) => {
                         :placeholder="t('web.console.search_devices')"
                         :aria-label="t('web.console.search_devices')" /></span>
                 <div class="flex items-center gap-3">
+                    <SelectButton v-model="statusFilter" :options="statusFilterOptions" optionLabel="label"
+                        optionValue="value" :allow-empty="false" class="status-filter" />
                     <span v-if="deviceList" class="table-count">{{ t('web.console.items', { count: sortedDeviceList.length }) }}</span>
                     <SelectButton v-model="viewMode" :options="viewModeOptions" optionValue="value"
                         :allow-empty="false" class="view-toggle">
@@ -231,9 +278,9 @@ const locationText = (device: Utils.DeviceInfo) => {
             </div>
             <div v-else-if="sortedDeviceList.length === 0" class="console-empty-state">
                 <i class="pi pi-server" aria-hidden="true"></i>
-                <h2>{{ search ? t('web.console.no_results') : t('web.console.devices_empty') }}</h2>
-                <p v-if="!search">{{ t('web.console.devices_empty_hint') }}</p>
-                <div v-if="!search && enrollCommand" class="flex items-center gap-2 justify-center mt-2 flex-wrap">
+                <h2>{{ filtersActive ? t('web.console.no_results') : t('web.console.devices_empty') }}</h2>
+                <p v-if="!filtersActive">{{ t('web.console.devices_empty_hint') }}</p>
+                <div v-if="!filtersActive && enrollCommand" class="flex items-center gap-2 justify-center mt-2 flex-wrap">
                     <code class="mono-value p-2 rounded" style="background: var(--console-ground); word-break: break-all">{{ enrollCommand }}</code>
                     <Button icon="pi pi-copy" severity="secondary" outlined size="small"
                         :aria-label="t('web.console.enroll_copy')" @click="copyEnrollCommand" />
@@ -264,6 +311,14 @@ const locationText = (device: Utils.DeviceInfo) => {
                     </Column>
                     <Column :header="t('web.device.last_seen')" style="width: 10rem">
                         <template #body="{ data }"><span v-if="!data.online && data.last_seen" class="muted">{{ data.last_seen.replace('T', ' ').slice(5, 16) }}</span><span v-else class="muted">—</span></template>
+                    </Column>
+                    <Column :header="t('web.device.remark')" style="width: 12rem">
+                        <template #body="{ data }">
+                            <button type="button" class="remark-button" @click="handleSetRemark(data)">
+                                <i :class="['pi', data.remark ? 'pi-bookmark-fill' : 'pi-bookmark', 'remark-icon']" aria-hidden="true"></i>
+                                <span :class="['truncate', { muted: !data.remark }]">{{ data.remark || t('web.device.remark_placeholder') }}</span>
+                            </button>
+                        </template>
                     </Column>
                     <Column :header="t('web.console.manage')" style="width: 7rem">
                         <template #body="{ data }">
@@ -296,9 +351,12 @@ const locationText = (device: Utils.DeviceInfo) => {
                             <span class="mono-value muted shrink-0">v{{ (device.easytier_version || '?').split('-')[0] }}</span>
                         </div>
                         <p class="preview-secondary">{{ locationText(device) }}</p>
+                        <p v-if="device.remark" class="preview-secondary"><i class="pi pi-bookmark-fill" aria-hidden="true"></i> {{ device.remark }}</p>
                         <div class="device-card-actions">
                             <span class="muted"><i class="pi pi-sitemap" aria-hidden="true"></i> {{ device.running_network_count }} {{ t('web.console.instances') }}</span>
                             <div class="flex items-center gap-1">
+                                <Button v-tooltip.top="t('web.device.remark')" icon="pi pi-bookmark" severity="secondary"
+                                    text rounded class="w-8 h-8" :aria-label="t('web.device.remark')" @click="handleSetRemark(device)" />
                                 <Button v-if="centralEnabled" v-tooltip.top="t('web.console.set_alias')" icon="pi pi-pencil" severity="secondary"
                                     text rounded class="w-8 h-8" :aria-label="t('web.console.set_alias')" @click="handleSetAlias(device)" />
                                 <Button v-if="centralEnabled" v-tooltip.top="t('web.console.delete_device')" icon="pi pi-trash" severity="danger"
@@ -320,6 +378,7 @@ const locationText = (device: Utils.DeviceInfo) => {
                             <span class="mono-value muted">v{{ (device.easytier_version || '?').split('-')[0] }}</span>
                         </div>
                         <p class="preview-secondary">{{ locationText(device) }} · {{ device.running_network_count }} {{ t('web.console.instances') }}</p>
+                        <p v-if="device.remark" class="preview-secondary"><i class="pi pi-bookmark-fill" aria-hidden="true"></i> {{ device.remark }}</p>
                         <details>
                             <summary>{{ t('web.console.details') }}</summary>
                             <DeviceDetails :device="device" :compact="true" />
@@ -340,6 +399,19 @@ const locationText = (device: Utils.DeviceInfo) => {
             <template #footer>
                 <Button :label="t('web.common.cancel')" severity="secondary" @click="aliasVisible = false" />
                 <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="aliasSaving" @click="saveAlias" />
+            </template>
+        </Dialog>
+
+        <!-- 备注对话框 -->
+        <Dialog v-model:visible="remarkVisible" modal :header="t('web.device.remark')" :style="{ width: '26rem' }">
+            <div class="flex flex-col gap-3">
+                <InputText v-model="remarkInput" id="device-remark-input" :maxlength="64" autocomplete="off"
+                    :placeholder="t('web.device.remark_placeholder')" @keydown.enter="saveRemark" />
+                <div class="text-xs muted text-right">{{ remarkInput.trim().length }}/64</div>
+            </div>
+            <template #footer>
+                <Button :label="t('web.common.cancel')" severity="secondary" @click="remarkVisible = false" />
+                <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="remarkSaving" @click="saveRemark" />
             </template>
         </Dialog>
 
@@ -411,5 +483,32 @@ const locationText = (device: Utils.DeviceInfo) => {
     margin-top: 4px;
     padding-top: 10px;
     border-top: 1px solid var(--console-border);
+}
+
+.remark-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.remark-button:hover .remark-icon {
+    color: var(--console-accent, currentColor);
+}
+
+.remark-icon {
+    flex-shrink: 0;
+    font-size: .85em;
+}
+
+.status-filter {
+    flex-shrink: 0;
 }
 </style>

@@ -64,6 +64,8 @@ struct ListSessionJsonResp(Vec<StorageToken>);
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct GetSummaryJsonResp {
     device_count: u32,
+    online_device_count: u32,
+    offline_device_count: u32,
 }
 
 #[derive(Clone)]
@@ -186,26 +188,22 @@ impl RestfulServer {
     async fn handle_get_summary(
         auth_session: AuthSession,
         State(client_mgr): AppState,
-        Extension(config): Extension<ConsoleInfoConfig>,
-        Extension(service): Extension<Arc<CentralNetworkService>>,
     ) -> Result<Json<GetSummaryJsonResp>, HttpHandleError> {
         let Some(user) = auth_session.user else {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
-        let device_count = if config.webhook_auth {
-            client_mgr.list_machine_by_user_id(user.id()).await.len()
-        } else {
-            service
-                .db
-                .list_devices(user.id())
-                .await
-                .map_err(convert_db_error)?
-                .len()
-        };
+        let devices = client_mgr
+            .list_device_by_user_id(user.id())
+            .await
+            .map_err(convert_db_error)?;
+        let online_count = client_mgr.list_machine_by_user_id(user.id()).await.len() as u32;
+        let total_count = devices.len() as u32;
 
         Ok(GetSummaryJsonResp {
-            device_count: device_count as u32,
+            device_count: total_count,
+            online_device_count: online_count,
+            offline_device_count: total_count.saturating_sub(online_count),
         }
         .into())
     }

@@ -82,6 +82,8 @@ pub struct ApplicationConfig {
     inst_id: String,
     pub config: NetworkConfig,
     source: PersistedConfigSource,
+    /// 用户是否关闭了该网络的自动启动；由存储在列出配置时按 desired 集合填充。
+    disabled: bool,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -108,7 +110,13 @@ impl ApplicationConfig {
             inst_id,
             config,
             source,
+            disabled: false,
         }
+    }
+
+    fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     fn into_stored(self) -> StoredConfig {
@@ -128,6 +136,9 @@ impl PersistentConfig<anyhow::Error> for ApplicationConfig {
     }
     fn get_network_config_source(&self) -> ConfigSource {
         self.source.to_runtime_source()
+    }
+    fn is_disabled(&self) -> bool {
+        self.disabled
     }
 }
 
@@ -322,18 +333,23 @@ impl<H: ManagementHost> Storage<H, ApplicationConfig, anyhow::Error> for Applica
         let mut ret = Vec::new();
         for entry in self.network_configs.iter() {
             let id: Uuid = entry.key().to_owned();
+            // 自动启动意图保存在 desired 集合里，按值返回时一并带出。
+            let config = entry
+                .value()
+                .clone()
+                .with_disabled(!self.desired_networks.contains(&id));
             match props {
                 ListNetworkProps::All => {
-                    ret.push(entry.value().clone());
+                    ret.push(config);
                 }
                 ListNetworkProps::EnabledOnly => {
                     if self.enabled_networks.contains(&id) {
-                        ret.push(entry.value().clone());
+                        ret.push(config);
                     }
                 }
                 ListNetworkProps::DisabledOnly => {
                     if !self.enabled_networks.contains(&id) {
-                        ret.push(entry.value().clone());
+                        ret.push(config);
                     }
                 }
             }

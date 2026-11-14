@@ -30,6 +30,10 @@ defineProps<{
       <div class="detail-label">{{ t('web.device.last_seen') }}</div>
       <div class="detail-value">{{ device.last_seen }}</div>
     </div>
+    <div class="detail-item remark">
+      <div class="detail-label">{{ t('web.device.remark') }}</div>
+      <div class="detail-value">{{ device.remark || '-' }}</div>
+    </div>
     <div class="detail-item public-ip">
       <div class="detail-label">{{ t('web.device.public_ip') }}</div>
       <div class="detail-value">{{ device.public_ip }}</div>
