@@ -290,7 +290,11 @@ impl WindowsDNSManager {
             RegistryManager::IPV4_TCPIP_INTERFACE_PREFIX,
             RegistryManager::IPV6_TCPIP_INTERFACE_PREFIX,
         ] {
-            let key = RegistryManager::open_interface_key(&self.interface_guid, prefix)?;
+            let key = match RegistryManager::open_interface_key(&self.interface_guid, prefix) {
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
             let current = search_list(&key)?;
             if let Some(saved) = state.search_lists.iter().find(|s| s.prefix == prefix)
                 && current.as_ref() != Some(&saved.applied)
@@ -312,7 +316,11 @@ impl WindowsDNSManager {
             ("IPv4", RegistryManager::IPV4_TCPIP_INTERFACE_PREFIX),
             ("IPv6", RegistryManager::IPV6_TCPIP_INTERFACE_PREFIX),
         ] {
-            let key = RegistryManager::open_interface_key(&self.interface_guid, prefix)?;
+            let key = match RegistryManager::open_interface_key(&self.interface_guid, prefix) {
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
             let current = search_list(&key)?;
             if let Some(saved) = state.search_lists.iter_mut().find(|s| s.prefix == prefix) {
                 if current.as_ref() != Some(&saved.applied) {
@@ -427,12 +435,11 @@ impl SystemConfig for WindowsDNSManager {
     fn close(&self) -> io::Result<()> {
         let mut state = self.state.lock().unwrap();
         self.recovery.clean()?;
-        Self::flush_dns()?;
         state.rules.clear();
         state.search_lists.clear();
         // This owner can still retry setup after a partial startup failure.
         state.prepared = true;
-        Ok(())
+        Self::flush_dns()
     }
 }
 
@@ -455,15 +462,20 @@ mod tests {
             RegistryManager::IPV6_TCPIP_INTERFACE_PREFIX,
         ]
         .iter()
-        .map(|prefix| {
+        .filter_map(|prefix| {
             // Snapshot independently of the helper whose access mask we test.
-            let key = RegKey::predef(HKEY_LOCAL_MACHINE)
+            let key = match RegKey::predef(HKEY_LOCAL_MACHINE)
                 .open_subkey_with_flags(format!("{prefix}{}", manager.interface_guid), KEY_READ)
-                .unwrap();
-            let original = search_list(&key).unwrap();
-            (key, original)
+            {
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(search_list(&key).map(|original| (key, original)))
         })
-        .collect();
+        .collect::<io::Result<Vec<_>>>()
+        .unwrap();
+        assert!(!snapshots.is_empty());
         let domain = format!("{}.invalid", uuid::Uuid::new_v4().simple());
         let mut cfg = OSConfig {
             nameservers: vec!["192.0.2.53".to_owned()],
