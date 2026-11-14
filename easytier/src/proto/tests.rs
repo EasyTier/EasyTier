@@ -405,17 +405,15 @@ async fn test_bidirect_rpc_manager() {
         let s_c = s
             .rpc_client()
             .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
+        let name = random_string(250 * 1024);
         let ret = s_c
             .say_hello(
                 RpcController::default(),
-                SayHelloRequest {
-                    name: "world".to_string(),
-                },
+                SayHelloRequest { name: name.clone() },
             )
             .await
             .unwrap();
-        assert_eq!(ret.greeting, "Hello Client world!");
-        println!("server done, {:?}", ret);
+        assert_eq!(ret.greeting, format!("Hello Client {}!", name));
 
         server_test_done_clone.notify_one();
 
@@ -431,17 +429,15 @@ async fn test_bidirect_rpc_manager() {
     let c_c = c
         .rpc_client()
         .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
+    let name = random_string(250 * 1024);
     let ret = c_c
         .say_hello(
             RpcController::default(),
-            SayHelloRequest {
-                name: "world".to_string(),
-            },
+            SayHelloRequest { name: name.clone() },
         )
         .await
         .unwrap();
-    assert_eq!(ret.greeting, "Hello Server world!");
-    println!("client done, {:?}", ret);
+    assert_eq!(ret.greeting, format!("Hello Server {}!", name));
 
     server_test_done.notified().await;
     drop(c);

@@ -13,7 +13,7 @@ use crate::{
         conn::{
             peer_conn::{PeerConn, PeerConnId},
             peer_map::PeerMap,
-            peer_session::PeerSessionStore,
+            peer_session::{PeerSession, PeerSessionStore},
         },
         context::{NetworkIdentity, PeerContext},
         create_packet_recv_chan,
@@ -88,6 +88,121 @@ async fn peer_conn_handshake_over_memory_tunnel() {
     assert_eq!(server.get_peer_id(), 1);
     assert_eq!(client.get_conn_info().features, ["liveness-echo-v1"]);
     assert_eq!(server.get_conn_info().features, ["liveness-echo-v1"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn peer_conn_pingpong_continues_while_a_secure_relay_batch_drains() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures::{SinkExt, StreamExt};
+
+    use crate::tunnel::{Tunnel, TunnelError, wrapper::TunnelWrapper};
+
+    let wrap = |tunnel: Box<dyn Tunnel>, slow: bool, pongs: Arc<AtomicUsize>| {
+        let info = tunnel.info();
+        let (stream, sink) = tunnel.split();
+        let stream = stream.inspect(move |packet| {
+            if packet.as_ref().is_ok_and(|packet| {
+                packet
+                    .peer_manager_header()
+                    .is_some_and(|header| header.packet_type == PacketType::Pong as u8)
+            }) {
+                pongs.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        let sink = sink.with(move |packet: ZCPacket| async move {
+            if slow
+                && packet
+                    .peer_manager_header()
+                    .is_some_and(|header| header.packet_type == PacketType::RpcReq as u8)
+            {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+            Ok::<_, TunnelError>(packet)
+        });
+        Box::new(TunnelWrapper::new(stream, sink, info)) as Box<dyn Tunnel>
+    };
+    let pongs = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+    let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+    let mut client = PeerConn::new(
+        1,
+        Arc::new(NoopPeerContext::default()),
+        wrap(client_tunnel, true, pongs[0].clone()),
+        Arc::new(PeerSessionStore::new()),
+    );
+    let mut server = PeerConn::new(
+        2,
+        Arc::new(NoopPeerContext::default()),
+        wrap(server_tunnel, false, pongs[1].clone()),
+        Arc::new(PeerSessionStore::new()),
+    );
+    let (client_ret, server_ret) = tokio::join!(
+        client.do_handshake_as_client(),
+        server.do_handshake_as_server()
+    );
+    client_ret.unwrap();
+    server_ret.unwrap();
+    let (client_tx, _client_rx) = create_packet_recv_chan();
+    let (server_tx, mut server_rx) = create_packet_recv_chan();
+    client.start_recv_loop(client_tx).await;
+    server.start_recv_loop(server_tx).await;
+    client.start_pingpong();
+    server.start_pingpong();
+    let session = Arc::new(PeerSession::new(
+        3,
+        [7; 32],
+        0,
+        0,
+        "aes-gcm".to_owned(),
+        "aes-gcm".to_owned(),
+        None,
+    ));
+    let endpoint = PeerSession::new(
+        1,
+        [7; 32],
+        0,
+        0,
+        "aes-gcm".to_owned(),
+        "aes-gcm".to_owned(),
+        None,
+    );
+    let destination = 3;
+    let packets = (0..207u32)
+        .map(|sequence| {
+            let mut packet = ZCPacket::new_with_payload(&vec![sequence as u8; 1200]);
+            packet.mut_payload()[..4].copy_from_slice(&sequence.to_le_bytes());
+            packet.fill_peer_manager_hdr(1, destination, PacketType::RpcReq as u8);
+            packet.peer_session = Some(session.clone());
+            packet
+        })
+        .collect();
+    client.send_msg(ZCPacket::batch(packets)).await.unwrap();
+    timeout(Duration::from_secs(100), async {
+        for sequence in 0..207u32 {
+            let mut packet = server_rx.recv().await.unwrap();
+            assert_eq!(
+                packet.peer_manager_header().unwrap().packet_type,
+                PacketType::RpcReq as u8
+            );
+            assert!(packet.peer_manager_header().unwrap().is_encrypted());
+            endpoint
+                .decrypt_payload(1, destination, &mut packet)
+                .unwrap();
+            assert_eq!(packet.payload()[..4], sequence.to_le_bytes());
+            assert_eq!(packet.payload()[4..], vec![sequence as u8; 1196]);
+            if sequence == 100 {
+                // Actual native Pongs were received before half of the batch
+                // finished; business-packet liveness echoes cannot satisfy this.
+                for received in &pongs {
+                    assert!(received.load(Ordering::Relaxed) > 0);
+                }
+            }
+            assert!(!client.is_closed());
+            assert!(!server.is_closed());
+        }
+    })
+    .await
+    .expect("slow RPC batch did not drain while native pingpong was running");
 }
 
 #[tokio::test]

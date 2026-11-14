@@ -95,7 +95,8 @@ impl BidirectRpcManager {
 
     pub fn run_and_create_tunnel(&self) -> Box<dyn Tunnel> {
         let (ret, inner) = create_ring_tunnel_pair();
-        self.run_with_tunnel(inner);
+        let info = inner.info();
+        self.run(inner, info, true);
         ret
     }
 
@@ -108,6 +109,15 @@ impl BidirectRpcManager {
         &self,
         inner: Box<dyn Tunnel>,
         tunnel_info: Option<crate::proto::common::TunnelInfo>,
+    ) {
+        self.run(inner, tunnel_info, false);
+    }
+
+    fn run(
+        &self,
+        inner: Box<dyn Tunnel>,
+        tunnel_info: Option<crate::proto::common::TunnelInfo>,
+        keep_batch: bool,
     ) {
         let mut tasks = JoinSet::new();
         self.rpc_client.run();
@@ -130,7 +140,7 @@ impl BidirectRpcManager {
         let r_clone = self.running.clone();
         tasks.spawn(async move {
             loop {
-                let packet = tokio::select! {
+                let mut packet = tokio::select! {
                     Some(Ok(packet)) = server_rx.next() => {
                         tracing::trace!(?packet, "recv rpc packet from server");
                         packet
@@ -146,7 +156,21 @@ impl BidirectRpcManager {
                     }
                 };
 
-                if let Err(e) = inner_tx.send(packet).await {
+                // A real standalone transport serializes one wire fragment at a
+                // time; only the local PeerRpcManager ring carries batches.
+                let remaining = if keep_batch {
+                    Vec::new().into_iter()
+                } else {
+                    packet.take_batch()
+                };
+                let mut result = Ok(());
+                for packet in std::iter::once(packet).chain(remaining) {
+                    if let Err(error) = inner_tx.send(packet).await {
+                        result = Err(error);
+                        break;
+                    }
+                }
+                if let Err(e) = result {
                     tracing::error!(error = ?e, "send to peer failed");
                     e_clone.lock().unwrap().replace(Error::from(e));
                     r_clone.store(false, Ordering::Relaxed);
