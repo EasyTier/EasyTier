@@ -25,6 +25,7 @@ pub struct FixtureConfig {
     pub nameservers: Vec<(i32, Vec<u8>)>,
     pub domains: Vec<(String, bool)>,
     pub default_route: bool,
+    pub dns_over_tls: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -178,6 +179,21 @@ impl ResolvedManagerFixture {
             })
             .await
     }
+
+    #[zbus(name = "SetLinkDNSOverTLS")]
+    async fn set_link_dns_over_tls(
+        &self,
+        ifindex: i32,
+        mode: String,
+        #[zbus(header)] header: Header<'_>,
+    ) -> Result<(), FixtureError> {
+        assert_eq!(ifindex, self.ifindex);
+        self.state
+            .write("resolved", "SetLinkDNSOverTLS", &header, |config| {
+                config.dns_over_tls = mode;
+            })
+            .await
+    }
 }
 
 struct NetworkManagerFixture {
@@ -231,6 +247,21 @@ impl NetworkManagerFixture {
             })
             .await
     }
+
+    #[zbus(name = "SetLinkDNSOverTLS")]
+    async fn set_link_dns_over_tls(
+        &self,
+        ifindex: i32,
+        mode: String,
+        #[zbus(header)] header: Header<'_>,
+    ) -> Result<(), FixtureError> {
+        assert_eq!(ifindex, self.ifindex);
+        self.state
+            .write("networkd", "SetLinkDNSOverTLS", &header, |config| {
+                config.dns_over_tls = mode;
+            })
+            .await
+    }
 }
 
 struct LinkFixture {
@@ -257,6 +288,11 @@ impl LinkFixture {
             ));
         }
         Ok(self.state.config.lock().unwrap().default_route)
+    }
+
+    #[zbus(property, name = "DNSOverTLS")]
+    fn dns_over_tls(&self) -> String {
+        self.state.config.lock().unwrap().dns_over_tls.clone()
     }
 }
 
@@ -375,6 +411,7 @@ impl ResolvedFixture {
         if !preserve_config {
             *self.state.config.lock().unwrap() = FixtureConfig {
                 default_route: true,
+                dns_over_tls: "yes".to_owned(),
                 ..Default::default()
             };
         }

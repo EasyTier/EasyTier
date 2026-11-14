@@ -45,6 +45,7 @@ struct LinkConfig {
     nameservers: Vec<IpAddr>,
     domains: Vec<String>,
     default_route: bool,
+    dns_over_tls: String,
 }
 
 struct LinkState {
@@ -245,6 +246,9 @@ impl ResolvedConfigurator {
         let default_route = link
             .get_property("DefaultRoute")
             .map_err(|error| Self::dbus_error("reading resolved DefaultRoute", error))?;
+        let dns_over_tls = link
+            .get_property("DNSOverTLS")
+            .map_err(|error| Self::dbus_error("reading resolved DNSOverTLS", error))?;
         let current_owner: OwnedUniqueName = bus
             .call("GetNameOwner", &(RESOLVED_SERVICE,))
             .map_err(|error| Self::dbus_error("checking the resolved service owner", error))?;
@@ -258,6 +262,7 @@ impl ResolvedConfigurator {
                 nameservers,
                 domains,
                 default_route,
+                dns_over_tls,
             },
             owner,
         })
@@ -304,6 +309,7 @@ impl ResolvedConfigurator {
             nameservers,
             domains,
             default_route: false,
+            dns_over_tls: "no".to_owned(),
         })
     }
 
@@ -399,6 +405,12 @@ impl ResolvedConfigurator {
             .collect();
         self.call_manager(owner.as_str(), "SetLinkDNS", &(ifindex, nameservers))?;
         applied.current.nameservers.clone_from(&cfg.nameservers);
+        self.call_manager(
+            owner.as_str(),
+            "SetLinkDNSOverTLS",
+            &(ifindex, cfg.dns_over_tls.as_str()),
+        )?;
+        applied.current.dns_over_tls.clone_from(&cfg.dns_over_tls);
         Ok(())
     }
 
@@ -523,6 +535,7 @@ mod tests {
     fn original_config() -> FixtureConfig {
         FixtureConfig {
             default_route: true,
+            dns_over_tls: "yes".to_owned(),
             ..Default::default()
         }
     }
@@ -535,6 +548,7 @@ mod tests {
                 ("internal.test".to_owned(), true),
             ],
             default_route: false,
+            dns_over_tls: "no".to_owned(),
         }
     }
 
@@ -551,6 +565,7 @@ mod tests {
             nameservers: vec![(AF_INET, vec![100, 100, 100, 102])],
             domains: vec![("new.test".to_owned(), false)],
             default_route: false,
+            dns_over_tls: "no".to_owned(),
         }
     }
 
@@ -580,6 +595,7 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.domains, ["et.net", "~internal.test"]);
         assert!(!cfg.default_route);
+        assert_eq!(cfg.dns_over_tls, "no");
     }
 
     #[test]
@@ -622,6 +638,7 @@ mod tests {
                 "resolved.SetLinkDefaultRoute",
                 "resolved.SetLinkDomains",
                 "resolved.SetLinkDNS",
+                "resolved.SetLinkDNSOverTLS",
             ]
         );
 
@@ -643,11 +660,26 @@ mod tests {
     }
 
     #[test]
+    fn cleans_up_after_dns_over_tls_write_fails() {
+        let (fixture, configurator) = setup();
+        fixture.fail("resolved.SetLinkDNSOverTLS", FixtureFailure::AccessDenied);
+        assert!(configurator.set_dns(&config()).is_err());
+        let mut partial = desired_config();
+        partial.dns_over_tls = "yes".to_owned();
+        assert_eq!(fixture.config(), partial);
+
+        fixture.clear_failures();
+        configurator.close().unwrap();
+        assert_eq!(fixture.config(), original_config());
+    }
+
+    #[test]
     fn maintains_and_closes_over_external_dbus_changes() {
         let (fixture, configurator) = setup();
         configurator.set_dns(&config()).unwrap();
         let mut changed = fixture.config();
         changed.nameservers = vec![(AF_INET, vec![192, 0, 2, 53])];
+        changed.dns_over_tls = "yes".to_owned();
         fixture.set_config(changed);
 
         configurator.set_dns(&config()).unwrap();
@@ -740,6 +772,7 @@ mod tests {
             nameservers: vec![(AF_INET, vec![192, 0, 2, 53])],
             domains: vec![("external.test".to_owned(), true)],
             default_route: true,
+            dns_over_tls: "yes".to_owned(),
         };
         fixture.set_config(external);
 
@@ -756,6 +789,7 @@ mod tests {
             "resolved.SetLinkDefaultRoute",
             "resolved.SetLinkDomains",
             "resolved.SetLinkDNS",
+            "resolved.SetLinkDNSOverTLS",
         ] {
             fixture.fail(method, FixtureFailure::LinkBusy);
         }
@@ -767,6 +801,7 @@ mod tests {
             "networkd.SetLinkDefaultRoute",
             "networkd.SetLinkDomains",
             "networkd.SetLinkDNS",
+            "networkd.SetLinkDNSOverTLS",
         ] {
             assert!(calls.contains(&method.to_owned()));
         }
