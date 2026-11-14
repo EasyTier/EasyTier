@@ -26,6 +26,11 @@ pub trait SystemConfig: Send + Sync {
         Ok(())
     }
 
+    /// Reapply owned settings if the platform resolver lost them.
+    fn refresh(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+
     /// Recover a persistent file takeover before loading its original upstreams.
     fn needs_resolv_conf_recovery(&self) -> bool {
         false

@@ -782,8 +782,13 @@ impl MagicDnsServerInstance {
         }
         let apply = self.data.record_apply.clone().lock_owned().await;
         let configer = configer.clone();
-        let read =
-            tokio::task::spawn_blocking(move || (apply, configer.original_resolv_conf())).await;
+        let read = tokio::task::spawn_blocking(move || {
+            let original = configer
+                .refresh()
+                .and_then(|()| configer.original_resolv_conf());
+            (apply, original)
+        })
+        .await;
         let (apply, original) = match read {
             Ok((apply, Ok(original))) => (apply, original),
             Ok((_, Err(error))) => {
