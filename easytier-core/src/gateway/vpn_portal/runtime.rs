@@ -25,9 +25,11 @@ use crate::{
     foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
     peers::{
         attached::{AttachedPeerConfig, AttachedPeerRuntime},
+        error::Error as PeerError,
         peer_manager::PeerManagerCore,
     },
     socket::SocketListener,
+    tunnel::TunnelError,
 };
 
 pub const MAX_VPN_PORTAL_CLIENTS: usize = 64;
@@ -574,6 +576,12 @@ impl PortalModule {
                     }
                     if let Err(error) = attached.send_packet(&payload).await {
                         tracing::debug!(?error, client = %name, "attached peer send failed");
+                        if matches!(
+                            error.downcast_ref::<PeerError>(),
+                            Some(PeerError::Tunnel(TunnelError::BufferFull))
+                        ) {
+                            continue;
+                        }
                         break;
                     }
                     traffic.record_upload(payload.len());
@@ -1605,9 +1613,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portal_session_stops_when_outbound_packet_task_ends() {
+    async fn portal_session_survives_queue_full_and_stops_when_output_closes() {
+        check_portal_session_queue_full(true).await;
+    }
+
+    #[tokio::test]
+    async fn portal_session_survives_queue_full_and_stops_on_send_error() {
+        check_portal_session_queue_full(false).await;
+    }
+
+    async fn check_portal_session_queue_full(close_output: bool) {
+        use crate::{
+            packet::{PacketType, ZCPacket},
+            peers::{PeerPacketFilter, PeerPacketFilterResult},
+        };
+
+        #[derive(Default)]
+        struct PausedClientIngress {
+            paused: AtomicBool,
+            entered: Notify,
+            resume: Notify,
+            recovered: Notify,
+        }
+
+        #[async_trait]
+        impl PeerPacketFilter for PausedClientIngress {
+            async fn try_process_packet_from_peer(
+                &self,
+                packet: ZCPacket,
+            ) -> PeerPacketFilterResult {
+                if packet.peer_manager_header().unwrap().packet_type == PacketType::Data as u8 {
+                    if packet.payload().get(24..) == Some(b"done") {
+                        self.recovered.notify_one();
+                    } else if !self.paused.swap(true, Ordering::SeqCst) {
+                        self.entered.notify_one();
+                        self.resume.notified().await;
+                    }
+                }
+                PeerPacketFilterResult::Pass(packet)
+            }
+        }
+
         let (peer_manager, runtime_config) = network_runtime();
         peer_manager.run().await.unwrap();
+        let ingress = Arc::new(PausedClientIngress::default());
+        peer_manager
+            .add_packet_process_pipeline(Box::new(ingress.clone()))
+            .await;
         let virtual_ip = Ipv4Addr::new(10, 82, 0, 2);
         let config = PortalRuntimeConfig {
             clients: vec![client("alice", virtual_ip, &["ops"])],
@@ -1620,8 +1672,8 @@ mod tests {
             "alice".to_owned(),
             Arc::new(Mutex::new(())),
         )])));
-        let (to_runtime, from_client) = mpsc::channel(1);
-        let (to_client, from_runtime) = mpsc::channel(1);
+        let (to_runtime, from_client) = mpsc::channel(1024);
+        let (to_client, mut from_runtime) = mpsc::channel(1);
         let (_endpoint_sender, endpoint) = tokio::sync::watch::channel("portal://alice".to_owned());
         let session = PortalSession {
             client_name: "alice".to_owned(),
@@ -1664,17 +1716,129 @@ mod tests {
         .await
         .expect("portal session did not publish its virtual address");
 
-        drop(from_runtime);
+        // Stall actual mesh ingress so the attached ring, receive channel and
+        // PeerConn queue fill, rather than injecting a synthetic send error.
+        let mut submitted = 1u64;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    ingress.entered.notified(),
+                )
+                .await
+                .is_ok()
+                {
+                    break;
+                }
+                to_runtime.send(client_packet.clone()).await.unwrap();
+                submitted += 1;
+            }
+        })
+        .await
+        .expect("client packet did not reach the mesh");
+        for _ in 0..512 {
+            to_runtime.try_send(client_packet.clone()).unwrap();
+            submitted += 1;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while to_runtime.capacity() != to_runtime.max_capacity() {
+                assert!(
+                    !to_runtime.is_closed(),
+                    "queue full closed the portal session"
+                );
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("portal stopped consuming client packets on queue full");
+        assert!(
+            !to_runtime.is_closed(),
+            "queue full closed the portal session"
+        );
+        let status = statuses.read().await.get("alice").cloned().unwrap();
+        assert_eq!(status.state, PortalClientState::Online);
+        assert_eq!(status.peer_id, Some(attached_peer_id));
+        assert_eq!(status.generation, 1);
+        let labels = LabelSet::new()
+            .with_label_type(LabelType::NetworkName("portal-test".to_owned()))
+            .with_label_type(LabelType::VpnPortalClient("alice".to_owned()));
+        let admitted = peer_manager
+            .stats_manager()
+            .get_metric(MetricName::VpnPortalClientPacketsTx, &labels)
+            .unwrap()
+            .value;
+        assert!(
+            admitted < submitted,
+            "the burst did not cause queue rejection"
+        );
+
+        ingress.resume.notify_one();
+        let mut recovered = client_packet.clone();
+        recovered[24..].copy_from_slice(b"done");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                to_runtime.send(recovered.clone()).await.unwrap();
+                if tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    ingress.recovered.notified(),
+                )
+                .await
+                .is_ok()
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("same portal client could not send after the queue drained");
         let mesh_packet = raw_ipv4(Ipv4Addr::new(10, 82, 0, 1), virtual_ip);
-        if tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !task.is_finished() {
-                let _ = peer_manager
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                peer_manager
                     .send_msg_by_ip(
-                        crate::packet::ZCPacket::new_with_payload(&mesh_packet),
+                        ZCPacket::new_with_payload(&mesh_packet),
                         IpAddr::V4(virtual_ip),
                         false,
                     )
-                    .await;
+                    .await
+                    .unwrap();
+                if let Ok(Some(packet)) =
+                    tokio::time::timeout(std::time::Duration::from_millis(20), from_runtime.recv())
+                        .await
+                {
+                    assert_eq!(packet, mesh_packet);
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("same portal client could not receive after queue full");
+        let admitted = peer_manager
+            .stats_manager()
+            .get_metric(MetricName::VpnPortalClientPacketsTx, &labels)
+            .unwrap()
+            .value;
+
+        if close_output {
+            drop(from_runtime);
+        } else {
+            // It has the assigned source, so the portal accepts it, but its
+            // invalid total length makes AttachedPeerRuntime::send_packet fail.
+            let mut invalid = client_packet.clone();
+            invalid[2..4].copy_from_slice(&0u16.to_be_bytes());
+            to_runtime.send(invalid).await.unwrap();
+        }
+        if tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !task.is_finished() {
+                if close_output {
+                    let _ = peer_manager
+                        .send_msg_by_ip(
+                            crate::packet::ZCPacket::new_with_payload(&mesh_packet),
+                            IpAddr::V4(virtual_ip),
+                            false,
+                        )
+                        .await;
+                }
                 tokio::task::yield_now().await;
             }
         })
@@ -1684,20 +1848,17 @@ mod tests {
             task.abort();
             let _ = task.await;
             peer_manager.clear_resources().await;
-            panic!("portal session did not stop when its outbound task ended");
+            panic!("portal session did not stop after a fatal I/O error");
         }
         task.await.unwrap();
 
-        let labels = LabelSet::new()
-            .with_label_type(LabelType::NetworkName("portal-test".to_owned()))
-            .with_label_type(LabelType::VpnPortalClient("alice".to_owned()));
         assert_eq!(
             peer_manager
                 .stats_manager()
                 .get_metric(MetricName::VpnPortalClientBytesTx, &labels)
                 .unwrap()
                 .value,
-            client_packet.len() as u64
+            admitted * client_packet.len() as u64
         );
         assert_eq!(
             peer_manager
@@ -1705,7 +1866,7 @@ mod tests {
                 .get_metric(MetricName::VpnPortalClientPacketsTx, &labels)
                 .unwrap()
                 .value,
-            1
+            admitted
         );
 
         let status = statuses.read().await.get("alice").cloned().unwrap();

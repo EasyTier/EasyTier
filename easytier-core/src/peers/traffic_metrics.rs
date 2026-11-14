@@ -25,9 +25,9 @@ struct TrafficCounters {
 }
 
 impl TrafficCounters {
-    fn add_sample(&self, bytes: u64) {
+    fn add_sample(&self, bytes: u64, packets: u64) {
         self.bytes.add(bytes);
-        self.packets.inc();
+        self.packets.add(packets);
     }
 }
 
@@ -38,10 +38,10 @@ enum CachedPeerTrafficCounters {
 }
 
 impl CachedPeerTrafficCounters {
-    fn add_sample(&self, bytes: u64) {
+    fn add_sample(&self, bytes: u64, packets: u64) {
         match self {
             CachedPeerTrafficCounters::Unknown(counters)
-            | CachedPeerTrafficCounters::Resolved(counters) => counters.add_sample(bytes),
+            | CachedPeerTrafficCounters::Resolved(counters) => counters.add_sample(bytes, packets),
         }
     }
 
@@ -98,18 +98,32 @@ impl LogicalTrafficMetrics {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Option<String>>,
     {
-        self.total.add_sample(bytes);
+        self.record_packets_with_resolver(peer_id, bytes, 1, resolver)
+            .await;
+    }
+
+    async fn record_packets_with_resolver<F, Fut>(
+        &self,
+        peer_id: PeerId,
+        bytes: u64,
+        packets: u64,
+        resolver: F,
+    ) where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Option<String>>,
+    {
+        self.total.add_sample(bytes, packets);
 
         if let Some(entry) = self.per_peer.get(&peer_id)
             && entry.value().is_resolved()
         {
-            entry.value().add_sample(bytes);
+            entry.value().add_sample(bytes, packets);
             return;
         }
 
         let resolved_instance_id = resolver().await;
         let counters = self.get_or_update_peer_counters(peer_id, resolved_instance_id.as_deref());
-        counters.add_sample(bytes);
+        counters.add_sample(bytes, packets);
     }
 
     fn get_or_update_peer_counters(
@@ -273,12 +287,24 @@ impl TrafficMetricRecorder {
     }
 
     pub async fn record_tx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {
+        self.record_tx_batch(peer_id, packet_type, bytes, 1).await;
+    }
+
+    pub(crate) async fn record_tx_batch(
+        &self,
+        peer_id: PeerId,
+        packet_type: u8,
+        bytes: u64,
+        packets: u64,
+    ) {
         if peer_id == self.my_peer_id {
             return;
         }
         self.tx_metrics
             .select(traffic_kind(packet_type))
-            .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
+            .record_packets_with_resolver(peer_id, bytes, packets, || {
+                self.resolve_instance_id(peer_id)
+            })
             .await;
     }
 
