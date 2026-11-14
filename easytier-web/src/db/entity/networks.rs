@@ -22,6 +22,8 @@ pub struct Model {
     pub public_server_url: Option<String>,
     #[sea_orm(column_type = "Text")]
     pub peer_urls: String,
+    #[sea_orm(column_type = "Text")]
+    pub member_peers: String,
     #[sea_orm(column_type = "Text", nullable)]
     pub virtual_cidr: Option<String>,
     pub secure_mode: bool,

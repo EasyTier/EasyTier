@@ -19,8 +19,8 @@ use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter as _, QueryOrder a
 use uuid::Uuid;
 
 use super::model::{
-    AclPolicy, CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
-    NetworkMode, member_group_name,
+    AclPolicy, CentralNetworkIntent, CredentialGrant, MemberPeer, NetworkCredentialIntent,
+    NetworkMemberIntent, NetworkMode, member_group_name,
 };
 pub use super::temporary_peers::TemporaryPeerInfo;
 use crate::{
@@ -77,6 +77,8 @@ pub struct NetworkSettings {
     pub public_server_url: Option<String>,
     #[serde(default)]
     pub peer_urls: Vec<String>,
+    #[serde(default)]
+    pub member_peers: Vec<MemberPeer>,
     pub virtual_cidr: Option<String>,
     #[serde(default)]
     pub secure_mode: bool,
@@ -162,6 +164,7 @@ pub struct NetworkDetail {
     pub secure_mode: bool,
     pub public_server_url: Option<String>,
     pub peer_urls: Vec<String>,
+    pub member_peers: Vec<MemberPeer>,
     pub member_count: usize,
 }
 
@@ -177,6 +180,8 @@ pub struct MemberInfo {
     pub online: bool,
     pub running: Option<bool>,
     pub runtime_virtual_ipv4: Option<String>,
+    /// Public IPv4 the device last reported, offered as an initial-node address.
+    pub public_ipv4: Option<String>,
     pub version: Option<String>,
     pub error_msg: Option<String>,
     pub has_override: bool,
@@ -420,7 +425,8 @@ impl CentralNetworkService {
         network_id: Uuid,
     ) -> Result<NetworkDetail, CentralNetworkServiceError> {
         let intent = self.load(user_id, network_id).await?;
-        let (networking_method, public_server_url, peer_urls) = mode_view(&intent.mode);
+        let (networking_method, public_server_url, peer_urls, member_peers) =
+            mode_view(&intent.mode);
         Ok(NetworkDetail {
             network_id: network_id.to_string(),
             display_name: intent.display_name,
@@ -431,6 +437,7 @@ impl CentralNetworkService {
             secure_mode: intent.secure_mode,
             public_server_url,
             peer_urls,
+            member_peers,
             member_count: intent.members.len(),
         })
     }
@@ -935,6 +942,7 @@ impl CentralNetworkService {
             .is_some();
         let mut running = None;
         let mut runtime_virtual_ipv4 = None;
+        let mut public_ipv4 = None;
         let mut error_msg = None;
         if online {
             match self
@@ -943,12 +951,11 @@ impl CentralNetworkService {
                 .await
             {
                 Ok(response) => {
-                    if let Some((is_running, virtual_ipv4, runtime_error)) =
-                        member_runtime_fields(&response, network_id)
-                    {
-                        running = Some(is_running);
-                        runtime_virtual_ipv4 = virtual_ipv4;
-                        error_msg = runtime_error;
+                    if let Some(fields) = member_runtime_fields(&response, network_id) {
+                        running = Some(fields.running);
+                        runtime_virtual_ipv4 = fields.virtual_ipv4;
+                        public_ipv4 = fields.public_ipv4;
+                        error_msg = fields.error_msg;
                     }
                 }
                 Err(RemoteClientError::ClientNotFound) => {}
@@ -978,6 +985,7 @@ impl CentralNetworkService {
             online,
             running,
             runtime_virtual_ipv4,
+            public_ipv4,
             version: device.map(|device| device.easytier_version.clone()),
             error_msg,
             has_override: member.config_override.is_some(),
@@ -1215,6 +1223,7 @@ fn mode_from_settings(
             .ok_or_else(|| CentralNetworkServiceError::Invalid("missing public server URL".into())),
         "Manual" | "manual" => Ok(NetworkMode::Manual {
             peer_urls: settings.peer_urls.clone(),
+            member_peers: settings.member_peers.clone(),
         }),
         "Standalone" | "standalone" => Ok(NetworkMode::Standalone),
         "Gateway" | "gateway" => gateway_config
@@ -1230,12 +1239,27 @@ fn mode_from_settings(
     }
 }
 
-fn mode_view(mode: &NetworkMode) -> (String, Option<String>, Vec<String>) {
+fn mode_view(mode: &NetworkMode) -> (String, Option<String>, Vec<String>, Vec<MemberPeer>) {
     match mode {
-        NetworkMode::PublicServer { url } => ("PublicServer".into(), Some(url.clone()), Vec::new()),
-        NetworkMode::Manual { peer_urls } => ("Manual".into(), None, peer_urls.clone()),
-        NetworkMode::Standalone => ("Standalone".into(), None, Vec::new()),
-        NetworkMode::Gateway { peer_url } => ("Gateway".into(), None, vec![peer_url.clone()]),
+        NetworkMode::PublicServer { url } => (
+            "PublicServer".into(),
+            Some(url.clone()),
+            Vec::new(),
+            Vec::new(),
+        ),
+        NetworkMode::Manual {
+            peer_urls,
+            member_peers,
+        } => (
+            "Manual".into(),
+            None,
+            peer_urls.clone(),
+            member_peers.clone(),
+        ),
+        NetworkMode::Standalone => ("Standalone".into(), None, Vec::new(), Vec::new()),
+        NetworkMode::Gateway { peer_url } => {
+            ("Gateway".into(), None, vec![peer_url.clone()], Vec::new())
+        }
     }
 }
 
@@ -1266,18 +1290,31 @@ fn random_secret() -> String {
     base64::engine::general_purpose::STANDARD.encode(secret)
 }
 
+#[derive(Debug, PartialEq)]
+struct MemberRuntimeFields {
+    running: bool,
+    virtual_ipv4: Option<String>,
+    public_ipv4: Option<String>,
+    error_msg: Option<String>,
+}
+
 fn member_runtime_fields(
     response: &CollectNetworkInfoResponse,
     network_id: Uuid,
-) -> Option<(bool, Option<String>, Option<String>)> {
+) -> Option<MemberRuntimeFields> {
     let info = response.info.as_ref()?.map.get(&network_id.to_string())?;
-    let virtual_ipv4 = info
-        .my_node_info
-        .as_ref()
-        .and_then(|node| node.virtual_ipv4.as_ref())
-        .map(ToString::to_string);
-    let error_msg = info.error_msg.clone().filter(|error| !error.is_empty());
-    Some((info.running, virtual_ipv4, error_msg))
+    let node = info.my_node_info.as_ref();
+    Some(MemberRuntimeFields {
+        running: info.running,
+        virtual_ipv4: node
+            .and_then(|node| node.virtual_ipv4.as_ref())
+            .map(ToString::to_string),
+        public_ipv4: node
+            .and_then(|node| node.ips.as_ref())
+            .and_then(|ips| ips.public_ipv4)
+            .map(|address| std::net::Ipv4Addr::from(address).to_string()),
+        error_msg: info.error_msg.clone().filter(|error| !error.is_empty()),
+    })
 }
 
 #[cfg(test)]
@@ -1313,6 +1350,10 @@ mod tests {
                             address: Some(std::net::Ipv4Addr::new(10, 88, 0, 9).into()),
                             network_length: 24,
                         }),
+                        ips: Some(easytier::proto::peer_rpc::GetIpListResponse {
+                            public_ipv4: Some(std::net::Ipv4Addr::new(203, 0, 113, 7).into()),
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     }),
                     running: true,
@@ -1327,7 +1368,12 @@ mod tests {
 
         assert_eq!(
             member_runtime_fields(&response, network_id),
-            Some((true, Some("10.88.0.9/24".to_owned()), None))
+            Some(MemberRuntimeFields {
+                running: true,
+                virtual_ipv4: Some("10.88.0.9/24".to_owned()),
+                public_ipv4: Some("203.0.113.7".to_owned()),
+                error_msg: None,
+            })
         );
         assert_eq!(member_runtime_fields(&response, Uuid::new_v4()), None);
 
@@ -1335,11 +1381,12 @@ mod tests {
         response.info = Some(NetworkInstanceRunningInfoMap { map });
         assert_eq!(
             member_runtime_fields(&response, network_id),
-            Some((
-                true,
-                Some("10.88.0.9/24".to_owned()),
-                Some("runtime failed".to_owned())
-            ))
+            Some(MemberRuntimeFields {
+                running: true,
+                virtual_ipv4: Some("10.88.0.9/24".to_owned()),
+                public_ipv4: Some("203.0.113.7".to_owned()),
+                error_msg: Some("runtime failed".to_owned()),
+            })
         );
     }
 
@@ -1563,6 +1610,7 @@ mod tests {
             networking_method: "Standalone".to_owned(),
             public_server_url: None,
             peer_urls: Vec::new(),
+            member_peers: Vec::new(),
             virtual_cidr: Some("10.88.0.0/24".to_owned()),
             secure_mode: true,
         }

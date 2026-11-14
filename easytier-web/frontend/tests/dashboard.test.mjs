@@ -383,6 +383,51 @@ test('PublicServer settings retain discovery mode when renamed or edited to the 
     assert.deepEqual(settings.peer_urls, []);
 });
 
+test('member devices serve as initial nodes with a stored address', async t => {
+    const { page, state } = await open(t, '/h/networks/network-1', {}, state => {
+        state.members[0].public_ipv4 = '198.51.100.1';
+        state.members.push({ member_id: id(102), device_id: id(2), hostname: 'Build server', temporary: true, online: true });
+    });
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    const latestSettings = () => state.writes.filter(w => w.method === 'PATCH').at(-1).payload.settings;
+    const saved = () => page.waitForResponse(response => response.request().method() === 'GET' && response.url().endsWith('/networks/network-1'));
+
+    await page.locator('#add-member-peer').click();
+    const host = page.locator('#settings-member-peers .member-peer-host');
+    assert.equal(await host.inputValue(), '198.51.100.1');
+    // Temporary members cannot serve, so no other device is offered.
+    assert.equal(await page.locator('#add-member-peer').isDisabled(), true);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await saved();
+    let settings = latestSettings();
+    assert.equal(settings.networking_method, 'Manual');
+    assert.deepEqual(settings.peer_urls, ['tcp://192.0.2.1:11010']);
+    assert.deepEqual(settings.member_peers, [{ member_id: id(101), host: '198.51.100.1' }]);
+
+    // A new detected address is offered, never applied silently.
+    state.members[0].public_ipv4 = '198.51.100.2';
+    await page.getByText('The device currently reports public IP 198.51.100.2').waitFor();
+    assert.equal(await host.inputValue(), '198.51.100.1');
+    await page.getByRole('button', { name: 'Use it', exact: true }).click();
+    assert.equal(await host.inputValue(), '198.51.100.2');
+
+    // Member devices alone keep the network in Manual mode.
+    await page.locator('#settings-initial-nodes').getByRole('button').last().click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await saved();
+    settings = latestSettings();
+    assert.equal(settings.networking_method, 'Manual');
+    assert.deepEqual(settings.peer_urls, []);
+    assert.deepEqual(settings.member_peers, [{ member_id: id(101), host: '198.51.100.2' }]);
+
+    await page.getByRole('button', { name: 'Remove this initial node', exact: true }).click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await saved();
+    settings = latestSettings();
+    assert.equal(settings.networking_method, 'Standalone');
+    assert.deepEqual(settings.member_peers, []);
+});
+
 test('network tabs preserve gateway settings and unsaved input across polling', async t => {
     const { page, state } = await open(t, '/h/networks/network-0');
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
