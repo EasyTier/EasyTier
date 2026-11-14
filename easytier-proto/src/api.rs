@@ -276,7 +276,9 @@ pub mod instance {
         pub fn get_remote_addr(&self) -> Option<String> {
             let p = self.peer.as_ref()?;
             for conn in &p.conns {
-                let tunnel = conn.tunnel.as_ref()?;
+                let Some(tunnel) = conn.tunnel.as_ref() else {
+                    continue;
+                };
                 if let Some(addr) = tunnel.display_remote_addr() {
                     return Some(addr);
                 }
@@ -289,7 +291,9 @@ pub mod instance {
         pub fn get_local_addr(&self) -> Option<String> {
             let p = self.peer.as_ref()?;
             for conn in &p.conns {
-                let tunnel = conn.tunnel.as_ref()?;
+                let Some(tunnel) = conn.tunnel.as_ref() else {
+                    continue;
+                };
                 if let Some(addr) = tunnel.display_local_addr() {
                     return Some(addr);
                 }
@@ -748,5 +752,31 @@ mod tests {
         };
         assert!(pair.get_remote_addr().is_none());
         assert!(pair.get_local_addr().is_none());
+    }
+
+    #[test]
+    fn peer_route_pair_skips_connection_without_tunnel() {
+        use super::instance::{PeerConnInfo, PeerInfo, Route};
+        use crate::proto::common::{TunnelInfo, Url};
+
+        let pair = PeerRoutePair {
+            route: Some(Route { peer_id: 1, ..Default::default() }),
+            peer: Some(PeerInfo {
+                conns: vec![
+                    PeerConnInfo::default(),
+                    PeerConnInfo {
+                        tunnel: Some(TunnelInfo {
+                            local_addr: Some(Url { url: "tcp://local:1".to_string() }),
+                            remote_addr: Some(Url { url: "tcp://remote:2".to_string() }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+        };
+        assert_eq!(pair.get_local_addr().as_deref(), Some("tcp://local:1"));
+        assert_eq!(pair.get_remote_addr().as_deref(), Some("tcp://remote:2"));
     }
 }
