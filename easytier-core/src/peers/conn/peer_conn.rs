@@ -1476,7 +1476,13 @@ impl PeerConn {
         let result = if is_heartbeat(&msg) {
             self.sink.send(msg).await
         } else {
-            self.sink.try_send(msg)
+            let result = self.sink.try_send(msg);
+            if result.is_ok() && self.sink.ordinary_queue_is_full() {
+                // Let the writer run before a ready producer fills the next
+                // turn with drops. Do not wait for capacity or retry the item.
+                tokio::task::yield_now().await;
+            }
+            result
         };
         if let Err(error) = result {
             if !matches!(error, TunnelError::BufferFull) {
@@ -1655,13 +1661,10 @@ mod tests {
                 packet.fill_peer_manager_hdr(1, 2, kind as u8);
                 packet
             };
-            // Do not yield to the writer: exercise the real connection's
-            // admission policy with its ordinary queue deterministically full.
+            // Pre-fill without yielding to the writer, then exercise the
+            // connection's admission policy with its ordinary queue full.
             for _ in 0..32 {
-                conn.send_msg(packet(PacketType::Data))
-                    .now_or_never()
-                    .unwrap()
-                    .unwrap();
+                conn.sink.try_send(packet(PacketType::Data)).unwrap();
             }
             let session = Arc::new(PeerSession::new(
                 2,

@@ -52,6 +52,10 @@ impl MpscTunnelSender {
             TrySendError::Closed(_) => TunnelError::Shutdown,
         })
     }
+
+    pub(crate) fn ordinary_queue_is_full(&self) -> bool {
+        self.sender.capacity() == 0
+    }
 }
 
 /// Only connection writers expand batches. Internal RPC rings keep one entry
