@@ -146,51 +146,22 @@ impl DarwinConfigurator {
         let _guard = self.prepared.lock().unwrap();
         fs::create_dir_all(&self.resolver_dir)?;
 
-        // Keep the existing refusal to replace unrelated files, even though
-        // tailscaled's writer can replace an unmarked same-domain file.
-        for name in desired.keys() {
-            let path = self.resolver_dir.join(name);
-            match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.is_file() => {
-                    if Self::open_marked(&path, false)?.is_none() {
-                        return Err(io::Error::other(format!(
-                            "Resolver file {} is not owned by EasyTier; preserving it",
-                            path.display(),
-                        )));
-                    }
-                }
-                Ok(_) => {
-                    return Err(io::Error::other(format!(
-                        "Resolver file {} is not a regular owned file; preserving it",
-                        path.display(),
-                    )));
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-        }
-
         // 写 match_domains 文件 and the independent search-domain file.
         for (name, content) in &desired {
             let path = self.resolver_dir.join(name);
-            let mut file = match OpenOptions::new()
-                .create_new(true)
+            let mut file = OpenOptions::new()
+                .create(true)
                 .read(true)
                 .write(true)
+                .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
                 .mode(0o644)
-                .open(&path)
-            {
-                Ok(file) => file,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    Self::open_marked(&path, true)?.ok_or_else(|| {
-                        io::Error::other(format!(
-                            "Resolver file {} is no longer owned by EasyTier; preserving it",
-                            path.display(),
-                        ))
-                    })?
-                }
-                Err(error) => return Err(error),
-            };
+                .open(&path)?;
+            if !file.metadata()?.is_file() {
+                return Err(io::Error::other(format!(
+                    "Resolver file {} is not a regular file; preserving it",
+                    path.display(),
+                )));
+            }
             file.rewind()?;
             file.set_len(0)?;
             file.set_permissions(fs::Permissions::from_mode(0o644))?;
@@ -262,22 +233,26 @@ mod tests {
     }
 
     #[test]
-    fn refuses_preexisting_files_and_symlinks_before_writing() -> io::Result<()> {
+    fn takes_over_preexisting_regular_files_and_refuses_symlinks() -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let preexisting = dir.path().join("existing.test");
         let content = "nameserver 192.0.2.53\n";
         fs::write(&preexisting, content)?;
         let configurator = DarwinConfigurator::with_resolver_dir(dir.path().to_owned());
-        assert!(
-            configurator
-                .set_dns(&config(&["another.test", "existing.test"]))
-                .is_err()
+        configurator.set_dns(&config(&["another.test", "existing.test"]))?;
+        assert_eq!(
+            fs::read_to_string(&preexisting)?,
+            "# Added by easytier\nnameserver 100.100.100.101\n"
         );
-        assert!(!dir.path().join("another.test").exists());
+        assert!(dir.path().join("another.test").exists());
         configurator.close()?;
-        assert_eq!(fs::read_to_string(&preexisting)?, content);
+        assert!(!preexisting.exists());
+        assert!(!dir.path().join("another.test").exists());
+
+        fs::write(&preexisting, content)?;
         symlink(&preexisting, dir.path().join("linked.test"))?;
-        assert!(configurator.set_dns(&config(&["linked.test"])).is_err());
+        let restarted = DarwinConfigurator::with_resolver_dir(dir.path().to_owned());
+        assert!(restarted.set_dns(&config(&["linked.test"])).is_err());
         assert_eq!(fs::read_to_string(&preexisting)?, content);
         Ok(())
     }
@@ -303,9 +278,22 @@ mod tests {
         assert!(!edited.exists());
         assert!(!dir.path().join("search.easytier").exists());
         assert_eq!(fs::read_to_string(&replaced)?, "nameserver 192.0.2.55\n");
-        restarted.set_dns(&config(&["edited.test"]))?;
+
+        let empty = dir.path().join("empty.test");
+        let partial = dir.path().join("partial.test");
+        fs::write(&empty, "")?;
+        fs::write(&partial, "# Added by easy")?;
+        restarted.set_dns(&config(&["edited.test", "empty.test", "partial.test"]))?;
+        for path in [&edited, &empty, &partial] {
+            assert_eq!(
+                fs::read_to_string(path)?,
+                "# Added by easytier\nnameserver 100.100.100.101\n"
+            );
+        }
         restarted.close()?;
-        assert!(!edited.exists());
+        for path in [&edited, &empty, &partial] {
+            assert!(!path.exists());
+        }
         assert!(replaced.exists());
         Ok(())
     }
