@@ -26,6 +26,7 @@ pub struct FixtureConfig {
     pub domains: Vec<(String, bool)>,
     pub default_route: bool,
     pub dns_over_tls: String,
+    pub dnssec: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,11 +39,14 @@ pub enum FixtureFailure {
 }
 
 #[derive(Debug, DBusError)]
-#[zbus(prefix = "org.freedesktop.resolve1")]
+#[zbus(prefix = "org.freedesktop")]
 enum FixtureError {
+    #[zbus(name = "resolve1.LinkBusy")]
     LinkBusy(String),
-    #[zbus(error)]
-    ZBus(zbus::Error),
+    #[zbus(name = "DBus.Error.AccessDenied")]
+    AccessDenied(String),
+    #[zbus(name = "DBus.Error.UnknownMethod")]
+    UnknownMethod(String),
 }
 
 #[derive(Default)]
@@ -84,14 +88,14 @@ impl FixtureState {
                 return Err(FixtureError::LinkBusy("link is managed".to_owned()));
             }
             Some(FixtureFailure::AccessDenied) => {
-                return Err(FixtureError::ZBus(zbus::Error::FDO(Box::new(
-                    fdo::Error::AccessDenied("non-interactive authorization denied".to_owned()),
-                ))));
+                return Err(FixtureError::AccessDenied(
+                    "non-interactive authorization denied".to_owned(),
+                ));
             }
             Some(FixtureFailure::UnknownMethod) => {
-                return Err(FixtureError::ZBus(zbus::Error::FDO(Box::new(
-                    fdo::Error::UnknownMethod(format!("{method} is unavailable")),
-                ))));
+                return Err(FixtureError::UnknownMethod(format!(
+                    "{method} is unavailable"
+                )));
             }
             Some(FixtureFailure::Delay(delay)) => {
                 let timer = Arc::new(tokio::sync::Notify::new());
@@ -194,6 +198,21 @@ impl ResolvedManagerFixture {
             })
             .await
     }
+
+    #[zbus(name = "SetLinkDNSSEC")]
+    async fn set_link_dnssec(
+        &self,
+        ifindex: i32,
+        mode: String,
+        #[zbus(header)] header: Header<'_>,
+    ) -> Result<(), FixtureError> {
+        assert_eq!(ifindex, self.ifindex);
+        self.state
+            .write("resolved", "SetLinkDNSSEC", &header, |config| {
+                config.dnssec = mode;
+            })
+            .await
+    }
 }
 
 struct NetworkManagerFixture {
@@ -262,6 +281,21 @@ impl NetworkManagerFixture {
             })
             .await
     }
+
+    #[zbus(name = "SetLinkDNSSEC")]
+    async fn set_link_dnssec(
+        &self,
+        ifindex: i32,
+        mode: String,
+        #[zbus(header)] header: Header<'_>,
+    ) -> Result<(), FixtureError> {
+        assert_eq!(ifindex, self.ifindex);
+        self.state
+            .write("networkd", "SetLinkDNSSEC", &header, |config| {
+                config.dnssec = mode;
+            })
+            .await
+    }
 }
 
 struct LinkFixture {
@@ -293,6 +327,11 @@ impl LinkFixture {
     #[zbus(property, name = "DNSOverTLS")]
     fn dns_over_tls(&self) -> String {
         self.state.config.lock().unwrap().dns_over_tls.clone()
+    }
+
+    #[zbus(property, name = "DNSSEC")]
+    fn dnssec(&self) -> String {
+        self.state.config.lock().unwrap().dnssec.clone()
     }
 }
 
@@ -412,6 +451,7 @@ impl ResolvedFixture {
             *self.state.config.lock().unwrap() = FixtureConfig {
                 default_route: true,
                 dns_over_tls: "yes".to_owned(),
+                dnssec: "yes".to_owned(),
                 ..Default::default()
             };
         }

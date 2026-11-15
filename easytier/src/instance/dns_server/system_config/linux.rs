@@ -46,6 +46,7 @@ struct LinkConfig {
     domains: Vec<String>,
     default_route: bool,
     dns_over_tls: String,
+    dnssec: String,
 }
 
 struct LinkState {
@@ -249,6 +250,11 @@ impl ResolvedConfigurator {
         let dns_over_tls = link
             .get_property("DNSOverTLS")
             .map_err(|error| Self::dbus_error("reading resolved DNSOverTLS", error))?;
+        // Like DNSOverTLS, DNSSEC exposes the effective mode, not whether it
+        // was inherited. Cleanup restores this sampled value.
+        let dnssec = link
+            .get_property("DNSSEC")
+            .map_err(|error| Self::dbus_error("reading resolved DNSSEC", error))?;
         let current_owner: OwnedUniqueName = bus
             .call("GetNameOwner", &(RESOLVED_SERVICE,))
             .map_err(|error| Self::dbus_error("checking the resolved service owner", error))?;
@@ -263,6 +269,7 @@ impl ResolvedConfigurator {
                 domains,
                 default_route,
                 dns_over_tls,
+                dnssec,
             },
             owner,
         })
@@ -310,6 +317,7 @@ impl ResolvedConfigurator {
             domains,
             default_route: false,
             dns_over_tls: "no".to_owned(),
+            dnssec: "no".to_owned(),
         })
     }
 
@@ -372,10 +380,31 @@ impl ResolvedConfigurator {
         }
     }
 
+    fn write_dnssec(
+        &self,
+        applied: &mut AppliedConfig,
+        ifindex: i32,
+        mode: &str,
+    ) -> io::Result<()> {
+        self.call_manager(applied.owner.as_str(), "SetLinkDNSSEC", &(ifindex, mode))?;
+        applied.current.dnssec = mode.to_owned();
+        Ok(())
+    }
+
     // Record each successful write so normal cleanup also handles partial setup.
-    fn write_config(&self, applied: &mut AppliedConfig, cfg: &LinkConfig) -> io::Result<()> {
+    fn write_config(
+        &self,
+        applied: &mut AppliedConfig,
+        cfg: &LinkConfig,
+        restoring: bool,
+    ) -> io::Result<()> {
         let ifindex = self.ifindex()?;
         let owner = applied.owner.clone();
+        // Disable validation before publishing private DNS. Restore the sampled
+        // mode only after withdrawing our DNS servers and domains.
+        if !restoring {
+            self.write_dnssec(applied, ifindex, &cfg.dnssec)?;
+        }
         self.call_manager(
             owner.as_str(),
             "SetLinkDefaultRoute",
@@ -411,6 +440,9 @@ impl ResolvedConfigurator {
             &(ifindex, cfg.dns_over_tls.as_str()),
         )?;
         applied.current.dns_over_tls.clone_from(&cfg.dns_over_tls);
+        if restoring {
+            self.write_dnssec(applied, ifindex, &cfg.dnssec)?;
+        }
         Ok(())
     }
 
@@ -471,7 +503,7 @@ impl ResolvedConfigurator {
         }
         // Once owned, maintain the latest desired state instead of treating a
         // late reply or external write as a permanent snapshot conflict.
-        self.write_config(applied, &desired)
+        self.write_config(applied, &desired, false)
     }
 }
 
@@ -510,7 +542,7 @@ impl SystemConfig for ResolvedConfigurator {
             applied.owner = observed.owner;
         }
         let original = applied.original.clone();
-        self.write_config(applied, &original)?;
+        self.write_config(applied, &original, true)?;
         *state = None;
         Ok(())
     }
@@ -536,6 +568,7 @@ mod tests {
         FixtureConfig {
             default_route: true,
             dns_over_tls: "yes".to_owned(),
+            dnssec: "yes".to_owned(),
             ..Default::default()
         }
     }
@@ -549,6 +582,7 @@ mod tests {
             ],
             default_route: false,
             dns_over_tls: "no".to_owned(),
+            dnssec: "no".to_owned(),
         }
     }
 
@@ -566,6 +600,7 @@ mod tests {
             domains: vec![("new.test".to_owned(), false)],
             default_route: false,
             dns_over_tls: "no".to_owned(),
+            dnssec: "no".to_owned(),
         }
     }
 
@@ -596,6 +631,7 @@ mod tests {
         assert_eq!(cfg.domains, ["et.net", "~internal.test"]);
         assert!(!cfg.default_route);
         assert_eq!(cfg.dns_over_tls, "no");
+        assert_eq!(cfg.dnssec, "no");
     }
 
     #[test]
@@ -635,6 +671,7 @@ mod tests {
         assert_eq!(
             fixture.calls(),
             [
+                "resolved.SetLinkDNSSEC",
                 "resolved.SetLinkDefaultRoute",
                 "resolved.SetLinkDomains",
                 "resolved.SetLinkDNS",
@@ -644,7 +681,37 @@ mod tests {
 
         configurator.close().unwrap();
         assert_eq!(fixture.config(), original_config());
+        assert_eq!(
+            &fixture.calls()[5..],
+            [
+                "resolved.SetLinkDefaultRoute",
+                "resolved.SetLinkDomains",
+                "resolved.SetLinkDNS",
+                "resolved.SetLinkDNSOverTLS",
+                "resolved.SetLinkDNSSEC",
+            ]
+        );
         configurator.close().unwrap();
+    }
+
+    #[test]
+    fn refuses_existing_link_dns_before_changing_dnssec() {
+        for existing in [
+            FixtureConfig {
+                nameservers: vec![(AF_INET, vec![192, 0, 2, 53])],
+                ..original_config()
+            },
+            FixtureConfig {
+                domains: vec![("external.test".to_owned(), true)],
+                ..original_config()
+            },
+        ] {
+            let (fixture, configurator) = setup();
+            fixture.set_config(existing.clone());
+            assert!(configurator.set_dns(&config()).is_err());
+            assert_eq!(fixture.config(), existing);
+            assert!(fixture.calls().is_empty());
+        }
     }
 
     #[test]
@@ -653,6 +720,7 @@ mod tests {
         fixture.fail("resolved.SetLinkDomains", FixtureFailure::AccessDenied);
         assert!(configurator.set_dns(&config()).is_err());
         assert!(!fixture.config().default_route);
+        assert_eq!(fixture.config().dnssec, "no");
 
         fixture.clear_failures();
         configurator.close().unwrap();
@@ -680,12 +748,37 @@ mod tests {
         let mut changed = fixture.config();
         changed.nameservers = vec![(AF_INET, vec![192, 0, 2, 53])];
         changed.dns_over_tls = "yes".to_owned();
+        changed.dnssec = "yes".to_owned();
         fixture.set_config(changed);
 
         configurator.set_dns(&config()).unwrap();
         assert_eq!(fixture.config(), desired_config());
+        let mut changed = fixture.config();
+        changed.dnssec = "yes".to_owned();
+        fixture.set_config(changed);
+        configurator.refresh().unwrap();
+        assert_eq!(fixture.config(), desired_config());
         configurator.close().unwrap();
         assert_eq!(fixture.config(), original_config());
+    }
+
+    #[test]
+    fn close_retries_after_dnssec_restore_fails() {
+        let (fixture, configurator) = setup();
+        configurator.set_dns(&config()).unwrap();
+        fixture.fail("resolved.SetLinkDNSSEC", FixtureFailure::AccessDenied);
+
+        let error = configurator.close().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        let mut partial = original_config();
+        partial.dnssec = "no".to_owned();
+        assert_eq!(fixture.config(), partial);
+        assert!(configurator.applied.lock().unwrap().is_some());
+
+        fixture.clear_failures();
+        configurator.close().unwrap();
+        assert_eq!(fixture.config(), original_config());
+        assert!(configurator.applied.lock().unwrap().is_none());
     }
 
     #[test]
@@ -773,6 +866,7 @@ mod tests {
             domains: vec![("external.test".to_owned(), true)],
             default_route: true,
             dns_over_tls: "yes".to_owned(),
+            dnssec: "yes".to_owned(),
         };
         fixture.set_config(external);
 
@@ -786,6 +880,7 @@ mod tests {
     fn link_busy_falls_back_to_networkd() {
         let (fixture, configurator) = setup();
         for method in [
+            "resolved.SetLinkDNSSEC",
             "resolved.SetLinkDefaultRoute",
             "resolved.SetLinkDomains",
             "resolved.SetLinkDNS",
@@ -798,6 +893,7 @@ mod tests {
         assert_eq!(fixture.config(), desired_config());
         let calls = fixture.calls();
         for method in [
+            "networkd.SetLinkDNSSEC",
             "networkd.SetLinkDefaultRoute",
             "networkd.SetLinkDomains",
             "networkd.SetLinkDNS",
@@ -805,24 +901,38 @@ mod tests {
         ] {
             assert!(calls.contains(&method.to_owned()));
         }
+        configurator.close().unwrap();
+        assert_eq!(fixture.config(), original_config());
     }
 
     #[test]
     fn permission_errors_do_not_fall_back_to_networkd() {
         let (fixture, configurator) = setup();
-        fixture.fail("resolved.SetLinkDefaultRoute", FixtureFailure::AccessDenied);
+        fixture.fail("resolved.SetLinkDNSSEC", FixtureFailure::AccessDenied);
 
-        assert!(configurator.set_dns(&config()).is_err());
-        assert!(
-            !fixture
-                .calls()
-                .iter()
-                .any(|call| call.starts_with("networkd."))
+        let error = configurator.set_dns(&config()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fixture.config(), original_config());
+        assert_eq!(fixture.calls(), ["resolved.SetLinkDNSSEC"]);
+    }
+
+    #[test]
+    fn networkd_dnssec_permission_failure_does_not_publish_dns() {
+        let (fixture, configurator) = setup();
+        fixture.fail("resolved.SetLinkDNSSEC", FixtureFailure::LinkBusy);
+        fixture.fail("networkd.SetLinkDNSSEC", FixtureFailure::AccessDenied);
+
+        let error = configurator.set_dns(&config()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fixture.config(), original_config());
+        assert_eq!(
+            fixture.calls(),
+            ["resolved.SetLinkDNSSEC", "networkd.SetLinkDNSSEC"]
         );
     }
 
     #[test]
-    fn missing_default_route_method_aborts_before_changes() {
+    fn missing_default_route_method_preserves_partial_setup_for_cleanup() {
         let (fixture, configurator) = setup();
         fixture.fail(
             "resolved.SetLinkDefaultRoute",
@@ -830,9 +940,12 @@ mod tests {
         );
 
         assert!(configurator.set_dns(&config()).is_err());
-        assert_eq!(fixture.config(), original_config());
+        let mut partial = original_config();
+        partial.dnssec = "no".to_owned();
+        assert_eq!(fixture.config(), partial);
         fixture.clear_failures();
         configurator.close().unwrap();
+        assert_eq!(fixture.config(), original_config());
     }
 
     #[test]
@@ -853,10 +966,14 @@ mod tests {
         configurator.set_dns(&config()).unwrap();
         fixture.restart_resolved();
         assert_eq!(fixture.config(), original_config());
+        let mut original = original_config();
+        original.dnssec = "allow-downgrade".to_owned();
+        fixture.set_config(original.clone());
 
         configurator.refresh().unwrap();
         assert_eq!(fixture.config(), desired_config());
         configurator.close().unwrap();
+        assert_eq!(fixture.config(), original);
     }
 
     #[test]
@@ -899,7 +1016,7 @@ mod tests {
 
         let mut state = configurator.applied.lock().unwrap();
         configurator
-            .write_config(state.as_mut().unwrap(), &desired)
+            .write_config(state.as_mut().unwrap(), &desired, false)
             .unwrap_err();
         assert_eq!(fixture.config(), original_config());
     }
