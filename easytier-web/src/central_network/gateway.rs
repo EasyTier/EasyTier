@@ -38,6 +38,12 @@ impl GatewayConfig {
             .parse()
             .map_err(|error| anyhow::anyhow!("invalid gateway peer URL: {error}"))?;
         let listener_protocol = listener_protocol.to_ascii_lowercase();
+        if listener_protocol == "both" {
+            if !matches!(peer_url.scheme(), "tcp" | "udp") {
+                anyhow::bail!("gateway peer URL scheme must be tcp or udp for both listeners");
+            }
+            return Ok(());
+        }
         let listener_scheme: IpScheme = listener_protocol.parse().map_err(|_| {
             anyhow::anyhow!("unsupported config server protocol: {listener_protocol}")
         })?;
@@ -742,6 +748,15 @@ mod tests {
             relay_data: false,
         };
         assert!(tcp.validate("tcp").is_ok());
+        assert!(tcp.validate("both").is_ok());
+        assert!(
+            GatewayConfig {
+                peer_url: "udp://gateway.example:22020".into(),
+                relay_data: false
+            }
+            .validate("both")
+            .is_ok()
+        );
         assert!(tcp.validate("udp").is_err());
         assert!(tcp.validate("unknown").is_err());
 
@@ -750,5 +765,6 @@ mod tests {
             relay_data: false,
         };
         assert!(secure_websocket.validate("ws").is_ok());
+        assert!(secure_websocket.validate("both").is_err());
     }
 }

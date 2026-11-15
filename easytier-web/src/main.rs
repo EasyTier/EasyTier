@@ -88,6 +88,7 @@ struct Cli {
         long,
         short='p',
         env = "ET_CONFIG_SERVER_PROTOCOL",
+        value_parser = ["udp", "tcp", "ws", "both"],
         default_value = "udp",
         help = t!("cli.config_server_protocol").to_string(),
     )]
@@ -254,6 +255,14 @@ fn get_config_server_listeners(
     protocol: &str,
     port: u16,
 ) -> Result<Vec<ConfigServerListener>, Error> {
+    if protocol == "both" {
+        if port == 0 {
+            return Err(anyhow::anyhow!("both requires a non-zero config server port").into());
+        }
+        let mut listeners = get_config_server_listeners("udp", port)?;
+        listeners.extend(get_config_server_listeners("tcp", port)?);
+        return Ok(listeners);
+    }
     let scheme = protocol
         .parse()
         .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
@@ -290,6 +299,12 @@ async fn main() {
     easytier::utils::init_crypto_provider();
 
     let cli = Cli::parse();
+    let config_server_listeners =
+        get_config_server_listeners(&cli.config_server_protocol, cli.config_server_port)
+            .unwrap_or_else(|error| {
+                eprintln!("Invalid config server configuration: {error}");
+                std::process::exit(2);
+            });
     log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();
     tracing::info!(
         version = EASYTIER_VERSION,
@@ -384,9 +399,8 @@ async fn main() {
         feature_flags.clone(),
         webhook_config.clone(),
     );
-    for listener in
-        get_config_server_listeners(&cli.config_server_protocol, cli.config_server_port).unwrap()
-    {
+    let mut bound_protocols = std::collections::HashSet::new();
+    for listener in config_server_listeners {
         let local_url = listener.local_url();
         let result = if let Some(instances) = network_instances.as_ref() {
             mgr.add_listener(gateway::listener::GatewayListener::new(
@@ -399,12 +413,22 @@ async fn main() {
         };
         match result {
             Ok(local_url) => {
+                bound_protocols.insert(local_url.scheme().to_owned());
                 tracing::info!(%local_url, "Config server listener bound");
             }
             Err(error) => {
                 tracing::warn!(%local_url, error = %format_args!("{error:#}"), "Failed to bind config server listener");
             }
         }
+    }
+    if cli.config_server_protocol == "both"
+        && !(bound_protocols.contains("tcp") && bound_protocols.contains("udp"))
+    {
+        eprintln!(
+            "Both TCP and UDP must bind on config server port {}",
+            cli.config_server_port
+        );
+        std::process::exit(2);
     }
     if !mgr.is_running() {
         panic!(

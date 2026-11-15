@@ -174,6 +174,7 @@ export interface BlockedDevice {
 export interface ConsoleInfo {
     username: string;
     config_server_protocol: string;
+    config_server_protocols?: string[];
     config_server_port: number;
     webhook_auth: boolean;
 }

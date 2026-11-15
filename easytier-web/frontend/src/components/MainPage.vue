@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { enrollmentCommands } from '../modules/enrollment';
 import { applyThemeMode, storedThemeMode, type ThemeMode } from '../modules/theme';
 
 const themeMode = ref<ThemeMode>(storedThemeMode());
@@ -107,12 +108,7 @@ watch([() => enrollInfo.value?.webhook_auth, () => route.name], ([external, name
     }
 });
 
-const enrollCommand = computed(() => {
-    if (!enrollInfo.value) return '';
-    const host = new URL(getApiBase(), window.location.href).hostname;
-    const { config_server_protocol: proto, config_server_port: port, username } = enrollInfo.value;
-    return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;
-});
+const enrollCommands = computed(() => enrollmentCommands(enrollInfo.value, new URL(getApiBase(), window.location.href).hostname));
 
 const toggleEnrollBell = async (event: Event) => {
     enrollBell.value.toggle(event);
@@ -128,9 +124,9 @@ const toggleEnrollBell = async (event: Event) => {
     }
 };
 
-const copyEnrollCommand = async () => {
+const copyEnrollCommand = async (command: string) => {
     try {
-        await navigator.clipboard.writeText(enrollCommand.value);
+        await navigator.clipboard.writeText(command);
         toast.add({ severity: 'success', summary: t('web.common.confirm'), life: 1500 });
     } catch (e) {
         console.error(e);
@@ -279,11 +275,11 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                             <p class="text-sm muted m-0">{{ t('web.console.enroll_hint') }}</p>
                             <div v-if="enrollLoading" class="text-sm muted">{{ t('web.common.loading') }}</div>
                             <template v-else-if="enrollInfo">
-                                <div class="flex items-center gap-2">
+                                <div v-for="command in enrollCommands" :key="command" class="flex items-center gap-2">
                                     <code class="mono-value flex-1 p-2 rounded"
-                                        style="background: var(--console-ground); word-break: break-all">{{ enrollCommand }}</code>
+                                        style="background: var(--console-ground); word-break: break-all">{{ command }}</code>
                                     <Button icon="pi pi-copy" severity="secondary" outlined size="small"
-                                        :aria-label="t('web.console.enroll_copy')" @click="copyEnrollCommand" />
+                                        :aria-label="t('web.console.enroll_copy')" @click="copyEnrollCommand(command)" />
                                 </div>
                                 <p class="text-xs muted m-0">
                                     {{ enrollInfo.webhook_auth ? t('web.console.enroll_webhook_note') : t('web.console.enroll_token_note') }}
