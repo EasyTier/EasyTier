@@ -1,249 +1,524 @@
-use std::net::IpAddr;
-use std::process::Command;
+use std::{collections::BTreeMap, io, net::IpAddr, process::Command, sync::Mutex};
 
-use std::io;
-use winreg::RegKey;
+use winreg::{
+    RegKey, RegValue,
+    enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE},
+    types::ToRegValue,
+};
 
 use crate::common::ifcfg::RegistryManager;
 
 use super::{OSConfig, SystemConfig};
 
-pub fn is_windows_10_or_better() -> io::Result<bool> {
-    let hklm = winreg::enums::HKEY_LOCAL_MACHINE;
-    let key_path = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
-    let key = winreg::RegKey::predef(hklm).open_subkey(key_path)?;
+const RECOVERY_KEY: &str = r"SOFTWARE\EasyTier\MagicDNS";
+const NRPT_KEY: &str = r"SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig";
+const RULE_IDS: &str = "NRPTRuleIDs";
 
-    // check CurrentMajorVersionNumber, which only exists on Windows 10 and later
-    let value_name = "CurrentMajorVersionNumber";
-    key.get_raw_value(value_name).map(|_| true)
+fn powershell(script: &str) -> io::Result<()> {
+    // Pass the script directly to PowerShell, without invoking cmd.exe. All
+    // configurable values are escaped as PowerShell single-quoted strings.
+    let script = format!("$ErrorActionPreference = 'Stop'; {script}");
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(script)
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "Windows DNS configuration failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
-// 假设 interface_guid 是你的网络接口 GUID
-pub struct InterfaceControl {
-    interface_guid: String,
+fn quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
-impl InterfaceControl {
-    // 构造函数
-    pub fn new(interface_guid: &str) -> Self {
-        InterfaceControl {
-            interface_guid: interface_guid.to_string(),
-        }
+struct NrptRule {
+    id: String,
+    domain: String,
+}
+
+impl NrptRule {
+    fn namespaces(&self) -> String {
+        format!(
+            "@({}, {})",
+            quoted(&self.domain),
+            quoted(&format!(".{}", self.domain))
+        )
     }
 
-    // 删除注册表值（模拟 delValue）
-    fn delete_value(key: &RegKey, value_name: &str) -> io::Result<()> {
-        match key.delete_value(value_name) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                if matches!(e.kind(), io::ErrorKind::NotFound) {
-                    Ok(()) // 忽略不存在的值
-                } else {
-                    Err(e)
+    fn policy_check(&self, nameservers: &str) -> String {
+        format!(
+            "$domain = {}; \
+             $effective = @(Get-DnsClientNrptPolicy -Effective); \
+             $conflicts = @($effective | Where-Object {{ \
+                 $policy = $_; \
+                 $covered = @($policy.Namespace | Where-Object {{ \
+                     $name = $_.Trim('.'); \
+                     ($name -eq $domain -and -not $updating) -or \
+                     $name.EndsWith('.' + $domain, [StringComparison]::OrdinalIgnoreCase) \
+                 }}).Count -gt 0; \
+                 if (-not $covered) {{ return $false }}; \
+                 $servers = (@($policy.NameServers | ForEach-Object {{ \
+                     ([ipaddress] $_).ToString() \
+                 }} | Sort-Object -Unique) -join ';'); \
+                 $covered -and $servers -ne {} \
+             }}); \
+             if ($conflicts.Count -gt 0) {{ \
+                 throw 'An existing NRPT policy routes this domain or a descendant to other DNS servers' \
+             }};",
+            quoted(&self.domain),
+            quoted(nameservers),
+        )
+    }
+
+    fn set(&self, nameservers: &str) -> io::Result<()> {
+        let check = self.policy_check(nameservers);
+        powershell(&format!(
+            "$updating = [bool](Get-DnsClientNrptRule | Where-Object {{ $_.Name -eq {} }}); {check}",
+            quoted(&self.id),
+        ))?;
+        // Create a known ID only after its durable ownership list was saved.
+        // Add-DnsClientNrptRule chooses an ID itself, leaving a crash window
+        // between creating that rule and recording which ID belongs to us.
+        let (key, _) =
+            RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(format!(r"{NRPT_KEY}\{}", self.id))?;
+        key.set_value("Version", &1_u32)?;
+        key.set_value("ConfigOptions", &8_u32)?;
+        key.set_value(
+            "Name",
+            &vec![self.domain.clone(), format!(".{}", self.domain)],
+        )?;
+        key.set_value("GenericDNSServers", &nameservers)?;
+        key.set_value("Comment", &"EasyTier Magic DNS")?;
+        powershell(&format!(
+            "$updating = $false; {check} \
+             foreach ($namespace in {}) {{ \
+                 if (@($effective | Where-Object {{ \
+                     $_.Namespace -contains $namespace \
+                 }}).Count -eq 0) {{ throw 'EasyTier NRPT rule is not effective (check Group Policy)' }} \
+             }}",
+            self.namespaces(),
+        ))
+    }
+}
+
+fn remove_rule(id: &str) -> io::Result<()> {
+    uuid::Uuid::parse_str(id).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    match RegKey::predef(HKEY_LOCAL_MACHINE).delete_subkey(format!(r"{NRPT_KEY}\{id}")) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+// The private registry values are ownership records, not fingerprints. Like
+// Tailscale's rule IDs, they authorize cleanup even after an external edit.
+struct WindowsDNSRecovery {
+    path: String,
+}
+
+impl WindowsDNSRecovery {
+    fn open(&self) -> io::Result<RegKey> {
+        RegKey::predef(HKEY_LOCAL_MACHINE)
+            .create_subkey_with_flags(&self.path, KEY_READ | KEY_WRITE)
+            .map(|(key, _)| key)
+    }
+
+    fn save_rules(&self, rules: &BTreeMap<String, NrptRule>) -> io::Result<()> {
+        let key = self.open()?;
+        let ids: Vec<_> = rules.values().map(|rule| rule.id.as_str()).collect();
+        key.set_value(RULE_IDS, &ids)
+    }
+
+    fn save_search_list(
+        &self,
+        guid: &str,
+        protocol: &str,
+        original: &Option<RegValue<'_>>,
+    ) -> io::Result<()> {
+        let key = self.open()?;
+        let (saved, _) = key.create_subkey(format!(r"SearchLists\{guid}\{protocol}"))?;
+        match saved.get_value::<u32, _>("Ready") {
+            Ok(1) => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if let Some(value) = original {
+            saved.set_raw_value("OriginalSearchList", value)?;
+        } else {
+            match saved.delete_value("OriginalSearchList") {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        // Until Ready is saved, no interface value may be changed. A crash
+        // before this point therefore needs no interface restoration.
+        saved.set_value("Ready", &1_u32)
+    }
+
+    fn clean(&self) -> io::Result<()> {
+        let key = self.open()?;
+        let ids: Vec<String> = match key.get_value(RULE_IDS) {
+            Ok(ids) => ids,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        for id in &ids {
+            uuid::Uuid::parse_str(id)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        }
+        for id in &ids {
+            remove_rule(id)?;
+        }
+        let searches = match key.open_subkey_with_flags("SearchLists", KEY_READ | KEY_WRITE) {
+            Ok(searches) => Some(searches),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(searches) = searches {
+            for guid in searches.enum_keys().collect::<io::Result<Vec<_>>>()? {
+                uuid::Uuid::parse_str(&guid)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                let interface = searches.open_subkey_with_flags(&guid, KEY_READ | KEY_WRITE)?;
+                for (protocol, prefix) in [
+                    ("IPv4", RegistryManager::IPV4_TCPIP_INTERFACE_PREFIX),
+                    ("IPv6", RegistryManager::IPV6_TCPIP_INTERFACE_PREFIX),
+                ] {
+                    let saved = match interface.open_subkey(protocol) {
+                        Ok(saved) => saved,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error),
+                    };
+                    let ready: u32 = match saved.get_value("Ready") {
+                        Ok(ready) => ready,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+                        Err(error) => return Err(error),
+                    };
+                    if ready == 1 {
+                        match RegistryManager::open_interface_key(&guid, prefix) {
+                            Ok(target) => match saved.get_raw_value("OriginalSearchList") {
+                                Ok(original) => target.set_raw_value("SearchList", &original)?,
+                                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                                    match target.delete_value("SearchList") {
+                                        Ok(()) => {}
+                                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                                        Err(error) => return Err(error),
+                                    }
+                                }
+                                Err(error) => return Err(error),
+                            },
+                            // A disposable TUN adapter may have vanished with
+                            // its process. There is no remaining value to fix.
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    drop(saved);
+                    interface.delete_subkey(protocol)?;
                 }
+                drop(interface);
+                searches.delete_subkey(&guid)?;
             }
+            drop(searches);
+            key.delete_subkey("SearchLists")?;
         }
-    }
-
-    pub fn set_primary_dns(&self, resolvers: &[IpAddr], domains: &[String]) -> io::Result<()> {
-        let (ipsv4, ipsv6): (Vec<String>, Vec<String>) = resolvers
-            .iter()
-            .map(|ip| ip.to_string())
-            .partition(|ip| ip.contains('.'));
-
-        let dom_strs: Vec<String> = domains
-            .iter()
-            .map(|d| d.trim_end_matches('.').to_string())
-            .collect();
-
-        // IPv4 处理
-        if let Ok(key4) = RegistryManager::open_interface_key(
-            &self.interface_guid,
-            RegistryManager::IPV4_TCPIP_INTERFACE_PREFIX,
-        ) {
-            if ipsv4.is_empty() {
-                Self::delete_value(&key4, "NameServer")?;
-            } else {
-                key4.set_value("NameServer", &ipsv4.join(","))?;
-            }
-
-            if dom_strs.is_empty() {
-                Self::delete_value(&key4, "SearchList")?;
-            } else {
-                key4.set_value("SearchList", &dom_strs.join(","))?;
-            }
-
-            // 禁用 LLMNR（通过 DisableMulticast）
-            key4.set_value("EnableMulticast", &0u32)?;
-        }
-
-        // IPv6 处理
-        if let Ok(key6) = RegistryManager::open_interface_key(
-            &self.interface_guid,
-            RegistryManager::IPV6_TCPIP_INTERFACE_PREFIX,
-        ) {
-            if ipsv6.is_empty() {
-                Self::delete_value(&key6, "NameServer")?;
-            } else {
-                key6.set_value("NameServer", &ipsv6.join(","))?;
-            }
-
-            if dom_strs.is_empty() {
-                Self::delete_value(&key6, "SearchList")?;
-            } else {
-                key6.set_value("SearchList", &dom_strs.join(","))?;
-            }
-            key6.set_value("EnableMulticast", &0u32)?;
-        }
-
-        Ok(())
-    }
-
-    fn flush_dns(&self) -> io::Result<()> {
-        // 刷新 DNS 缓存
-        let output = Command::new("ipconfig")
-            .arg("/flushdns")
-            .output()
-            .expect("failed to execute process");
-        if !output.status.success() {
-            return Err(io::Error::other("Failed to flush DNS cache"));
+        match key.delete_value(RULE_IDS) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
         Ok(())
     }
+}
 
-    // re-register DNS
-    pub fn re_register_dns(&self) -> io::Result<()> {
-        // ipconfig /registerdns
-        let output = Command::new("ipconfig")
-            .arg("/registerdns")
-            .output()
-            .expect("failed to execute process");
-        if !output.status.success() {
-            return Err(io::Error::other("Failed to register DNS"));
-        }
-        Ok(())
+struct SearchList {
+    prefix: &'static str,
+    applied: RegValue<'static>,
+}
+
+fn search_list(key: &RegKey) -> io::Result<Option<RegValue<'static>>> {
+    match key.get_raw_value("SearchList") {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
+}
+
+#[derive(Default)]
+struct WindowsDNSState {
+    prepared: bool,
+    rules: BTreeMap<String, NrptRule>,
+    search_lists: Vec<SearchList>,
 }
 
 pub struct WindowsDNSManager {
-    interface_control: InterfaceControl,
+    interface_guid: String,
+    recovery: WindowsDNSRecovery,
+    state: Mutex<WindowsDNSState>,
 }
 
 impl WindowsDNSManager {
     pub fn new(tun_dev_name: &str) -> io::Result<Self> {
-        let interface_guid = RegistryManager::find_interface_guid(tun_dev_name)?;
-        Ok(WindowsDNSManager {
-            interface_control: InterfaceControl::new(&interface_guid),
+        Ok(Self {
+            interface_guid: RegistryManager::find_interface_guid(tun_dev_name)?,
+            recovery: WindowsDNSRecovery {
+                path: RECOVERY_KEY.to_owned(),
+            },
+            state: Mutex::new(WindowsDNSState::default()),
         })
     }
 
-    pub fn set_primary_dns(&self, resolvers: &[IpAddr], domains: &[String]) -> io::Result<()> {
-        self.interface_control.set_primary_dns(resolvers, domains)?;
-        self.interface_control.flush_dns()?;
+    fn flush_dns() -> io::Result<()> {
+        let output = Command::new("ipconfig").arg("/flushdns").output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "Failed to flush Windows DNS cache: {}",
+                String::from_utf8_lossy(&output.stderr).trim(),
+            )));
+        }
+        Ok(())
+    }
+
+    fn check_search_lists(&self, state: &WindowsDNSState) -> io::Result<()> {
+        // Check access and external edits before publishing any new NRPT rules.
+        for prefix in [
+            RegistryManager::IPV4_TCPIP_INTERFACE_PREFIX,
+            RegistryManager::IPV6_TCPIP_INTERFACE_PREFIX,
+        ] {
+            let key = match RegistryManager::open_interface_key(&self.interface_guid, prefix) {
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            let current = search_list(&key)?;
+            if let Some(saved) = state.search_lists.iter().find(|s| s.prefix == prefix)
+                && current.as_ref() != Some(&saved.applied)
+            {
+                return Err(io::Error::other(
+                    "EasyTier adapter search list was changed externally; leaving it unchanged",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn set_search_list(&self, state: &mut WindowsDNSState, domains: &[String]) -> io::Result<()> {
+        // Search suffixes expand short names. NRPT's namespaces select the DNS
+        // server; they must never be used as the adapter's search list.
+        let text = domains.join(",");
+        let value = text.to_reg_value();
+        for (protocol, prefix) in [
+            ("IPv4", RegistryManager::IPV4_TCPIP_INTERFACE_PREFIX),
+            ("IPv6", RegistryManager::IPV6_TCPIP_INTERFACE_PREFIX),
+        ] {
+            let key = match RegistryManager::open_interface_key(&self.interface_guid, prefix) {
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            let current = search_list(&key)?;
+            if let Some(saved) = state.search_lists.iter_mut().find(|s| s.prefix == prefix) {
+                if current.as_ref() != Some(&saved.applied) {
+                    return Err(io::Error::other(
+                        "EasyTier adapter search list was changed externally; leaving it unchanged",
+                    ));
+                }
+                key.set_raw_value("SearchList", &value)?;
+                saved.applied = RegValue {
+                    bytes: value.bytes.to_vec().into(),
+                    vtype: value.vtype.clone(),
+                };
+            } else {
+                self.recovery
+                    .save_search_list(&self.interface_guid, protocol, &current)?;
+                key.set_raw_value("SearchList", &value)?;
+                state.search_lists.push(SearchList {
+                    prefix,
+                    applied: RegValue {
+                        bytes: value.bytes.to_vec().into(),
+                        vtype: value.vtype.clone(),
+                    },
+                });
+            }
+        }
         Ok(())
     }
 }
 
 impl SystemConfig for WindowsDNSManager {
-    fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
-        self.set_primary_dns(
-            &cfg.nameservers
-                .iter()
-                .map(|s| s.parse::<IpAddr>().unwrap())
-                .collect::<Vec<_>>(),
-            &cfg.match_domains,
-        )?;
+    fn prepare(&self) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if !state.prepared {
+            self.recovery.clean()?;
+            Self::flush_dns()?;
+            state.prepared = true;
+        }
         Ok(())
     }
 
+    fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
+        self.prepare()?;
+        let mut nameservers = cfg
+            .nameservers
+            .iter()
+            .map(|s| {
+                s.parse::<IpAddr>()
+                    .map(|ip| ip.to_string())
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        nameservers.sort();
+        nameservers.dedup();
+        let nameservers = nameservers.join(";");
+        if nameservers.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "No Magic DNS server",
+            ));
+        }
+        let mut domains: Vec<_> = cfg
+            .match_domains
+            .iter()
+            .map(|d| d.trim_end_matches('.').to_lowercase())
+            .collect();
+        let search: Vec<_> = cfg
+            .search_domains
+            .iter()
+            .map(|d| d.trim_end_matches('.').to_owned())
+            .collect();
+        if domains
+            .iter()
+            .chain(&search)
+            .any(|d| d.is_empty() || d.starts_with('.'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid DNS domain",
+            ));
+        }
+        // Update a more specific owned zone before its parent so its old
+        // nameservers do not look like a conflicting descendant during updates.
+        domains.sort_by_key(|domain| std::cmp::Reverse(domain.split('.').count()));
+        let mut state = self.state.lock().unwrap();
+        self.check_search_lists(&state)?;
+        for domain in &domains {
+            state
+                .rules
+                .entry(domain.clone())
+                .or_insert_with(|| NrptRule {
+                    id: format!("{{{}}}", uuid::Uuid::new_v4()),
+                    domain: domain.clone(),
+                });
+            self.recovery.save_rules(&state.rules)?;
+            state.rules[domain].set(&nameservers)?;
+        }
+        let obsolete: Vec<_> = state
+            .rules
+            .keys()
+            .filter(|d| !domains.contains(d))
+            .cloned()
+            .collect();
+        for domain in obsolete {
+            remove_rule(&state.rules[&domain].id)?;
+            state.rules.remove(&domain);
+            self.recovery.save_rules(&state.rules)?;
+        }
+        self.set_search_list(&mut state, &search)?;
+        Self::flush_dns()
+    }
+
     fn close(&self) -> io::Result<()> {
-        Ok(())
+        let mut state = self.state.lock().unwrap();
+        self.recovery.clean()?;
+        state.rules.clear();
+        state.search_lists.clear();
+        // This owner can still retry setup after a partial startup failure.
+        state.prepared = true;
+        Self::flush_dns()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use cidr::Ipv4Inet;
+    use super::*;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
 
-    #[cfg(target_os = "windows")]
-    #[tokio::test]
-    async fn test_windows_set_primary_server() {
-        use std::{net::Ipv4Addr, str::FromStr as _, time::Duration};
-
-        use tokio_util::sync::CancellationToken;
-
-        use crate::instance::dns_server::{
-            runner::DnsRunner,
-            tests::{check_dns_record, prepare_env},
-        };
-
-        let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
-        let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
-        let tun_name = virtual_nic.ifname().await.unwrap();
-
-        println!("dev_name: {}", tun_name);
-        let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
-        let mut dns_runner = DnsRunner::new(
-            core_instance.packet_plane(),
-            global_ctx,
-            Some(tun_name.clone()),
-            tun_ip,
-            fake_ip,
-        );
-
-        let cancel_token = CancellationToken::new();
-        let cancel_token_clone = cancel_token.clone();
-        let t = tokio::spawn(async move {
-            dns_runner.run(cancel_token_clone).await;
-        });
-
-        // windows is slow to add a ip address, wait for a longer time for dns server ready ,with ping
-        let now = std::time::Instant::now();
-        while now.elapsed() < Duration::from_secs(15) {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if let Ok(o) = tokio::process::Command::new("ping")
-                .arg("-n")
-                .arg("1")
-                .arg("-w")
-                .arg("100")
-                .arg(fake_ip.to_string())
-                .output()
-                .await
-                && o.status.success()
+    // Supply an exclusively owned disposable adapter, never a user's interface.
+    #[test]
+    #[ignore = "requires administrator privileges and Windows DNS Client service"]
+    fn manager_lifecycle() {
+        let interface = std::env::var("EASYTIER_DNS_TEST_INTERFACE")
+            .expect("set EASYTIER_DNS_TEST_INTERFACE to an owned disposable adapter");
+        assert!(interface.starts_with("EasyTier-DNS-Test-"));
+        let mut manager = WindowsDNSManager::new(&interface).unwrap();
+        manager.recovery.path = format!(r"{RECOVERY_KEY}\Test-{}", uuid::Uuid::new_v4());
+        let snapshots: Vec<_> = [
+            RegistryManager::IPV4_TCPIP_INTERFACE_PREFIX,
+            RegistryManager::IPV6_TCPIP_INTERFACE_PREFIX,
+        ]
+        .iter()
+        .filter_map(|prefix| {
+            // Snapshot independently of the helper whose access mask we test.
+            let key = match RegKey::predef(HKEY_LOCAL_MACHINE)
+                .open_subkey_with_flags(format!("{prefix}{}", manager.interface_guid), KEY_READ)
             {
-                break;
-            }
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(search_list(&key).map(|original| (key, original)))
+        })
+        .collect::<io::Result<Vec<_>>>()
+        .unwrap();
+        assert!(!snapshots.is_empty());
+        let domain = format!("{}.invalid", uuid::Uuid::new_v4().simple());
+        let mut cfg = OSConfig {
+            nameservers: vec!["192.0.2.53".to_owned()],
+            search_domains: vec![format!("search.{domain}")],
+            match_domains: vec![domain.clone()],
+        };
+        let first_text = cfg.search_domains.join(",");
+        let second_text = format!("updated.{domain}");
+        let first_expected = first_text.to_reg_value();
+        let second_expected = second_text.to_reg_value();
+        let result = (|| -> io::Result<_> {
+            manager.set_dns(&cfg)?;
+            let ids: Vec<String> = manager.recovery.open()?.get_value(RULE_IDS)?;
+            assert_eq!(ids.len(), 1);
+            assert_eq!(ids[0], manager.state.lock().unwrap().rules[&domain].id);
+            let first = snapshots
+                .iter()
+                .map(|(key, _)| search_list(key))
+                .collect::<io::Result<Vec<_>>>()?;
+            cfg.search_domains = vec![second_text.clone()];
+            manager.set_dns(&cfg)?;
+            let second = snapshots
+                .iter()
+                .map(|(key, _)| search_list(key))
+                .collect::<io::Result<Vec<_>>>()?;
+            Ok((first, second))
+        })();
+        // Attempt cleanup even when configuration or observation fails.
+        let cleanup = manager.close();
+        let (first, second) = result.unwrap();
+        cleanup.unwrap();
+        for value in first {
+            assert_eq!(value.as_ref(), Some(&first_expected));
         }
-
-        check_dns_record(&fake_ip, "test1.et.net", "10.144.144.10").await;
-
-        let dns_mgr = super::WindowsDNSManager::new(&tun_name).unwrap();
-        println!("dev_name: {}", tun_name);
-        println!("guid: {}", dns_mgr.interface_control.interface_guid);
-
-        dns_mgr
-            .interface_control
-            .set_primary_dns(
-                &["100.100.100.101".parse().unwrap()],
-                &[".et.net.".to_string()],
-            )
+        for value in second {
+            assert_eq!(value.as_ref(), Some(&second_expected));
+        }
+        for (key, original) in snapshots {
+            assert_eq!(search_list(&key).unwrap(), original);
+        }
+        manager.close().unwrap();
+        RegKey::predef(HKEY_LOCAL_MACHINE)
+            .delete_subkey(&manager.recovery.path)
             .unwrap();
-        dns_mgr.interface_control.flush_dns().unwrap();
-
-        tracing::info!("check dns record with nslookup");
-
-        // nslookup should return 10.144.144.10
-        let ret = tokio::process::Command::new("nslookup")
-            .arg("test1.et.net")
-            .output()
-            .await
-            .expect("failed to execute process");
-        assert!(ret.status.success());
-        let output = String::from_utf8_lossy(&ret.stdout);
-        println!("nslookup output: {}", output);
-        assert!(output.contains("10.144.144.10"));
-
-        cancel_token.cancel();
-        let _ = t.await;
     }
 }

@@ -2527,7 +2527,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "easytier"
-version = "2.7.0"
+version = "2.7.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2643,6 +2643,7 @@ dependencies = [
  "winreg 0.56.0",
  "x25519-dalek 2.0.1",
  "xmltree",
+ "zbus",
  "zerocopy 0.7.35",
 ]
 
@@ -2661,7 +2662,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-core"
-version = "2.7.0"
+version = "2.7.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2751,7 +2752,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-gui"
-version = "2.7.0"
+version = "2.7.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2793,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-mini"
-version = "2.7.0"
+version = "2.7.1"
 dependencies = [
  "anyhow",
  "easytier",
@@ -2860,7 +2861,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-proto"
-version = "2.7.0"
+version = "2.7.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2928,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-web"
-version = "2.7.0"
+version = "2.7.1"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -12395,6 +12396,7 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",
