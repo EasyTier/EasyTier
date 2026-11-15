@@ -74,11 +74,11 @@ impl DnsRunner {
     }
 
     async fn clean_env(&mut self) {
-        if let Some(claim) = self.active_fake_ip_route.take() {
-            claim.remove().await;
-        }
         if let Some(server) = self.server.take() {
             server.clean_env().await;
+        }
+        if let Some(claim) = self.active_fake_ip_route.take() {
+            claim.remove().await;
         }
         self.client.take();
     }
@@ -131,6 +131,9 @@ impl DnsRunner {
                         anyhow::anyhow!("failed to add magic dns fake-ip route: {err}")
                     })?;
                 }
+                if self.should_manage_fake_ip_route_externally() {
+                    self.server.as_ref().unwrap().enable_system_dns().await;
+                }
                 tracing::info!("DnsRunner::run_once: server started");
             }
             Err(e) => {
@@ -138,19 +141,31 @@ impl DnsRunner {
             }
         }
 
-        // Every runner must run a client. Only this phase is cancellable: server
-        // initialization and route updates must finish before async cleanup.
-        tokio::select! {
-            _ = cancel_token.cancelled() => Ok(()),
-            ret = async {
-                let client = MagicDnsClientInstance::new(
-                    self.packet_plane.clone(),
-                    self.global_ctx.clone(),
-                ).await?;
-                self.client = Some(client);
-                self.client.as_mut().unwrap().run_and_wait().await;
-                Err(anyhow::anyhow!("Client instance exit"))
-            } => ret,
+        // Every runner must run a client. Do not recreate its publisher when a
+        // maintenance tick fires, or cancel an OS write before cleanup.
+        let client = tokio::select! {
+            _ = cancel_token.cancelled() => return Ok(()),
+            result = MagicDnsClientInstance::new(
+                self.packet_plane.clone(),
+                self.global_ctx.clone(),
+            ) => result?,
+        };
+        self.client = Some(client);
+        let waiting = self.client.as_mut().unwrap().run_and_wait();
+        tokio::pin!(waiting);
+        let mut maintenance = tokio::time::interval(Duration::from_secs(30));
+        maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        maintenance.tick().await;
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => return Ok(()),
+                _ = &mut waiting => return Err(anyhow::anyhow!("Client instance exit")),
+                _ = maintenance.tick() => {
+                    if let Some(server) = &self.server {
+                        server.refresh_system_dns().await;
+                    }
+                }
+            }
         }
     }
 
