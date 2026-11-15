@@ -101,6 +101,7 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
 
     let compiled_members = members
         .into_iter()
+        .filter(|member| member.enabled)
         .map(|member| {
             let credential = member
                 .credential_id
@@ -817,6 +818,7 @@ mod tests {
             acl_group_secret: credential_id
                 .is_none()
                 .then(|| format!("group-secret-{device_id}")),
+            enabled: true,
         }
     }
 
@@ -912,6 +914,44 @@ mod tests {
         assert!(temporary.allow_relay);
         assert_eq!(temporary.allowed_proxy_cidrs, vec!["10.90.0.0/24"]);
         assert_eq!(temporary.reusable, Some(false));
+    }
+
+    #[test]
+    fn suspended_member_is_omitted_but_keeps_its_address_reserved() {
+        let mut candidate = intent();
+        // device-a carries an allocation from a previous save, as every
+        // persisted member does once the console has assigned it an address.
+        candidate.members[1].allocated_ipv4 = Some("10.42.0.1".to_owned());
+        candidate.members[1].enabled = false;
+        let compiled = compile(&candidate).unwrap();
+        assert_eq!(compiled.members.len(), 1);
+        assert_eq!(compiled.members[0].device_id, "device-b");
+
+        let mut newcomer = member(3, "device-c", None);
+        newcomer.allocated_ipv4 = None;
+        candidate.members.push(newcomer);
+        let compiled = compile(&candidate).unwrap();
+        let newcomer = compiled
+            .members
+            .iter()
+            .find(|member| member.device_id == "device-c")
+            .unwrap();
+        assert_eq!(
+            newcomer.network_config.virtual_ipv4.as_deref(),
+            Some("10.42.0.3")
+        );
+
+        candidate.members[1].enabled = true;
+        let compiled = compile(&candidate).unwrap();
+        let restored = compiled
+            .members
+            .iter()
+            .find(|member| member.device_id == "device-a")
+            .unwrap();
+        assert_eq!(
+            restored.network_config.virtual_ipv4.as_deref(),
+            Some("10.42.0.1")
+        );
     }
 
     #[test]

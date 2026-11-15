@@ -116,6 +116,7 @@ pub struct UpdateMemberReq {
     pub hostname_override: Option<String>,
     pub virtual_ipv4: Option<String>,
     pub proxy_cidrs: Option<Vec<String>>,
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -182,6 +183,7 @@ pub struct MemberInfo {
     pub has_override: bool,
     pub proxy_cidrs: Vec<String>,
     pub temporary: bool,
+    pub enabled: bool,
     pub credential_id: Option<String>,
     pub credential_expiry_unix: Option<i64>,
 }
@@ -353,6 +355,11 @@ impl CentralNetworkService {
 
         let mut device_ids_by_network = std::collections::HashMap::<String, Vec<String>>::new();
         for member in members {
+            // Suspended members are not part of the running network, so the
+            // devices page must not list the network for them.
+            if !member.enabled {
+                continue;
+            }
             device_ids_by_network
                 .entry(member.network_id)
                 .or_default()
@@ -637,6 +644,7 @@ impl CentralNetworkService {
                 credential_id,
                 acl_group_secret: (!request.temporary && intent.acl_policy.is_some())
                     .then(random_secret),
+                enabled: true,
             });
         }
         self.persist(intent).await?;
@@ -674,6 +682,9 @@ impl CentralNetworkService {
         }
         if let Some(virtual_ipv4) = request.virtual_ipv4 {
             member.virtual_ipv4 = (!virtual_ipv4.trim().is_empty()).then_some(virtual_ipv4);
+        }
+        if let Some(enabled) = request.enabled {
+            member.enabled = enabled;
         }
         if let Some(proxy_cidrs) = request.proxy_cidrs {
             let mut config = member.config_override.clone().unwrap_or_default();
@@ -987,6 +998,7 @@ impl CentralNetworkService {
                 .map(|config| config.proxy_cidrs.clone())
                 .unwrap_or_default(),
             temporary: member.credential_id.is_some(),
+            enabled: member.enabled,
             credential_id: member.credential_id.clone(),
             credential_expiry_unix,
         })
@@ -2677,6 +2689,90 @@ mod tests {
             .unwrap();
         assert!(intent.members.is_empty());
         assert!(intent.credentials.is_empty());
+    }
+
+    #[tokio::test]
+    async fn suspending_a_member_preserves_its_record_until_reenabled() {
+        async fn load_member(
+            service: &CentralNetworkService,
+            user_id: i32,
+            network_id: Uuid,
+            device_id: Uuid,
+        ) -> NetworkMemberIntent {
+            service
+                .db
+                .load_central_network_intent(user_id, network_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .members
+                .into_iter()
+                .find(|member| member.device_id == device_id.to_string())
+                .unwrap()
+        }
+
+        let (service, user_id, _) = service().await;
+        let device_id = Uuid::new_v4();
+        register_device(&service, user_id, device_id).await;
+        let network = service
+            .create_network(user_id, standalone_settings(), None)
+            .await
+            .unwrap();
+        let network_id = Uuid::parse_str(&network.network_id).unwrap();
+        service
+            .add_members(
+                user_id,
+                network_id,
+                AddMembersReq {
+                    device_ids: vec![device_id.to_string()],
+                    temporary: false,
+                    ttl_seconds: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let before = load_member(&service, user_id, network_id, device_id).await;
+        assert!(before.enabled);
+        let assigned = before.allocated_ipv4.clone().unwrap();
+
+        service
+            .update_member(
+                user_id,
+                network_id,
+                device_id,
+                UpdateMemberReq {
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let suspended = load_member(&service, user_id, network_id, device_id).await;
+        assert!(!suspended.enabled);
+        assert_eq!(suspended.allocated_ipv4.as_deref(), Some(assigned.as_str()));
+        assert_eq!(suspended.virtual_ipv4, before.virtual_ipv4);
+        assert_eq!(suspended.config_override, before.config_override);
+
+        let info = service
+            .update_member(
+                user_id,
+                network_id,
+                device_id,
+                UpdateMemberReq {
+                    enabled: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(info.enabled);
+        let restored = load_member(&service, user_id, network_id, device_id).await;
+        assert_eq!(
+            restored.allocated_ipv4.as_deref(),
+            Some(assigned.as_str())
+        );
     }
 
     #[tokio::test]

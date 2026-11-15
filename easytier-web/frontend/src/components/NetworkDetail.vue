@@ -160,6 +160,22 @@ const removeMember = (member: CentralNetworkMember) => {
     });
 };
 
+const toggleMemberSuspend = async (member: CentralNetworkMember) => {
+    const suspend = member.enabled !== false;
+    try {
+        await api?.update_network_member(networkId.value, member.device_id, { enabled: !suspend });
+        toast.add({
+            severity: 'success',
+            summary: suspend ? t('web.network_detail.suspend_member') : t('web.network_detail.resume_member'),
+            detail: `${member.hostname ?? member.device_id}`,
+            life: 3000,
+        });
+        await loadAll();
+    } catch (e: any) {
+        toast.add({ severity: 'error', summary: t('web.network_detail.suspend_member'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
+    }
+};
+
 const editMemberVisible = ref(false);
 const editingMember = ref<CentralNetworkMember | undefined>(undefined);
 const editMemberForm = ref({ hostname_override: '', virtual_ipv4: '' });
@@ -920,7 +936,9 @@ const switchTab = async (tab: string) => {
                         </Column>
                         <Column :header="t('web.device.status')" style="width: 8rem">
                             <template #body="{ data }">
-                                <Tag v-if="data.temporary" severity="warn" :value="t('web.network_detail.temporary_tag')" />
+                                <Tag v-if="data.enabled === false" severity="secondary" :value="t('web.network_detail.suspended')"
+                                    v-tooltip.top="t('web.network_detail.suspend_member_hint')" />
+                                <Tag v-else-if="data.temporary" severity="warn" :value="t('web.network_detail.temporary_tag')" />
                                 <Tag v-else-if="data.running === true" severity="success" :value="t('web.network_detail.running')" />
                                 <Tag v-else-if="data.running === false" severity="secondary" :value="t('web.network_detail.stopped')" />
                                 <span v-else class="muted">—</span>
@@ -937,6 +955,10 @@ const switchTab = async (tab: string) => {
                                 <div class="flex items-center gap-1">
                                     <i v-if="data.has_override" class="pi pi-sliders-h override-marker"
                                         v-tooltip.top="t('web.network_detail.has_override')"></i>
+                                    <Button :icon="data.enabled === false ? 'pi pi-play-circle' : 'pi pi-pause-circle'" text rounded severity="secondary"
+                                        :aria-label="data.enabled === false ? t('web.network_detail.resume_member') : t('web.network_detail.suspend_member')"
+                                        v-tooltip.top="data.enabled === false ? t('web.network_detail.resume_member') : t('web.network_detail.suspend_member_hint')"
+                                        @click="toggleMemberSuspend(data)" />
                                     <Button icon="pi pi-chart-line" text rounded severity="secondary"
                                         :disabled="!data.online" :aria-label="t('web.network_detail.node_detail')"
                                         v-tooltip.top="data.online ? t('web.network_detail.node_detail') : t('web.network_detail.node_detail_offline')"
@@ -962,6 +984,7 @@ const switchTab = async (tab: string) => {
                             </div>
                             <div class="text-sm flex flex-col gap-0.5 min-w-0 mt-1.5">
                                 <div class="flex items-center gap-1.5 flex-wrap">
+                                    <Tag v-if="member.enabled === false" :value="t('web.network_detail.suspended')" severity="secondary" />
                                     <Tag v-if="member.temporary" :value="t('web.network_detail.temporary_tag')" severity="secondary" />
                                     <span v-if="member.temporary && member.credential_expiry_unix"
                                         class="text-xs muted">{{ t('web.network_detail.expires_at') }}
@@ -980,6 +1003,10 @@ const switchTab = async (tab: string) => {
                             <div class="member-actions">
                                 <span v-if="member.has_override" class="pi pi-sliders override-marker"
                                     v-tooltip.top="t('web.network_detail.has_override')"></span>
+                                <Button :icon="member.enabled === false ? 'pi pi-play-circle' : 'pi pi-pause-circle'" text rounded severity="secondary"
+                                    :aria-label="member.enabled === false ? t('web.network_detail.resume_member') : t('web.network_detail.suspend_member')"
+                                    v-tooltip.top="member.enabled === false ? t('web.network_detail.resume_member') : t('web.network_detail.suspend_member_hint')"
+                                    @click="toggleMemberSuspend(member)" />
                                 <Button icon="pi pi-chart-line" text rounded severity="secondary"
                                     :disabled="!member.online" :aria-label="t('web.network_detail.node_detail')"
                                     v-tooltip.top="member.online ? t('web.network_detail.node_detail') : t('web.network_detail.node_detail_offline')"

@@ -535,6 +535,10 @@ web:
     no_candidate_devices: 暂无可添加的设备
     remove_member: 移除设备
     remove_member_confirm: 确定将设备 {device} 移出该网络？其托管配置将被回收
+    suspend_member: 挂起成员
+    suspend_member_hint: 挂起后设备上的网络实例将停止，其地址与覆盖配置保持保留
+    resume_member: 恢复成员
+    suspended: 已挂起
     edit_member: 编辑成员
     tab_basic_settings: 常规设置
     hostname_override: 主机名覆盖

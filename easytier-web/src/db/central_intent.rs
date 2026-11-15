@@ -42,6 +42,7 @@ struct PreparedMember {
     override_config: Option<String>,
     credential_id: Option<String>,
     acl_group_secret: Option<String>,
+    enabled: bool,
 }
 
 struct PreparedCredential {
@@ -90,22 +91,33 @@ fn prepare_intent(intent: CentralNetworkIntent) -> Result<PreparedIntent, Centra
     for member in &intent.members {
         let device_id = Uuid::parse_str(&member.device_id)
             .map_err(|_| CentralIntentError::InvalidDeviceId(member.device_id.clone()))?;
-        let compiled = compiled_by_member.get(&member.id).ok_or_else(|| {
-            CentralIntentError::InvalidStoredData(format!("compiler omitted member {}", member.id))
-        })?;
+        let compiled = compiled_by_member.get(&member.id);
+        // The compiler omits suspended members, so their address reservation
+        // is whatever the stored row already holds instead of a fresh
+        // assignment derived from the compiled output.
+        let allocated_ipv4 = member
+            .virtual_ipv4
+            .is_none()
+            .then(|| {
+                if member.enabled {
+                    compiled
+                        .map(|item| item.network_config.virtual_ipv4.clone())
+                        .flatten()
+                } else {
+                    member.allocated_ipv4.clone()
+                }
+            })
+            .flatten();
         members.push(PreparedMember {
             id: member.id.to_string(),
             device_id,
             hostname: member.hostname.clone(),
             virtual_ipv4: member.virtual_ipv4.clone(),
-            allocated_ipv4: member
-                .virtual_ipv4
-                .is_none()
-                .then(|| compiled.network_config.virtual_ipv4.clone())
-                .flatten(),
+            allocated_ipv4,
             override_config: member.config_override.as_ref().map(json).transpose()?,
             credential_id: member.credential_id.clone(),
             acl_group_secret: member.acl_group_secret.clone(),
+            enabled: member.enabled,
         });
     }
     members.sort_by_key(|member| member.device_id);
@@ -499,8 +511,8 @@ async fn persist_intent(
             INSERT INTO network_members (
                 user_id, network_id, id, device_id, hostname_override,
                 virtual_ipv4, allocated_ipv4, override_config, credential_id,
-                acl_group_secret, create_time, update_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                acl_group_secret, enabled, create_time, update_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(prepared.intent.user_id)
@@ -513,6 +525,7 @@ async fn persist_intent(
         .bind(&member.override_config)
         .bind(&member.credential_id)
         .bind(&member.acl_group_secret)
+        .bind(member.enabled)
         .bind(now)
         .bind(now)
         .execute(&mut **transaction)
@@ -655,11 +668,12 @@ async fn load_intent(
         Option<String>,
         Option<String>,
         Option<String>,
+        bool,
     );
     let member_rows: Vec<MemberRow> = sqlx::query_as(
         r#"
         SELECT allocated_ipv4, id, device_id, hostname_override, virtual_ipv4,
-            override_config, credential_id, acl_group_secret
+            override_config, credential_id, acl_group_secret, enabled
         FROM network_members
         WHERE user_id = ? AND network_id = ?
         ORDER BY id
@@ -682,6 +696,7 @@ async fn load_intent(
                 override_config,
                 credential_id,
                 acl_group_secret,
+                enabled,
             )| {
                 Ok(NetworkMemberIntent {
                     id: Uuid::parse_str(&id).map_err(|_| {
@@ -702,6 +717,7 @@ async fn load_intent(
                         })?,
                     credential_id,
                     acl_group_secret,
+                    enabled,
                 })
             },
         )
@@ -748,6 +764,7 @@ mod tests {
             config_override: None,
             credential_id: credential_id.map(str::to_owned),
             acl_group_secret: None,
+            enabled: true,
         }
     }
 
