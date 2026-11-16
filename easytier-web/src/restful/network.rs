@@ -1061,6 +1061,7 @@ mod tests {
                     let config = super::super::ConsoleInfoConfig {
                         config_server_protocol: "tcp".into(),
                         config_server_port: 22020,
+                        config_server_host: None,
                         webhook_auth: true,
                     };
                     let machines = NetworkApi::handle_list_machines(
