@@ -49,6 +49,8 @@ impl NrptRule {
         )
     }
 
+    // NRPT can carry security settings without redirecting DNS. Keep those
+    // requirements and active DirectAccess targets separate from empty targets.
     fn policy_check(&self, nameservers: &str) -> String {
         format!(
             "$domain = {}; \
@@ -61,16 +63,38 @@ impl NrptRule {
                      $name.EndsWith('.' + $domain, [StringComparison]::OrdinalIgnoreCase) \
                  }}).Count -gt 0; \
                  if (-not $covered) {{ return $false }}; \
-                 $servers = (@($policy.NameServers | ForEach-Object {{ \
+                 if ($policy.DnsSecValidationRequired -or $policy.DnsSecQueryIPsecRequired -or \
+                     ($policy.DirectAccessEnabled -and $policy.DirectAccessQueryIPsecRequired)) {{ \
+                     return $true \
+                 }}; \
+                 $addresses = @($policy.NameServers); \
+                 if ($policy.DirectAccessEnabled) {{ \
+                     $addresses += @($policy.DirectAccessDnsServers) \
+                 }}; \
+                 $servers = (@($addresses | Where-Object {{ $_ }} | ForEach-Object {{ \
                      ([ipaddress] $_).ToString() \
                  }} | Sort-Object -Unique) -join ';'); \
-                 $covered -and $servers -ne {} \
+                 $servers -and $servers -ne {} \
              }}); \
              if ($conflicts.Count -gt 0) {{ \
-                 throw 'An existing NRPT policy routes this domain or a descendant to other DNS servers' \
+                 throw 'An existing NRPT policy conflicts with Magic DNS for this domain or a descendant' \
              }};",
             quoted(&self.domain),
             quoted(nameservers),
+        )
+    }
+
+    fn effective_check(&self, nameservers: &str) -> String {
+        format!(
+            "$updating = $false; {} \
+             foreach ($namespace in {}) {{ \
+                 if (@($effective | Where-Object {{ \
+                     $_.Namespace -contains $namespace -and \
+                     @($_.NameServers | Where-Object {{ $_ }}).Count -gt 0 \
+                 }}).Count -eq 0) {{ throw 'EasyTier NRPT rule is not effective (check Group Policy)' }} \
+             }}",
+            self.policy_check(nameservers),
+            self.namespaces(),
         )
     }
 
@@ -93,15 +117,7 @@ impl NrptRule {
         )?;
         key.set_value("GenericDNSServers", &nameservers)?;
         key.set_value("Comment", &"EasyTier Magic DNS")?;
-        powershell(&format!(
-            "$updating = $false; {check} \
-             foreach ($namespace in {}) {{ \
-                 if (@($effective | Where-Object {{ \
-                     $_.Namespace -contains $namespace \
-                 }}).Count -eq 0) {{ throw 'EasyTier NRPT rule is not effective (check Group Policy)' }} \
-             }}",
-            self.namespaces(),
-        ))
+        powershell(&self.effective_check(nameservers))
     }
 }
 
@@ -447,6 +463,73 @@ impl SystemConfig for WindowsDNSManager {
 mod tests {
     use super::*;
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+
+    #[test]
+    fn nrpt_policy_checks() {
+        let rule = NrptRule {
+            id: String::new(),
+            domain: "et.net".to_owned(),
+        };
+        // These policies are in-memory objects; the test never changes NRPT.
+        for (fields, accepted) in [
+            ("NameServers = $null", true),
+            ("NameServers = @()", true),
+            ("NameServers = @($null, '', '100.100.100.101')", true),
+            ("NameServers = '192.0.2.53'", false),
+            (
+                "NameServers = $null; DirectAccessEnabled = $true; \
+                 DirectAccessDnsServers = @('192.0.2.53')",
+                false,
+            ),
+            (
+                "NameServers = $null; DirectAccessEnabled = $false; \
+                 DirectAccessDnsServers = @('192.0.2.53')",
+                true,
+            ),
+            (
+                "NameServers = $null; DirectAccessEnabled = $true; \
+                 DirectAccessDnsServers = @('100.100.100.101')",
+                true,
+            ),
+            (
+                "NameServers = $null; DirectAccessEnabled = $true; \
+                 DirectAccessDnsServers = @('100.100.100.101'); \
+                 DirectAccessQueryIPsecRequired = $true",
+                false,
+            ),
+            (
+                "NameServers = $null; DnsSecValidationRequired = $true",
+                false,
+            ),
+            (
+                "NameServers = $null; DnsSecQueryIPsecRequired = $true",
+                false,
+            ),
+        ] {
+            let script = format!(
+                "function Get-DnsClientNrptPolicy {{ \
+                     param([switch] $Effective); \
+                     [pscustomobject]@{{ Namespace = @('et.net', '.et.net'); {fields} }}; \
+                     [pscustomobject]@{{ Namespace = @('et.net', '.et.net'); \
+                         NameServers = '100.100.100.101' }} \
+                 }}; {}",
+                rule.effective_check("100.100.100.101"),
+            );
+            let result = powershell(&script);
+            assert_eq!(result.is_ok(), accepted, "{fields}: {result:?}");
+        }
+
+        // A non-redirecting policy must not certify our new rule as effective.
+        let script = format!(
+            "function Get-DnsClientNrptPolicy {{ \
+                 param([switch] $Effective); \
+                 [pscustomobject]@{{ Namespace = @('et.net', '.et.net'); NameServers = $null }} \
+             }}; {}",
+            rule.effective_check("100.100.100.101"),
+        );
+        let error = powershell(&script).unwrap_err();
+        assert!(error.to_string().contains("NRPT rule is not effective"));
+    }
 
     // Supply an exclusively owned disposable adapter, never a user's interface.
     #[test]
