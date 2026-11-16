@@ -290,10 +290,13 @@ const saveMember = async () => {
 const settingsForm = ref({
     display_name: '',
     network_name: '',
+    network_secret: '',
     virtual_cidr: '',
     secure_mode: false,
     regenerate_secret: false,
 });
+// The secret is only sent when it differs from the one the form loaded.
+const settingsSecretBaseline = ref('');
 // Initial nodes in the same model as the GUI config form; an empty list
 // means Standalone.
 const initialNodes = ref<string[]>([]);
@@ -316,10 +319,12 @@ const loadSettingsForm = () => {
     settingsForm.value = {
         display_name: network.value.display_name,
         network_name: network.value.network_name,
+        network_secret: network.value.network_secret,
         virtual_cidr: network.value.virtual_cidr ?? '',
         secure_mode: network.value.secure_mode ?? false,
         regenerate_secret: false,
     };
+    settingsSecretBaseline.value = network.value.network_secret;
     // Present every networking method as an initial-node list: the gateway
     // URL for gateway networks, the stored peers otherwise.
     switch (network.value.networking_method) {
@@ -363,8 +368,15 @@ const saveSettings = async () => {
             virtual_cidr: normalizeVirtualSubnet(settingsForm.value.virtual_cidr) || null,
             secure_mode: settingsForm.value.secure_mode,
         };
-        await api?.update_network(networkId.value, settings, settingsForm.value.regenerate_secret ? uuidv4() : undefined);
+        const secret = settingsForm.value.regenerate_secret ? uuidv4()
+            : settingsForm.value.network_secret !== settingsSecretBaseline.value ? settingsForm.value.network_secret.trim()
+            : undefined;
+        const updated = await api?.update_network(networkId.value, settings, secret);
         settingsForm.value.regenerate_secret = false;
+        if (updated) {
+            settingsForm.value.network_secret = updated.network_secret;
+            settingsSecretBaseline.value = updated.network_secret;
+        }
         await loadAll();
         toast.add({ severity: 'success', summary: t('web.network_detail.settings'), detail: t('web.device_management.config_saved'), life: 2000 });
     } catch (e: any) {
@@ -1154,9 +1166,10 @@ const switchTab = async (tab: string) => {
                     <InputSwitch inputId="settings-secure-mode" v-model="settingsForm.secure_mode" />
                 </div>
                 <div class="flex flex-col gap-1">
-                    <label>{{ t('network_secret') }}</label>
+                    <label for="settings-network-secret">{{ t('network_secret') }}</label>
                     <div class="flex items-center gap-2">
-                        <InputText :model-value="network.network_secret" :aria-label="t('network_secret')" readonly class="flex-1 min-w-0" />
+                        <InputText id="settings-network-secret" v-model="settingsForm.network_secret"
+                            :disabled="settingsForm.regenerate_secret" class="flex-1 min-w-0" />
                     </div>
                     <div class="flex items-center gap-2 mt-1">
                         <InputSwitch inputId="regenerate-secret" v-model="settingsForm.regenerate_secret" />
