@@ -1963,6 +1963,7 @@ virtual_ip = "10.82.0.2/24"
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: vec![instance_id.into()],
+                    disable_only: false,
                 },
             )
             .await
@@ -2107,12 +2108,165 @@ virtual_ip = "10.82.0.2/24"
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: vec![created],
+                    disable_only: false,
                 },
             )
             .await
             .unwrap();
         assert!(deleted.remain_inst_ids.is_empty());
         assert!(instances.instances().is_empty());
+    }
+
+    #[cfg(feature = "web-client")]
+    #[tokio::test]
+    async fn process_management_rpc_reports_disable_separately_from_removal() {
+        use crate::{
+            config::toml::TomlConfig,
+            instance::manager::InstanceFactory,
+            management::{
+                InstanceManager, InstanceMutationHooks, ProcessManagementRpc,
+                UnsupportedConfigFileStorage,
+            },
+        };
+        use easytier_proto::{
+            api::manage::{
+                DeleteNetworkInstanceRequest, NetworkConfig, NetworkingMethod,
+                RunNetworkInstanceRequest, WebClientService,
+            },
+            rpc_types::controller::BaseController,
+        };
+
+        struct ManagementTestFactory(Arc<CoreProcessRuntime>);
+
+        impl InstanceFactory for ManagementTestFactory {
+            type Instance = CoreInstance<TestHost>;
+            type CreateContext = ();
+            type Error = anyhow::Error;
+
+            fn create(
+                &self,
+                config: TomlConfig,
+                (): Self::CreateContext,
+            ) -> Result<Arc<Self::Instance>, Self::Error> {
+                let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+                CoreInstance::from_toml(
+                    config,
+                    adapters_with_process_runtime(None, Arc::new(packet_sink), self.0.clone()),
+                )
+            }
+        }
+
+        impl crate::management::ProcessRuntimeProvider for ManagementTestFactory {
+            fn process_runtime(&self) -> Arc<CoreProcessRuntime> {
+                self.0.clone()
+            }
+        }
+
+        #[derive(Default)]
+        struct ProfileHooks {
+            removed: std::sync::Mutex<Vec<uuid::Uuid>>,
+            disabled: std::sync::Mutex<Vec<uuid::Uuid>>,
+        }
+
+        #[async_trait]
+        impl InstanceMutationHooks for ProfileHooks {
+            async fn post_remove_network_instances(
+                &self,
+                instance_ids: &[uuid::Uuid],
+            ) -> Result<(), String> {
+                self.removed.lock().unwrap().extend(instance_ids);
+                Ok(())
+            }
+
+            async fn post_disable_network_instances(
+                &self,
+                instance_ids: &[uuid::Uuid],
+            ) -> Result<(), String> {
+                self.disabled.lock().unwrap().extend(instance_ids);
+                Ok(())
+            }
+        }
+
+        // A Host without stored profiles only implements the removal hook.
+        #[derive(Default)]
+        struct RemovalOnlyHooks(std::sync::Mutex<Vec<uuid::Uuid>>);
+
+        #[async_trait]
+        impl InstanceMutationHooks for RemovalOnlyHooks {
+            async fn post_remove_network_instances(
+                &self,
+                instance_ids: &[uuid::Uuid],
+            ) -> Result<(), String> {
+                self.0.lock().unwrap().extend(instance_ids);
+                Ok(())
+            }
+        }
+
+        async fn run<H: InstanceMutationHooks>(
+            instances: &Arc<InstanceManager<ManagementTestFactory>>,
+            hooks: Arc<H>,
+            disable_only: bool,
+        ) -> uuid::Uuid {
+            let rpc = ProcessManagementRpc::<ManagementTestFactory>::new(
+                instances.clone(),
+                hooks,
+                Arc::new(UnsupportedConfigFileStorage),
+            );
+            let created = rpc
+                .run_network_instance(
+                    BaseController::default(),
+                    RunNetworkInstanceRequest {
+                        config: Some(NetworkConfig {
+                            network_name: Some("managed-process-rpc".to_owned()),
+                            networking_method: Some(NetworkingMethod::Standalone.into()),
+                            ..Default::default()
+                        }),
+                        overwrite: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .inst_id
+                .unwrap();
+            let deleted = rpc
+                .delete_network_instance(
+                    BaseController::default(),
+                    DeleteNetworkInstanceRequest {
+                        inst_ids: vec![created],
+                        disable_only,
+                    },
+                )
+                .await
+                .unwrap();
+            // Either way the Instance itself is stopped and gone.
+            assert!(deleted.remain_inst_ids.is_empty());
+            assert!(instances.instances().is_empty());
+            created.into()
+        }
+
+        let instances = Arc::new(InstanceManager::new(
+            ManagementTestFactory(CoreProcessRuntime::new()),
+            Some(tokio::runtime::Handle::current()),
+        ));
+
+        let hooks = Arc::new(ProfileHooks::default());
+        let disabled = run(&instances, hooks.clone(), true).await;
+        assert_eq!(hooks.disabled.lock().unwrap().as_slice(), &[disabled]);
+        assert!(hooks.removed.lock().unwrap().is_empty());
+
+        let removed = run(&instances, hooks.clone(), false).await;
+        assert_eq!(hooks.removed.lock().unwrap().as_slice(), &[removed]);
+        assert_eq!(hooks.disabled.lock().unwrap().as_slice(), &[disabled]);
+
+        let removal_only = Arc::new(RemovalOnlyHooks::default());
+        let disabled = run(&instances, removal_only.clone(), true).await;
+        assert_eq!(removal_only.0.lock().unwrap().as_slice(), &[disabled]);
+
+        // Managers released before this field existed omit it.
+        let legacy: DeleteNetworkInstanceRequest =
+            serde_json::from_value(serde_json::json!({ "inst_ids": [] })).unwrap();
+        assert!(!legacy.disable_only);
     }
 
     #[cfg(feature = "web-client")]
