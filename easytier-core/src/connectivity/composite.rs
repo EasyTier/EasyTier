@@ -8,6 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use cidr::Ipv4Cidr;
 use url::Url;
 
 use crate::{
@@ -126,6 +127,10 @@ pub trait ConnectorRuntime: VirtualTcpSocketFactory + Send + Sync + 'static {
     ) -> anyhow::Result<SocketAddr>;
 
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse;
+
+    async fn interface_ipv4_networks(&self, _context: &SocketContext) -> Vec<Ipv4Cidr> {
+        Vec::new()
+    }
 
     async fn preferred_ipv6_source(
         &self,
@@ -274,6 +279,10 @@ where
 {
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
         self.cached_ip_addrs(context).await
+    }
+
+    async fn interface_ipv4_networks(&self, context: &SocketContext) -> Vec<Ipv4Cidr> {
+        self.sockets.interface_ipv4_networks(context).await
     }
 
     async fn collect_foreign_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {

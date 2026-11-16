@@ -94,6 +94,34 @@ impl Drop for TestNetwork {
     }
 }
 
+#[tokio::test]
+async fn direct_ipv4_networks_follow_the_requested_namespace() {
+    use easytier_core::{
+        connectivity::composite::ConnectorRuntime,
+        socket::{NetNamespace, SocketContext},
+    };
+
+    let mut network = TestNetwork::new();
+    network.create_bridge("br");
+    network.create_namespace("private", "192.168.23.7/20", "fd81::1/64");
+    network.create_namespace("public", "198.51.100.7/26", "fd82::1/64");
+    network.create_empty_namespace("empty");
+    network.add_to_bridge("br", "private");
+    network.add_to_bridge("br", "public");
+    let runtime = crate::host_runtime::native_host_runtime();
+    for (name, expected) in [
+        ("private", vec!["192.168.16.0/20".parse().unwrap()]),
+        ("public", vec!["198.51.100.0/26".parse().unwrap()]),
+        ("empty", Vec::new()),
+    ] {
+        let context = SocketContext {
+            netns: Some(NetNamespace::new(network.namespace(name))),
+            ..Default::default()
+        };
+        assert_eq!(runtime.interface_ipv4_networks(&context).await, expected);
+    }
+}
+
 #[test]
 fn nested_namespace_guard_restores_current_thread() {
     let mut network = TestNetwork::new();
