@@ -183,6 +183,18 @@ impl CoreInstanceConfig {
         host: &CoreInstanceHostConfig,
     ) -> anyhow::Result<Self> {
         let flags = host.runtime_flags(config.get_flags());
+        if flags.enable_udp_fec {
+            let overhead = crate::packet::FEC_MAX_OVERHEAD as u32
+                + if flags.enable_encryption {
+                    crate::packet::StandardAeadTail::SIZE as u32
+                } else {
+                    0
+                };
+            anyhow::ensure!(
+                flags.mtu.checked_sub(overhead).is_some(),
+                "MTU must be at least {overhead} bytes when UDP FEC is enabled"
+            );
+        }
         let instance_id = config.get_id();
         let identity: crate::config::NetworkIdentity = config.get_network_identity().into();
         let managed_credentials = config.get_managed_credentials();
@@ -425,6 +437,31 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     use super::*;
+
+    #[test]
+    fn udp_fec_rejects_mtu_overhead_underflow() {
+        for (encryption, overhead) in [(false, 16), (true, 44)] {
+            let config = TomlConfig::default();
+            let mut flags = config.get_flags();
+            flags.enable_udp_fec = true;
+            flags.enable_encryption = encryption;
+            for mtu in [0, overhead - 1] {
+                flags.mtu = mtu;
+                config.set_flags(flags.clone());
+                assert!(CoreInstanceConfig::from_toml(&config).is_err());
+            }
+            for mtu in [overhead, 1280, 1380] {
+                flags.mtu = mtu;
+                config.set_flags(flags.clone());
+                assert!(CoreInstanceConfig::from_toml(&config).is_ok());
+                assert_eq!(config.get_flags().mtu, mtu);
+            }
+            flags.enable_udp_fec = false;
+            flags.mtu = 0;
+            config.set_flags(flags);
+            assert!(CoreInstanceConfig::from_toml(&config).is_ok());
+        }
+    }
 
     #[test]
     fn dhcp_initial_routes_ignore_static_addresses_of_managed_families() {

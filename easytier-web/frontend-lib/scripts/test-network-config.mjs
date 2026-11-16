@@ -174,7 +174,7 @@ function allFieldFixture() {
       ttl: 0,
       records: [
         { name: 'nas', type: 'A', value: '192.0.2.1' },
-        { name: 'info', type: 'TXT', ttl: 0, txt: { segments: ['quote" slash\\ ;', '', 'tail'] } },
+        { name: 'info', type: 'TXT', ttl: 0, value: String.raw`"quote\" slash\\ ;" "" "tail"` },
       ],
     }] },
     enable_private_mode: true,
@@ -625,7 +625,7 @@ for (const dns of [
   { zone: [{ origin: 'example.test.', ttl: 0, records: [] }] },
   { zone: [{ origin: 'example.test.', records: [
     { name: '@', type: 'MX', value: '10 mail' },
-    { name: 'info', type: 'TXT', txt: { segments: ['first', '', 'second'] } },
+    { name: 'info', type: 'TXT', value: '"first" "" "second"' },
   ] }] },
 ]) {
   const normalized = normalizeNetworkConfig({ ...DEFAULT_NETWORK_CONFIG(), dns });

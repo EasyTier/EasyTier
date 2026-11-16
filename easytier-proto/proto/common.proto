@@ -89,6 +89,9 @@ message Flags {
   // Prefer direct credential peers that already relay to a destination over
   // advertising another direct edge to the same destination.
   bool prefer_peer_relay = 44 [(easytier.flag) = { default: "false" }];
+  bool enable_udp_fec = 45 [(easytier.flag) = { default: "false" }];
+  bool enable_udp_fec_kcp = 46 [(easytier.flag) = { default: "false" }];
+  bool enable_udp_fec_quic = 47 [(easytier.flag) = { default: "false" }];
 }
 
 

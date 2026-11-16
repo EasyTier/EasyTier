@@ -58,16 +58,11 @@ export const PEER_PROTOCOLS: { [proto: string]: number } = {
 
 // Configuration JSON uses transparent repeated wrappers, as Rust Serde does.
 // Derive the value types from the protocol schema rather than copying fields.
-type OneofJson<T> = T extends { oneofKind: keyof T }
-  ? { [Field in Exclude<keyof T, 'oneofKind'>]: ConfigJson<T[Field]> }
-  : never
-
 type ConfigJson<T> = T extends { items: Array<infer Item> }
   ? ConfigJson<Item>[]
   : T extends DnsRecordRaw
-    ? ConfigJson<Omit<T, 'data' | 'type'>>
+    ? ConfigJson<Omit<T, 'type'>>
       & { type: DnsRecordType | keyof typeof DnsRecordType }
-      & OneofJson<T['data']>
     : T extends object ? { [Key in keyof T]: ConfigJson<T[Key]> } : T
 
 export type DnsConfig = ConfigJson<NonNullable<ProtoNetworkConfig['dns']>>

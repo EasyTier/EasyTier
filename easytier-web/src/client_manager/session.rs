@@ -108,6 +108,7 @@ pub(super) fn record_managed_config_reconcile_hint(
 
 #[derive(Debug, Default)]
 pub(super) struct ManagedRuntimeState {
+    // Applied includes saved DNS on supporting cores, not live DNS publication.
     pub(super) applied_config_revision: Option<String>,
     pub(super) applied_config_revision_known: bool,
     pub(super) known_runtime_base_revision: Option<String>,
@@ -570,6 +571,18 @@ impl SessionRpcService {
         data: &mut SessionData,
         req: HeartbeatRequest,
     ) -> HeartbeatRequest {
+        if data.req.as_ref().is_some_and(|previous| {
+            (previous.support_dns_config_patch == Some(true))
+                != (req.support_dns_config_patch == Some(true))
+        }) {
+            let mut runtime = data.managed_runtime();
+            runtime.applied_config_revision = None;
+            runtime.applied_config_revision_known = true;
+            runtime.known_runtime_base_revision = None;
+            runtime.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
+            runtime.runtime_config_epoch = runtime.runtime_config_epoch.wrapping_add(1);
+            runtime.runtime_config_cache_epoch = runtime.runtime_config_cache_epoch.wrapping_add(1);
+        }
         data.req = Some(req);
         data.req
             .clone()
@@ -600,6 +613,8 @@ impl SessionRpcService {
             Self::storage_token_matches_heartbeat(storage_token, req)
                 && data.req.as_ref().is_some_and(|current_req| {
                     Self::storage_token_matches_heartbeat(storage_token, current_req)
+                        && (current_req.support_dns_config_patch == Some(true))
+                            == (req.support_dns_config_patch == Some(true))
                 })
                 && data.auth_state.is_authorized()
                 && data.storage.upgrade().is_some_and(|storage| {

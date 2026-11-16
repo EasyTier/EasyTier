@@ -30,7 +30,9 @@ message PeerConnInfo {
   bytes noise_remote_static_pubkey = 12;
   peer_rpc.SecureAuthLevel secure_auth_level = 13;
   peer_rpc.PeerIdentityType peer_identity_type = 14;
+  PeerConnFecStats fec = 15;
 }
+
 
 message PeerInfo {
   uint32 peer_id = 1;
@@ -74,4 +76,17 @@ message PublicIpv6LeaseInfo {
 message ListPublicIpv6InfoResponse {
   common.Ipv6Inet provider_prefix = 1;
   repeated PublicIpv6LeaseInfo provider_leases = 2;
+}
+
+message PeerConnFecStats {
+  bool active = 1;
+  uint64 tx_sources = 2;
+  uint64 tx_repairs = 3;
+  uint64 tx_source_bytes = 4;
+  uint64 tx_repair_bytes = 5;
+  uint64 rx_sources = 6;
+  uint64 rx_repairs = 7;
+  uint64 recovered = 8;
+  uint64 duplicates = 9;
+  uint64 invalid_packets = 10;
 }

@@ -70,6 +70,7 @@ jobs:
         with:
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
+          do_not_skip: '["pull_request", "workflow_dispatch", "schedule", "merge_group"]'
           paths: ${{ env.RELEVANT_PATHS }}
 
       - id: path_filter

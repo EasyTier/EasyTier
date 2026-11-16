@@ -7,7 +7,7 @@ use std::{
 use atomic_shim::AtomicI64;
 use bytes::Bytes;
 use dashmap::DashMap;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use prost::Message;
 use tokio::{sync::mpsc, task::JoinSet};
 
@@ -159,7 +159,15 @@ impl Client {
             }
         });
 
-        let mut rx = self.mpsc.lock().unwrap().get_stream();
+        let mut rx = self
+            .mpsc
+            .lock()
+            .unwrap()
+            .get_stream()
+            .map_ok(|packet| {
+                futures::stream::iter(packet.into_batch().map(Ok::<_, crate::tunnel::TunnelError>))
+            })
+            .try_flatten();
         let inflight_requests = self.inflight_requests.clone();
         tasks.spawn(async move {
             while let Some(packet) = rx.next().await {
@@ -246,9 +254,9 @@ impl Client {
                 packets: Vec<crate::packet::ZCPacket>,
                 rx: &mut RpcPacketReceiver,
             ) -> Result<RpcPacket> {
-                for packet in packets {
-                    self.zc_packet_sender.send(packet).await?;
-                }
+                self.zc_packet_sender
+                    .send(crate::packet::ZCPacket::batch(packets))
+                    .await?;
 
                 Ok(rx.recv().await.ok_or(TunnelError::Shutdown)?)
             }

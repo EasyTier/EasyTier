@@ -3,13 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, bail, ensure};
-use easytier_proto::core_config::{
-    DnsConfigRaw, DnsRecordRaw, DnsRecordType, DnsZoneConfigRaw, dns_record_raw::Data,
-};
+use easytier_proto::core_config::{DnsConfigRaw, DnsRecordRaw, DnsRecordType, DnsZoneConfigRaw};
 use hickory_proto::{
     rr::{
         LowerName, Name, RData, Record, RecordSet, RecordType, RrKey,
-        rdata::{HTTPS, SVCB, TXT},
+        rdata::{HTTPS, SVCB},
     },
     serialize::{
         binary::{BinEncodable, BinEncoder, EncodeMode},
@@ -95,21 +93,16 @@ pub fn compile_zone(input: &DnsZoneConfigRaw) -> anyhow::Result<DnsZone> {
             .entry(key)
             .or_insert_with(|| (record.ttl(), BTreeMap::new()));
         ensure!(*ttl == record.ttl(), "{path}.ttl: RRset TTLs must match");
-        let data_field = if record_type == RecordType::TXT {
-            "txt"
-        } else {
-            "value"
-        };
         let mut bytes = Vec::new();
         let mut encoder = BinEncoder::with_mode(&mut bytes, EncodeMode::Signing);
         encoder.set_canonical_names(true);
         record
             .data()
             .emit(&mut encoder)
-            .with_context(|| format!("{path}.{data_field}"))?;
+            .with_context(|| format!("{path}.value"))?;
         ensure!(
             !values.contains_key(&bytes),
-            "{path}.{data_field}: duplicate RDATA"
+            "{path}.value: duplicate RDATA"
         );
         ensure!(
             values.is_empty()
@@ -117,7 +110,7 @@ pub fn compile_zone(input: &DnsZoneConfigRaw) -> anyhow::Result<DnsZone> {
                     record_type,
                     RecordType::CNAME | RecordType::ANAME | RecordType::SOA
                 ),
-            "{path}.{data_field}: {record_type} permits only one value"
+            "{path}.value: {record_type} permits only one value"
         );
         values.insert(bytes, record);
     }
@@ -157,41 +150,29 @@ fn compile_record(input: &DnsRecordRaw, origin: &Name, ttl: u32) -> anyhow::Resu
         "type: record type is required"
     );
     let record_type: RecordType = kind.as_str_name().parse().context("type")?;
-    let rdata = match (&input.data, record_type) {
-        (Some(Data::Txt(txt)), RecordType::TXT) => {
+    let value = input.value.as_deref().context("value: RDATA is required")?;
+    let rdata = parse_value(record_type, value, origin).context("value")?;
+    if let RData::TXT(txt) = &rdata {
+        ensure!(
+            !txt.txt_data().is_empty(),
+            "value: at least one TXT character-string is required"
+        );
+        for (index, segment) in txt.txt_data().iter().enumerate() {
             ensure!(
-                !txt.segments.is_empty(),
-                "txt.segments: at least one segment is required"
+                segment.len() <= 255,
+                "value: TXT character-string {index} exceeds 255 UTF-8 bytes"
             );
-            for (index, segment) in txt.segments.iter().enumerate() {
-                ensure!(
-                    segment.len() <= 255,
-                    "txt.segments[{index}]: exceeds 255 UTF-8 bytes"
-                );
-            }
-            RData::TXT(TXT::new(txt.segments.clone()))
         }
-        (Some(Data::Value(value)), kind) if kind != RecordType::TXT => {
-            parse_value(kind, value, origin).context("value")?
-        }
-        (Some(Data::Txt(_)), _) => bail!("txt: only TXT records accept txt.segments"),
-        (Some(Data::Value(_)), _) => bail!("value: TXT records require txt.segments"),
-        (None, RecordType::TXT) => bail!("txt: at least one segment is required"),
-        (None, _) => bail!("value: RDATA is required"),
-    };
+    }
     let record = Record::from_rdata(name, ttl, rdata);
-    record.to_bytes().with_context(|| {
-        if record_type == RecordType::TXT {
-            "txt.segments: invalid DNS wire encoding"
-        } else {
-            "value: invalid DNS wire encoding"
-        }
-    })?;
+    record
+        .to_bytes()
+        .context("value: invalid DNS wire encoding")?;
     Ok(record)
 }
 
 fn parse_value(kind: RecordType, value: &str, origin: &Name) -> anyhow::Result<RData> {
-    let mut tokens = rdata_tokens(value)?;
+    let mut tokens = rdata_tokens(value, kind == RecordType::TXT)?;
     let name_fields: &[usize] = match kind {
         RecordType::ANAME | RecordType::CNAME | RecordType::NS | RecordType::PTR => &[0],
         RecordType::MX | RecordType::SVCB | RecordType::HTTPS => &[1],
@@ -290,14 +271,14 @@ fn validate_alpn_member(value: &str) -> anyhow::Result<()> {
             .is_some_and(|ch| !ch.is_whitespace() && !matches!(ch, '@' | '(')),
         "invalid ALPN protocol identifier"
     );
-    rdata_tokens(value).context("invalid ALPN protocol identifier")?;
+    rdata_tokens(value, false).context("invalid ALPN protocol identifier")?;
     Ok(())
 }
 
 /// Tokenize one RDATA, retaining the iterator for strict consumption checks.
-/// Hickory's lexer is private; its TXT parser decodes individual quoted strings
+/// Hickory's lexer is private; its TXT parser decodes non-TXT quoted strings
 /// using the same escaping rules as the previous zone-file input.
-fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
+fn rdata_tokens(value: &str, decode_txt: bool) -> anyhow::Result<Vec<String>> {
     let mut chars = value.char_indices().peekable();
     let mut tokens = Vec::new();
     let mut list = false;
@@ -320,7 +301,9 @@ fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
                 while let Some((index, ch)) = chars.next() {
                     if ch == '\\' {
                         let (_, escaped) = chars.next().context("incomplete RDATA escape")?;
-                        if escaped.is_numeric() {
+                        let numeric_escape =
+                            escaped.is_ascii_digit() || (!decode_txt && escaped.is_numeric());
+                        if numeric_escape {
                             ensure!(
                                 chars.next().is_some() && chars.next().is_some(),
                                 "incomplete numeric RDATA escape"
@@ -340,6 +323,10 @@ fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
                 // The dependency's lexer asserts after 4096 steps per token.
                 // Values that exceed that bound must fail rather than panic.
                 ensure!(steps <= 4093, "RDATA token exceeds parser limit");
+                if decode_txt {
+                    tokens.push(decode_txt_string(&token[1..token.len() - 1])?);
+                    continue;
+                }
                 // A leading blank enters the same lexer state as RDATA after
                 // a zone-file header, including its maximum token length.
                 let RData::TXT(decoded) =
@@ -354,11 +341,14 @@ fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
             ch => {
                 ensure!(!ch.is_control(), "control character in RDATA");
                 let mut end = start + ch.len_utf8();
+                let mut escaped = decode_txt && ch == '\\';
                 while let Some(&(index, ch)) = chars.peek() {
-                    if ch.is_whitespace() || matches!(ch, ')' | ';') {
+                    // Escaped TXT delimiters belong to the character-string.
+                    if !escaped && (ch.is_whitespace() || matches!(ch, ')' | ';')) {
                         break;
                     }
                     ensure!(!ch.is_control(), "control character in RDATA");
+                    escaped = decode_txt && !escaped && ch == '\\';
                     chars.next();
                     end = index + ch.len_utf8();
                 }
@@ -367,7 +357,11 @@ fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
                     token.chars().count() <= 4093,
                     "RDATA token exceeds parser limit"
                 );
-                tokens.push(token.to_owned());
+                tokens.push(if decode_txt {
+                    decode_txt_string(token)?
+                } else {
+                    token.to_owned()
+                });
             }
         }
     }
@@ -375,10 +369,36 @@ fn rdata_tokens(value: &str) -> anyhow::Result<Vec<String>> {
     Ok(tokens)
 }
 
+// Hickory 0.25.2 decodes decimal escapes as shifted Unicode digits, not octets.
+fn decode_txt_string(value: &str) -> anyhow::Result<String> {
+    let mut chars = value.chars();
+    let mut bytes = Vec::new();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let escaped = chars.next().context("incomplete RDATA escape")?;
+            ensure!(!escaped.is_control(), "control character in RDATA escape");
+            if escaped.is_ascii_digit() {
+                let mut octet = escaped.to_digit(10).unwrap();
+                for _ in 0..2 {
+                    let digit = chars.next().context("incomplete numeric RDATA escape")?;
+                    ensure!(digit.is_ascii_digit(), "invalid numeric RDATA escape");
+                    octet = octet * 10 + digit.to_digit(10).unwrap();
+                }
+                ensure!(octet <= 255, "numeric RDATA escape exceeds 255");
+                bytes.push(octet as u8);
+            } else {
+                bytes.extend_from_slice(escaped.encode_utf8(&mut [0; 4]).as_bytes());
+            }
+        } else {
+            bytes.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
+        }
+    }
+    Ok(String::from_utf8(bytes)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use easytier_proto::core_config::DnsTxtData;
     use hickory_proto::serialize::binary::BinDecodable;
 
     fn record(kind: DnsRecordType, value: &str) -> DnsRecordRaw {
@@ -386,7 +406,7 @@ mod tests {
             name: "service".into(),
             r#type: kind as i32,
             ttl: None,
-            data: Some(Data::Value(value.into())),
+            value: Some(value.into()),
         }
     }
 
@@ -424,6 +444,7 @@ mod tests {
             (Sshfp, "1 1 ABCD"),
             (Svcb, "1 target alpn=h2 port=443"),
             (Tlsa, "3 1 1 ABCD"),
+            (Txt, "\"hello world\" \"tail\""),
         ] {
             let mut input = record(kind, value);
             if kind == Soa {
@@ -458,12 +479,25 @@ mod tests {
     }
 
     #[test]
-    fn txt_segments_are_literal_ordered_utf8_strings() {
-        let segments = vec!["quote\" slash\\ ;\n".into(), String::new(), "x".repeat(255)];
-        let mut input = record(DnsRecordType::Txt, "");
-        input.data = Some(Data::Txt(DnsTxtData {
-            segments: segments.clone(),
-        }));
+    fn txt_presentation_preserves_ordered_utf8_strings() {
+        let segments = [
+            "quote\" slash\\ ;\n".to_owned(),
+            String::new(),
+            "x".repeat(255),
+            "é".repeat(127),
+            "é".to_owned(),
+            "\u{0663}".to_owned(),
+            "hello world".to_owned(),
+            "escaped space;close)".to_owned(),
+            "quote\"slash\\".to_owned(),
+            "é".to_owned(),
+            ";start".to_owned(),
+        ];
+        let value = format!(
+            r#""quote\" slash\\ ;\010" "" "{}" "{}" "\195\169" "\{}" hello\032world escaped\ space\;close\) quote\"slash\\ \195\169 \;start"#,
+            segments[2], segments[3], segments[5]
+        );
+        let mut input = record(DnsRecordType::Txt, &value);
         let parsed = compile_zone(&zone(vec![input.clone()])).unwrap();
         let record = parsed
             .records
@@ -484,8 +518,22 @@ mod tests {
                 .map(|s| s.as_bytes().to_vec().into_boxed_slice())
                 .collect::<Vec<_>>()
         );
-        for segments in [vec![], vec!["x".repeat(256)], vec!["é".repeat(128)]] {
-            input.data = Some(Data::Txt(DnsTxtData { segments }));
+        for value in [
+            String::new(),
+            " ".to_owned(),
+            format!("\"{}\"", "x".repeat(256)),
+            format!("\"{}\"", "é".repeat(128)),
+            r#""\256""#.to_owned(),
+            r#""\01""#.to_owned(),
+            r#""\0x0""#.to_owned(),
+            r#""\255""#.to_owned(),
+            r"\256".to_owned(),
+            r"\01".to_owned(),
+            r"\0x0".to_owned(),
+            r"\255".to_owned(),
+            "trailing\\".to_owned(),
+        ] {
+            input.value = Some(value);
             assert!(compile_zone(&zone(vec![input.clone()])).is_err());
         }
     }
@@ -616,17 +664,11 @@ mod tests {
             input.r#type = kind;
             assert!(compile_zone(&zone(vec![input])).is_err());
         }
-        for data in [
-            None,
-            Some(Data::Txt(DnsTxtData {
-                segments: vec!["x".into()],
-            })),
-        ] {
-            let mut input = record(DnsRecordType::A, "192.0.2.1");
-            input.data = data;
+        for kind in [DnsRecordType::A, DnsRecordType::Txt] {
+            let mut input = record(kind, "192.0.2.1");
+            input.value = None;
             assert!(compile_zone(&zone(vec![input])).is_err());
         }
-        assert!(compile_zone(&zone(vec![record(DnsRecordType::Txt, "\"x\"")])).is_err());
         let mut outside = record(DnsRecordType::A, "192.0.2.1");
         outside.name = "other.invalid.".into();
         assert!(

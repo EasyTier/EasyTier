@@ -1,20 +1,23 @@
 use std::{sync::Arc, time::Duration};
 
 use easytier_core::gateway::magic_dns::{
-    MagicDnsRoutePublisher, MagicDnsRouteSnapshot, run_magic_dns_route_publisher,
+    MagicDnsRoutePublisher, MagicDnsRouteSnapshot, normalized_dns, run_magic_dns_route_publisher,
 };
 use easytier_core::instance::CorePacketPlane;
-use hickory_proto::rr::LowerName;
 use tokio::task::JoinSet;
 
-use crate::proto::{
-    api::instance::Route,
-    common::Void,
-    magic_dns::{
-        HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory, UpdateDnsRecordRequest,
+use crate::{
+    common::global_ctx::ArcGlobalCtx,
+    proto::{
+        api::instance::Route,
+        common::Void,
+        magic_dns::{
+            HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory,
+            UpdateDnsRecordRequest,
+        },
+        rpc::standalone::{RuntimeRpcClient, runtime_rpc_client},
+        rpc_types::{controller::BaseController, error::Error as RpcError},
     },
-    rpc::standalone::{RuntimeRpcClient, runtime_rpc_client},
-    rpc_types::controller::BaseController,
 };
 
 use super::MAGIC_DNS_INSTANCE_ADDR;
@@ -23,13 +26,13 @@ pub struct MagicDnsClientInstance {
     rpc_client: RuntimeRpcClient,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,
     route_source: Arc<CorePacketPlane>,
-    zone: LowerName,
+    global_ctx: ArcGlobalCtx,
     tasks: JoinSet<()>,
 }
 
 struct RpcMagicDnsRoutePublisher {
     rpc_stub: Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>,
-    zone: LowerName,
+    global_ctx: ArcGlobalCtx,
 }
 
 #[async_trait::async_trait]
@@ -49,6 +52,7 @@ impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
     }
 
     async fn publish(&mut self, snapshot: &MagicDnsRouteSnapshot) -> anyhow::Result<()> {
+        let dns = normalized_dns(&self.global_ctx.config)?;
         let request = UpdateDnsRecordRequest {
             routes: snapshot
                 .routes
@@ -59,23 +63,30 @@ impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
                     ..Default::default()
                 })
                 .collect(),
-            zone: self.zone.to_string(),
+            zone: dns.domain.clone().unwrap(),
+            instance_id: self.global_ctx.get_id().to_string(),
+            dns: Some(dns),
         };
-        tracing::debug!(
-            "MagicDnsClientInstance::update_dns_task: update dns records: {:?}",
-            request
-        );
-        self.rpc_stub
+        match self
+            .rpc_stub
             .update_dns_record(BaseController::default(), request)
-            .await?;
-        Ok(())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(RpcError::ExecutionError(error)) => {
+                // Keep accepted records and this connection until a later snapshot succeeds.
+                tracing::warn!(?error, "DNS contribution rejected");
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
 impl MagicDnsClientInstance {
     pub(crate) async fn new(
         route_source: Arc<CorePacketPlane>,
-        zone: LowerName,
+        global_ctx: ArcGlobalCtx,
     ) -> Result<Self, anyhow::Error> {
         let mut rpc_client = runtime_rpc_client(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
         let rpc_stub = rpc_client
@@ -85,42 +96,35 @@ impl MagicDnsClientInstance {
             rpc_client,
             rpc_stub: Some(rpc_stub),
             route_source,
-            zone,
+            global_ctx,
             tasks: JoinSet::new(),
         })
     }
 
-    async fn update_dns_task(
-        route_source: Arc<CorePacketPlane>,
-        rpc_stub: Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>,
-        zone: LowerName,
-    ) -> Result<(), anyhow::Error> {
-        let mut publisher = RpcMagicDnsRoutePublisher { rpc_stub, zone };
-        run_magic_dns_route_publisher(
-            route_source.as_ref(),
-            &mut publisher,
-            Duration::from_millis(500),
-        )
-        .await
-    }
-
     pub async fn run_and_wait(&mut self) {
-        let rpc_stub = self.rpc_stub.take().unwrap();
         let route_source = self.route_source.clone();
-        let zone = self.zone.clone();
+        let mut publisher = RpcMagicDnsRoutePublisher {
+            rpc_stub: self.rpc_stub.take().unwrap(),
+            global_ctx: self.global_ctx.clone(),
+        };
         self.tasks.spawn(async move {
-            let ret = Self::update_dns_task(route_source, rpc_stub, zone).await;
-            if let Err(e) = ret {
-                tracing::error!("MagicDnsServerInstanceData::run_and_wait: {:?}", e);
+            if let Err(error) = run_magic_dns_route_publisher(
+                route_source.as_ref(),
+                &mut publisher,
+                Duration::from_millis(500),
+            )
+            .await
+            {
+                tracing::error!(?error, "DNS publishing task exited");
             }
         });
 
         tokio::select! {
             _ = self.tasks.join_next() => {
-                tracing::warn!("MagicDnsServerInstanceData::run_and_wait: dns record update task exited");
+                tracing::warn!("DNS record update task exited");
             }
             _ = self.rpc_client.wait() => {
-                tracing::warn!("MagicDnsServerInstanceData::run_and_wait: rpc client exited");
+                tracing::warn!("DNS RPC client exited");
             }
         }
     }
