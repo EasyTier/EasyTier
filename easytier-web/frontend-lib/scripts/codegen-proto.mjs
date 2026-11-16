@@ -17,6 +17,7 @@ const protobufTsPluginRoot = dirname(require.resolve('@protobuf-ts/plugin/packag
 const protoFiles = [
   'annotations.proto',
   'common.proto',
+  'core_config.proto',
   'acl.proto',
   'api_instance.proto',
   'api_manage.proto',

@@ -139,6 +139,9 @@ case "$platform" in
   mipsel)
     ARCH="mipsel"
     ;;
+  ppc64le | powerpc64le)
+    ARCH="ppc64le"
+    ;;
   *)
     ARCH="UNKNOWN"
     ;;

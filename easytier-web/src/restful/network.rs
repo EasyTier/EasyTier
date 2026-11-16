@@ -536,6 +536,7 @@ impl NetworkApi {
                     support_heartbeat_policy: false,
                     support_manual_routes_patch: false,
                     public_ip: device.reported_public_ip.clone(),
+                    support_dns_config_patch: None,
                 }),
             };
             let location = client_mgr.reported_location(info.as_ref(), location);

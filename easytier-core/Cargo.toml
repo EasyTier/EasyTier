@@ -3,7 +3,7 @@ name = "easytier-core"
 description = "EasyTier OS-free control-plane core primitives."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.7.0"
+version = "2.7.1"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["kkrainbow"]
@@ -34,6 +34,7 @@ cidr = { workspace = true, features = ["serde"] }
 crossbeam-utils.workspace = true
 dashmap.workspace = true
 bon.workspace = true
+hickory-proto = { version = "0.25.2", default-features = false, features = ["text-parsing"] }
 easytier-proto = { workspace = true, features = ["core"] }
 futures = { workspace = true, features = ["std", "async-await"] }
 guarden.workspace = true
@@ -45,6 +46,7 @@ idna = "1.1"
 atomic-shim.workspace = true
 ordered_hash_map = "0.6.1"
 parking_lot.workspace = true
+reed-solomon-erasure = "6.0"
 percent-encoding.workspace = true
 petgraph = "0.8.3"
 pin-project-lite.workspace = true
@@ -89,6 +91,7 @@ webpki-roots = { version = "1.0", optional = true }
 x25519-dalek = { workspace = true, features = ["static_secrets"] }
 zerocopy = { workspace = true, features = ["derive", "simd"] }
 zstd = { version = "0.14", optional = true }
+lzokay-native = { version = "0.2", optional = true }
 # Match snow 0.10's AEAD generation to share aead, cipher and crypto-common.
 # Upgrade together with snow rather than pulling in a second crypto stack.
 aes-gcm = { version = "0.10.3", optional = true }
@@ -102,6 +105,9 @@ ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"], optional = 
 rustls-pki-types = { version = "1.15.1", features = ["web"], optional = true }
 uuid = { workspace = true, features = ["js"] }
 wasm-bindgen = "0.2"
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tokio = { workspace = true, features = ["net"] }
 
 [features]
 default = ["aes-gcm", "endpoint-discovery", "extended-services", "management", "tcp-hole-punch"]
@@ -171,6 +177,7 @@ wasm-host-tunnel-outbound = ["wasm-host-tunnel"]
 test-utils = []
 tracing-log = ["tracing/log"]
 zstd = ["dep:zstd"]
+lzo = ["dep:lzokay-native"]
 
 [dev-dependencies]
 futures = { workspace = true, features = ["executor"] }

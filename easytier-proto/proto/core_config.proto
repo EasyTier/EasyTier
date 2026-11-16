@@ -54,3 +54,56 @@ message TrafficConfig {
   optional uint64 instance_recv_bps_limit = 2;
   optional uint64 foreign_relay_bps_limit = 3;
 }
+
+// Raw file/management input. Domain parsing and defaults belong to Raw -> Parsed.
+// Future generators may rename these messages, preserving field numbers, types
+// and collection wrapper nesting.
+message DnsConfigRaw {
+  RepeatedDnsZoneConfigRaw zone = 1;
+  optional string domain = 2;
+}
+
+message RepeatedDnsZoneConfigRaw { repeated DnsZoneConfigRaw items = 1; }
+
+message DnsZoneConfigRaw {
+  string origin = 1;
+  optional uint32 ttl = 2;
+  RepeatedDnsRecordRaw records = 3;
+}
+
+message RepeatedDnsRecordRaw { repeated DnsRecordRaw items = 1; }
+
+// The values are DNS RR type codes, restricted to the supported input types.
+enum DnsRecordType {
+  DNS_RECORD_TYPE_UNSPECIFIED = 0;
+  A = 1;
+  NS = 2;
+  CNAME = 5;
+  SOA = 6;
+  PTR = 12;
+  HINFO = 13;
+  MX = 15;
+  TXT = 16;
+  AAAA = 28;
+  SRV = 33;
+  NAPTR = 35;
+  CERT = 37;
+  SSHFP = 44;
+  TLSA = 52;
+  CSYNC = 62;
+  SVCB = 64;
+  HTTPS = 65;
+  OPENPGPKEY = 61;
+  CAA = 257;
+  ANAME = 65305;
+}
+
+message DnsRecordRaw {
+  string name = 1;
+  DnsRecordType type = 2;
+  optional uint32 ttl = 3;
+  // One RDATA in presentation format, without an owner, TTL, class or type.
+  optional string value = 4;
+  reserved 5;
+  reserved "txt";
+}

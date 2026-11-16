@@ -581,10 +581,7 @@ impl VirtualNic {
             config.platform_config(|config| {
                 // Wintun uses the GUID for Windows network profile identity.
                 // Include the name so explicitly shared NICs use the same GUID.
-                let identity = format!("https://easytier.rs/wintun/{}", dev_name.to_lowercase());
-                config.device_guid(
-                    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).as_u128(),
-                );
+                config.device_guid(crate::arch::windows::tun_device_guid(&dev_name).as_u128());
                 config.skip_config(true);
                 config.ring_cap(Some(std::cmp::min(
                     config.min_ring_cap() * 32,
@@ -1078,7 +1075,12 @@ impl NicCtx {
         let flags = global_ctx.get_flags();
         let mut mtu = flags.mtu;
         if flags.enable_encryption {
-            mtu -= 20;
+            mtu -= easytier_core::packet::StandardAeadTail::SIZE as u32;
+        }
+        if flags.enable_udp_fec {
+            mtu = mtu
+                .checked_sub(easytier_core::packet::FEC_MAX_OVERHEAD as u32)
+                .expect("UDP FEC MTU was validated when normalizing the instance config");
         }
 
         let dev_name = flags.dev_name;
@@ -1714,6 +1716,26 @@ mod tests {
     use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
 
     use super::{NicCtx, VirtualNic};
+
+    #[test]
+    fn udp_fec_mtu_reserves_overhead_once() {
+        let global_ctx = get_mock_global_ctx();
+        for (encryption, fec, expected) in [
+            (false, false, 1380),
+            (true, false, 1352),
+            (false, true, 1364),
+            (true, true, 1336),
+        ] {
+            let mut flags = global_ctx.get_flags();
+            flags.mtu = 1380;
+            flags.enable_encryption = encryption;
+            flags.enable_udp_fec = fec;
+            global_ctx.set_flags(flags);
+            assert_eq!(NicCtx::virtual_nic_config(&global_ctx).mtu(), expected);
+            assert_eq!(NicCtx::virtual_nic_config(&global_ctx).mtu(), expected);
+            assert_eq!(global_ctx.get_flags().mtu, 1380);
+        }
+    }
 
     #[cfg(target_os = "windows")]
     #[rstest::rstest]

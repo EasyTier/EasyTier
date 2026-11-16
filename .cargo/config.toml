@@ -45,6 +45,9 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [target.loongarch64-unknown-linux-musl]
 rustflags = ["-C", "target-feature=+crt-static"]
 
+[target.powerpc64le-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [target.mipsel-unknown-linux-musl]
 linker = "mipsel-unknown-linux-muslsf-gcc"
 rustflags = [

@@ -19,8 +19,13 @@ pub mod magic_dns;
 pub mod peer_rpc;
 #[cfg(feature = "api")]
 pub mod tests;
+#[cfg(feature = "core")]
+pub mod utils;
 #[cfg(feature = "api")]
 pub mod web;
+
+#[cfg(feature = "core")]
+pub use utils::{CollectionExt, MessageModel, RepeatedMessageModel};
 
 pub const DESCRIPTOR_POOL_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));

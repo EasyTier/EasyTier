@@ -189,6 +189,79 @@ async fn lossy_udp_session_enqueue_preserves_reserved_capacity() {
     );
 }
 
+#[tokio::test]
+async fn fec_udp_frames_preserve_control_queue_capacity() {
+    use crate::packet::{FEC_REPAIR_KIND, FEC_SOURCE_KIND, PacketType, ZCPacket};
+
+    const RESERVED_CAPACITY: usize = 4;
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let conn_id = 17;
+    let key = UdpSessionKey::new(peer_addr, conn_id);
+    let mut original = ZCPacket::new_with_payload(b"fec data");
+    original.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+    let peer = original.tunnel_payload();
+    let source = [&0u64.to_le_bytes()[..], &[FEC_SOURCE_KIND], peer].concat();
+    let repair = [
+        &0u64.to_le_bytes()[..],
+        &[FEC_REPAIR_KIND | 1, 0],
+        &0u32.to_le_bytes(),
+        &(peer.len() as u16).to_le_bytes(),
+        peer,
+    ]
+    .concat();
+
+    for frame in [source, repair] {
+        let sessions = DashMap::new();
+        let mut rings = create_udp_session_rings();
+        sessions.insert(key, udp_session_registry_entry(&rings));
+        for _ in 0..UDP_SESSION_QUEUE_CAPACITY {
+            assert!(
+                dispatch_data_packet(
+                    &sessions,
+                    peer_addr,
+                    conn_id,
+                    new_data_packet(conn_id, &frame).unwrap(),
+                    Default::default(),
+                )
+                .is_ok()
+            );
+        }
+        let mut control = ZCPacket::new_with_payload(b"ping");
+        control.fill_peer_manager_hdr(1, 2, PacketType::Ping as u8);
+        for _ in 0..RESERVED_CAPACITY {
+            assert!(
+                dispatch_data_packet(
+                    &sessions,
+                    peer_addr,
+                    conn_id,
+                    new_data_packet(conn_id, control.tunnel_payload()).unwrap(),
+                    Default::default(),
+                )
+                .is_ok()
+            );
+        }
+
+        let mut data_count = 0;
+        let mut control_count = 0;
+        for _ in 0..UDP_SESSION_QUEUE_CAPACITY {
+            let received =
+                tokio::time::timeout(Duration::from_secs(1), rings.session_recv_rx.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+            if received.payload() == frame {
+                data_count += 1;
+            } else {
+                assert_eq!(received.payload(), control.tunnel_payload());
+                control_count += 1;
+            }
+        }
+        assert_eq!(data_count, UDP_SESSION_QUEUE_CAPACITY - RESERVED_CAPACITY);
+        assert_eq!(control_count, RESERVED_CAPACITY);
+    }
+}
+
 struct MockUdpSessionSocket {
     kind: UdpSessionKind,
     local_addr: SocketAddr,
