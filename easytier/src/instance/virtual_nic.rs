@@ -5,6 +5,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use crate::common::{
@@ -1415,23 +1416,30 @@ impl NicCtx {
         {
             return Err(err);
         }
+        let mut retry_needed = cur_proxy_cidrs != diff.current;
 
         self.tasks.spawn(async move {
+            let retry_delay = tokio::time::sleep(Duration::from_secs(1));
+            tokio::pin!(retry_delay);
             loop {
-                let should_sync = match event_receiver.recv().await {
-                    Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => true,
-                    Ok(_) => false,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
-                        break;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        tracing::warn!(
-                            "event bus lagged in proxy_cidrs route updater, doing full sync"
-                        );
-                        event_receiver = event_receiver.resubscribe();
-                        true
-                    }
+                // Native conflicts can clear without changing the desired CIDRs.
+                let should_sync = tokio::select! {
+                    _ = &mut retry_delay, if retry_needed => true,
+                    event = event_receiver.recv() => match event {
+                        Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => true,
+                        Ok(_) => false,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
+                            break;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            tracing::warn!(
+                                "event bus lagged in proxy_cidrs route updater, doing full sync"
+                            );
+                            event_receiver = event_receiver.resubscribe();
+                            true
+                        }
+                    },
                 };
                 if !should_sync {
                     continue;
@@ -1453,6 +1461,10 @@ impl NicCtx {
                 {
                     tracing::error!(?err, "failed to update proxy CIDR routes");
                 }
+                retry_needed = cur_proxy_cidrs != diff.current;
+                retry_delay
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_secs(1));
             }
         });
 
@@ -1732,19 +1744,34 @@ mod tests {
 
     #[tokio::test]
     async fn optional_shared_route_conflict_retries_without_hiding_partial_failures() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
+        use std::{
+            sync::{
+                Arc,
+                atomic::{AtomicBool, AtomicUsize, Ordering},
+            },
+            time::Duration,
+        };
+
+        use easytier_core::{
+            host::packet::{HostPacketChannelSink, HostPacketReceiver},
+            process_runtime::CoreProcessRuntime,
         };
 
         use crate::{
             common::{ifcfg::IfConfiguerTrait, netns::NetNS},
-            instance::shared_virtual_nic::{
-                SharedIfConfigClaims, SharedIpv4Route, SharedVirtualNicRegistry,
+            instance::{
+                composition::{NativeCoreInstance, runtime_core_host_adapters},
+                config::test_core_instance_config,
+                shared_virtual_nic::{
+                    SharedIfConfigClaims, SharedIpv4Route, SharedVirtualNicRegistry,
+                },
             },
         };
 
-        struct ConflictingRoute(Arc<AtomicBool>);
+        struct ConflictingRoute {
+            conflict: Arc<AtomicBool>,
+            attempts: Arc<AtomicUsize>,
+        }
         #[async_trait::async_trait]
         impl IfConfiguerTrait for ConflictingRoute {
             async fn add_ipv4_route_with_source_hint(
@@ -1755,7 +1782,8 @@ mod tests {
                 _cost: Option<i32>,
                 _source_hint: Option<std::net::Ipv4Addr>,
             ) -> Result<(), Error> {
-                if self.0.load(Ordering::Relaxed) {
+                self.attempts.fetch_add(1, Ordering::Relaxed);
+                if self.conflict.load(Ordering::Relaxed) {
                     return Err(Error::Ipv4RouteConflict {
                         address,
                         prefix,
@@ -1767,6 +1795,7 @@ mod tests {
         }
 
         let conflict = Arc::new(AtomicBool::new(true));
+        let attempts = Arc::new(AtomicUsize::new(0));
         let mut registry = SharedVirtualNicRegistry::new();
         let member_id = uuid::Uuid::from_u128(2);
         let member = registry.create_member(
@@ -1780,7 +1809,10 @@ mod tests {
             let nic = shared.lock().await.nic();
             let mut nic = nic.lock().await;
             nic.set_ifname_for_test("et0".to_owned());
-            nic.set_ifcfg_for_test(Box::new(ConflictingRoute(conflict.clone())));
+            nic.set_ifcfg_for_test(Box::new(ConflictingRoute {
+                conflict: conflict.clone(),
+                attempts: attempts.clone(),
+            }));
         }
         member
             .replace_claims(SharedIfConfigClaims {
@@ -1799,11 +1831,29 @@ mod tests {
                 .await,
             Err(Error::Ipv4RouteConflict { .. }),
         ));
-        let mut installed = std::collections::BTreeSet::new();
-        NicCtx::apply_route_changes(&backend, &mut installed, vec![cidr], vec![])
-            .await
-            .unwrap();
-        assert!(installed.is_empty());
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.config.set_routes(Some(vec![cidr]));
+        let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(1);
+        let core = NativeCoreInstance::new(
+            test_core_instance_config(&global_ctx),
+            runtime_core_host_adapters(
+                global_ctx.clone(),
+                CoreProcessRuntime::new(),
+                Arc::new(HostPacketChannelSink::new(packet_sink)),
+            ),
+        )
+        .unwrap();
+        let mut events = global_ctx.subscribe();
+        let mut nic = NicCtx::new_with_backend(
+            global_ctx,
+            core.packet_plane(),
+            Arc::new(tokio::sync::Mutex::new(HostPacketReceiver::new(
+                packet_receiver,
+            ))),
+            Arc::new(tokio::sync::Notify::new()),
+            backend.clone(),
+        );
+        nic.run_proxy_cidrs_route_updater().await.unwrap();
         assert!(shared.lock().await.is_valid());
         assert!(
             shared
@@ -1814,19 +1864,39 @@ mod tests {
                 .is_empty()
         );
 
+        let initial_attempts = attempts.load(Ordering::Relaxed);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while attempts.load(Ordering::Relaxed) == initial_attempts {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the updater must retry while the route is still in conflict");
         conflict.store(false, Ordering::Relaxed);
-        NicCtx::apply_route_changes(&backend, &mut installed, vec![cidr], vec![])
-            .await
-            .unwrap();
-        assert!(installed.contains(&cidr));
-        assert!(
-            shared
+        // Neither the configured CIDRs nor the event bus change when the
+        // external route disappears. The production updater must recover.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !shared
                 .lock()
                 .await
                 .ifcfg()
                 .owners_of_ipv4_route(&route)
                 .contains(&member_id)
-        );
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the updater must install the route after the conflict clears");
+        assert!(shared.lock().await.is_valid());
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        let installed_attempts = attempts.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(attempts.load(Ordering::Relaxed), installed_attempts);
+        nic.shutdown().await;
 
         let fake_ip: std::net::Ipv4Addr = "100.100.100.101".parse().unwrap();
         backend.add_route(fake_ip, 32).await.unwrap();
