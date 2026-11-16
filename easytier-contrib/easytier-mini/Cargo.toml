@@ -1,7 +1,7 @@
 [package]
 name = "easytier-mini"
 description = "Minimal native EasyTier node with TCP/UDP tunnels, TUN and UDP hole punching."
-version = "2.7.0"
+version = "2.7.1"
 edition.workspace = true
 rust-version.workspace = true
 license-file = "../../LICENSE"

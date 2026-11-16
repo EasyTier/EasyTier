@@ -38,7 +38,7 @@ use easytier::{
         acl::{Acl, AclStats},
         api::{
             config::{
-                AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
+                AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, GetConfigRequest,
                 InstanceConfigPatch, PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
                 VpnPortalClientPatch,
             },
@@ -142,6 +142,8 @@ enum SubCommand {
     VpnPortal(VpnPortalArgs),
     #[command(about = "inspect self easytier-core status")]
     Node(NodeArgs),
+    #[command(about = "inspect and update saved DNS configuration")]
+    Dns(DnsArgs),
     #[command(about = "manage easytier-core as a system service")]
     Service(ServiceArgs),
     #[command(about = "show tcp/kcp proxy status")]
@@ -305,6 +307,37 @@ enum NodeSubCommand {
     Info,
     #[command(about = "show node config")]
     Config,
+}
+
+#[derive(Args, Debug)]
+struct DnsArgs {
+    #[command(subcommand)]
+    sub_command: DnsSubCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum DnsSubCommand {
+    /// Show this instance's saved DNS configuration.
+    Show,
+    /// Patch DNS from a file containing only [dns] and [[dns.zone]].
+    Set {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Clear this instance's static records, preserving its default domain.
+    Clear,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DnsFile {
+    dns: easytier_proto::core_config::DnsConfigRaw,
+}
+
+fn parse_dns_file(contents: &str) -> Result<easytier_proto::core_config::DnsConfigRaw, Error> {
+    let file: DnsFile = toml::from_str(contents)
+        .context("expected a DNS-only TOML file containing [dns] and/or [[dns.zone]]")?;
+    Ok(file.dns)
 }
 
 #[derive(Args, Debug)]
@@ -744,6 +777,53 @@ fn format_credential_peers(data: &CredentialPeersData) -> String {
 mod tests {
     use super::*;
     use easytier::proto::api::instance::PeerConnInfo;
+
+    #[test]
+    fn dns_commands_parse_and_files_preserve_clear_semantics() {
+        let cli = Cli::try_parse_from([
+            "easytier-cli",
+            "--instance-name",
+            "mesh",
+            "dns",
+            "set",
+            "--file",
+            "dns.toml",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Dns(DnsArgs {
+                sub_command: DnsSubCommand::Set { .. }
+            })
+        ));
+        let patch = parse_dns_file("[dns]\ndomain = 'mesh.test'\n").unwrap();
+        assert_eq!(patch.domain.as_deref(), Some("mesh.test"));
+        assert!(patch.zone.is_none());
+        let patch = parse_dns_file("[dns]\nzone = []\n").unwrap();
+        assert!(patch.zone.unwrap().items.is_empty());
+        let patch = parse_dns_file(
+            r#"[[dns.zone]]
+origin = "records.test"
+records = [
+    { name = "nas", type = "A", value = "192.0.2.10" },
+    { name = "info", type = "TXT", value = '"literal ; \" \\" "tail"' },
+]
+"#,
+        )
+        .unwrap();
+        easytier_core::config::dns::compile_dns(&patch).unwrap();
+        let records = patch.zone.unwrap().items.remove(0).records.unwrap().items;
+        assert_eq!(
+            records[0].r#type,
+            easytier_proto::core_config::DnsRecordType::A as i32
+        );
+        assert_eq!(
+            records[1].value.as_deref(),
+            Some(r#""literal ; \" \\" "tail""#)
+        );
+        assert!(parse_dns_file("hostname = 'unrelated'\n[dns]\nzone = []").is_err());
+        assert!(parse_dns_file("").is_err());
+    }
 
     const CREDENTIAL_FINGERPRINT: &str =
         "4bb06f8e4e3a7715d201d573d0aa423762e55dabd61a2c02278fa56cc6d294e0";
@@ -3305,6 +3385,98 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
+    async fn fetch_dns_config(&self) -> Result<serde_json::Value, Error> {
+        let response = self
+            .get_config_client()
+            .await?
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?;
+        Ok(serde_json::json!({
+            "dns": response.config.and_then(|config| config.dns),
+        }))
+    }
+
+    async fn handle_dns_show(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_dns_config()))
+            .await?;
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+        self.print_results(&results, |state| {
+            println!("{}", serde_json::to_string_pretty(state)?);
+            Ok(())
+        })
+    }
+
+    async fn apply_dns_patch(
+        &self,
+        dns: easytier_proto::core_config::DnsConfigRaw,
+    ) -> Result<(), Error> {
+        let client = self.get_config_client().await?;
+        client
+            .patch_config(
+                BaseController::default(),
+                PatchConfigRequest {
+                    instance: Some(self.instance_selector.clone()),
+                    patch: Some(InstanceConfigPatch {
+                        dns: Some(dns.clone()),
+                        ..Default::default()
+                    }),
+                },
+            )
+            .await?;
+        let saved = client
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .config
+            .and_then(|config| config.dns)
+            .unwrap_or_default();
+        anyhow::ensure!(
+            (dns.domain.is_none() || dns.domain == saved.domain)
+                && (dns.zone.is_none() || dns.zone == saved.zone),
+            "core did not retain the requested DNS patch; check its version and configuration"
+        );
+        Ok(())
+    }
+
+    async fn handle_dns_patch(
+        &self,
+        dns: easytier_proto::core_config::DnsConfigRaw,
+    ) -> Result<(), Error> {
+        // DNS writes require one instance to avoid a partially successful fanout.
+        if let Some(targets) = self.fanout_targets().await? {
+            anyhow::ensure!(
+                targets.len() == 1,
+                "DNS updates require one instance; specify --instance-id or --instance-name"
+            );
+            self.scoped_to_instance(&targets[0])
+                .apply_dns_patch(dns)
+                .await?;
+        } else {
+            self.apply_dns_patch(dns).await?;
+        }
+        if *self.output_format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({ "saved": true, "requires_restart": true })
+            );
+        } else {
+            println!("DNS configuration saved; restart the instance to apply DNS changes.");
+        }
+        Ok(())
+    }
+
     async fn handle_node(&self, sub_command: Option<&NodeSubCommand>) -> Result<(), Error> {
         let results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_node_info()))
@@ -3833,6 +4005,23 @@ async fn main() -> Result<(), Error> {
         SubCommand::Node(sub_cmd) => {
             handler.handle_node(sub_cmd.sub_command.as_ref()).await?;
         }
+        SubCommand::Dns(args) => match &args.sub_command {
+            DnsSubCommand::Show => handler.handle_dns_show().await?,
+            DnsSubCommand::Set { file } => {
+                let contents = std::fs::read_to_string(file).with_context(|| {
+                    format!("failed to read DNS configuration {}", file.display())
+                })?;
+                handler.handle_dns_patch(parse_dns_file(&contents)?).await?;
+            }
+            DnsSubCommand::Clear => {
+                handler
+                    .handle_dns_patch(easytier_proto::core_config::DnsConfigRaw {
+                        zone: Some(Default::default()),
+                        domain: None,
+                    })
+                    .await?;
+            }
+        },
         SubCommand::Service(service_args) => {
             let service = Service::new(service_args.name)?;
             match service_args.sub_command {

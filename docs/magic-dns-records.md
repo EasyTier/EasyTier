@@ -1,4 +1,4 @@
-# Local Magic DNS records
+# Magic DNS records
 
 Enable Magic DNS and configure static records in the same TOML file:
 
@@ -120,25 +120,82 @@ accepted and reports paths such as `dns.zone[0].records[1].value`. Compound
 RDATA errors identify `value`, rather than separate MX/SRV subfields. Existing
 management error responses carry these paths and the parser's explanation.
 
-The existing management operation replaces the complete configuration candidate;
-records do not have IDs or individual CRUD operations. Concurrent full edits
-can overwrite each other. This model does not add configuration CAS or DNS
-publication acknowledgements. CLI configuration files use the TOML model above.
+The full management operation replaces the complete configuration candidate.
+`PatchConfig` also accepts `InstanceConfigPatch.dns`: omitted DNS members are
+unchanged, a present `zone` array replaces all static zones, and `zone = []`
+clears them while preserving the domain. An empty DNS patch changes nothing.
+Record lists are replaced with their zone; records have no IDs or individual
+CRUD operations. Invalid DNS is rejected before saving that DNS change.
+Concurrent edits can overwrite each other. This does not add configuration
+CAS or DNS publication acknowledgements.
+
+Use `easytier-cli dns show` to read the instance's saved DNS configuration.
+`easytier-cli dns set --file dns.toml` sends a DNS-only TOML patch using the
+same syntax as above, without `[flags]` or other unrelated settings. For
+example, `[dns]` followed by `domain = "mesh.test."` changes only the domain.
+`easytier-cli dns clear` clears static zones and preserves the domain. Writes
+require one instance; use `--instance-id` or `--instance-name` when necessary.
+The CLI reads the configuration back before reporting success. This checks
+saved configuration. The running instance publishes the current DNS configuration
+through its existing local Magic DNS connection every 500 ms, together with its
+node routes, even when the routes have not changed. Saving does not wait for
+publication or verify DNS answers.
+As with other patches, the instance's backing file is updated when configured.
+For instances without a backing file, export the updated configuration and use
+it on restart.
+
+EasyTier Web keeps the desired DNS configuration in its saved configuration.
+Cores advertise DNS patch support in their heartbeat. On older cores, Web
+skips DNS patching and DNS readback comparisons, while continuing to apply
+and verify other fields. Editing or restarting such a configuration retains
+the saved DNS fields; initial startup requests still include DNS, which cores
+that do not recognize the field ignore. After upgrading to a supporting core,
+Web reconciles saved DNS again. An applied revision on an older core covers
+only supported fields; on a supporting core it includes saved DNS, never DNS
+publication. Offline editing reads the saved configuration without inferring
+core capabilities. This adds no DNS form or runtime status to the Web UI.
 
 ## Runtime boundary
 
-Static records come from the local configuration of the EasyTier instance that
-wins the local Magic DNS server election. They coexist with automatically
-generated node records and survive route updates. Configuration changes take
-effect when the instance restarts. If the elected instance has no `[dns]`
-configuration, no static records are served, even when another local instance
-has some. Records are not distributed to other machines.
+Every participating EasyTier instance publishes its complete static configuration
+to the elected Magic DNS server on the same machine. Static zones with the same
+normalized origin are merged, and different origins coexist with automatically
+generated node records. An update
+replaces that instance's entire contribution: changing or clearing zones removes
+its old records, while other instances' contributions remain. Disconnecting a
+publishing connection withdraws its contribution. After server election or
+reconnection, the periodic upload restores the current configuration. This is
+eventually consistent and adds no publication acknowledgement or status API.
+Records are not distributed to other machines.
 
-Only the elected instance's configured zones are added to the system resolver
-match list, after the default zone. Configured zones are authoritative: a name
-missing from a configured zone does not fall back to system DNS. Queries outside
-those zones retain the existing forwarding behavior.
+Released local DNS clients such as v2.6.4 can continue publishing automatic
+node routes without an instance UUID. Their contributions remain owned by the
+publishing connection and are replaced on update and withdrawn on disconnect.
+Static DNS contributions require a supporting client.
 
-This does not change Magic DNS activation, the fixed DNS address, TUN
-requirements, platform DNS setup or node record RPC. Systems without automatic
-DNS setup must continue to configure their resolver manually.
+Across publishers, records with the same owner and type merge into one RRset
+with duplicate RDATA removed. This includes different A and AAAA addresses and
+all other supported multi-value types. Overlapping static RRsets must have the
+same effective TTL. CNAME, ANAME and SOA remain single-value: identical records
+can be shared, but different values are rejected. CNAME cannot coexist with
+another type at the same owner, including an automatically generated A record.
+ANAME input support still does not add ANAME resolution. Automatic node records
+retain their existing aggregation; a shared static/automatic A RRset uses the
+configured TTL, or TTL 1 when only automatic records remain.
+
+An incompatible update is rejected as a whole before publication; its previously
+accepted contribution remains until a later valid upload or disconnect. There
+is no source priority or winner selection. Identical records remain owned by
+each contributing instance, so withdrawing one publisher removes only values
+that no remaining publisher contributes. Input validation within one instance
+still rejects duplicate RDATA and duplicate zone origins.
+
+The system resolver match list includes active node domains and configured
+origins, with the elected instance's current default domain first. Configured
+zones are authoritative: a name missing from a configured zone does not fall back
+to system DNS. Removing a static-only zone restores the existing forwarding
+behavior there; empty former node zones remain authoritative as before.
+
+This does not change Magic DNS activation, the fixed DNS address or TUN
+requirements. Systems without automatic DNS setup must continue to configure
+their resolver manually.

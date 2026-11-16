@@ -22,6 +22,7 @@ use easytier::{
         },
         common::{CompressionAlgoPb, FlagsPatch, Ipv4Inet as RpcIpv4Inet},
         rpc_types::controller::BaseController,
+        web::HeartbeatRequest,
     },
 };
 use optionize::Retain;
@@ -65,6 +66,7 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
             .as_ref()
             .and_then(|mode| mode.local_private_key.as_deref())
             .is_some_and(|key| !key.is_empty());
+    config.dns = None;
     config.acl = None;
     config.port_forwards.clear();
     config.proxy_cidrs.clear();
@@ -87,6 +89,24 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     config.data_compress_algo = data_compress_algo;
     config.encryption_algorithm = encryption_algorithm;
     Ok(config)
+}
+
+#[allow(deprecated)]
+fn full_dns_patch(
+    config: &NetworkConfig,
+) -> anyhow::Result<easytier::proto::core_config::DnsConfigRaw> {
+    use easytier_core::config::toml::DEFAULT_ET_DNS_ZONE;
+
+    let config = config.gen_config()?;
+    let mut dns = config.get_dns().unwrap_or_default();
+    let legacy_domain = config.get_flags_patch().tld_dns_zone;
+    dns.domain = Some(dns.domain.unwrap_or_else(|| {
+        legacy_domain
+            .filter(|domain| !domain.is_empty())
+            .unwrap_or_else(|| DEFAULT_ET_DNS_ZONE.to_owned())
+    }));
+    dns.zone = Some(dns.zone.unwrap_or_default());
+    Ok(dns)
 }
 
 fn normalized_data_compress_algo(algo: Option<i32>) -> Option<i32> {
@@ -285,6 +305,7 @@ fn web_source_runtime_patch(
     current: &NetworkConfig,
     desired: &NetworkConfig,
     support_manual_routes_patch: bool,
+    support_dns_config_patch: bool,
 ) -> anyhow::Result<Option<InstanceConfigPatch>> {
     let mut current_base = hot_patch_base(current)?;
     let mut desired_base = hot_patch_base(desired)?;
@@ -322,6 +343,14 @@ fn web_source_runtime_patch(
     }
     if current_base != desired_base {
         return Ok(None);
+    }
+
+    if support_dns_config_patch {
+        let current_dns = full_dns_patch(current)?;
+        let desired_dns = full_dns_patch(desired)?;
+        if current_dns != desired_dns {
+            patch.dns = Some(desired_dns);
+        }
     }
 
     if desired.hostname.is_some() && current_hostname != desired_hostname {
@@ -416,10 +445,11 @@ pub(super) fn ensure_runtime_config_converged(
     current: &NetworkConfig,
     desired: &NetworkConfig,
     hostname_applied: bool,
+    support_dns_config_patch: bool,
 ) -> anyhow::Result<()> {
-    // Capability changes how a difference is applied, never whether the
-    // observed configuration matches the desired configuration.
-    let patch = web_source_runtime_patch(current, desired, true)?;
+    // DNS readback verifies saved configuration on supporting cores. On older
+    // cores, only the other fields can converge through a configuration patch.
+    let patch = web_source_runtime_patch(current, desired, true, support_dns_config_patch)?;
     match patch {
         Some(mut patch) => {
             // Release 2.6.4 omits a configured hostname when it equals
@@ -537,6 +567,7 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
     desired_config: NetworkConfig,
     is_running: bool,
     support_manual_routes_patch: bool,
+    support_dns_config_patch: bool,
 ) -> anyhow::Result<RuntimeReconcileAction> {
     if !is_running {
         return Ok(RuntimeReconcileAction::Run {
@@ -557,6 +588,7 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
         &current_config,
         desired_config,
         support_manual_routes_patch,
+        support_dns_config_patch,
     )
 }
 
@@ -564,9 +596,14 @@ pub(super) fn prepare_web_source_runtime_reconcile_from_current(
     current_config: &NetworkConfig,
     desired_config: NetworkConfig,
     support_manual_routes_patch: bool,
+    support_dns_config_patch: bool,
 ) -> anyhow::Result<RuntimeReconcileAction> {
-    let Some(patch) =
-        web_source_runtime_patch(current_config, &desired_config, support_manual_routes_patch)?
+    let Some(patch) = web_source_runtime_patch(
+        current_config,
+        &desired_config,
+        support_manual_routes_patch,
+        support_dns_config_patch,
+    )?
     else {
         let mut run_config = desired_config;
         if run_config.hostname.is_none() {
@@ -593,7 +630,7 @@ pub(super) async fn apply_web_source_runtime_reconcile(
     inst_id: &str,
     desired_config: NetworkConfig,
     action: RuntimeReconcileAction,
-    support_manual_routes_patch: bool,
+    heartbeat: &HeartbeatRequest,
 ) -> anyhow::Result<NetworkConfig> {
     match action {
         RuntimeReconcileAction::Unchanged(current_config) => Ok(*current_config),
@@ -604,10 +641,15 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                 config_client,
                 peer_client,
                 inst_id,
-                support_manual_routes_patch,
+                heartbeat.support_manual_routes_patch,
             )
             .await?;
-            ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
+            ensure_runtime_config_converged(
+                &current_config,
+                &desired_config,
+                hostname_applied,
+                heartbeat.support_dns_config_patch == Some(true),
+            )?;
             restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
         }
@@ -626,10 +668,15 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                 config_client,
                 peer_client,
                 inst_id,
-                support_manual_routes_patch,
+                heartbeat.support_manual_routes_patch,
             )
             .await?;
-            ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
+            ensure_runtime_config_converged(
+                &current_config,
+                &desired_config,
+                hostname_applied,
+                heartbeat.support_dns_config_patch == Some(true),
+            )?;
             restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
         }
@@ -658,6 +705,84 @@ mod tests {
             port_forwards,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn dns_patch_replaces_saved_config_and_checks_readback() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = current.clone();
+        desired.dns = Some(
+            toml::from_str(
+                "domain = 'mesh.test'\n[[zone]]\norigin = 'Records.Test'\nrecords = [{name = 'info', type = 'TXT', value = '\"first\" \"second\"'}]",
+            )
+            .unwrap(),
+        );
+        let patch = web_source_runtime_patch(&current, &desired, true, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(patch.dns, desired.dns);
+        assert!(ensure_runtime_config_converged(&current, &desired, false, true).is_err());
+        ensure_runtime_config_converged(&desired, &desired, false, true).unwrap();
+
+        let clear = web_source_runtime_patch(&desired, &current, true, true)
+            .unwrap()
+            .unwrap()
+            .dns
+            .unwrap();
+        assert_eq!(clear.domain.as_deref(), Some("et.net."));
+        assert!(clear.zone.unwrap().items.is_empty());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn dns_patch_defaults_preserve_legacy_domain_and_omitted_members() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.tld_dns_zone = Some("legacy.test".to_owned());
+        let mut desired = current.clone();
+        desired.dns = Some(easytier::proto::core_config::DnsConfigRaw {
+            domain: Some("legacy.test".to_owned()),
+            zone: Some(Default::default()),
+        });
+        assert_eq!(
+            web_source_runtime_patch(&current, &desired, true, true)
+                .unwrap()
+                .unwrap(),
+            InstanceConfigPatch::default()
+        );
+        assert_eq!(full_dns_patch(&current).unwrap(), desired.dns.unwrap());
+    }
+
+    #[test]
+    fn unsupported_dns_patch_preserves_other_changes_and_full_startup_config() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = current.clone();
+        desired.dns = Some(easytier::proto::core_config::DnsConfigRaw {
+            domain: Some("pending.test".to_owned()),
+            ..Default::default()
+        });
+        ensure_runtime_config_converged(&current, &desired, false, false).unwrap();
+        desired.hostname = Some("new-hostname".to_owned());
+        let patch = web_source_runtime_patch(&current, &desired, true, false)
+            .unwrap()
+            .unwrap();
+        assert!(patch.dns.is_none());
+        assert_eq!(patch.hostname.as_deref(), Some("new-hostname"));
+        assert!(ensure_runtime_config_converged(&current, &desired, false, false).is_err());
+
+        desired.network_name = Some("requires-restart".to_owned());
+        let RuntimeReconcileAction::Run { config, overwrite } =
+            prepare_web_source_runtime_reconcile_from_current(
+                &current,
+                desired.clone(),
+                true,
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("a non-patchable change must restart with the complete configuration");
+        };
+        assert!(overwrite);
+        assert_eq!(*config, desired);
     }
 
     fn port_forward(bind_port: u32, dst_port: u32) -> PortForwardConfig {
@@ -747,7 +872,7 @@ mod tests {
             "0.0.0.0:22121",
         );
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .unwrap()
             .expect("client-only changes must be hot-patchable");
 
@@ -782,7 +907,7 @@ mod tests {
             "0.0.0.0:22121",
         );
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .unwrap()
             .unwrap();
         assert!(patch.vpn_portal_clients.is_empty());
@@ -799,7 +924,7 @@ mod tests {
             "0.0.0.0:22122",
         );
         assert!(
-            web_source_runtime_patch(&current, &desired, false)
+            web_source_runtime_patch(&current, &desired, false, true)
                 .unwrap()
                 .is_none()
         );
@@ -816,7 +941,7 @@ mod tests {
             .unwrap()
             .wireguard_private_key = Some("bm90LXRoZS1zYW1lLWtleQ==".to_owned());
         assert!(
-            web_source_runtime_patch(&current, &different_key, false)
+            web_source_runtime_patch(&current, &different_key, false, true)
                 .unwrap()
                 .is_none()
         );
@@ -831,12 +956,12 @@ mod tests {
         );
 
         assert!(
-            web_source_runtime_patch(&without_portal, &with_portal, false)
+            web_source_runtime_patch(&without_portal, &with_portal, false, true)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            web_source_runtime_patch(&with_portal, &without_portal, false)
+            web_source_runtime_patch(&with_portal, &without_portal, false, true)
                 .unwrap()
                 .is_none()
         );
@@ -844,23 +969,23 @@ mod tests {
         let mut disabled = with_portal.clone();
         disabled.vpn_portal_config.as_mut().unwrap().enabled = Some(false);
         assert!(
-            web_source_runtime_patch(&with_portal, &disabled, false)
+            web_source_runtime_patch(&with_portal, &disabled, false, true)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            web_source_runtime_patch(&disabled, &with_portal, false)
+            web_source_runtime_patch(&disabled, &with_portal, false, true)
                 .unwrap()
                 .is_none()
         );
         assert_eq!(
-            web_source_runtime_patch(&disabled, &disabled, false).unwrap(),
+            web_source_runtime_patch(&disabled, &disabled, false, true).unwrap(),
             Some(InstanceConfigPatch::default())
         );
         let mut edited = disabled.clone();
         edited.vpn_portal_config.as_mut().unwrap().clients.clear();
         assert!(
-            web_source_runtime_patch(&disabled, &edited, false)
+            web_source_runtime_patch(&disabled, &edited, false, true)
                 .unwrap()
                 .is_none()
         );
@@ -880,7 +1005,7 @@ mod tests {
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -902,7 +1027,7 @@ mod tests {
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
         let desired = config_with_port_forwards(vec![port_forward(23000, 5174)]);
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -924,7 +1049,7 @@ mod tests {
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23000, 5174)]);
         let desired = config_with_port_forwards(vec![port_forward(23000, 5174)]);
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -955,8 +1080,9 @@ mod tests {
         current.dev_name = Some("et_3_abcd".to_string());
         let desired = config_with_port_forwards(Vec::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
-            .expect("prepare reconcile");
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false, true)
+                .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
     }
@@ -968,8 +1094,9 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
-            .expect("prepare reconcile");
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false, true)
+                .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
     }
@@ -981,8 +1108,9 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
-            .expect("prepare reconcile");
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false, true)
+                .expect("prepare reconcile");
         let RuntimeReconcileAction::Run { overwrite, .. } = action else {
             panic!("clearing an explicit device name should require a full overwrite");
         };
@@ -997,8 +1125,9 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.dev_name = Some("managed-device".to_string());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
-            .expect("prepare reconcile");
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false, true)
+                .expect("prepare reconcile");
         let RuntimeReconcileAction::Run { overwrite, .. } = action else {
             panic!("explicit device name should require a full overwrite");
         };
@@ -1016,7 +1145,7 @@ mod tests {
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
 
-        let err = ensure_runtime_config_converged(&current, &desired, false)
+        let err = ensure_runtime_config_converged(&current, &desired, false, true)
             .expect_err("extra runtime port forward should not converge");
 
         assert!(
@@ -1033,12 +1162,13 @@ mod tests {
         desired_port_forward.proto = "TCP".to_string();
         let desired = config_with_port_forwards(vec![desired_port_forward]);
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
         assert_eq!(patch, InstanceConfigPatch::default());
-        ensure_runtime_config_converged(&current, &desired, false).expect("runtime converged");
+        ensure_runtime_config_converged(&current, &desired, false, true)
+            .expect("runtime converged");
     }
 
     #[test]
@@ -1048,7 +1178,7 @@ mod tests {
 
         desired.network_secret = Some("new-secret".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false, true).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1065,6 +1195,7 @@ mod tests {
             &current,
             unmanaged_desired.clone(),
             false,
+            true,
         )
         .expect("prepare full overwrite");
         let RuntimeReconcileAction::Run { config, overwrite } = action else {
@@ -1080,6 +1211,7 @@ mod tests {
             &observed_after_run,
             explicit_clear,
             false,
+            true,
         )
         .expect("prepare explicit clear");
         let RuntimeReconcileAction::Patch(patch) = action else {
@@ -1100,8 +1232,9 @@ mod tests {
             ..Default::default()
         }];
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
-            .expect("prepare reconcile");
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false, true)
+                .expect("prepare reconcile");
         let RuntimeReconcileAction::Patch(patch) = action else {
             panic!("managed credential change must use a hot patch");
         };
@@ -1118,9 +1251,13 @@ mod tests {
         assert!(empty_manual.routes.is_empty());
 
         for (current, desired) in [(&automatic, &empty_manual), (&empty_manual, &automatic)] {
-            let action =
-                prepare_web_source_runtime_reconcile_from_current(current, desired.clone(), false)
-                    .expect("prepare mode change");
+            let action = prepare_web_source_runtime_reconcile_from_current(
+                current,
+                desired.clone(),
+                false,
+                true,
+            )
+            .expect("prepare mode change");
             assert!(matches!(
                 action,
                 RuntimeReconcileAction::Run {
@@ -1133,6 +1270,7 @@ mod tests {
             &empty_manual,
             empty_manual.clone(),
             false,
+            true,
         )
         .expect("prepare unchanged empty manual routes");
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
@@ -1150,6 +1288,7 @@ mod tests {
                 let action = prepare_web_source_runtime_reconcile_from_current(
                     current,
                     desired.clone(),
+                    true,
                     true,
                 )
                 .unwrap();
@@ -1173,7 +1312,7 @@ mod tests {
                         Some(&parse_rpc_ipv4_inet(cidr).unwrap())
                     );
                 }
-                assert!(ensure_runtime_config_converged(current, desired, false).is_err());
+                assert!(ensure_runtime_config_converged(current, desired, false, true).is_err());
             }
         }
     }
@@ -1361,7 +1500,7 @@ mod tests {
         desired.enable_manual_routes = Some(true);
         desired.routes = vec!["10.2.0.0/16".to_string(), "10.3.0.0/16".to_string()];
 
-        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false, true).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1379,7 +1518,7 @@ mod tests {
             "10.3.0.0/16".to_string(),
         ];
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1420,7 +1559,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.proxy_cidrs = vec!["10.1.2.0/24->10.1.3.0/24".to_string()];
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1449,7 +1588,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.proxy_cidrs = vec!["10.1.2.0/24".to_string()];
 
-        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false, true).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1460,7 +1599,7 @@ mod tests {
         current.proxy_cidrs = vec!["10.1.2.0/24".to_string()];
         let desired = config_with_port_forwards(Vec::new());
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1481,7 +1620,7 @@ mod tests {
         let mut desired = current.clone();
         desired.disable_relay_data = Some(true);
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1494,7 +1633,7 @@ mod tests {
         let mut desired = current.clone();
         desired.prefer_peer_relay = Some(true);
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1508,7 +1647,7 @@ mod tests {
         let mut desired = current.clone();
         desired.no_tun = Some(true);
 
-        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false, true).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1519,7 +1658,7 @@ mod tests {
         let mut desired = current.clone();
         desired.encryption_algorithm = Some("managed-test-algo".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false, true).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1530,7 +1669,7 @@ mod tests {
         let mut desired = current.clone();
         desired.data_compress_algo = Some(CompressionAlgoPb::Zstd as i32);
 
-        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false, true).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1551,7 +1690,7 @@ mod tests {
             local_public_key: None,
         });
 
-        let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired, false, true).expect("build patch");
 
         assert!(patch.is_none());
     }
@@ -1572,7 +1711,7 @@ mod tests {
             local_public_key: None,
         });
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1595,7 +1734,7 @@ mod tests {
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1617,8 +1756,9 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("desired-host".to_string());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
-            .expect("prepare reconcile");
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false, true)
+                .expect("prepare reconcile");
         let RuntimeReconcileAction::Patch(patch) = action else {
             panic!("hostname-only change should use a hot patch");
         };
@@ -1632,7 +1772,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("device-host".to_string());
 
-        ensure_runtime_config_converged(&current, &desired, true)
+        ensure_runtime_config_converged(&current, &desired, true, true)
             .expect("hostname-only readback difference should be converged");
     }
 
@@ -1642,7 +1782,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("device-host".to_string());
 
-        let err = ensure_runtime_config_converged(&current, &desired, false)
+        let err = ensure_runtime_config_converged(&current, &desired, false, true)
             .expect_err("omitted hostname before apply should not converge");
 
         assert!(
@@ -1658,7 +1798,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("device-host".to_string());
 
-        let err = ensure_runtime_config_converged(&current, &desired, true)
+        let err = ensure_runtime_config_converged(&current, &desired, true, true)
             .expect_err("explicit wrong hostname should not converge");
 
         assert!(
@@ -1674,7 +1814,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some(String::new());
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1687,8 +1827,9 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some(String::new());
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
-            .expect("prepare reconcile");
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false, true)
+                .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
     }
@@ -1699,8 +1840,9 @@ mod tests {
         current.hostname = Some("desired-host".to_string());
         let desired = current.clone();
 
-        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired, false)
-            .expect("prepare reconcile");
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, desired, false, true)
+                .expect("prepare reconcile");
 
         assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
     }
@@ -1711,7 +1853,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("a".repeat(33));
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1724,7 +1866,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("node\u{7}-name".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 
@@ -1738,7 +1880,7 @@ mod tests {
         let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("\u{7}\n".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired, false)
+        let patch = web_source_runtime_patch(&current, &desired, false, true)
             .expect("build patch")
             .expect("hot patch");
 

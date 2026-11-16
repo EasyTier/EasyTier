@@ -12,13 +12,15 @@ use hickory_server::authority::{
 use hickory_server::server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo};
 use hickory_server::store::forwarder::ForwardConfig;
 use hickory_server::store::{forwarder::ForwardAuthority, in_memory::InMemoryAuthority};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::{RwLock, RwLockReadGuard};
+use tokio::sync::RwLock;
+#[cfg(test)]
+use tokio::sync::RwLockReadGuard;
 
 use crate::common::dns::get_default_resolver_config;
 
@@ -182,12 +184,25 @@ impl RequestHandler for CatalogRequestHandler {
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
-        self.catalog
-            .read()
-            .await
-            .handle_request(request, response_handle)
-            .await
+        handle_request(&self.catalog, request, response_handle).await
     }
+}
+
+async fn handle_request<R: ResponseHandler>(
+    catalog: &RwLock<Catalog>,
+    request: &Request,
+    response_handle: R,
+) -> ResponseInfo {
+    let mut selected = Catalog::new();
+    if let Ok(info) = request.request_info() {
+        let name = info.query.name();
+        if let Some(authorities) = catalog.read().await.find(name).cloned() {
+            selected.upsert(name.clone(), authorities);
+        }
+    }
+    // Only authority selection needs the shared index. Upstream I/O must not
+    // hold its lock or delay publication of a new batch.
+    selected.handle_request(request, response_handle).await
 }
 
 pub fn build_authority(origin: &rr::LowerName, records: &[Record]) -> Result<InMemoryAuthority> {
@@ -336,30 +351,51 @@ impl Server {
         Ok(())
     }
 
-    pub async fn upsert(&self, name: LowerName, authority: Arc<InMemoryAuthority>) {
-        // Requests hold the Catalog read lock. Publish the local lookup index
-        // under the same write lock, without reentering Catalog during lookup.
-        let mut catalog = self.catalog.write().await;
-        self.local_zones
-            .write()
-            .await
-            .insert(name.clone(), authority.clone());
-        catalog.upsert(
-            name,
-            vec![Arc::new(LocalAuthority {
-                inner: authority,
-                zones: self.local_zones.clone(),
-            })],
-        );
+    pub async fn local_origins(&self) -> BTreeSet<LowerName> {
+        self.local_zones.read().await.keys().cloned().collect()
     }
 
+    /// Publishes a complete batch under the same Catalog write lock used by
+    /// authority selection. Keep the local CNAME lookup index in the same batch.
+    pub async fn replace_zones(
+        &self,
+        replacements: BTreeMap<LowerName, Arc<InMemoryAuthority>>,
+        removals: BTreeSet<LowerName>,
+    ) {
+        let mut catalog = self.catalog.write().await;
+        let mut local_zones = self.local_zones.write().await;
+        for name in removals {
+            catalog.remove(&name);
+            local_zones.remove(&name);
+        }
+        for (name, authority) in replacements {
+            local_zones.insert(name.clone(), authority.clone());
+            catalog.upsert(
+                name,
+                vec![Arc::new(LocalAuthority {
+                    inner: authority,
+                    zones: self.local_zones.clone(),
+                })],
+            );
+        }
+    }
+
+    pub async fn handle_request<R: ResponseHandler>(
+        &self,
+        request: &Request,
+        response_handle: R,
+    ) -> ResponseInfo {
+        handle_request(&self.catalog, request, response_handle).await
+    }
+
+    #[cfg(test)]
     pub async fn read_catalog(&self) -> RwLockReadGuard<'_, Catalog> {
         self.catalog.read().await
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::instance::dns_server::config::{
         GeneralConfigBuilder, RecordBuilder, RecordType, RunConfigBuilder,
@@ -440,6 +476,99 @@ mod tests {
         let expected_record: rr::Record = configured_record.try_into()?;
         assert_eq!(response.answers().first().unwrap(), &expected_record);
 
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    pub(in crate::instance::dns_server) async fn forwarding_server(
+        upstream: SocketAddr,
+    ) -> Result<Server> {
+        use hickory_proto::xfer::Protocol;
+        use hickory_resolver::config::NameServerConfig;
+
+        let config = RunConfigBuilder::default()
+            .general(
+                GeneralConfigBuilder::default()
+                    .listen_udp("127.0.0.1:0")
+                    .build()?,
+            )
+            .build()?;
+        let server = Server::new(config);
+        let mut options = ResolverOpts::default();
+        options.timeout = Duration::from_secs(10);
+        options.attempts = 1;
+        let forwarder = ForwardAuthority::builder_with_config(
+            ForwardConfig {
+                name_servers: vec![NameServerConfig::new(upstream, Protocol::Udp)].into(),
+                options: Some(options),
+            },
+            TokioConnectionProvider::default(),
+        )
+        .build()
+        .map_err(anyhow::Error::msg)?;
+        server
+            .catalog
+            .write()
+            .await
+            .upsert(".".parse()?, vec![Arc::new(forwarder)]);
+        Ok(server)
+    }
+
+    #[tokio::test]
+    async fn slow_forwarding_does_not_block_catalog_publication_or_local_queries() -> Result<()> {
+        use hickory_proto::op::{Message, Query, ResponseCode};
+
+        async fn query(address: SocketAddr, name: &str) -> Result<Message> {
+            let socket = UdpSocket::bind("127.0.0.1:0").await?;
+            let mut request = Message::new();
+            request.set_recursion_desired(true);
+            request.add_query(Query::query(name.parse()?, rr::RecordType::A));
+            socket.send_to(&request.to_vec()?, address).await?;
+            let mut response = [0; 4096];
+            let length = socket.recv(&mut response).await?;
+            Ok(Message::from_vec(&response[..length])?)
+        }
+
+        let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+        let mut server = forwarding_server(upstream.local_addr()?).await?;
+        server.run().await?;
+        let address = server.udp_local_addr().unwrap();
+        let forwarding = tokio::spawn(query(address, "slow.example.org."));
+        let mut packet = [0; 4096];
+        let (length, source) =
+            tokio::time::timeout(Duration::from_secs(1), upstream.recv_from(&mut packet)).await??;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let origin = "local.test.".parse()?;
+            let record = RecordBuilder::default()
+                .rr_type(RecordType::A)
+                .name("svc.local.test.".to_owned())
+                .value("192.0.2.8".to_owned())
+                .ttl(Duration::from_secs(42))
+                .build()?;
+            server
+                .replace_zones(
+                    BTreeMap::from([(
+                        origin,
+                        Arc::new(build_authority(&"local.test.".parse()?, &[record])?),
+                    )]),
+                    BTreeSet::new(),
+                )
+                .await;
+            let response = query(address, "svc.local.test.").await?;
+            assert_eq!(response.answers().len(), 1);
+            assert_eq!(response.answers()[0].ttl(), 42);
+            assert!(!forwarding.is_finished());
+            anyhow::Ok(())
+        })
+        .await??;
+
+        let mut response = Message::from_vec(&packet[..length])?;
+        response
+            .set_message_type(hickory_proto::op::MessageType::Response)
+            .set_response_code(ResponseCode::NXDomain);
+        upstream.send_to(&response.to_vec()?, source).await?;
+        assert_eq!(forwarding.await??.response_code(), ResponseCode::NXDomain);
         server.shutdown().await?;
         Ok(())
     }
