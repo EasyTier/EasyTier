@@ -5,8 +5,10 @@
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    all(test, target_os = "linux")
 ))]
+#[cfg_attr(all(test, target_os = "linux"), allow(dead_code))]
 mod darwin;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 mod netlink;
@@ -23,7 +25,8 @@ use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    all(test, target_os = "linux")
 ))]
 use tokio::process::Command;
 
@@ -120,7 +123,8 @@ pub trait IfConfiguerTrait: Send + Sync {
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    all(test, target_os = "linux")
 ))]
 fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
     if prefix_length > 32 {
@@ -140,7 +144,8 @@ fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    all(test, target_os = "linux")
 ))]
 async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     run_shell_cmd_output(cmd).await.map(|_| ())
@@ -148,7 +153,8 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    all(test, target_os = "linux")
 ))]
 async fn run_shell_cmd_output(cmd: &str) -> Result<String, Error> {
     let cmd_out: std::process::Output;

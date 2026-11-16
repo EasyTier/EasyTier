@@ -60,6 +60,7 @@ pub(super) struct MagicDnsServerInstanceData {
     net_ns: NetNS,
     fake_ip: Ipv4Addr,
     manage_fake_ip_route: bool,
+    route_ifcfg: IfConfiger,
     route_store: MagicDnsRecordStore,
     record_apply: Arc<tokio::sync::Mutex<()>>,
     owner_instance_id: String,
@@ -397,12 +398,12 @@ fn get_system_config(
 
 impl MagicDnsServerInstance {
     async fn add_fake_ip_route(
+        ifcfg: &IfConfiger,
         tun_dev_name: &str,
         fake_ip: Ipv4Addr,
         net_ns: &NetNS,
         cost: Option<i32>,
     ) -> Result<(), anyhow::Error> {
-        let ifcfg = IfConfiger::default();
         let _guard = net_ns.guard();
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
             Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -416,8 +417,12 @@ impl MagicDnsServerInstance {
         }
     }
 
-    async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, net_ns: &NetNS) {
-        let ifcfg = IfConfiger::default();
+    async fn remove_fake_ip_route(
+        ifcfg: &IfConfiger,
+        tun_dev_name: &str,
+        fake_ip: Ipv4Addr,
+        net_ns: &NetNS,
+    ) {
         let _guard = net_ns.guard();
         if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
             tracing::warn!(
@@ -487,6 +492,7 @@ impl MagicDnsServerInstance {
             net_ns: global_ctx.net_ns.clone(),
             fake_ip,
             manage_fake_ip_route,
+            route_ifcfg: IfConfiger::default(),
             route_store,
             record_apply: Arc::new(tokio::sync::Mutex::new(())),
             owner_instance_id,
@@ -499,7 +505,7 @@ impl MagicDnsServerInstance {
         let tcp_listener = runtime_rpc_listener(MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse()?);
         Self::start(
             StandAloneServer::new(tcp_listener),
-            data,
+            data.clone(),
             packet_plane,
             tun_inet,
             async {
@@ -512,8 +518,14 @@ impl MagicDnsServerInstance {
                     } else {
                         None
                     };
-                    Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost)
-                        .await?;
+                    Self::add_fake_ip_route(
+                        &data.route_ifcfg,
+                        tun_dev_name,
+                        fake_ip,
+                        &global_ctx.net_ns,
+                        cost,
+                    )
+                    .await?;
                 }
                 Ok(())
             },
@@ -572,7 +584,13 @@ impl MagicDnsServerInstance {
             && !self.tun_inet.contains(&self.data.fake_ip)
             && let Some(tun_dev_name) = &self.data.tun_dev
         {
-            Self::remove_fake_ip_route(tun_dev_name, self.data.fake_ip, &self.data.net_ns).await;
+            Self::remove_fake_ip_route(
+                &self.data.route_ifcfg,
+                tun_dev_name,
+                self.data.fake_ip,
+                &self.data.net_ns,
+            )
+            .await;
         }
 
         self.packet_filter.close().await;
@@ -672,6 +690,7 @@ mod tests {
             net_ns: NetNS::new(None),
             fake_ip: "100.100.100.101".parse().unwrap(),
             manage_fake_ip_route: false,
+            route_ifcfg: IfConfiger::default(),
             route_store,
             record_apply: Arc::new(tokio::sync::Mutex::new(())),
             owner_instance_id: "00000000-0000-0000-0000-000000000001".to_owned(),

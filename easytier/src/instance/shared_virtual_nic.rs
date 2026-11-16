@@ -183,6 +183,20 @@ impl SharedVirtualNic {
                 .await?;
 
             if let Err(err) = self.apply_ifcfg_update(&next_ifcfg).await {
+                if matches!(err, Error::Ipv4RouteConflict { .. })
+                    && self.ifcfg.is_single_ipv4_route_addition(&next_ifcfg)
+                {
+                    // EEXIST rejected the only native operation without changing
+                    // the OS configuration. Restore the old dispatcher claims.
+                    if let Err(restore_err) = self
+                        .sync_dispatcher_sources_for_claims(member_id, &old_claims)
+                        .await
+                    {
+                        self.invalidate_and_shutdown_dispatcher().await;
+                        return Err(restore_err);
+                    }
+                    return Err(err);
+                }
                 // Native operations may have already changed addresses or routes.
                 // Recreate the device rather than retaining inconsistent claims.
                 self.invalidate_and_shutdown_dispatcher().await;

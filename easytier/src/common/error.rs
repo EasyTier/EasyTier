@@ -20,6 +20,12 @@ pub enum Error {
     InvalidUrl(String),
     #[error("Shell Command error: {0}")]
     ShellCommandError(String),
+    #[error("existing IPv4 route {address}/{prefix} is unusable on interface {interface}")]
+    Ipv4RouteConflict {
+        address: std::net::Ipv4Addr,
+        prefix: u8,
+        interface: String,
+    },
     #[error("Timeout error: {0}")]
     Timeout(#[from] tokio::time::error::Elapsed),
     #[error("anyhow error: {0}")]

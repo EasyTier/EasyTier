@@ -1339,6 +1339,19 @@ impl NicCtx {
                 }
                 Err(err) => {
                     tracing::error!(?cidr, ?err, "add route failed");
+                    // A conflicting native route leaves the shared device and
+                    // its previous claims intact. Retry it on the next sync.
+                    if matches!(err, Error::Ipv4RouteConflict { .. }) {
+                        let unchanged = match backend {
+                            NicBackend::Dedicated(_) => true,
+                            NicBackend::Shared(member) => {
+                                member.shared_nic().lock().await.is_valid()
+                            }
+                        };
+                        if unchanged {
+                            continue;
+                        }
+                    }
                     if first_error.is_none() {
                         first_error = Some(err);
                     }
@@ -1716,6 +1729,134 @@ mod tests {
     use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
 
     use super::{NicCtx, VirtualNic};
+
+    #[tokio::test]
+    async fn optional_shared_route_conflict_retries_without_hiding_partial_failures() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use crate::{
+            common::{ifcfg::IfConfiguerTrait, netns::NetNS},
+            instance::shared_virtual_nic::{
+                SharedIfConfigClaims, SharedIpv4Route, SharedVirtualNicRegistry,
+            },
+        };
+
+        struct ConflictingRoute(Arc<AtomicBool>);
+        #[async_trait::async_trait]
+        impl IfConfiguerTrait for ConflictingRoute {
+            async fn add_ipv4_route_with_source_hint(
+                &self,
+                name: &str,
+                address: std::net::Ipv4Addr,
+                prefix: u8,
+                _cost: Option<i32>,
+                _source_hint: Option<std::net::Ipv4Addr>,
+            ) -> Result<(), Error> {
+                if self.0.load(Ordering::Relaxed) {
+                    return Err(Error::Ipv4RouteConflict {
+                        address,
+                        prefix,
+                        interface: name.to_owned(),
+                    });
+                }
+                Ok(())
+            }
+        }
+
+        let conflict = Arc::new(AtomicBool::new(true));
+        let mut registry = SharedVirtualNicRegistry::new();
+        let member_id = uuid::Uuid::from_u128(2);
+        let member = registry.create_member(
+            "et0".to_owned(),
+            super::VirtualNicConfig::new("et0".to_owned(), 1500, NetNS::new(None)),
+            member_id,
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let shared = member.shared_nic();
+        {
+            let nic = shared.lock().await.nic();
+            let mut nic = nic.lock().await;
+            nic.set_ifname_for_test("et0".to_owned());
+            nic.set_ifcfg_for_test(Box::new(ConflictingRoute(conflict.clone())));
+        }
+        member
+            .replace_claims(SharedIfConfigClaims {
+                ipv4_addresses: std::collections::BTreeSet::from(["10.50.0.2/24".parse().unwrap()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let backend = super::NicBackend::Shared(member);
+        let cidr: cidr::Ipv4Cidr = "192.0.2.0/24".parse().unwrap();
+        let route = SharedIpv4Route::new(cidr.first_address(), cidr.network_length(), None);
+        // Required callers still receive the conflict directly.
+        assert!(matches!(
+            backend
+                .add_route(cidr.first_address(), cidr.network_length())
+                .await,
+            Err(Error::Ipv4RouteConflict { .. }),
+        ));
+        let mut installed = std::collections::BTreeSet::new();
+        NicCtx::apply_route_changes(&backend, &mut installed, vec![cidr], vec![])
+            .await
+            .unwrap();
+        assert!(installed.is_empty());
+        assert!(shared.lock().await.is_valid());
+        assert!(
+            shared
+                .lock()
+                .await
+                .ifcfg()
+                .owners_of_ipv4_route(&route)
+                .is_empty()
+        );
+
+        conflict.store(false, Ordering::Relaxed);
+        NicCtx::apply_route_changes(&backend, &mut installed, vec![cidr], vec![])
+            .await
+            .unwrap();
+        assert!(installed.contains(&cidr));
+        assert!(
+            shared
+                .lock()
+                .await
+                .ifcfg()
+                .owners_of_ipv4_route(&route)
+                .contains(&member_id)
+        );
+
+        let fake_ip: std::net::Ipv4Addr = "100.100.100.101".parse().unwrap();
+        backend.add_route(fake_ip, 32).await.unwrap();
+        let next = registry.create_member(
+            "et0".to_owned(),
+            super::VirtualNicConfig::new("et0".to_owned(), 1500, NetNS::new(None)),
+            uuid::Uuid::from_u128(1),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        next.replace_claims(SharedIfConfigClaims {
+            ipv4_addresses: std::collections::BTreeSet::from(["10.51.0.2/24".parse().unwrap()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        conflict.store(true, Ordering::Relaxed);
+        // Sharing the fake-IP claim changes its source hint. The old route was
+        // removed before the failed replacement, so this failure stays fatal.
+        assert!(
+            NicCtx::apply_route_changes(
+                &super::NicBackend::Shared(next),
+                &mut std::collections::BTreeSet::new(),
+                vec![cidr::Ipv4Cidr::new(fake_ip, 32).unwrap()],
+                vec![],
+            )
+            .await
+            .is_err()
+        );
+        assert!(!shared.lock().await.is_valid());
+    }
 
     #[test]
     fn udp_fec_mtu_reserves_overhead_once() {
