@@ -279,50 +279,65 @@ async fn cancelling_the_attempt_cancels_deferred_and_active_dials() {
 
 #[tokio::test(start_paused = true)]
 async fn slow_dns_does_not_hold_numeric_dials_or_their_fallback() {
-    struct PendingDns;
+    #[derive(Default)]
+    struct PendingDns {
+        queries: Mutex<Vec<String>>,
+    }
 
     #[async_trait]
     impl DnsResolver for PendingDns {
         async fn resolve(&self, query: crate::host::dns::DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
-            if let Ok(ip) = query.host.parse() {
-                return Ok(vec![ip]);
-            }
+            self.queries.lock().unwrap().push(query.host);
             std::future::pending().await
         }
     }
 
     for networks in [Vec::new(), vec!["192.168.20.0/24"], vec!["192.168.10.0/24"]] {
-        let (mut data, protocol, mut attempts) =
-            connector(&networks, DialResult::Pending, DialResult::Pending);
-        Arc::get_mut(&mut data).unwrap().dns = Arc::new(PendingDns);
-        let mut list = ip_list();
-        list.listeners
-            .push(Url::parse("tcp://pending.example:11010").unwrap().into());
-        let peer_id = protocol.remote.my_peer_id();
-        let started = tokio::time::Instant::now();
-        let attempt_data = data.clone();
-        let task = tokio::spawn(async move {
-            attempt_data
-                .try_direct_connect_with_ip_list(peer_id, list)
+        for wildcard_listener in [true, false] {
+            let (mut data, protocol, mut attempts) =
+                connector(&networks, DialResult::Pending, DialResult::Pending);
+            let dns = Arc::new(PendingDns::default());
+            Arc::get_mut(&mut data).unwrap().dns = dns.clone();
+            let mut list = ip_list();
+            if !wildcard_listener {
+                list.listeners = [LOCAL_IP, PUBLIC_IP]
+                    .into_iter()
+                    .map(|ip| Url::parse(&format!("tcp://{ip}:11010")).unwrap().into())
+                    .collect();
+            }
+            list.listeners
+                .push(Url::parse("tcp://pending.example:11010").unwrap().into());
+            let peer_id = protocol.remote.my_peer_id();
+            let started = tokio::time::Instant::now();
+            let attempt_data = data.clone();
+            let task = tokio::spawn(async move {
+                attempt_data
+                    .try_direct_connect_with_ip_list(peer_id, list)
+                    .await
+            });
+            let (first, at) = tokio::time::timeout(Duration::from_millis(100), attempts.recv())
                 .await
-        });
-        let (first, at) = tokio::time::timeout(Duration::from_millis(100), attempts.recv())
-            .await
-            .expect("literal listener must not wait for unrelated DNS")
-            .unwrap();
-        assert_eq!(first.ip(), IpAddr::V4(LOCAL_IP));
-        assert_eq!(at, started);
-        let (fallback, at) = attempts.recv().await.unwrap();
-        assert_eq!(fallback.ip(), IpAddr::V4(PUBLIC_IP));
-        let expected_delay = if networks == ["192.168.10.0/24"] {
-            DIRECT_CONNECT_FALLBACK_DELAY
-        } else {
-            Duration::ZERO
-        };
-        assert_eq!(at - started, expected_delay);
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
-        stop(&data, &protocol).await;
+                .expect("literal listener must not wait for unrelated DNS")
+                .unwrap();
+            assert_eq!(at, started);
+            let first = (first.ip(), at);
+            let (second, at) = tokio::time::timeout(Duration::from_secs(1), attempts.recv())
+                .await
+                .expect("numeric fallback must not wait for DNS")
+                .unwrap();
+            let expected_delay = if networks == ["192.168.10.0/24"] {
+                DIRECT_CONNECT_FALLBACK_DELAY
+            } else {
+                Duration::ZERO
+            };
+            let observed = [first, (second.ip(), at)];
+            assert!(observed.contains(&(IpAddr::V4(LOCAL_IP), started)));
+            assert!(observed.contains(&(IpAddr::V4(PUBLIC_IP), started + expected_delay)));
+            assert_eq!(dns.queries.lock().unwrap().as_slice(), ["pending.example"]);
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            stop(&data, &protocol).await;
+        }
     }
 }
 

@@ -1028,12 +1028,16 @@ pub(crate) async fn resolve_url_addrs(
     let addrs = match host {
         url::Host::Ipv4(addr) => vec![SocketAddr::new(IpAddr::V4(addr), port)],
         url::Host::Ipv6(addr) => vec![SocketAddr::new(IpAddr::V6(addr), port)],
-        url::Host::Domain(host) => dns
-            .resolve(DnsQuery::new(host, context))
-            .await?
-            .into_iter()
-            .map(|addr| SocketAddr::new(addr, port))
-            .collect(),
+        url::Host::Domain(host) => {
+            let ips = if let Ok(ip) = host.parse::<IpAddr>() {
+                vec![ip]
+            } else {
+                dns.resolve(DnsQuery::new(host, context)).await?
+            };
+            ips.into_iter()
+                .map(|addr| SocketAddr::new(addr, port))
+                .collect()
+        }
     };
     let addrs = addrs
         .into_iter()
@@ -1374,6 +1378,43 @@ mod tests {
             options.connect_timeout(&"tcp://127.0.0.1".parse().unwrap(), &Protocol),
             Duration::from_secs(2)
         );
+    }
+
+    #[tokio::test]
+    async fn literal_urls_bypass_dns_and_keep_port_and_family_filters() {
+        let resolver = StaticDnsResolver {
+            ips: Vec::new(),
+            queries: Mutex::new(Vec::new()),
+        };
+        for (url, expected) in [
+            ("tcp://192.168.10.2", "192.168.10.2:11010"),
+            ("udp://0.0.0.0:12000", "0.0.0.0:12000"),
+            ("ws://198.51.100.2:12000", "198.51.100.2:12000"),
+            ("tcp://[2001:db8::1]", "[2001:db8::1]:11010"),
+        ] {
+            let url: Url = url.parse().unwrap();
+            let expected: SocketAddr = expected.parse().unwrap();
+            for ip_version in [IpVersion::Both, IpVersion::V4, IpVersion::V6] {
+                let result = resolve_url_addrs(
+                    &url,
+                    11010,
+                    SocketContext::default().with_ip_version(ip_version),
+                    &resolver,
+                )
+                .await;
+                if matches!(ip_version, IpVersion::Both)
+                    || matches!(ip_version, IpVersion::V4) == expected.is_ipv4()
+                {
+                    assert_eq!(result.unwrap(), [expected]);
+                } else {
+                    assert!(matches!(
+                        result.unwrap_err().downcast_ref::<TunnelError>(),
+                        Some(TunnelError::NoDnsRecordFound(version)) if *version == ip_version
+                    ));
+                }
+            }
+        }
+        assert!(resolver.queries.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
