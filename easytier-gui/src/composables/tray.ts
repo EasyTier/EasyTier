@@ -1,9 +1,19 @@
+import { invoke } from '@tauri-apps/api/core'
 import { Menu, MenuItem, PredefinedMenuItem } from '@tauri-apps/api/menu'
 import { TrayIcon } from '@tauri-apps/api/tray'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import pkg from '~/../package.json'
 
 const DEFAULT_TRAY_NAME = 'main'
+
+interface TrayMenuLabels {
+  show: string
+  quit: string
+}
+
+function usesUserTray() {
+  return invoke<boolean>('uses_user_tray')
+}
 
 async function toggleVisibility() {
   if (await getCurrentWindow().isVisible()) {
@@ -18,6 +28,10 @@ async function toggleVisibility() {
 export async function useTray(init: boolean = false) {
   let tray
   try {
+    // The Linux user-session process owns the tray; never recreate it as root.
+    if (await usesUserTray())
+      return null
+
     tray = await TrayIcon.getById(DEFAULT_TRAY_NAME)
     if (!tray) {
       tray = await TrayIcon.new({
@@ -76,18 +90,30 @@ export async function MenuItemShow(text: string) {
   })
 }
 
-export async function setTrayMenu(items: (MenuItem | PredefinedMenuItem)[] | undefined = undefined) {
+export async function setTrayMenu(labels?: TrayMenuLabels) {
+  if (await usesUserTray()) {
+    await invoke('update_user_tray', {
+      update: { type: 'menu', ...(labels ?? { show: 'Show / Hide', quit: 'Exit' }) },
+    })
+    return
+  }
   const tray = await useTray()
   if (!tray)
     return
   const menu = await Menu.new({
     id: 'main',
-    items: items || await generateMenuItem(),
+    items: labels
+      ? [await MenuItemShow(labels.show), await MenuItemExit(labels.quit)]
+      : await generateMenuItem(),
   })
   tray.setMenu(menu)
 }
 
 export async function setTrayRunState(isRunning: boolean = false) {
+  if (await usesUserTray()) {
+    await invoke('update_user_tray', { update: { type: 'run_state', running: isRunning } })
+    return
+  }
   const tray = await useTray()
   if (!tray)
     return
@@ -96,10 +122,15 @@ export async function setTrayRunState(isRunning: boolean = false) {
 
 export async function setTrayTooltip(tooltip: string) {
   if (tooltip) {
+    const text = `EasyTier\n${pkg.version}\n${tooltip}`
+    if (await usesUserTray()) {
+      await invoke('update_user_tray', { update: { type: 'tooltip', tooltip: text } })
+      return
+    }
     const tray = await useTray()
     if (!tray)
       return
-    tray.setTooltip(`EasyTier\n${pkg.version}\n${tooltip}`)
-    tray.setTitle(`EasyTier\n${pkg.version}\n${tooltip}`)
+    tray.setTooltip(text)
+    tray.setTitle(text)
   }
 }

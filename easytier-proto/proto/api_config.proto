@@ -1,5 +1,6 @@
 syntax = "proto3";
 
+import "core_config.proto";
 import "common.proto";
 import "acl.proto";
 import "api_instance.proto";
@@ -34,6 +35,9 @@ message InstanceConfigPatch {
   // Applies with routes: true preserves an empty manual list; false restores
   // automatic routes. Omission preserves legacy RoutePatch behavior.
   optional bool enable_manual_routes = 18;
+  // Omitted members are unchanged; a present zone list replaces all zones.
+  // Saves configuration only; existing DNS authorities are not republished.
+  core_config.DnsConfigRaw dns = 19;
 }
 
 message VpnPortalClientPatch {

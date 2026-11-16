@@ -98,6 +98,8 @@ back to AES-GCM rather than plaintext.
 The compact runtime supports `tcp://` and `udp://` listener, mapped-listener
 and peer URLs. `no_tun = true` runs through smoltcp without an OS TUN device,
 and `dhcp = true` allocates the virtual IPv4 address dynamically.
+Configured `proxy_network` IPv4 subnets are advertised and proxied for TCP, UDP
+and ICMP.
 
 The mini feature set keeps STUN collection, UDP hole punching, Web heartbeats,
 Web instance lifecycle management and the config hot-patch RPC. It omits TCP

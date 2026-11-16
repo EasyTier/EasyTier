@@ -68,6 +68,7 @@ jobs:
         with:
           concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
+          do_not_skip: '["pull_request", "workflow_dispatch", "schedule", "merge_group"]'
           paths: ${{ env.RELEVANT_PATHS }}
 
       - id: path_filter
@@ -160,6 +161,9 @@ jobs:
           - TARGET: loongarch64-unknown-linux-musl
             OS: ubuntu-24.04
             ARTIFACT_NAME: linux-loongarch64
+          - TARGET: powerpc64le-unknown-linux-musl
+            OS: ubuntu-24.04
+            ARTIFACT_NAME: linux-ppc64le
 
           - TARGET: armv7-unknown-linux-musleabihf # raspberry pi 2-3-4, not tested
             OS: ubuntu-24.04
@@ -271,7 +275,7 @@ jobs:
             BUILD=zigbuild
           fi
 
-          if [[ "$TARGET" =~ ^(riscv64|loongarch64|aarch64).*$ || "$TARGET" =~ (freebsd|windows) ]]; then
+          if [[ "$TARGET" =~ ^(riscv64|loongarch64|aarch64|powerpc64le).*$ || "$TARGET" =~ (freebsd|windows) ]]; then
             FEATURES="mimalloc"
           else
             FEATURES="jemalloc"

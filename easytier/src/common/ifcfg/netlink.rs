@@ -409,9 +409,11 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
                 .destination()
                 .copied()
                 .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+            // Only routes we added (RTPROT_STATIC), not the kernel's connected route.
             if destination == IpAddr::V4(address)
                 && msg.dst_len() == cidr_prefix
                 && msg.oif() == Some(ifidx)
+                && msg.protocol() == libc::RTPROT_STATIC
             {
                 let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
                 send_netlink_req_and_wait_ack(request)?;
@@ -578,9 +580,11 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
                 .destination()
                 .copied()
                 .unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+            // Only routes we added (RTPROT_STATIC), not the kernel's connected route.
             if destination == IpAddr::V6(address)
                 && msg.dst_len() == cidr_prefix
                 && msg.oif() == Some(ifidx)
+                && msg.protocol() == libc::RTPROT_STATIC
             {
                 let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
                 send_netlink_req_and_wait_ack(request)?;
@@ -791,6 +795,34 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn remove_route_keeps_kernel_connected_route() {
+        let iface = test_iface_name("kr");
+        let _link = ScopedDummyLink::new(&iface);
+        let ifcfg = NetlinkIfConfiger {};
+        run_cmd(&format!("ip addr add 10.144.144.1/24 dev {iface}"));
+        run_cmd(&format!("ip -6 addr add fd00:2621::1/64 dev {iface} nodad"));
+
+        // A peer advertises the local subnet: the route is added next to the kernel's one.
+        let v4 = "10.144.144.0".parse().unwrap();
+        let v6 = "fd00:2621::".parse().unwrap();
+        ifcfg.add_ipv4_route(&iface, v4, 24, None).await.unwrap();
+        ifcfg.add_ipv6_route(&iface, v6, 64, None).await.unwrap();
+
+        ifcfg.remove_ipv4_route(&iface, v4, 24).await.unwrap();
+        ifcfg.remove_ipv6_route(&iface, v6, 64).await.unwrap();
+
+        let v4_routes = run_cmd(&format!("ip -4 route show 10.144.144.0/24 dev {iface}"));
+        let v6_routes = run_cmd(&format!("ip -6 route show fd00:2621::/64 dev {iface}"));
+        for routes in [&v4_routes, &v6_routes] {
+            assert!(
+                routes.contains("proto kernel") && !routes.contains("metric 65535"),
+                "IPv4:\n{v4_routes}IPv6:\n{v6_routes}"
+            );
+        }
     }
 
     #[serial_test::serial]

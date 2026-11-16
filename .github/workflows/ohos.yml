@@ -53,6 +53,7 @@ jobs:
         with:
           concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
+          do_not_skip: '["pull_request", "workflow_dispatch", "schedule", "merge_group"]'
           cancel_others: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "easytier/**", "easytier-core/**", "easytier-proto/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/actions/**"]'
 

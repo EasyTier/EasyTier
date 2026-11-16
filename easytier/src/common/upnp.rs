@@ -10,10 +10,7 @@ use easytier_core::connectivity::hole_punch::port_mapping::{
     ActiveUdpPortMapping as CoreActiveUdpPortMapping, UdpPortMappingAttemptError,
     UdpPortMappingBackend, UdpPortMappingLifecycle,
 };
-use natpmp::{
-    Protocol as NatPmpProtocol, Response as NatPmpResponse, get_default_gateway,
-    new_natpmp_async_with,
-};
+use natpmp::{Protocol as NatPmpProtocol, Response as NatPmpResponse, new_natpmp_async_with};
 use tokio::net::UdpSocket;
 
 use crate::igd_next::{
@@ -28,12 +25,55 @@ const NAT_PMP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const UPNP_LEASE_DURATION_SECS: u32 = 300;
 const UPNP_DESCRIPTION: &str = "EasyTier udp hole punch";
 
+/// IPv4 default gateway of the calling thread's network namespace.
+fn default_gateway() -> anyhow::Result<Ipv4Addr> {
+    cfg_select! {
+        target_os = "linux" => {
+            // natpmp/netdev read /proc/net/route, which follows the thread-group
+            // leader's namespace. Port mapping may run on a thread that entered
+            // the instance namespace with setns, so read this thread's view.
+            let routes = std::fs::read_to_string("/proc/thread-self/net/route")
+                .context("read /proc/thread-self/net/route")?;
+            parse_default_gateway(&routes)
+                .ok_or_else(|| anyhow!("no IPv4 default gateway in the current network namespace"))
+        },
+        _ => natpmp::get_default_gateway().map_err(anyhow::Error::from),
+    }
+}
+
+/// Picks the lowest-metric usable default route from `/proc/net/route` content.
+#[cfg(any(target_os = "linux", test))]
+fn parse_default_gateway(routes: &str) -> Option<Ipv4Addr> {
+    const RTF_UP_GATEWAY: u32 = 0x1 | 0x2;
+    routes
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 8 {
+                return None;
+            }
+            let hex = |field: &str| u32::from_str_radix(field, 16).ok();
+            let destination = hex(fields[1])?;
+            let gateway = hex(fields[2])?;
+            let flags = hex(fields[3])?;
+            let metric = fields[6].parse::<u32>().ok()?;
+            let mask = hex(fields[7])?;
+            // Addresses are printed as the raw in-memory (network-order) u32.
+            (destination == 0
+                && mask == 0
+                && gateway != 0
+                && flags & RTF_UP_GATEWAY == RTF_UP_GATEWAY)
+                .then(|| (metric, Ipv4Addr::from(gateway.to_ne_bytes())))
+        })
+        .min_by_key(|(metric, _)| *metric)
+        .map(|(_, gateway)| gateway)
+}
+
 async fn new_protected_natpmp(
     gateway: Option<Ipv4Addr>,
 ) -> anyhow::Result<natpmp::NatpmpAsync<UdpSocket>> {
-    let gateway = gateway
-        .map(Ok)
-        .unwrap_or_else(|| get_default_gateway().map_err(anyhow::Error::from))?;
+    let gateway = gateway.map(Ok).unwrap_or_else(default_gateway)?;
     let gateway_addr = SocketAddr::V4(SocketAddrV4::new(gateway, natpmp::NATPMP_PORT));
     let socket = crate::socket::udp::create_udp_socket(
         &easytier_core::socket::udp::UdpBindOptions::direct_connect()
@@ -582,4 +622,33 @@ async fn remove_udp_mapping_igd(
         .remove_port(PortMappingProtocol::Udp, external_port)
         .await
         .with_context(|| format!("remove udp port mapping {local_listener}"))
+}
+
+#[cfg(test)]
+mod default_gateway_tests {
+    use super::*;
+
+    fn hex(address: Ipv4Addr) -> String {
+        format!("{:08X}", u32::from_ne_bytes(address.octets()))
+    }
+
+    #[test]
+    fn parses_lowest_metric_usable_default_route() {
+        let routes = format!(
+            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+             eth1\t00000000\t{}\t0003\t0\t0\t200\t00000000\t0\t0\t0\n\
+             eth0\t00000000\t{}\t0003\t0\t0\t100\t00000000\t0\t0\t0\n\
+             eth2\t00000000\t{}\t0001\t0\t0\t10\t00000000\t0\t0\t0\n\
+             eth0\t{}\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n",
+            hex(Ipv4Addr::new(10, 0, 0, 1)),
+            hex(Ipv4Addr::new(192, 168, 2, 1)),
+            hex(Ipv4Addr::new(172, 16, 0, 1)),
+            hex(Ipv4Addr::new(192, 168, 2, 0)),
+        );
+        assert_eq!(
+            parse_default_gateway(&routes),
+            Some(Ipv4Addr::new(192, 168, 2, 1))
+        );
+        assert_eq!(parse_default_gateway("Iface\tDestination\n"), None);
+    }
 }

@@ -19,6 +19,8 @@ use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 use zerocopy::byteorder::*;
 
+use crate::peers::conn::peer_session::PeerSession;
+
 type DefaultEndian = LittleEndian;
 
 const fn max(a: usize, b: usize) -> usize {
@@ -83,6 +85,10 @@ pub const WG_TUNNEL_HEADER_SIZE: usize = std::mem::size_of::<WGTunnelHeader>();
 
 #[derive(AsBytes, FromZeroes, Copy, Clone, Debug)]
 #[repr(u8)]
+// Keep ordinary peer packet types below 64. The UDP FEC envelope reserves
+// the high two bits at this field's wire offset (byte 8) to distinguish its
+// independent frames from plain peer packets, including reordered handshakes.
+// See peers/conn/fec/wire.rs; these are not UDP transport message types.
 pub enum PacketType {
     Invalid = 0,
     Data = 1,
@@ -109,6 +115,17 @@ pub enum PacketType {
     DataWithKcpSrcModified = 18,
     DataWithQuicSrcModified = 19,
 }
+
+/// Largest expansion relative to a complete peer packet: the independent
+/// 14-byte FEC repair header and the encoded original length.
+pub const FEC_MAX_OVERHEAD: usize = 14 + 2;
+
+// The independent FEC envelope and ordinary peer packets share a discriminator
+// at byte 8. Keep these values shared with peers/conn/fec/wire.rs: UDP queue
+// admission must treat FEC frames as lossy data, not as reserved control traffic.
+pub(crate) const FEC_SOURCE_KIND: u8 = 0x40;
+pub(crate) const FEC_REPAIR_KIND: u8 = 0x80;
+pub(crate) const FEC_KIND_MASK: u8 = 0xc0;
 
 bitflags::bitflags! {
     struct PeerManagerHeaderFlags: u8 {
@@ -354,6 +371,7 @@ pub type StandardAeadTail = AeadTail<16, 12>;
 pub enum CompressorAlgo {
     None = 0,
     ZstdDefault = 1,
+    Lzo = 2,
 }
 
 impl CompressorAlgo {
@@ -361,6 +379,7 @@ impl CompressorAlgo {
         match self {
             Self::None => true,
             Self::ZstdDefault => compressor::zstd_available(),
+            Self::Lzo => cfg!(feature = "lzo"),
         }
     }
 
@@ -385,6 +404,7 @@ impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
     fn try_from(value: CompressionAlgoPb) -> Result<Self, Self::Error> {
         match value {
             CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
+            CompressionAlgoPb::Lzo => Ok(CompressorAlgo::Lzo),
             CompressionAlgoPb::None => Ok(CompressorAlgo::None),
             _ => Err(CompressionAlgoError(value)),
         }
@@ -397,6 +417,7 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
     fn try_from(value: CompressorAlgo) -> Result<Self, Self::Error> {
         match value {
             CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
+            CompressorAlgo::Lzo => Ok(CompressionAlgoPb::Lzo),
             CompressorAlgo::None => Ok(CompressionAlgoPb::None),
         }
     }
@@ -413,6 +434,7 @@ impl CompressorTail {
     pub fn get_algo(&self) -> Option<CompressorAlgo> {
         match self.algo {
             1 => Some(CompressorAlgo::ZstdDefault),
+            2 => Some(CompressorAlgo::Lzo),
             _ => None,
         }
     }
@@ -539,15 +561,93 @@ impl ZCPacketType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ZCPacket {
     inner: BytesMut,
     packet_type: ZCPacketType,
     /// Local scheduling metadata; never serialized into a tunnel packet.
     pub(crate) flow_key: Option<FlowKey>,
+    /// Remaining RPC fragments, kept together only until the connection writer.
+    /// Box the Vec header so ordinary packets only carry one extra pointer.
+    #[allow(clippy::box_collection)]
+    batch: Option<Box<Vec<ZCPacket>>>,
+    /// A locally selected relay session; encryption is deferred to the writer.
+    pub(crate) peer_session: Option<std::sync::Arc<PeerSession>>,
+}
+
+impl std::fmt::Debug for ZCPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZCPacket")
+            .field("inner", &self.inner)
+            .field("packet_type", &self.packet_type)
+            .field("flow_key", &self.flow_key)
+            .field("batch", &self.batch)
+            .field("peer_session", &self.peer_session.is_some())
+            .finish()
+    }
 }
 
 impl ZCPacket {
+    /// Keep a locally generated RPC in one queue entry without changing its wire format.
+    pub(crate) fn batch(mut packets: Vec<Self>) -> Self {
+        let mut first = packets.remove(0);
+        debug_assert!(first.batch.is_none());
+        if !packets.is_empty() {
+            debug_assert!(packets.iter().all(|packet| packet.batch.is_none()));
+            first.batch = Some(Box::new(packets));
+        }
+        first
+    }
+
+    pub(crate) fn into_batch(mut self) -> impl Iterator<Item = Self> {
+        let rest = self.batch.take().map(|rest| *rest).unwrap_or_default();
+        std::iter::once(self).chain(rest)
+    }
+
+    pub(crate) fn take_batch(&mut self) -> std::vec::IntoIter<Self> {
+        self.batch
+            .take()
+            .map(|rest| *rest)
+            .unwrap_or_default()
+            .into_iter()
+    }
+
+    pub(crate) fn batch_len(&self) -> usize {
+        1 + self.batch.as_ref().map_or(0, |rest| rest.len())
+    }
+
+    pub(crate) fn batch_buf_len(&self) -> usize {
+        self.buf_len()
+            + self
+                .batch
+                .as_ref()
+                .map_or(0, |rest| rest.iter().map(ZCPacket::buf_len).sum::<usize>())
+    }
+
+    pub(crate) fn for_each_packet_mut(&mut self, mut f: impl FnMut(&mut Self)) {
+        let mut rest = self.batch.take();
+        f(self);
+        if let Some(rest) = &mut rest {
+            for packet in rest.iter_mut() {
+                f(packet);
+            }
+        }
+        self.batch = rest;
+    }
+
+    pub(crate) fn try_for_each_packet_mut<E>(
+        &mut self,
+        mut f: impl FnMut(&mut Self) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut result = Ok(());
+        self.for_each_packet_mut(|packet| {
+            if result.is_ok() {
+                result = f(packet);
+            }
+        });
+        result
+    }
+
     fn bytes_from_offset(&self, offset: usize) -> Option<&[u8]> {
         self.inner.get(offset..)
     }
@@ -561,6 +661,8 @@ impl ZCPacket {
             inner: BytesMut::new(),
             packet_type: ZCPacketType::NIC,
             flow_key: None,
+            batch: None,
+            peer_session: None,
         }
     }
 
@@ -569,6 +671,8 @@ impl ZCPacket {
             inner: buf,
             packet_type,
             flow_key: None,
+            batch: None,
+            peer_session: None,
         }
     }
 
@@ -617,6 +721,13 @@ impl ZCPacket {
 
         ret.fill_peer_manager_hdr(0, 0, PacketType::ForeignNetworkPacket as u8);
         ret.flow_key = foreign_zc_packet.flow_key;
+        ret.batch = foreign_zc_packet.batch.as_ref().map(|rest| {
+            Box::new(
+                rest.iter()
+                    .map(|packet| Self::new_for_foreign_network(network_name, dst_peer_id, packet))
+                    .collect(),
+            )
+        });
 
         ret
     }
@@ -725,15 +836,17 @@ impl ZCPacket {
     }
 
     pub fn fill_peer_manager_hdr(&mut self, from_peer_id: u32, to_peer_id: u32, packet_type: u8) {
-        let payload_len = self.payload_len();
-        let hdr = self.mut_peer_manager_header().unwrap();
-        hdr.from_peer_id.set(from_peer_id);
-        hdr.to_peer_id.set(to_peer_id);
-        hdr.packet_type = packet_type;
-        hdr.flags = 0;
-        hdr.forward_counter = 1;
-        hdr.reserved = 0;
-        hdr.len.set(payload_len as u32);
+        self.for_each_packet_mut(|packet| {
+            let payload_len = packet.payload_len();
+            let hdr = packet.mut_peer_manager_header().unwrap();
+            hdr.from_peer_id.set(from_peer_id);
+            hdr.to_peer_id.set(to_peer_id);
+            hdr.packet_type = packet_type;
+            hdr.flags = 0;
+            hdr.forward_counter = 1;
+            hdr.reserved = 0;
+            hdr.len.set(payload_len as u32);
+        });
     }
 
     pub fn tunnel_payload(&self) -> &[u8] {
@@ -794,6 +907,8 @@ impl ZCPacket {
             buf.extend_from_slice(tunnel_payload);
             let mut packet = Self::new_from_buf(buf, target_packet_type);
             packet.flow_key = self.flow_key;
+            packet.batch = self.batch.take();
+            packet.peer_session = self.peer_session.take();
             return packet;
         }
 
@@ -803,6 +918,10 @@ impl ZCPacket {
     }
 
     pub fn into_bytes(self) -> Bytes {
+        debug_assert!(
+            self.batch.is_none(),
+            "expand RPC batch before serialization"
+        );
         self.inner.freeze()
     }
 
@@ -816,7 +935,14 @@ impl ZCPacket {
 
     pub fn is_lossy(&self) -> bool {
         self.peer_manager_header()
-            .map(|hdr| hdr.packet_type == PacketType::Data as u8)
+            .map(|hdr| {
+                // For FEC this byte is the envelope discriminator, not an
+                // actual peer header. No other peer fields are inspected.
+                let kind = hdr.packet_type;
+                kind == PacketType::Data as u8
+                    || kind == FEC_SOURCE_KIND
+                    || kind & FEC_KIND_MASK == FEC_REPAIR_KIND
+            })
             .unwrap_or(false)
     }
 
@@ -848,6 +974,7 @@ impl ZCPacket {
     }
 
     pub fn foreign_network_packet(mut self) -> Self {
+        let batch = self.batch.take();
         let hdr = self.foreign_network_hdr().unwrap();
         let foreign_hdr_len = hdr.get_header_len();
 
@@ -859,6 +986,14 @@ impl ZCPacket {
             ZCPacketType::DummyTunnel,
         );
         packet.flow_key = self.flow_key;
+        packet.batch = batch.map(|rest| {
+            Box::new(
+                (*rest)
+                    .into_iter()
+                    .map(Self::foreign_network_packet)
+                    .collect(),
+            )
+        });
         packet
     }
 
@@ -895,6 +1030,52 @@ mod tests {
             let bytes = self.bytes_from_offset(offset)?;
             TCPTunnelHeader::ref_from_prefix(bytes)
         }
+    }
+
+    #[cfg(feature = "aes-gcm")]
+    #[test]
+    fn rpc_batch_foreign_wrapping_preserves_each_wire_packet() {
+        let packets: Vec<_> = (0u32..207)
+            .map(|index| {
+                let mut packet = ZCPacket::new_with_payload(&index.to_le_bytes());
+                packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+                packet
+            })
+            .collect();
+        let expected: Vec<_> = packets
+            .iter()
+            .map(|packet| packet.tunnel_payload().to_vec())
+            .collect();
+        let mut batch = ZCPacket::batch(packets);
+        let encryptor = crate::tunnel::encrypt::create_encryptor("aes-gcm", [1; 16], [2; 32]);
+        batch
+            .try_for_each_packet_mut(|packet| encryptor.encrypt(packet))
+            .unwrap();
+        let mut wrapped = ZCPacket::new_for_foreign_network(&"foreign".to_owned(), 2, &batch);
+        wrapped.fill_peer_manager_hdr(10, 20, PacketType::ForeignNetworkPacket as u8);
+        assert_eq!(wrapped.batch_len(), 207);
+        for packet in wrapped.clone().into_batch() {
+            let header = packet.peer_manager_header().unwrap();
+            assert_eq!(header.from_peer_id.get(), 10);
+            assert_eq!(header.to_peer_id.get(), 20);
+            assert_eq!(
+                packet.foreign_network_inner_packet_type(),
+                Some(PacketType::RpcReq as u8)
+            );
+        }
+        let restored: Vec<_> = wrapped
+            .foreign_network_packet()
+            .into_batch()
+            .map(|mut packet| {
+                assert!(packet.peer_manager_header().unwrap().is_encrypted());
+                encryptor.decrypt(&mut packet).unwrap();
+                packet
+                    .convert_type(ZCPacketType::TCP)
+                    .tunnel_payload()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(restored, expected);
     }
 
     #[test]
@@ -968,6 +1149,23 @@ mod tests {
             Some(CompressorAlgo::ZstdDefault),
             CompressorTail { algo: 1 }.get_algo()
         );
+    }
+
+    #[test]
+    fn converts_lzo_compression_algo_in_every_profile() {
+        assert_eq!(
+            CompressorAlgo::Lzo,
+            CompressorAlgo::try_from(CompressionAlgoPb::Lzo).unwrap()
+        );
+        assert_eq!(
+            CompressionAlgoPb::Lzo,
+            CompressionAlgoPb::try_from(CompressorAlgo::Lzo).unwrap()
+        );
+        assert_eq!(
+            Some(CompressorAlgo::Lzo),
+            CompressorTail { algo: 2 }.get_algo()
+        );
+        assert_eq!(CompressorAlgo::Lzo.is_available(), cfg!(feature = "lzo"));
     }
 
     #[cfg(not(feature = "zstd"))]

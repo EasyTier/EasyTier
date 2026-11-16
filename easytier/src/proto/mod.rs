@@ -12,3 +12,4 @@ pub use easytier_proto::magic_dns;
 pub mod tests;
 
 pub mod rpc;
+pub mod utils;

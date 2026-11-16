@@ -3,9 +3,13 @@
 pub(crate) mod config;
 #[cfg(all(feature = "magic-dns", feature = "tun"))]
 pub(crate) mod server;
+#[cfg(all(feature = "magic-dns", feature = "tun"))]
+pub(crate) mod zone;
 
 #[cfg(all(feature = "magic-dns", feature = "tun"))]
 pub mod client_instance;
+#[cfg(all(feature = "magic-dns", feature = "tun"))]
+mod records;
 #[cfg(all(feature = "magic-dns", feature = "tun"))]
 pub mod runner;
 #[cfg(all(feature = "magic-dns", feature = "tun"))]

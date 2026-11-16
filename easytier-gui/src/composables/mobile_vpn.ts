@@ -22,6 +22,7 @@ let vpnReconcileTimer: ReturnType<typeof setTimeout> | null = null
 const VPN_RECONCILE_INTERVAL_MS = 2000
 const VPN_RECONCILE_MAX_ATTEMPTS = 60
 
+let vpnNativeStatusRevision = 0
 let vpnReconcileGeneration = 0
 let vpnReconcileAttempts = 0
 let vpnReconcileQueue: Promise<void> = Promise.resolve()
@@ -272,6 +273,7 @@ async function waitVpnAttachment() {
 }
 
 async function onVpnServiceStart(payload: any) {
+  vpnNativeStatusRevision += 1
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
   if (payload.fd) {
@@ -292,6 +294,7 @@ async function onVpnServiceStart(payload: any) {
 async function onVpnServiceStop(payload: any) {
   console.log('vpn service stop', JSON.stringify(payload))
   await detachTunFd()
+  vpnNativeStatusRevision += 1
   curVpnStatus.running = false
   resetVpnConfigStatus()
 }
@@ -532,6 +535,14 @@ export async function prepareVpnService(instanceId: string) {
 }
 
 export async function syncMobileVpnService() {
-  syncVpnStatusFromNative(await get_vpn_status())
-  await onNetworkInstanceChange('')
+  const generation = beginVpnReconcile()
+  await enqueueVpnTask(async () => {
+    const nativeStatusRevision = vpnNativeStatusRevision
+    const status = await get_vpn_status()
+    // Even a superseded sync must refresh native state for the next queued
+    // reconcile. Only a newer native event can invalidate this status sample.
+    if (nativeStatusRevision === vpnNativeStatusRevision)
+      syncVpnStatusFromNative(status)
+    await reconcileNetworkInstance(generation)
+  })
 }
