@@ -256,7 +256,7 @@ where
         && let Some(ip) = forwarded.remotest_forwarded_for_ip()
     {
         remote_url
-            .set_host(Some(&ip.to_string()))
+            .set_ip_host(ip)
             .map_err(|_| TunnelError::InvalidAddr(format!("invalid forwarded ip {ip}")))?;
         remote_url
             .query_pairs_mut()
@@ -474,49 +474,48 @@ pub mod tests {
         assert!(sink.inner.close_called);
     }
 
+    #[rstest::rstest]
+    #[case::xff_ipv4("X-Forwarded-For: 203.0.113.5, 192.168.1.1", "203.0.113.5")]
+    #[case::xff_ipv6("X-Forwarded-For: 2409:8a21:0:1::e87b", "2409:8a21:0:1::e87b")]
+    #[case::xff_ipv6_private("X-Forwarded-For: fd00::1", "fd00::1")]
+    #[case::xff_ipv6_loopback("X-Forwarded-For: ::1", "::1")]
+    #[case::forwarded_ipv4("Forwarded: for=203.0.113.5", "203.0.113.5")]
+    #[case::forwarded_ipv6(
+        "Forwarded: for=\"[2409:8a21:0:1::e87b]\";proto=https",
+        "2409:8a21:0:1::e87b"
+    )]
+    #[case::forwarded_ipv6_loopback("Forwarded: for=\"[::1]\"", "::1")]
+    #[case::forwarded_preferred(
+        "Forwarded: for=\"[2409:8a21:0:1::e87b]\"\r\nX-Forwarded-For: 203.0.113.5",
+        "2409:8a21:0:1::e87b"
+    )]
+    #[case::invalid_forwarded_falls_back(
+        "Forwarded: for=invalid\r\nX-Forwarded-For: 2409:8a21:0:1::e87b",
+        "2409:8a21:0:1::e87b"
+    )]
     #[tokio::test]
-    async fn ws_forwarded() {
-        let mut listener = WsTunnelListener::new("ws://127.0.0.1:25559".parse().unwrap());
+    async fn ws_forwarded(#[case] forwarded_headers: &str, #[case] expected_ip: &str) {
+        let mut listener = WsTunnelListener::new("ws://127.0.0.1:0".parse().unwrap());
         listener.listen().await.unwrap();
-
-        let server_task = tokio::spawn(async move {
-            let tunnel = listener.accept().await.unwrap();
-
-            let remote_addr = tunnel
-                .info()
-                .unwrap()
-                .remote_addr
-                .unwrap()
-                .url
-                .parse::<url::Url>()
-                .unwrap();
-
-            assert_eq!(remote_addr.host_str().unwrap(), "203.0.113.5");
-            let proxy_addr = remote_addr
-                .query_pairs()
-                .find(|(k, _)| k == "proxy")
-                .map(|(_, v)| v.into_owned())
-                .unwrap();
-            assert_eq!(proxy_addr, "127.0.0.1:25560");
-
-            tunnel
-        });
+        let listener_addr =
+            SocketAddr::from(([127, 0, 0, 1], listener.local_url().port().unwrap()));
+        let server_task = tokio::spawn(async move { listener.accept().await.unwrap() });
 
         let socket = TcpSocket::new_v4().unwrap();
-        socket.bind("127.0.0.1:25560".parse().unwrap()).unwrap();
-        let mut stream = socket
-            .connect("127.0.0.1:25559".parse().unwrap())
-            .await
-            .unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut stream = socket.connect(listener_addr).await.unwrap();
+        let peer_addr = stream.local_addr().unwrap();
 
-        let handshake = "GET / HTTP/1.1\r\n\
-                         Host: 127.0.0.1:25559\r\n\
+        let handshake = format!(
+            "GET / HTTP/1.1\r\n\
+                         Host: {listener_addr}\r\n\
                          Upgrade: websocket\r\n\
                          Connection: Upgrade\r\n\
                          Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
                          Sec-WebSocket-Version: 13\r\n\
-                         X-Forwarded-For: 203.0.113.5, 192.168.1.1\r\n\
-                         \r\n";
+                         {forwarded_headers}\r\n\
+                         \r\n"
+        );
 
         stream.write_all(handshake.as_bytes()).await.unwrap();
 
@@ -526,6 +525,24 @@ pub mod tests {
 
         assert!(response.contains("101 Switching Protocols"));
 
-        let _tunnel = server_task.await.unwrap();
+        let tunnel = timeout(Duration::from_secs(3), server_task)
+            .await
+            .expect("forwarded WebSocket connection should be accepted")
+            .unwrap();
+        let info = tunnel.info().unwrap();
+        assert_eq!(info.remote_addr, info.resolved_remote_addr);
+        let remote_addr: url::Url = info.remote_addr.unwrap().into();
+        let expected_host = match expected_ip.parse::<IpAddr>().unwrap() {
+            IpAddr::V4(ip) => url::Host::Ipv4(ip),
+            IpAddr::V6(ip) => url::Host::Ipv6(ip),
+        };
+        assert_eq!(remote_addr.host(), Some(expected_host));
+        assert_eq!(remote_addr.port(), Some(peer_addr.port()));
+        let proxy_addr = remote_addr
+            .query_pairs()
+            .find(|(k, _)| k == "proxy")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+        assert_eq!(proxy_addr, peer_addr.to_string());
     }
 }
