@@ -46,6 +46,11 @@ pub struct PeerMap {
 }
 
 impl PeerMap {
+    #[cfg(feature = "proxy-packet")]
+    pub(crate) fn local_packet_sender(&self) -> PacketRecvChan {
+        self.packet_send.clone()
+    }
+
     pub(crate) fn new(
         packet_send: PacketRecvChan,
         context: ArcPeerContext,

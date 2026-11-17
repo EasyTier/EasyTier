@@ -1,6 +1,11 @@
-use std::{future::Future, net::Ipv4Addr};
+use std::{
+    future::Future,
+    net::Ipv4Addr,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use smoltcp::wire::{
     IPV4_HEADER_LEN, Icmpv4Message, Icmpv4Packet, IpAddress, IpProtocol, Ipv4Packet,
     UDP_HEADER_LEN, UdpPacket,
@@ -9,8 +14,11 @@ use smoltcp::wire::{
 use crate::{
     config::PeerId,
     packet::ZCPacket,
-    peers::{BoxNicPacketFilter, NicPacketFilter},
+    peers::{BoxNicPacketFilter, NicPacketFilter, PacketRecvChan},
 };
+use tokio::task::JoinSet;
+
+const MAX_CONCURRENT_FORWARDS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagicDnsQuery {
@@ -20,82 +28,151 @@ pub struct MagicDnsQuery {
 
 #[async_trait]
 pub trait MagicDnsQueryResolver: Send + Sync + 'static {
-    async fn resolve(&self, query: MagicDnsQuery) -> Option<Vec<u8>>;
+    /// Select the authority once. Local answers finish here; upstream I/O is
+    /// deferred until the registration has admitted the forwarding task.
+    async fn resolve(&self, query: MagicDnsQuery) -> MagicDnsQueryResult;
+}
+
+pub enum MagicDnsQueryResult {
+    Response(Option<Vec<u8>>),
+    Forward {
+        response: BoxFuture<'static, Option<Vec<u8>>>,
+        overload_response: Vec<u8>,
+    },
+}
+
+pub(crate) struct MagicDnsResolverState {
+    // None closes both admission and reply delivery under the same lock.
+    tasks: Mutex<Option<JoinSet<()>>>,
+    replies: PacketRecvChan,
+    my_peer_id: PeerId,
+}
+
+impl MagicDnsResolverState {
+    pub(crate) fn new(replies: PacketRecvChan, my_peer_id: PeerId) -> Arc<Self> {
+        Arc::new(Self {
+            tasks: Mutex::new(Some(JoinSet::new())),
+            replies,
+            my_peer_id,
+        })
+    }
+
+    fn stop(&self) -> JoinSet<()> {
+        let mut tasks = self.tasks.lock().unwrap().take().unwrap_or_default();
+        tasks.abort_all();
+        tasks
+    }
+
+    fn reply(&self, mut packet: ZCPacket, info: MagicDnsPacketInfo, response: Option<&[u8]>) {
+        let tasks = self.tasks.lock().unwrap();
+        if tasks.is_none() {
+            return;
+        }
+        if info.apply_response(&mut packet, self.my_peer_id, response) {
+            // Keep the original peer receive pipeline (including ACL) without
+            // awaiting capacity or creating detached delivery tasks.
+            self.replies.try_send(packet);
+        }
+    }
+
+    fn forward(
+        self: &Arc<Self>,
+        packet: ZCPacket,
+        info: MagicDnsPacketInfo,
+        response: BoxFuture<'static, Option<Vec<u8>>>,
+        overload_response: Vec<u8>,
+    ) {
+        let mut guard = self.tasks.lock().unwrap();
+        let Some(tasks) = guard.as_mut() else {
+            return;
+        };
+        while tasks.try_join_next().is_some() {}
+        if tasks.len() >= MAX_CONCURRENT_FORWARDS {
+            drop(guard);
+            self.reply(packet, info, Some(&overload_response));
+            return;
+        }
+        let state = self.clone();
+        tasks.spawn(async move {
+            if let Some(response) = response.await {
+                state.reply(packet, info, Some(&response));
+            }
+        });
+    }
 }
 
 /// Owns one Magic DNS resolver installed in the core NIC pipeline.
 ///
-/// `close` waits until readers that may already be invoking the resolver have
-/// finished, then removes the entry so the resolver can be dropped promptly.
+/// `close` unregisters the filter, stops admission and delivery, then cancels
+/// and drains its forwarding tasks. Already queued replies remain queued.
 pub struct MagicDnsResolverRegistration {
-    peer_manager: std::sync::Weak<crate::peers::peer_manager::PeerManagerCore>,
     pipeline: crate::peers::peer_manager::PipelineRegistrationGuard,
-    runtime: tokio::runtime::Handle,
+    state: Arc<MagicDnsResolverState>,
 }
 
 impl MagicDnsResolverRegistration {
     pub(crate) fn new(
-        peer_manager: std::sync::Weak<crate::peers::peer_manager::PeerManagerCore>,
         pipeline: crate::peers::peer_manager::PipelineRegistrationGuard,
-        runtime: tokio::runtime::Handle,
+        state: Arc<MagicDnsResolverState>,
     ) -> Self {
-        Self {
-            peer_manager,
-            pipeline,
-            runtime,
-        }
+        Self { pipeline, state }
     }
 
     pub async fn close(&self) {
         self.pipeline.close();
-        if let Some(peer_manager) = self.peer_manager.upgrade() {
-            peer_manager
-                .remove_managed_nic_packet_process_pipeline(&self.pipeline)
-                .await;
-        }
+        let mut tasks = self.state.stop();
+        while tasks.join_next().await.is_some() {}
     }
 }
 
 impl Drop for MagicDnsResolverRegistration {
     fn drop(&mut self) {
         self.pipeline.close();
-        let Some(peer_manager) = self.peer_manager.upgrade() else {
-            return;
-        };
-        let pipeline = self.pipeline.clone();
-        self.runtime.spawn(async move {
-            peer_manager
-                .remove_managed_nic_packet_process_pipeline(&pipeline)
-                .await;
-        });
+        self.state.stop();
     }
 }
 
 struct MagicDnsPacketFilter {
     fake_ip: Ipv4Addr,
-    my_peer_id: PeerId,
     resolver: std::sync::Arc<dyn MagicDnsQueryResolver>,
+    state: Arc<MagicDnsResolverState>,
 }
 
 pub(crate) fn magic_dns_packet_filter(
     fake_ip: Ipv4Addr,
-    my_peer_id: PeerId,
     resolver: std::sync::Arc<dyn MagicDnsQueryResolver>,
+    state: Arc<MagicDnsResolverState>,
 ) -> BoxNicPacketFilter {
     Box::new(MagicDnsPacketFilter {
         fake_ip,
-        my_peer_id,
         resolver,
+        state,
     })
 }
 
 #[async_trait]
 impl NicPacketFilter for MagicDnsPacketFilter {
-    async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
-        process_magic_dns_packet(packet, self.fake_ip, self.my_peer_id, |query| {
-            self.resolver.resolve(query)
-        })
-        .await
+    async fn try_process_packet_from_nic(&self, packet: ZCPacket) -> Option<ZCPacket> {
+        let Some(info) = MagicDnsPacketInfo::parse(&packet, self.fake_ip) else {
+            return Some(packet);
+        };
+        let Some(query) = info.query(&packet) else {
+            self.state.reply(packet, info, None);
+            return None;
+        };
+        match self.resolver.resolve(query).await {
+            MagicDnsQueryResult::Response(response) => {
+                self.state.reply(packet, info, response.as_deref());
+            }
+            MagicDnsQueryResult::Forward {
+                response,
+                overload_response,
+            } => {
+                self.state
+                    .forward(packet, info, response, overload_response);
+            }
+        }
+        None
     }
 
     fn id(&self) -> String {
@@ -113,94 +190,116 @@ where
     F: FnOnce(MagicDnsQuery) -> Fut,
     Fut: Future<Output = Option<Vec<u8>>>,
 {
-    if packet.peer_manager_header().is_none() {
+    let Some(info) = MagicDnsPacketInfo::parse(packet, fake_ip) else {
         return false;
-    }
-    if packet.payload().len() < IPV4_HEADER_LEN {
-        return false;
-    }
-    let ip_packet = Ipv4Packet::new_unchecked(packet.payload());
-    if ip_packet.version() != 4 || ip_packet.dst_addr() != fake_ip {
-        return false;
+    };
+    let response = match info.query(packet) {
+        Some(query) => resolve(query).await,
+        None => None,
+    };
+    info.apply_response(packet, my_peer_id, response.as_deref())
+}
+
+#[derive(Clone, Copy)]
+struct MagicDnsPacketInfo {
+    source_ip: Ipv4Addr,
+    destination_ip: Ipv4Addr,
+    ip_header_length: usize,
+    udp_ports: Option<(u16, u16)>,
+}
+
+impl MagicDnsPacketInfo {
+    fn parse(packet: &ZCPacket, fake_ip: Ipv4Addr) -> Option<Self> {
+        packet.peer_manager_header()?;
+        if packet.payload().len() < IPV4_HEADER_LEN {
+            return None;
+        }
+        let ip = Ipv4Packet::new_unchecked(packet.payload());
+        let header_length = ip.header_len() as usize;
+        if ip.version() != 4
+            || ip.dst_addr() != fake_ip
+            || header_length < IPV4_HEADER_LEN
+            || header_length > ip.total_len() as usize
+            || ip.total_len() as usize != packet.payload().len()
+            || ip.frag_offset() != 0
+            || ip.more_frags()
+        {
+            return None;
+        }
+        let payload = &packet.payload()[header_length..];
+        let udp_ports = match ip.next_header() {
+            IpProtocol::Udp => {
+                if payload.len() < UDP_HEADER_LEN {
+                    return None;
+                }
+                let udp = UdpPacket::new_unchecked(payload);
+                if udp.len() as usize != payload.len() || udp.dst_port() != 53 {
+                    return None;
+                }
+                Some((udp.src_port(), udp.dst_port()))
+            }
+            IpProtocol::Icmp => {
+                let icmp = Icmpv4Packet::new_checked(payload).ok()?;
+                if icmp.msg_type() != Icmpv4Message::EchoRequest {
+                    return None;
+                }
+                None
+            }
+            _ => return None,
+        };
+        Some(Self {
+            source_ip: ip.src_addr(),
+            destination_ip: ip.dst_addr(),
+            ip_header_length: header_length,
+            udp_ports,
+        })
     }
 
-    let ip_header_length = ip_packet.header_len() as usize;
-    let ip_total_length = ip_packet.total_len() as usize;
-    if ip_header_length < IPV4_HEADER_LEN
-        || ip_header_length > ip_total_length
-        || ip_total_length != packet.payload().len()
-        || ip_packet.frag_offset() != 0
-        || ip_packet.more_frags()
-    {
-        return false;
+    fn query(&self, packet: &ZCPacket) -> Option<MagicDnsQuery> {
+        let (source_port, _) = self.udp_ports?;
+        Some(MagicDnsQuery {
+            source: (self.source_ip, source_port).into(),
+            payload: packet.payload()[self.ip_header_length + UDP_HEADER_LEN..].to_vec(),
+        })
     }
 
-    let protocol = ip_packet.next_header();
-    let source_ip = ip_packet.src_addr();
-    let destination_ip = ip_packet.dst_addr();
-
-    match protocol {
-        IpProtocol::Udp => {
-            let ip_payload = &packet.payload()[ip_header_length..ip_total_length];
-            if ip_payload.len() < UDP_HEADER_LEN {
-                return false;
-            }
-            let udp_packet = UdpPacket::new_unchecked(ip_payload);
-            let udp_length = udp_packet.len() as usize;
-            if udp_length != ip_payload.len() || udp_length < UDP_HEADER_LEN {
-                return false;
-            }
-            if udp_packet.dst_port() != 53 {
-                return false;
-            }
-            let source_port = udp_packet.src_port();
-            let destination_port = udp_packet.dst_port();
-            let query = MagicDnsQuery {
-                source: std::net::SocketAddr::from((source_ip, source_port)),
-                payload: udp_packet.payload().to_vec(),
-            };
-            let Some(response) = resolve(query).await else {
+    fn apply_response(
+        &self,
+        packet: &mut ZCPacket,
+        my_peer_id: PeerId,
+        response: Option<&[u8]>,
+    ) -> bool {
+        if let Some((source_port, destination_port)) = self.udp_ports {
+            let Some(response) = response else {
                 return false;
             };
             if !apply_udp_response(
                 packet,
-                source_ip,
-                destination_ip,
+                self.source_ip,
+                self.destination_ip,
                 source_port,
                 destination_port,
-                ip_header_length,
-                &response,
+                self.ip_header_length,
+                response,
             ) {
                 return false;
             }
+        } else {
+            let mut icmp =
+                Icmpv4Packet::new_unchecked(&mut packet.mut_payload()[self.ip_header_length..]);
+            icmp.set_msg_type(Icmpv4Message::EchoReply);
+            icmp.fill_checksum();
         }
-        IpProtocol::Icmp => {
-            let Ok(icmp_packet) = Icmpv4Packet::new_checked(&packet.payload()[ip_header_length..])
-            else {
-                return false;
-            };
-            if icmp_packet.msg_type() != Icmpv4Message::EchoRequest {
-                return false;
-            }
-            let mut icmp_packet =
-                Icmpv4Packet::new_unchecked(&mut packet.mut_payload()[ip_header_length..]);
-            icmp_packet.set_msg_type(Icmpv4Message::EchoReply);
-            icmp_packet.fill_checksum();
-        }
-        _ => return false,
+        let mut ip = Ipv4Packet::new_unchecked(packet.mut_payload());
+        ip.set_src_addr(self.destination_ip);
+        ip.set_dst_addr(self.source_ip);
+        ip.fill_checksum();
+        let payload_length = packet.payload().len() as u32;
+        let header = packet.mut_peer_manager_header().unwrap();
+        header.to_peer_id = my_peer_id.into();
+        header.len.set(payload_length);
+        true
     }
-
-    let mut ip_packet = Ipv4Packet::new_unchecked(packet.mut_payload());
-    ip_packet.set_src_addr(destination_ip);
-    ip_packet.set_dst_addr(source_ip);
-    ip_packet.fill_checksum();
-    let payload_length = packet.payload().len() as u32;
-    let Some(header) = packet.mut_peer_manager_header() else {
-        return false;
-    };
-    header.to_peer_id = my_peer_id.into();
-    header.len.set(payload_length);
-    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -253,6 +352,222 @@ fn apply_udp_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    struct ActiveQuery(Arc<AtomicUsize>);
+
+    impl Drop for ActiveQuery {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    struct SlowResolver {
+        active: Arc<AtomicUsize>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl MagicDnsQueryResolver for SlowResolver {
+        async fn resolve(&self, query: MagicDnsQuery) -> MagicDnsQueryResult {
+            if query.payload == b"local" {
+                return MagicDnsQueryResult::Response(Some(b"local answer".to_vec()));
+            }
+            if query.payload == b"blocked local" {
+                self.active.fetch_add(1, Ordering::SeqCst);
+                let _active = ActiveQuery(self.active.clone());
+                self.release.notified().await;
+                return MagicDnsQueryResult::Response(Some(b"late answer".to_vec()));
+            }
+            let active = self.active.clone();
+            let release = self.release.clone();
+            MagicDnsQueryResult::Forward {
+                response: Box::pin(async move {
+                    active.fetch_add(1, Ordering::SeqCst);
+                    let _active = ActiveQuery(active);
+                    release.notified().await;
+                    Some(b"upstream answer".to_vec())
+                }),
+                overload_response: b"SERVFAIL".to_vec(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn saturated_forwarding_keeps_local_dns_icmp_and_other_packets_available() {
+        let (sender, mut receiver) = crate::peers::create_packet_recv_chan();
+        let state = MagicDnsResolverState::new(sender, 42);
+        let active = Arc::new(AtomicUsize::new(0));
+        let filter = magic_dns_packet_filter(
+            "100.100.100.101".parse().unwrap(),
+            Arc::new(SlowResolver {
+                active: active.clone(),
+                release: Arc::new(Notify::new()),
+            }),
+            state.clone(),
+        );
+        for _ in 0..MAX_CONCURRENT_FORWARDS {
+            assert!(
+                filter
+                    .try_process_packet_from_nic(udp_query(b"slow", 53))
+                    .await
+                    .is_none()
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while active.load(Ordering::SeqCst) != MAX_CONCURRENT_FORWARDS {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), MAX_CONCURRENT_FORWARDS);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            filter
+                .try_process_packet_from_nic(udp_query(b"overflow", 53))
+                .await;
+            filter
+                .try_process_packet_from_nic(udp_query(b"local", 53))
+                .await;
+            filter
+                .try_process_packet_from_nic(icmp_echo_request())
+                .await;
+            assert!(
+                filter
+                    .try_process_packet_from_nic(udp_query(b"ordinary", 54))
+                    .await
+                    .is_some()
+            );
+        })
+        .await
+        .unwrap();
+        for expected in [b"SERVFAIL".as_slice(), b"local answer"] {
+            let packet = receiver.recv().await.unwrap();
+            let ip = Ipv4Packet::new_checked(packet.payload()).unwrap();
+            assert_eq!(
+                UdpPacket::new_checked(ip.payload()).unwrap().payload(),
+                expected
+            );
+        }
+        let packet = receiver.recv().await.unwrap();
+        let ip = Ipv4Packet::new_checked(packet.payload()).unwrap();
+        assert_eq!(
+            Icmpv4Packet::new_checked(ip.payload()).unwrap().msg_type(),
+            Icmpv4Message::EchoReply
+        );
+        let mut tasks = state.stop();
+        while tasks.join_next().await.is_some() {}
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        filter
+            .try_process_packet_from_nic(udp_query(b"local", 53))
+            .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), receiver.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn full_reply_queue_does_not_wait_or_create_delivery_tasks() {
+        let (sender, mut receiver) = crate::peers::create_packet_recv_chan();
+        let state = MagicDnsResolverState::new(sender.clone(), 42);
+        while sender.try_send(ZCPacket::new_with_payload(b"queued")) {}
+        let active = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Notify::new());
+        let filter = magic_dns_packet_filter(
+            "100.100.100.101".parse().unwrap(),
+            Arc::new(SlowResolver {
+                active: active.clone(),
+                release: release.clone(),
+            }),
+            state.clone(),
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            filter
+                .try_process_packet_from_nic(udp_query(b"local", 53))
+                .await;
+            filter
+                .try_process_packet_from_nic(icmp_echo_request())
+                .await;
+        })
+        .await
+        .unwrap();
+        filter
+            .try_process_packet_from_nic(udp_query(b"forwarded", 53))
+            .await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while active.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            release.notify_waiters();
+            loop {
+                let finished = {
+                    let mut guard = state.tasks.lock().unwrap();
+                    let tasks = guard.as_mut().unwrap();
+                    while tasks.try_join_next().is_some() {}
+                    tasks.is_empty()
+                };
+                if finished {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        let mut tasks = state.stop();
+        assert!(tasks.join_next().await.is_none());
+        drop(filter);
+        drop(state);
+        drop(sender);
+        let mut queued = 0;
+        while let Some(packet) = receiver.recv().await {
+            assert_eq!(packet.payload(), b"queued");
+            queued += 1;
+        }
+        assert_eq!(queued, 128);
+    }
+
+    #[tokio::test]
+    async fn local_preparation_finishing_after_close_cannot_enqueue() {
+        let (sender, mut receiver) = crate::peers::create_packet_recv_chan();
+        let state = MagicDnsResolverState::new(sender, 42);
+        let active = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Notify::new());
+        let filter = magic_dns_packet_filter(
+            "100.100.100.101".parse().unwrap(),
+            Arc::new(SlowResolver {
+                active: active.clone(),
+                release: release.clone(),
+            }),
+            state.clone(),
+        );
+        let query = tokio::spawn(async move {
+            filter
+                .try_process_packet_from_nic(udp_query(b"blocked local", 53))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while active.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut tasks = state.stop();
+        assert!(tasks.join_next().await.is_none());
+        release.notify_waiters();
+        assert!(query.await.unwrap().is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), receiver.recv())
+                .await
+                .is_err()
+        );
+    }
 
     fn udp_query(payload: &[u8], destination_port: u16) -> ZCPacket {
         let mut bytes = vec![0; 20 + 8 + payload.len()];

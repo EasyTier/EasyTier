@@ -99,6 +99,10 @@ impl DnsRunner {
     }
 
     async fn run_once(&mut self, cancel_token: &CancellationToken) -> anyhow::Result<()> {
+        let local_ipv4_addresses = match &self.shared_route_backend {
+            Some(backend) => backend.shared_ipv4_addresses().await,
+            None => None,
+        };
         // try server first
         let server_result = if self.should_manage_fake_ip_route_externally() {
             MagicDnsServerInstance::new_with_external_fake_ip_route(
@@ -107,6 +111,7 @@ impl DnsRunner {
                 self.tun_dev.clone(),
                 self.tun_inet,
                 self.fake_ip,
+                local_ipv4_addresses,
             )
             .await
         } else {
@@ -116,6 +121,7 @@ impl DnsRunner {
                 self.tun_dev.clone(),
                 self.tun_inet,
                 self.fake_ip,
+                local_ipv4_addresses,
             )
             .await
         };
