@@ -191,7 +191,11 @@ impl From<&InstanceSelectArgs> for InstanceIdentifier {
 }
 
 #[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 struct PeerArgs {
+    /// Output complete peer and route RPC responses as JSON
+    #[arg(long)]
+    all_json: bool,
     #[command(subcommand)]
     sub_command: Option<PeerSubCommand>,
 }
@@ -1120,12 +1124,28 @@ mod tests {
     }
 
     #[test]
+    fn peer_all_json_command_parses() {
+        let cli = Cli::try_parse_from(["easytier-cli", "peer", "--all-json"]).unwrap();
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Peer(PeerArgs {
+                all_json: true,
+                sub_command: None
+            })
+        ));
+        assert!(
+            Cli::try_parse_from(["easytier-cli", "peer", "--all-json", "conns"]).is_err()
+        );
+    }
+
+    #[test]
     fn peer_conns_command_parses() {
         let cli = Cli::try_parse_from(["easytier-cli", "peer", "conns"]).unwrap();
         assert!(matches!(
             cli.sub_command,
             SubCommand::Peer(PeerArgs {
-                sub_command: Some(PeerSubCommand::Conns)
+                sub_command: Some(PeerSubCommand::Conns),
+                ..
             })
         ));
         let cli = Cli::try_parse_from([
@@ -1137,7 +1157,8 @@ mod tests {
         assert!(matches!(
             cli.sub_command,
             SubCommand::Peer(PeerArgs {
-                sub_command: Some(PeerSubCommand::Conns)
+                sub_command: Some(PeerSubCommand::Conns),
+                ..
             })
         ));
     }
@@ -1179,7 +1200,10 @@ mod tests {
         let cli = Cli::try_parse_from(["easytier-cli", "peer"]).unwrap();
         assert!(matches!(
             cli.sub_command,
-            SubCommand::Peer(PeerArgs { sub_command: None })
+            SubCommand::Peer(PeerArgs {
+                sub_command: None,
+                all_json: false
+            })
         ));
     }
 }
@@ -1207,6 +1231,12 @@ fn format_proxy_cidrs(value: &str) -> String {
 struct PeerListData {
     node_info: NodeInfo,
     peer_routes: Vec<PeerRoutePair>,
+}
+
+#[derive(serde::Serialize)]
+struct PeerAllJsonData {
+    peers: ListPeerResponse,
+    routes: ListRouteResponse,
 }
 
 #[derive(serde::Serialize)]
@@ -1933,6 +1963,20 @@ impl<'a> CommandHandler<'a> {
         .await
     }
 
+    async fn handle_peer_all_json(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| {
+                Box::pin(async move {
+                    Ok(PeerAllJsonData {
+                        peers: handler.list_peers().await?,
+                        routes: handler.list_routes().await?,
+                    })
+                })
+            })
+            .await?;
+        self.print_json_results(results)
+    }
+
     async fn handle_peer_list(&self) -> Result<(), Error> {
         #[derive(tabled::Tabled, serde::Serialize)]
         struct PeerTableItem {
@@ -1984,7 +2028,12 @@ impl<'a> CommandHandler<'a> {
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tunnel_proto: p.get_conn_protos().unwrap_or_default().join(","),
                     nat_type: p.get_udp_nat_type(),
-                    remote_addr: p.get_remote_addr().unwrap_or_else(|| "-".to_string()),
+                    remote_addr: peer_conn_remote_addrs(
+                        p.peer.as_ref().and_then(|peer| {
+                            peer.conns.iter().find_map(|conn| conn.tunnel.as_ref())
+                        }),
+                    )
+                    .0,
                     id: route.peer_id.to_string(),
                     version: if route.version.is_empty() {
                         "unknown".to_string()
@@ -3891,6 +3940,9 @@ async fn main() -> Result<(), Error> {
     };
 
     match cli.sub_command {
+        SubCommand::Peer(peer_args) if peer_args.all_json => {
+            handler.handle_peer_all_json().await?;
+        }
         SubCommand::Peer(peer_args) => match &peer_args.sub_command {
             Some(PeerSubCommand::List) => {
                 handler.handle_peer_list().await?;
