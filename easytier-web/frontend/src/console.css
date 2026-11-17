@@ -41,7 +41,8 @@
 .console-navigation .pi { font-size: 15px; }
 .console-navigation a.nav-child { padding-left: 34px; }
 .console-navigation a.nav-child .pi { font-size: 12px; opacity: .85; }
-.console-navigation .nav-badge { margin-left: auto; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--p-content-border); color: var(--p-text-muted-color); font-variant-numeric: tabular-nums; }
+.console-navigation a.nav-child .p-menu-item-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-navigation .nav-badge { margin-left: auto; flex-shrink: 0; white-space: nowrap; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--p-content-border); color: var(--p-text-muted-color); font-variant-numeric: tabular-nums; }
 .console-navigation a.is-active .nav-badge { background: var(--p-primary-color); color: var(--p-primary-contrast-color); }
 .console-docs { display: flex; gap: 10px; align-items: center; margin-top: auto; padding: 12px; font-size: 12px; color: var(--console-muted); }
 .console-docs .pi:last-child { margin-left: auto; font-size: 11px; }
