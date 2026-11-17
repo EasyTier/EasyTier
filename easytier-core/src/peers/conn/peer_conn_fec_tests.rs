@@ -278,17 +278,19 @@ async fn assert_recovery(noise: bool) {
     }
 }
 
-#[tokio::test]
+// These in-memory recovery tests use virtual time so host scheduling delays
+// cannot expire FEC state before the writer gets to send a repair.
+#[tokio::test(start_paused = true)]
 async fn legacy_handshake_enables_bidirectional_udp_recovery() {
     assert_recovery(false).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn noise_handshake_recovers_and_decrypts_original_payload() {
     assert_recovery(true).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn batched_packets_are_filtered_and_delivered_as_individual_frames() {
     let payloads: Vec<_> = (0..207u32)
         .map(|sequence| {
@@ -391,7 +393,7 @@ async fn batched_packets_are_filtered_and_delivered_as_individual_frames() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn noise_full_mtu_sources_are_encoded_and_recovered() {
     // Only the requesting endpoint reserves 16 bytes for FEC. Both endpoints
     // reserve the 28-byte AEAD tail. Exercise each full TUN size through the
@@ -424,7 +426,7 @@ async fn noise_full_mtu_sources_are_encoded_and_recovered() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn packets_larger_than_the_local_mtu_remain_protected() {
     let (client, server, filters) = connect([true, false], "udp", true).await;
     // Forwarded input need not obey this endpoint's 1300-byte TUN setting.
@@ -499,7 +501,7 @@ async fn an_endpoint_without_fec_capability_keeps_both_directions_plain() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn proxy_packet_types_require_an_explicit_flag_from_either_endpoint() {
     for (enabled, kcp, quic) in [
         (true, [false, false], [false, false]),

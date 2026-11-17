@@ -413,6 +413,9 @@ where
     pub(crate) async fn stop(&self) {
         let _operation = self.operation.lock().await;
         self.stop_started();
+        // Rollback only requests cancellation; normal shutdown must also wait
+        // for TCP tasks to release their listeners and streams.
+        self.tcp.stop_and_wait().await;
     }
 }
 

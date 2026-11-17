@@ -10,9 +10,8 @@ use crate::{
         },
         constants::EASYTIER_VERSION,
         log,
-        stun::default_stun_server_config,
     },
-    instance::factory::native_cli_instance_manager,
+    instance::factory::{NativeInstanceManager, native_cli_instance_manager},
     proto::common::{CompressionAlgoPb, Flags, FlagsPatch, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -24,7 +23,6 @@ use clap::{
     Arg, ArgMatches, CommandFactory, FromArgMatches, Parser, builder::TypedValueParser as _,
 };
 use easytier_core::config::{DhcpConfig, EncryptionAlgorithm, normalize_secure_mode_config};
-use easytier_core::connectivity::stun::StunServerConfig;
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
 use rust_i18n::t;
@@ -1078,27 +1076,19 @@ fn win_service_event_loop(
     std::thread::spawn(move || {
         let rt = Runtime::new().unwrap();
         rt.block_on(async move {
-            tokio::select! {
-                res = run_main(cli) => {
-                    match res {
-                        Ok(_) => {
-                            status_handle.set_service_status(normal_status).unwrap();
-                            std::process::exit(0);
-                        }
-                        Err(error) => {
-                            status_handle.set_service_status(error_status).unwrap();
-                            log::error!(?error);
-                            // exit with non-zero code so the SCM treats this as
-                            // a non-crash failure and applies the configured
-                            // failure actions; staying alive would leave a
-                            // zombie process until the SCM force-kills it.
-                            std::process::exit(1);
-                        }
-                    }
-                },
-                _ = stop_notify.notified() => {
-                    _ = status_handle.set_service_status(normal_status);
+            match run_main(cli, Some(stop_notify)).await {
+                Ok(_) => {
+                    status_handle.set_service_status(normal_status).unwrap();
                     std::process::exit(0);
+                }
+                Err(error) => {
+                    status_handle.set_service_status(error_status).unwrap();
+                    log::error!(?error);
+                    // exit with non-zero code so the SCM treats this as
+                    // a non-crash failure and applies the configured
+                    // failure actions; staying alive would leave a
+                    // zombie process until the SCM force-kills it.
+                    std::process::exit(1);
                 }
             }
         });
@@ -1210,7 +1200,10 @@ fn parse_cli() -> Cli {
 
 #[cfg(target_os = "windows")]
 fn win_service_main(arg: Vec<std::ffi::OsString>) {
-    use std::{sync::Arc, time::Duration};
+    use std::{
+        sync::{Arc, OnceLock},
+        time::Duration,
+    };
     use tokio::sync::Notify;
     use windows_service::{service::*, service_control_handler::*};
 
@@ -1220,17 +1213,35 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 
     let stop_notify_send = Arc::new(Notify::new());
     let stop_notify_recv = Arc::clone(&stop_notify_send);
+    let status_handle = Arc::new(OnceLock::<ServiceStatusHandle>::new());
+    let stop_status_handle = Arc::clone(&status_handle);
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
             ServiceControl::Stop => {
+                // Stop accepting controls before returning: windows-service
+                // releases this handler after STOP, while cleanup continues.
+                stop_status_handle
+                    .get()
+                    .expect("service status handle not initialized")
+                    .set_service_status(ServiceStatus {
+                        service_type: ServiceType::OWN_PROCESS,
+                        current_state: ServiceState::StopPending,
+                        controls_accepted: ServiceControlAccept::empty(),
+                        exit_code: ServiceExitCode::Win32(0),
+                        checkpoint: 1,
+                        wait_hint: Duration::from_secs(30),
+                        process_id: None,
+                    })
+                    .expect("set service stop pending fail");
                 stop_notify_send.notify_one();
                 ServiceControlHandlerResult::NoError
             }
             _ => ServiceControlHandlerResult::NotImplemented,
         }
     };
-    let status_handle = register(String::new(), event_handler).expect("register service fail");
+    let registered = register(String::new(), event_handler).expect("register service fail");
+    status_handle.set(registered).unwrap();
     let next_status = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Running,
@@ -1240,34 +1251,17 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
         wait_hint: Duration::default(),
         process_id: None,
     };
-    status_handle
+    registered
         .set_service_status(next_status)
         .expect("set service status fail");
 
-    win_service_event_loop(stop_notify_recv, cli, status_handle);
+    win_service_event_loop(stop_notify_recv, cli, registered);
 }
 
-/// STUN servers for the web client's public IP lookup, resolved from the CLI
-/// the same way instance configs resolve them (empty lists disable STUN).
-fn web_client_stun_servers(options: &NetworkOptions) -> StunServerConfig {
-    let defaults = default_stun_server_config();
-    let udp_servers = options.stun_servers.clone();
-    StunServerConfig {
-        tcp_servers: options
-            .tcp_stun_servers
-            .clone()
-            .or_else(|| udp_servers.clone())
-            .unwrap_or(defaults.tcp_servers),
-        udp_v6_servers: options
-            .stun_servers_v6
-            .clone()
-            .or_else(|| udp_servers.as_ref().map(|_| Vec::new()))
-            .unwrap_or(defaults.udp_v6_servers),
-        udp_servers: udp_servers.unwrap_or(defaults.udp_servers),
-    }
-}
-
-async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
+async fn run_main(
+    mut cli: Cli,
+    stop_notify: Option<Arc<tokio::sync::Notify>>,
+) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init_with_default_console_targets(
         &cli.logging_options,
@@ -1279,7 +1273,20 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
         native_cli_instance_manager(cli.shared_runtime, cli.take_runtime_thread_count())?
             .with_config_path(cli.config_dir.clone()),
     );
+    let result = run_with_manager(cli, manager.clone(), stop_notify).await;
+    // DNS restoration needs the instance runtime and its interface to remain
+    // alive until the existing asynchronous stop path has finished.
+    let stopped = manager.retain_network_instances(&[]).await;
+    result?;
+    stopped?;
+    Ok(())
+}
 
+async fn run_with_manager(
+    cli: Cli,
+    manager: Arc<NativeInstanceManager>,
+    stop_notify: Option<Arc<tokio::sync::Notify>>,
+) -> anyhow::Result<()> {
     let _rpc_server = ApiRpcServer::new(
         cli.rpc_portal_options.rpc_portal,
         cli.rpc_portal_options.rpc_portal_whitelist,
@@ -1289,7 +1296,7 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
     .await?;
 
     let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
-        let wc = web_client::run_web_client_with_stun_servers(
+        let wc = web_client::run_web_client(
             config_server_url_s,
             crate::common::MachineIdOptions {
                 explicit_machine_id: cli.machine_id.clone(),
@@ -1297,7 +1304,6 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
             },
             cli.network_options.hostname.clone(),
             cli.network_options.secure_mode.unwrap_or(false),
-            web_client_stun_servers(&cli.network_options),
             manager.clone(),
             None,
         )
@@ -1422,6 +1428,13 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
     let sigterm = sigterm.recv();
     #[cfg(not(unix))]
     let sigterm = std::future::pending::<()>();
+    let service_stop = async {
+        if let Some(notify) = stop_notify {
+            notify.notified().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
 
     tokio::select! {
         _ = manager.wait() => {
@@ -1445,6 +1458,10 @@ async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
 
         _ = sigterm, if cfg!(unix) => {
             log::warn!("terminate signal received, exiting...");
+        }
+
+        _ = service_stop => {
+            log::info!("service stop received, exiting...");
         }
     }
     Ok(())
@@ -1561,7 +1578,7 @@ pub async fn main() -> ExitCode {
 
     let mut ret_code = 0;
 
-    if let Err(error) = run_main(cli).await {
+    if let Err(error) = run_main(cli, None).await {
         log::error!(error = %format_args!("{error:#}"));
         ret_code = 1;
     }
