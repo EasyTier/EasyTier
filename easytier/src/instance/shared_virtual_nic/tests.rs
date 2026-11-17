@@ -110,6 +110,7 @@ enum RouteChange {
 struct RecordingIfConfiger {
     routes: Arc<StdMutex<Vec<RouteChange>>>,
     fail_remove_ip: bool,
+    fail_add_route: Option<bool>,
 }
 
 #[async_trait::async_trait]
@@ -126,6 +127,17 @@ impl IfConfiguerTrait for RecordingIfConfiger {
             SharedIpv4Route::new(address, prefix, cost),
             source_hint,
         ));
+        if let Some(conflict) = self.fail_add_route {
+            return Err(if conflict {
+                Error::Ipv4RouteConflict {
+                    address,
+                    prefix,
+                    interface: _name.to_owned(),
+                }
+            } else {
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied).into()
+            });
+        }
         Ok(())
     }
 
@@ -156,6 +168,76 @@ async fn set_ifcfg(nic: &SharedVirtualNic, ifcfg: RecordingIfConfiger) {
     let mut device = nic.nic.lock().await;
     device.set_ifname_for_test("et0".to_owned());
     device.set_ifcfg_for_test(Box::new(ifcfg));
+}
+
+#[tokio::test]
+async fn rejected_single_route_preserves_the_live_dispatcher_and_member_claims() {
+    let mut nic = registered_nic();
+    let healthy_member = uuid::Uuid::from_u128(2);
+    nic.ifcfg
+        .apply_member_claims(healthy_member, address_claims("10.51.0.2/24"));
+    let original = nic.ifcfg.effective();
+    set_ifcfg(
+        &nic,
+        RecordingIfConfiger {
+            fail_add_route: Some(true),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let (_tun, tunnel) = easytier_core::tunnel::ring::create_ring_tunnel_pair();
+    nic.dispatcher = Some(SharedVirtualNicDispatcher::start(
+        tunnel,
+        nic.member_tunnel_table.clone(),
+        nic.valid.clone(),
+    ));
+    nic.sync_dispatcher_sources(nic.dispatcher.as_ref().unwrap())
+        .await
+        .unwrap();
+    let mut claims = nic.ifcfg.claims_of(MEMBER);
+    claims
+        .ipv4_routes
+        .insert(SharedIpv4Route::new("192.0.2.0".parse().unwrap(), 24, None));
+    assert!(matches!(
+        nic.apply_member_claims(MEMBER, claims, true).await,
+        Err(Error::Ipv4RouteConflict { .. }),
+    ));
+    assert_eq!(nic.ifcfg.effective(), original);
+    assert!(nic.is_valid());
+    // A live control channel accepts another update after the rejection.
+    nic.sync_dispatcher_sources(nic.dispatcher.as_ref().unwrap())
+        .await
+        .unwrap();
+    nic.shutdown_dispatcher().await;
+}
+
+#[tokio::test]
+async fn real_route_errors_and_partially_applied_conflicts_invalidate() {
+    for (conflict, partial_update) in [(false, false), (true, true)] {
+        let mut nic = registered_nic();
+        let original = nic.ifcfg.effective();
+        set_ifcfg(
+            &nic,
+            RecordingIfConfiger {
+                fail_add_route: Some(conflict),
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut claims = nic.ifcfg.claims_of(MEMBER);
+        claims
+            .ipv4_routes
+            .insert(SharedIpv4Route::new("192.0.2.0".parse().unwrap(), 24, None));
+        if partial_update {
+            claims
+                .ipv4_addresses
+                .insert("10.52.0.2/24".parse().unwrap());
+        }
+        assert!(nic.apply_member_claims(MEMBER, claims, true).await.is_err());
+        assert!(!nic.is_valid());
+        assert_eq!(nic.ifcfg.effective(), original);
+    }
 }
 
 #[tokio::test]

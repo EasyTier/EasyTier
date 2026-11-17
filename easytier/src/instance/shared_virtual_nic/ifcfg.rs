@@ -114,6 +114,23 @@ pub(crate) struct SharedIfConfigConflict {
 }
 
 impl SharedIfConfig {
+    pub(super) fn is_single_ipv4_route_addition(&self, next: &Self) -> bool {
+        let mut old_effective = self.effective();
+        let next_effective = next.effective();
+        if next_effective.ipv4_routes.len() != old_effective.ipv4_routes.len() + 1
+            || !old_effective
+                .ipv4_routes
+                .is_subset(&next_effective.ipv4_routes)
+            || old_effective.ipv4_routes.iter().any(|route| {
+                self.ipv4_route_source_hint(route) != next.ipv4_route_source_hint(route)
+            })
+        {
+            return false;
+        }
+        old_effective.ipv4_routes = next_effective.ipv4_routes.clone();
+        old_effective == next_effective
+    }
+
     pub(crate) fn ensure_disjoint(
         &self,
         member_id: SharedVirtualNicMemberId,
