@@ -19,8 +19,9 @@ use crate::{
     tunnel::ring::create_ring_tunnel_pair,
 };
 
-const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 10, 2);
+const INTERFACE_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 20, 2);
 const PUBLIC_IP: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 2);
+const FALLBACK_IP: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 2);
 
 #[derive(Clone, Copy)]
 enum DialResult {
@@ -30,7 +31,6 @@ enum DialResult {
 }
 
 struct DialHost {
-    networks: Vec<Ipv4Cidr>,
     results: HashMap<IpAddr, DialResult>,
     attempts: tokio::sync::mpsc::UnboundedSender<(SocketAddr, tokio::time::Instant)>,
     active: Arc<AtomicUsize>,
@@ -96,10 +96,6 @@ impl DirectConnectorHost for DialHost {
         GetIpListResponse::default()
     }
 
-    async fn interface_ipv4_networks(&self, _context: &SocketContext) -> Vec<Ipv4Cidr> {
-        self.networks.clone()
-    }
-
     fn mapped_listeners(&self) -> Vec<Url> {
         Vec::new()
     }
@@ -155,8 +151,7 @@ fn peer_manager() -> Arc<PeerManagerCore> {
 type Attempts = tokio::sync::mpsc::UnboundedReceiver<(SocketAddr, tokio::time::Instant)>;
 
 fn connector(
-    networks: &[&str],
-    local_result: DialResult,
+    interface_result: DialResult,
     public_result: DialResult,
 ) -> (
     Arc<DirectConnectorData<DialHost>>,
@@ -165,13 +160,10 @@ fn connector(
 ) {
     let (attempts, receiver) = tokio::sync::mpsc::unbounded_channel();
     let host = Arc::new(DialHost {
-        networks: networks
-            .iter()
-            .map(|network| network.parse().unwrap())
-            .collect(),
         results: [
-            (LOCAL_IP.into(), local_result),
+            (INTERFACE_IP.into(), interface_result),
             (PUBLIC_IP.into(), public_result),
+            (FALLBACK_IP.into(), DialResult::Success),
         ]
         .into_iter()
         .collect(),
@@ -208,7 +200,7 @@ fn connector(
 
 fn ip_list() -> GetIpListResponse {
     GetIpListResponse {
-        interface_ipv4s: vec![LOCAL_IP.into()],
+        interface_ipv4s: vec![INTERFACE_IP.into()],
         public_ipv4: Some(PUBLIC_IP.into()),
         listeners: vec![Url::parse("tcp://0.0.0.0:11010").unwrap().into()],
         ..Default::default()
@@ -231,18 +223,24 @@ async fn stop(data: &DirectConnectorData<DialHost>, protocol: &PeerProtocol) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn local_authentication_stops_deferred_dialing() {
-    for (network, expected) in [
-        ("192.168.10.0/24", LOCAL_IP),
-        ("198.51.100.0/26", PUBLIC_IP),
-    ] {
+async fn interface_authentication_stops_deferred_dialing() {
+    for expected in [INTERFACE_IP, PUBLIC_IP] {
         for wildcard_listener in [true, false] {
             let (data, protocol, mut attempts) =
-                connector(&[network], DialResult::Success, DialResult::Success);
+                connector(DialResult::Success, DialResult::Success);
             let peer_id = protocol.remote.my_peer_id();
             let mut list = ip_list();
+            list.interface_ipv4s = vec![expected.into()];
+            list.public_ipv4 = Some(
+                if expected == INTERFACE_IP {
+                    PUBLIC_IP
+                } else {
+                    INTERFACE_IP
+                }
+                .into(),
+            );
             if !wildcard_listener {
-                list.listeners = [LOCAL_IP, PUBLIC_IP]
+                list.listeners = [INTERFACE_IP, PUBLIC_IP]
                     .into_iter()
                     .map(|ip| Url::parse(&format!("tcp://{ip}:11010")).unwrap().into())
                     .collect();
@@ -261,13 +259,12 @@ async fn local_authentication_stops_deferred_dialing() {
 
 #[tokio::test(start_paused = true)]
 async fn cancelling_the_attempt_cancels_deferred_and_active_dials() {
-    let (data, protocol, mut attempts) = connector(
-        &["192.168.10.0/24"],
-        DialResult::Pending,
-        DialResult::Pending,
-    );
+    let (data, protocol, mut attempts) = connector(DialResult::Pending, DialResult::Pending);
     let task = start(data.clone(), protocol.remote.my_peer_id());
-    assert_eq!(attempts.recv().await.unwrap().0.ip(), IpAddr::V4(LOCAL_IP));
+    assert_eq!(
+        attempts.recv().await.unwrap().0.ip(),
+        IpAddr::V4(INTERFACE_IP)
+    );
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     tokio::time::advance(DIRECT_CONNECT_FALLBACK_DELAY).await;
@@ -292,18 +289,28 @@ async fn slow_dns_does_not_hold_numeric_dials_or_their_fallback() {
         }
     }
 
-    for networks in [Vec::new(), vec!["192.168.20.0/24"], vec!["192.168.10.0/24"]] {
+    for advertise_interface in [true, false] {
         for wildcard_listener in [true, false] {
             let (mut data, protocol, mut attempts) =
-                connector(&networks, DialResult::Pending, DialResult::Pending);
+                connector(DialResult::Pending, DialResult::Pending);
             let dns = Arc::new(PendingDns::default());
             Arc::get_mut(&mut data).unwrap().dns = dns.clone();
             let mut list = ip_list();
             if !wildcard_listener {
-                list.listeners = [LOCAL_IP, PUBLIC_IP]
+                list.listeners = [INTERFACE_IP, PUBLIC_IP]
                     .into_iter()
                     .map(|ip| Url::parse(&format!("tcp://{ip}:11010")).unwrap().into())
                     .collect();
+            }
+            if !advertise_interface {
+                list.interface_ipv4s.clear();
+                if wildcard_listener {
+                    list.listeners.push(
+                        Url::parse(&format!("tcp://{INTERFACE_IP}:11010"))
+                            .unwrap()
+                            .into(),
+                    );
+                }
             }
             list.listeners
                 .push(Url::parse("tcp://pending.example:11010").unwrap().into());
@@ -325,13 +332,13 @@ async fn slow_dns_does_not_hold_numeric_dials_or_their_fallback() {
                 .await
                 .expect("numeric fallback must not wait for DNS")
                 .unwrap();
-            let expected_delay = if networks == ["192.168.10.0/24"] {
+            let expected_delay = if advertise_interface {
                 DIRECT_CONNECT_FALLBACK_DELAY
             } else {
                 Duration::ZERO
             };
             let observed = [first, (second.ip(), at)];
-            assert!(observed.contains(&(IpAddr::V4(LOCAL_IP), started)));
+            assert!(observed.contains(&(IpAddr::V4(INTERFACE_IP), started)));
             assert!(observed.contains(&(IpAddr::V4(PUBLIC_IP), started + expected_delay)));
             assert_eq!(dns.queries.lock().unwrap().as_slice(), ["pending.example"]);
             task.abort();
@@ -342,13 +349,15 @@ async fn slow_dns_does_not_hold_numeric_dials_or_their_fallback() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn failed_or_pending_local_dial_does_not_hold_back_fallback() {
-    for local_result in [DialResult::Failure, DialResult::Pending] {
-        let (data, protocol, mut attempts) =
-            connector(&["192.168.10.0/24"], local_result, DialResult::Success);
+async fn failed_or_pending_interface_dial_does_not_hold_back_fallback() {
+    for interface_result in [DialResult::Failure, DialResult::Pending] {
+        let (data, protocol, mut attempts) = connector(interface_result, DialResult::Success);
         let started = tokio::time::Instant::now();
         let task = start(data.clone(), protocol.remote.my_peer_id());
-        assert_eq!(attempts.recv().await.unwrap().0.ip(), IpAddr::V4(LOCAL_IP));
+        assert_eq!(
+            attempts.recv().await.unwrap().0.ip(),
+            IpAddr::V4(INTERFACE_IP)
+        );
         let (fallback, at) = attempts.recv().await.unwrap();
         assert_eq!(fallback.ip(), IpAddr::V4(PUBLIC_IP));
         assert_eq!(at - started, DIRECT_CONNECT_FALLBACK_DELAY);
@@ -362,15 +371,68 @@ async fn failed_or_pending_local_dial_does_not_hold_back_fallback() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn unknown_or_nonmatching_prefixes_keep_concurrent_dialing() {
-    for networks in [Vec::new(), vec!["192.168.20.0/24"]] {
-        let (data, protocol, mut attempts) =
-            connector(&networks, DialResult::Pending, DialResult::Pending);
+async fn interface_candidates_start_concurrently_before_fallback() {
+    let (data, protocol, mut attempts) = connector(DialResult::Pending, DialResult::Pending);
+    let mut list = ip_list();
+    list.interface_ipv4s.push(PUBLIC_IP.into());
+    list.public_ipv4 = Some(FALLBACK_IP.into());
+    let peer_id = protocol.remote.my_peer_id();
+    let attempt_data = data.clone();
+    let started = tokio::time::Instant::now();
+    let task = tokio::spawn(async move {
+        attempt_data
+            .try_direct_connect_with_ip_list(peer_id, list)
+            .await
+    });
+    let first = attempts.recv().await.unwrap();
+    let second = attempts.recv().await.unwrap();
+    assert_ne!(first.0.ip(), second.0.ip());
+    assert_eq!(first.1, started);
+    assert_eq!(second.1, started);
+    let (fallback, at) = attempts.recv().await.unwrap();
+    assert_eq!(fallback.ip(), IpAddr::V4(FALLBACK_IP));
+    assert_eq!(at - started, DIRECT_CONNECT_FALLBACK_DELAY);
+    task.await.unwrap().unwrap();
+    stop(&data, &protocol).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_interface_candidate_keeps_concurrent_dialing() {
+    for advertise_interface in [true, false] {
+        let (data, protocol, mut attempts) = connector(DialResult::Pending, DialResult::Pending);
+        let mut list = ip_list();
+        list.listeners = if advertise_interface {
+            // An explicit listener must not expand to other interface addresses.
+            [11010, 11011]
+                .into_iter()
+                .map(|port| {
+                    Url::parse(&format!("tcp://{PUBLIC_IP}:{port}"))
+                        .unwrap()
+                        .into()
+                })
+                .collect()
+        } else {
+            list.interface_ipv4s.clear();
+            [INTERFACE_IP, PUBLIC_IP]
+                .into_iter()
+                .map(|ip| Url::parse(&format!("tcp://{ip}:11010")).unwrap().into())
+                .collect()
+        };
         let started = tokio::time::Instant::now();
-        let task = start(data.clone(), protocol.remote.my_peer_id());
+        let peer_id = protocol.remote.my_peer_id();
+        let attempt_data = data.clone();
+        let task = tokio::spawn(async move {
+            attempt_data
+                .try_direct_connect_with_ip_list(peer_id, list)
+                .await
+        });
         let first = attempts.recv().await.unwrap();
         let second = attempts.recv().await.unwrap();
-        assert_ne!(first.0.ip(), second.0.ip());
+        assert_ne!(first.0, second.0);
+        if advertise_interface {
+            assert_eq!(first.0.ip(), IpAddr::V4(PUBLIC_IP));
+            assert_eq!(second.0.ip(), IpAddr::V4(PUBLIC_IP));
+        }
         assert_eq!(first.1, started);
         assert_eq!(second.1, started);
         task.abort();
@@ -382,16 +444,12 @@ async fn unknown_or_nonmatching_prefixes_keep_concurrent_dialing() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn blacklisted_local_candidate_does_not_delay_fallback() {
-    let (data, protocol, mut attempts) = connector(
-        &["192.168.10.0/24"],
-        DialResult::Pending,
-        DialResult::Success,
-    );
+async fn blacklisted_interface_candidate_does_not_delay_fallback() {
+    let (data, protocol, mut attempts) = connector(DialResult::Pending, DialResult::Success);
     data.listener_blacklist.insert(
         ListenerBlacklistKey(
             protocol.remote.my_peer_id(),
-            format!("tcp://{LOCAL_IP}:11010"),
+            format!("tcp://{INTERFACE_IP}:11010"),
         ),
         DIRECT_CONNECTOR_BLACKLIST_TIMEOUT,
     );
@@ -411,17 +469,16 @@ async fn blacklisted_local_candidate_does_not_delay_fallback() {
 #[tokio::test(start_paused = true)]
 async fn existing_or_new_ordinary_connection_prevents_fallback() {
     for connect_before_attempt in [true, false] {
-        let (data, protocol, mut attempts) = connector(
-            &["192.168.10.0/24"],
-            DialResult::Pending,
-            DialResult::Pending,
-        );
+        let (data, protocol, mut attempts) = connector(DialResult::Pending, DialResult::Pending);
         let peer_id = protocol.remote.my_peer_id();
         let task = if connect_before_attempt {
             None
         } else {
             let task = start(data.clone(), peer_id);
-            assert_eq!(attempts.recv().await.unwrap().0.ip(), IpAddr::V4(LOCAL_IP));
+            assert_eq!(
+                attempts.recv().await.unwrap().0.ip(),
+                IpAddr::V4(INTERFACE_IP)
+            );
             Some(task)
         };
         let (client, server) = create_ring_tunnel_pair();
@@ -449,13 +506,10 @@ async fn existing_or_new_ordinary_connection_prevents_fallback() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn local_priority_stays_within_the_default_protocol_group() {
+async fn interface_priority_stays_within_the_default_protocol_group() {
     for default_protocol in ["tcp", "ws"] {
-        let (mut data, protocol, mut attempts) = connector(
-            &["192.168.10.0/24"],
-            DialResult::Success,
-            DialResult::Success,
-        );
+        let (mut data, protocol, mut attempts) =
+            connector(DialResult::Success, DialResult::Success);
         Arc::get_mut(&mut data).unwrap().options.default_protocol = default_protocol.to_owned();
         let mut list = ip_list();
         list.listeners = [
@@ -471,7 +525,7 @@ async fn local_priority_stays_within_the_default_protocol_group() {
         let expected = if default_protocol == "tcp" {
             PUBLIC_IP
         } else {
-            LOCAL_IP
+            INTERFACE_IP
         };
         assert_eq!(attempts.try_recv().unwrap().0.ip(), IpAddr::V4(expected));
         assert!(attempts.try_recv().is_err());

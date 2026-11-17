@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::Context;
 use async_trait::async_trait;
-use cidr::Ipv4Cidr;
 use quanta::Instant;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -72,13 +71,6 @@ const MAX_UDP_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
 #[async_trait]
 pub trait DirectConnectorHost: ManualConnectorHost {
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse;
-
-    /// Connected IPv4 networks from usable host interfaces, when known.
-    ///
-    /// Hosts without interface prefixes keep the usual concurrent dialing.
-    async fn interface_ipv4_networks(&self, _context: &SocketContext) -> Vec<Ipv4Cidr> {
-        Vec::new()
-    }
 
     async fn collect_foreign_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
         self.collect_ip_addrs(context).await
@@ -465,16 +457,6 @@ where
 
             let listener = available_listeners.last().expect("non-empty listener list");
             let current_scheme = listener.scheme().to_owned();
-            let networks = match DirectTransport::from_url(listener) {
-                Ok(transport) => {
-                    self.host
-                        .interface_ipv4_networks(
-                            &self.options.socket_context(transport, IpVersion::V4),
-                        )
-                        .await
-                }
-                Err(_) => Vec::new(),
-            };
             let mut candidates = Vec::new();
             let mut tasks = JoinSet::new();
             let mut domain_listeners = Vec::new();
@@ -490,31 +472,20 @@ where
                 }
                 self.collect_direct_connect_candidates(&ip_list, &listener, &mut candidates)
                     .await;
-                if networks.is_empty() {
-                    // Preserve incremental dialing while resolving listeners on
-                    // hosts that cannot supply interface prefixes.
-                    self.spawn_direct_connect_tasks(
-                        dst_peer_id,
-                        std::mem::take(&mut candidates),
-                        &networks,
-                        None,
-                        &mut tasks,
-                    );
-                }
             }
             self.listener_blacklist.cleanup();
-            let prefer_local = candidates.iter().any(|url| {
-                is_local_candidate(url, &networks)
+            let prefer_interface = candidates.iter().any(|url| {
+                is_interface_candidate(url, &ip_list)
                     && !self
                         .listener_blacklist
                         .contains(&ListenerBlacklistKey(dst_peer_id, url.to_string()))
             });
-            let fallback_at = prefer_local
+            let fallback_at = prefer_interface
                 .then(|| crate::foundation::time::Instant::now() + DIRECT_CONNECT_FALLBACK_DELAY);
             self.spawn_direct_connect_tasks(
                 dst_peer_id,
                 candidates,
-                &networks,
+                &ip_list,
                 fallback_at,
                 &mut tasks,
             );
@@ -531,7 +502,7 @@ where
                 self.spawn_direct_connect_tasks(
                     dst_peer_id,
                     candidates,
-                    &networks,
+                    &ip_list,
                     fallback_at,
                     &mut tasks,
                 );
@@ -548,19 +519,19 @@ where
         self: &Arc<Self>,
         dst_peer_id: PeerId,
         candidates: Vec<Url>,
-        networks: &[Ipv4Cidr],
+        ip_list: &GetIpListResponse,
         fallback_at: Option<crate::foundation::time::Instant>,
         tasks: &mut JoinSet<anyhow::Result<()>>,
     ) {
         for url in candidates {
-            let delay_until = fallback_at.filter(|_| !is_local_candidate(&url, networks));
+            let delay_until = fallback_at.filter(|_| !is_interface_candidate(&url, ip_list));
             let data = self.clone();
             tasks.spawn(async move {
                 if let Some(deadline) = delay_until {
                     crate::foundation::time::sleep_until(deadline).await;
                 }
                 // The existing URL guard skips dialing if another candidate
-                // authenticated during the local candidate's head start.
+                // authenticated during the interface candidate's head start.
                 data.try_connect_to_url(dst_peer_id, url.to_string()).await
             });
         }
@@ -1277,11 +1248,16 @@ fn resolve_literal_url(url: &Url, ip_version: IpVersion) -> anyhow::Result<Socke
     }
 }
 
-fn is_local_candidate(url: &Url, networks: &[Ipv4Cidr]) -> bool {
+fn is_interface_candidate(url: &Url, ip_list: &GetIpListResponse) -> bool {
     // Non-special schemes such as tcp can expose an IPv4 literal as a domain.
     url.host_str()
         .and_then(|host| host.parse::<Ipv4Addr>().ok())
-        .is_some_and(|ip| networks.iter().any(|network| network.contains(&ip)))
+        .is_some_and(|ip| {
+            ip_list
+                .interface_ipv4s
+                .iter()
+                .any(|interface_ip| Ipv4Addr::from(*interface_ip) == ip)
+        })
 }
 
 fn is_public_ipv4(ip: Ipv4Addr) -> bool {

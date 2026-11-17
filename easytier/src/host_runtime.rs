@@ -4,7 +4,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cidr::{Ipv4Cidr, Ipv4Inet};
 use easytier_core::{
     connectivity::{composite::ConnectorRuntime, transport::ConnectedByteStream},
     host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
@@ -22,7 +21,7 @@ use crate::{
     common::{
         dns::RuntimeDnsResolver,
         netns::NetNS,
-        network::{collect_interfaces, collect_local_ip_addrs, ip_mask_to_prefix},
+        network::{collect_interfaces, collect_local_ip_addrs},
     },
     proto::peer_rpc::GetIpListResponse,
     socket::{
@@ -148,35 +147,6 @@ impl ConnectorRuntime for NativeHostRuntime {
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
         collect_local_ip_addrs(NetNS::from_socket_context(context)).await
     }
-
-    async fn interface_ipv4_networks(&self, context: &SocketContext) -> Vec<Ipv4Cidr> {
-        collect_interfaces(NetNS::from_socket_context(context), true)
-            .await
-            .into_iter()
-            .flat_map(|interface| interface.addr)
-            .filter_map(ipv4_interface_network)
-            .collect()
-    }
-}
-
-fn ipv4_interface_network(addr: network_interface::Addr) -> Option<Ipv4Cidr> {
-    let network_interface::Addr::V4(addr) = addr else {
-        return None;
-    };
-    if addr.ip.is_unspecified()
-        || addr.ip.is_loopback()
-        || addr.ip.is_multicast()
-        || addr.ip.is_broadcast()
-    {
-        return None;
-    }
-
-    let prefix = ip_mask_to_prefix(addr.netmask?.into()).ok()?;
-    // A default route does not establish a directly connected network.
-    if prefix == 0 {
-        return None;
-    }
-    Some(Ipv4Inet::new(addr.ip, prefix).ok()?.network())
 }
 
 impl NativeHostRuntime {
@@ -230,41 +200,6 @@ impl DnsRecordResolver for NativeHostRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn direct_ipv4_networks_use_valid_interface_masks() {
-        let interface_addr = |ip: &str, netmask: Option<&str>| {
-            network_interface::Addr::V4(network_interface::V4IfAddr {
-                ip: ip.parse().unwrap(),
-                broadcast: None,
-                netmask: netmask.map(|mask| mask.parse().unwrap()),
-            })
-        };
-        for (ip, mask, expected) in [
-            (
-                "192.168.23.7",
-                Some("255.255.240.0"),
-                Some("192.168.16.0/20"),
-            ),
-            (
-                "198.51.100.7",
-                Some("255.255.255.192"),
-                Some("198.51.100.0/26"),
-            ),
-            ("192.168.10.7", None, None),
-            ("192.168.10.7", Some("255.0.255.0"), None),
-            ("192.168.10.7", Some("0.0.0.0"), None),
-            ("127.0.0.1", Some("255.0.0.0"), None),
-            ("0.0.0.0", Some("255.255.255.0"), None),
-            ("224.0.0.1", Some("255.255.255.0"), None),
-        ] {
-            assert_eq!(
-                ipv4_interface_network(interface_addr(ip, mask)),
-                expected.map(|network| network.parse().unwrap()),
-                "{ip} {mask:?}",
-            );
-        }
-    }
 
     #[test]
     fn native_host_runtime_is_process_wide() {
