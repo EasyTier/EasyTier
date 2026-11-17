@@ -29,9 +29,8 @@ message HeartbeatRequest {
   bool support_manual_routes_patch = 12;
   // True advertises DNS PatchConfig support. Offline metadata leaves it unset.
   optional bool support_dns_config_patch = 13;
-  // Bare IPv4/IPv6 address the node's STUN lookup observed, started with the
-  // core and refreshed periodically. Empty until a lookup succeeds, when STUN
-  // is disabled, or on older peers.
+  // Public IP (IPv4 preferred) seen by the node's process-wide STUN
+  // collector. Empty until detection completes, or on older peers.
   string public_ip = 14;
 }
 

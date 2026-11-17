@@ -1,15 +1,15 @@
 //! Native composition for the portable core STUN collector.
 
 #[cfg(test)]
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(test)]
 use async_trait::async_trait;
 #[cfg(test)]
 use easytier_core::connectivity::stun::{StunInfoProvider, StunSocketMapper};
 use easytier_core::{
-    connectivity::stun::{StunInfoCollector as CoreStunInfoCollector, StunServerConfig},
-    socket::SocketContext,
+    connectivity::stun::StunInfoCollector as CoreStunInfoCollector, socket::SocketContext,
 };
 #[cfg(test)]
 use easytier_proto::common::{NatType, StunInfo};
@@ -92,30 +92,25 @@ impl StunSocketMapper<RuntimeUdpSocket> for MockStunInfoCollector {
     }
 }
 
-pub fn default_stun_server_config() -> StunServerConfig {
-    StunServerConfig {
-        udp_servers: default_udp_stun_servers(),
-        tcp_servers: default_tcp_stun_servers(),
-        udp_v6_servers: default_udp_v6_stun_servers(),
-    }
+/// Process-wide collector for the default socket context and STUN servers.
+/// Instances with default STUN settings share it, and the config-server
+/// client reports the public IP it observes.
+pub fn global_stun_info_collector() -> Arc<StunInfoCollector> {
+    static COLLECTOR: OnceLock<Arc<StunInfoCollector>> = OnceLock::new();
+    COLLECTOR
+        .get_or_init(|| Arc::new(runtime_stun_info_collector(SocketContext::default())))
+        .clone()
 }
 
 pub fn runtime_stun_info_collector(socket_context: SocketContext) -> StunInfoCollector {
-    runtime_stun_info_collector_with_servers(socket_context, default_stun_server_config())
-}
-
-pub fn runtime_stun_info_collector_with_servers(
-    socket_context: SocketContext,
-    servers: StunServerConfig,
-) -> StunInfoCollector {
     let runtime = native_host_runtime();
     StunInfoCollector::new(
         runtime.clone(),
         runtime,
         socket_context,
-        servers.udp_servers,
-        servers.tcp_servers,
-        servers.udp_v6_servers,
+        default_udp_stun_servers(),
+        default_tcp_stun_servers(),
+        default_udp_v6_stun_servers(),
     )
 }
 

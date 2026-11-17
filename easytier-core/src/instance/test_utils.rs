@@ -1,12 +1,9 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
-use crate::{
-    connectivity::stun::StunSocketMapper, peers::conn::peer_conn::PeerConnId,
-    socket::udp::VirtualUdpSocketFactory,
-};
+use crate::peers::conn::peer_conn::PeerConnId;
 
 use super::{
-    CoreHostAdapters, CoreInstance, CoreInstanceConfig, CoreInstanceHost, PeerRelaySessionSnapshot,
+    CoreInstance, CoreInstanceConfig, CoreInstanceHost, PeerRelaySessionSnapshot,
     build_capabilities,
 };
 
@@ -14,19 +11,6 @@ impl CoreInstanceConfig {
     #[doc(hidden)]
     pub fn validate_build_capabilities_for_test(&self) -> anyhow::Result<()> {
         build_capabilities::validate(self)
-    }
-}
-
-impl<H> CoreHostAdapters<H>
-where
-    H: CoreInstanceHost,
-{
-    #[doc(hidden)]
-    pub fn replace_stun_provider(
-        &mut self,
-        provider: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
-    ) {
-        self.stun_override = Some(provider);
     }
 }
 

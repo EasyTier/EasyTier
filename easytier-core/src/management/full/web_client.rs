@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -18,7 +18,7 @@ use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 use crate::{
-    connectivity::protocol::raw::TunnelDialer,
+    connectivity::{protocol::raw::TunnelDialer, stun::StunInfoProvider},
     foundation::time,
     instance::{CoreInstance, CoreInstanceHost, manager::InstanceFactory},
     rpc::{bidirect::BidirectRpcManager, service_registry::ServiceRegistry},
@@ -146,21 +146,6 @@ impl ConfigServerEndpoint {
     }
 }
 
-/// Public IP a host discovered for itself (e.g. via STUN). Hosts refresh it
-/// in the background; each heartbeat reports the latest value.
-#[derive(Debug, Clone, Default)]
-pub struct ReportedPublicIp(Arc<std::sync::RwLock<Option<IpAddr>>>);
-
-impl ReportedPublicIp {
-    pub fn set(&self, ip: IpAddr) {
-        *self.0.write().unwrap() = Some(ip);
-    }
-
-    pub fn get(&self) -> Option<IpAddr> {
-        *self.0.read().unwrap()
-    }
-}
-
 pub struct WebClientConfig {
     pub token: String,
     pub machine_id: uuid::Uuid,
@@ -168,7 +153,8 @@ pub struct WebClientConfig {
     pub device_os: DeviceOsInfo,
     pub easytier_version: String,
     pub secure_mode: bool,
-    pub public_ip: ReportedPublicIp,
+    /// STUN collector whose observed public IP heartbeats report.
+    pub stun: Option<Arc<dyn StunInfoProvider>>,
 }
 
 #[async_trait]
@@ -454,12 +440,23 @@ fn build_heartbeat_request(
         support_heartbeat_policy: true,
         support_manual_routes_patch: true,
         public_ip: config
-            .public_ip
-            .get()
-            .map(|ip| ip.to_string())
+            .stun
+            .as_deref()
+            .map(reported_public_ip)
             .unwrap_or_default(),
         support_dns_config_patch: Some(true),
     }
+}
+
+/// Picks one STUN-observed public IP for the console, preferring IPv4.
+fn reported_public_ip(stun: &dyn StunInfoProvider) -> String {
+    let public_ip = stun.get_stun_info().public_ip;
+    public_ip
+        .iter()
+        .find(|ip| ip.parse::<Ipv4Addr>().is_ok())
+        .or(public_ip.first())
+        .cloned()
+        .unwrap_or_default()
 }
 
 async fn wait_for_next_heartbeat(
@@ -603,7 +600,29 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::tunnel::ring::create_ring_tunnel_pair;
+    use crate::{proto::common::StunInfo, tunnel::ring::create_ring_tunnel_pair};
+
+    struct FixedStunInfo(Vec<&'static str>);
+
+    #[async_trait]
+    impl StunInfoProvider for FixedStunInfo {
+        fn get_stun_info(&self) -> StunInfo {
+            StunInfo {
+                public_ip: self.0.iter().map(|ip| ip.to_string()).collect(),
+                ..Default::default()
+            }
+        }
+
+        async fn get_udp_port_mapping(&self, _: u16) -> anyhow::Result<std::net::SocketAddr> {
+            anyhow::bail!("unused")
+        }
+
+        async fn get_tcp_port_mapping(&self, _: u16) -> anyhow::Result<std::net::SocketAddr> {
+            anyhow::bail!("unused")
+        }
+
+        fn update_stun_info(&self) {}
+    }
 
     struct StalledThenReadyDialer {
         attempts: AtomicUsize,
@@ -740,8 +759,6 @@ mod tests {
         let runtime_id = uuid::Uuid::new_v4();
         let registered = uuid::Uuid::new_v4();
         let failed = uuid::Uuid::new_v4();
-        let public_ip = ReportedPublicIp::default();
-        public_ip.set("203.0.113.7".parse().unwrap());
         let request = build_heartbeat_request(
             &WebClientConfig {
                 token: "token".to_owned(),
@@ -750,7 +767,7 @@ mod tests {
                 device_os: DeviceOsInfo::default(),
                 easytier_version: "test-version".to_owned(),
                 secure_mode: false,
-                public_ip,
+                stun: Some(Arc::new(FixedStunInfo(vec!["2001:db8::7", "203.0.113.7"]))),
             },
             runtime_id,
             vec![registered],

@@ -1,12 +1,9 @@
-//! Per-instance STUN state and background detection lifecycle.
+//! STUN state and background detection lifecycle, shareable across instances.
 
 use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -89,7 +86,6 @@ where
     nat_test_result_time: Arc<RwLock<i64>>,
     redetect_notify: Arc<tokio::sync::Notify>,
     tasks: Mutex<JoinSet<()>>,
-    started: AtomicBool,
 }
 
 impl<R, D> StunInfoCollector<R, D>
@@ -139,7 +135,6 @@ where
             nat_test_result_time: Arc::new(RwLock::new(unix_timestamp())),
             redetect_notify: Arc::new(tokio::sync::Notify::new()),
             tasks: Mutex::new(JoinSet::new()),
-            started: AtomicBool::new(false),
         }
     }
 
@@ -233,7 +228,11 @@ where
     }
 
     fn start_stun_routine(&self) {
-        if self.started.swap(true, Ordering::AcqRel) {
+        let mut tasks = self.tasks.lock().unwrap();
+        // A collector shared across instances can outlive the runtime that
+        // first started its routines; restart them once that runtime is gone.
+        while tasks.try_join_next().is_some() {}
+        if !tasks.is_empty() {
             return;
         }
 
@@ -244,7 +243,7 @@ where
         let udp_nat_test_result = self.udp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        tasks.spawn(async move {
             loop {
                 let servers = sampled_servers(&stun_servers.read().unwrap());
                 let detector = UdpNatTypeDetector::new(
@@ -300,7 +299,7 @@ where
         let tcp_nat_test_result = self.tcp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        tasks.spawn(async move {
             loop {
                 let servers = sampled_servers(&tcp_stun_servers.read().unwrap());
                 let detector = TcpNatTypeDetector::new(
@@ -336,7 +335,7 @@ where
         let stun_servers_v6 = self.stun_servers_v6.clone();
         let public_ipv6 = self.public_ipv6.clone();
         let redetect_notify = self.redetect_notify.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        tasks.spawn(async move {
             loop {
                 let servers = stun_servers_v6.read().unwrap().clone();
                 if let Some(ip) = Self::get_public_ipv6(
@@ -427,56 +426,6 @@ where
 
     async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
         self.start_stun_routine();
-        self.tcp_port_mapping(local_port).await
-    }
-
-    fn update_stun_info(&self) {
-        self.redetect_notify.notify_waiters();
-    }
-}
-
-impl<R, D> StunInfoCollector<R, D>
-where
-    R: StunSocketRuntime,
-    D: StunDnsRuntime + ?Sized,
-{
-    /// Looks up this host's public IP once without starting background NAT
-    /// detection: UDP over IPv4 first, then TCP, then UDP over IPv6.
-    pub async fn query_public_ip(&self) -> anyhow::Result<IpAddr> {
-        let udp_error = match self
-            .runtime
-            .bind_udp(stun_udp_bind_options(
-                self.udp_socket_context.clone(),
-                IpVersion::V4,
-                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
-            ))
-            .await
-        {
-            Ok(socket) => match self.udp_port_mapping_with_socket(socket).await {
-                Ok(addr) => return Ok(addr.ip()),
-                Err(error) => error,
-            },
-            Err(error) => error.into(),
-        };
-        let tcp_error = match self.tcp_port_mapping(0).await {
-            Ok(addr) => return Ok(addr.ip()),
-            Err(error) => error,
-        };
-        let stun_servers_v6 = self.stun_servers_v6.read().unwrap().clone();
-        if let Some(ip) = Self::get_public_ipv6(
-            self.runtime.clone(),
-            self.dns.clone(),
-            self.udp_socket_context.clone(),
-            &stun_servers_v6,
-        )
-        .await
-        {
-            return Ok(ip.into());
-        }
-        anyhow::bail!("no STUN server answered (udp: {udp_error:#}; tcp: {tcp_error:#})")
-    }
-
-    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
         let mut servers = self
             .tcp_nat_test_result
             .read()
@@ -522,10 +471,22 @@ where
         anyhow::bail!("no TCP STUN mapping found")
     }
 
-    async fn udp_port_mapping_with_socket(
+    fn update_stun_info(&self) {
+        self.redetect_notify.notify_waiters();
+    }
+}
+
+#[async_trait]
+impl<R, D> StunSocketMapper<<R as VirtualUdpSocketFactory>::Socket> for StunInfoCollector<R, D>
+where
+    R: StunSocketRuntime,
+    D: StunDnsRuntime + ?Sized,
+{
+    async fn get_udp_port_mapping_with_socket(
         &self,
         socket: Arc<<R as VirtualUdpSocketFactory>::Socket>,
     ) -> anyhow::Result<SocketAddr> {
+        self.start_stun_routine();
         let mut servers = self
             .udp_nat_test_result
             .read()
@@ -562,21 +523,6 @@ where
             }
         }
         anyhow::bail!("no UDP STUN mapping found")
-    }
-}
-
-#[async_trait]
-impl<R, D> StunSocketMapper<<R as VirtualUdpSocketFactory>::Socket> for StunInfoCollector<R, D>
-where
-    R: StunSocketRuntime,
-    D: StunDnsRuntime + ?Sized,
-{
-    async fn get_udp_port_mapping_with_socket(
-        &self,
-        socket: Arc<<R as VirtualUdpSocketFactory>::Socket>,
-    ) -> anyhow::Result<SocketAddr> {
-        self.start_stun_routine();
-        self.udp_port_mapping_with_socket(socket).await
     }
 }
 
@@ -819,27 +765,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn query_public_ip_does_not_start_background_detection() {
-        let runtime = Arc::new(MockRuntime::default());
-        let collector = StunInfoCollector::new(
-            runtime.clone(),
-            Arc::new(MockDns),
-            SocketContext::default(),
-            vec!["stun.example".to_owned()],
-            Vec::new(),
-            Vec::new(),
-        );
-
-        let ip = collector.query_public_ip().await.unwrap();
-
-        assert_eq!(ip, "198.51.100.10".parse::<IpAddr>().unwrap());
-        assert!(!collector.started.load(Ordering::Acquire));
-        assert_eq!(runtime.udp_binds.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn query_public_ip_fails_without_servers() {
+    #[test]
+    fn routines_restart_after_their_runtime_shuts_down() {
         let collector = StunInfoCollector::new(
             Arc::new(MockRuntime::default()),
             Arc::new(MockDns),
@@ -848,8 +775,22 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        };
 
-        assert!(collector.query_public_ip().await.is_err());
-        assert!(!collector.started.load(Ordering::Acquire));
+        let first = runtime();
+        first.block_on(async { collector.get_stun_info() });
+        drop(first);
+
+        runtime().block_on(async {
+            collector.get_stun_info();
+            let mut tasks = collector.tasks.lock().unwrap();
+            assert_eq!(tasks.len(), 3);
+            assert!(tasks.try_join_next().is_none());
+        });
     }
 }
