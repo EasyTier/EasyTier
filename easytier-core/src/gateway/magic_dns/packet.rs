@@ -1,5 +1,4 @@
 use std::{
-    future::Future,
     net::Ipv4Addr,
     sync::{Arc, Mutex},
 };
@@ -180,26 +179,6 @@ impl NicPacketFilter for MagicDnsPacketFilter {
     }
 }
 
-pub async fn process_magic_dns_packet<F, Fut>(
-    packet: &mut ZCPacket,
-    fake_ip: Ipv4Addr,
-    my_peer_id: PeerId,
-    resolve: F,
-) -> bool
-where
-    F: FnOnce(MagicDnsQuery) -> Fut,
-    Fut: Future<Output = Option<Vec<u8>>>,
-{
-    let Some(info) = MagicDnsPacketInfo::parse(packet, fake_ip) else {
-        return false;
-    };
-    let response = match info.query(packet) {
-        Some(query) => resolve(query).await,
-        None => None,
-    };
-    info.apply_response(packet, my_peer_id, response.as_deref())
-}
-
 #[derive(Clone, Copy)]
 struct MagicDnsPacketInfo {
     source_ip: Ipv4Addr,
@@ -364,6 +343,7 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct SlowResolver {
         active: Arc<AtomicUsize>,
         release: Arc<Notify>,
@@ -399,13 +379,10 @@ mod tests {
     async fn saturated_forwarding_keeps_local_dns_icmp_and_other_packets_available() {
         let (sender, mut receiver) = crate::peers::create_packet_recv_chan();
         let state = MagicDnsResolverState::new(sender, 42);
-        let active = Arc::new(AtomicUsize::new(0));
+        let resolver = Arc::new(SlowResolver::default());
         let filter = magic_dns_packet_filter(
             "100.100.100.101".parse().unwrap(),
-            Arc::new(SlowResolver {
-                active: active.clone(),
-                release: Arc::new(Notify::new()),
-            }),
+            resolver.clone(),
             state.clone(),
         );
         for _ in 0..MAX_CONCURRENT_FORWARDS {
@@ -417,13 +394,16 @@ mod tests {
             );
         }
         tokio::time::timeout(Duration::from_secs(1), async {
-            while active.load(Ordering::SeqCst) != MAX_CONCURRENT_FORWARDS {
+            while resolver.active.load(Ordering::SeqCst) != MAX_CONCURRENT_FORWARDS {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .unwrap();
-        assert_eq!(active.load(Ordering::SeqCst), MAX_CONCURRENT_FORWARDS);
+        assert_eq!(
+            resolver.active.load(Ordering::SeqCst),
+            MAX_CONCURRENT_FORWARDS
+        );
         tokio::time::timeout(Duration::from_secs(1), async {
             filter
                 .try_process_packet_from_nic(udp_query(b"overflow", 53))
@@ -459,7 +439,7 @@ mod tests {
         );
         let mut tasks = state.stop();
         while tasks.join_next().await.is_some() {}
-        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(resolver.active.load(Ordering::SeqCst), 0);
         filter
             .try_process_packet_from_nic(udp_query(b"local", 53))
             .await;
@@ -475,14 +455,10 @@ mod tests {
         let (sender, mut receiver) = crate::peers::create_packet_recv_chan();
         let state = MagicDnsResolverState::new(sender.clone(), 42);
         while sender.try_send(ZCPacket::new_with_payload(b"queued")) {}
-        let active = Arc::new(AtomicUsize::new(0));
-        let release = Arc::new(Notify::new());
+        let resolver = Arc::new(SlowResolver::default());
         let filter = magic_dns_packet_filter(
             "100.100.100.101".parse().unwrap(),
-            Arc::new(SlowResolver {
-                active: active.clone(),
-                release: release.clone(),
-            }),
+            resolver.clone(),
             state.clone(),
         );
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -499,10 +475,10 @@ mod tests {
             .try_process_packet_from_nic(udp_query(b"forwarded", 53))
             .await;
         tokio::time::timeout(Duration::from_secs(1), async {
-            while active.load(Ordering::SeqCst) == 0 {
+            while resolver.active.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
             }
-            release.notify_waiters();
+            resolver.release.notify_waiters();
             loop {
                 let finished = {
                     let mut guard = state.tasks.lock().unwrap();
@@ -518,7 +494,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(resolver.active.load(Ordering::SeqCst), 0);
         let mut tasks = state.stop();
         assert!(tasks.join_next().await.is_none());
         drop(filter);
@@ -536,14 +512,10 @@ mod tests {
     async fn local_preparation_finishing_after_close_cannot_enqueue() {
         let (sender, mut receiver) = crate::peers::create_packet_recv_chan();
         let state = MagicDnsResolverState::new(sender, 42);
-        let active = Arc::new(AtomicUsize::new(0));
-        let release = Arc::new(Notify::new());
+        let resolver = Arc::new(SlowResolver::default());
         let filter = magic_dns_packet_filter(
             "100.100.100.101".parse().unwrap(),
-            Arc::new(SlowResolver {
-                active: active.clone(),
-                release: release.clone(),
-            }),
+            resolver.clone(),
             state.clone(),
         );
         let query = tokio::spawn(async move {
@@ -552,7 +524,7 @@ mod tests {
                 .await
         });
         tokio::time::timeout(Duration::from_secs(1), async {
-            while active.load(Ordering::SeqCst) == 0 {
+            while resolver.active.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
             }
         })
@@ -560,7 +532,7 @@ mod tests {
         .unwrap();
         let mut tasks = state.stop();
         assert!(tasks.join_next().await.is_none());
-        release.notify_waiters();
+        resolver.release.notify_waiters();
         assert!(query.await.unwrap().is_none());
         assert!(
             tokio::time::timeout(Duration::from_millis(20), receiver.recv())
@@ -603,22 +575,15 @@ mod tests {
         }
         ZCPacket::new_with_payload(&bytes)
     }
-    #[tokio::test]
-    async fn packet_engine_rewrites_dns_query_response() {
+    #[test]
+    fn packet_engine_rewrites_dns_query_response() {
         let mut packet = udp_query(b"query", 53);
-        let handled = process_magic_dns_packet(
-            &mut packet,
-            "100.100.100.101".parse().unwrap(),
-            42,
-            |query| async move {
-                assert_eq!(query.source, "10.0.0.2:53000".parse().unwrap());
-                assert_eq!(query.payload, b"query");
-                Some(b"response".to_vec())
-            },
-        )
-        .await;
+        let info = MagicDnsPacketInfo::parse(&packet, "100.100.100.101".parse().unwrap()).unwrap();
+        let query = info.query(&packet).unwrap();
+        assert_eq!(query.source, "10.0.0.2:53000".parse().unwrap());
+        assert_eq!(query.payload, b"query");
 
-        assert!(handled);
+        assert!(info.apply_response(&mut packet, 42, Some(b"response")));
         let ip = Ipv4Packet::new_checked(packet.payload()).unwrap();
         assert_eq!(
             ip.src_addr(),
@@ -636,108 +601,63 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn packet_engine_rejects_invalid_ipv4_header_without_mutation() {
+    #[test]
+    fn packet_engine_rejects_invalid_ipv4_header_without_mutation() {
         let mut packet = udp_query(b"query", 53);
         Ipv4Packet::new_unchecked(packet.mut_payload()).set_header_len(60);
         let original = packet.payload().to_vec();
 
-        assert!(
-            !process_magic_dns_packet(
-                &mut packet,
-                "100.100.100.101".parse().unwrap(),
-                42,
-                |_| async { panic!("invalid IPv4 header must not invoke DNS") },
-            )
-            .await
-        );
+        assert!(MagicDnsPacketInfo::parse(&packet, "100.100.100.101".parse().unwrap()).is_none());
         assert_eq!(packet.payload(), original);
     }
 
-    #[tokio::test]
-    async fn packet_engine_rejects_short_zc_packet_without_panicking() {
-        let mut packet =
-            ZCPacket::new_from_buf(Default::default(), crate::packet::ZCPacketType::NIC);
+    #[test]
+    fn packet_engine_rejects_short_zc_packet_without_panicking() {
+        let packet = ZCPacket::new_from_buf(Default::default(), crate::packet::ZCPacketType::NIC);
 
-        assert!(
-            !process_magic_dns_packet(
-                &mut packet,
-                "100.100.100.101".parse().unwrap(),
-                42,
-                |_| async { panic!("short packet must not invoke DNS") },
-            )
-            .await
-        );
+        assert!(MagicDnsPacketInfo::parse(&packet, "100.100.100.101".parse().unwrap()).is_none());
     }
 
-    #[tokio::test]
-    async fn packet_engine_rejects_inconsistent_udp_length_without_mutation() {
+    #[test]
+    fn packet_engine_rejects_inconsistent_udp_length_without_mutation() {
         let mut packet = udp_query(b"query", 53);
         let mut ip = Ipv4Packet::new_unchecked(packet.mut_payload());
         UdpPacket::new_unchecked(ip.payload_mut()).set_len(8);
         let original = packet.payload().to_vec();
 
-        assert!(
-            !process_magic_dns_packet(
-                &mut packet,
-                "100.100.100.101".parse().unwrap(),
-                42,
-                |_| async { panic!("invalid UDP length must not invoke DNS") },
-            )
-            .await
-        );
+        assert!(MagicDnsPacketInfo::parse(&packet, "100.100.100.101".parse().unwrap()).is_none());
         assert_eq!(packet.payload(), original);
     }
 
-    #[tokio::test]
-    async fn packet_engine_rejects_fragmented_packets_without_mutation() {
+    #[test]
+    fn packet_engine_rejects_fragmented_packets_without_mutation() {
         let mut packet = udp_query(b"query", 53);
         Ipv4Packet::new_unchecked(packet.mut_payload()).set_more_frags(true);
         let original = packet.payload().to_vec();
 
-        assert!(
-            !process_magic_dns_packet(
-                &mut packet,
-                "100.100.100.101".parse().unwrap(),
-                42,
-                |_| async { panic!("fragmented packet must not invoke DNS") },
-            )
-            .await
-        );
+        assert!(MagicDnsPacketInfo::parse(&packet, "100.100.100.101".parse().unwrap()).is_none());
         assert_eq!(packet.payload(), original);
     }
 
-    #[tokio::test]
-    async fn packet_engine_rejects_oversized_response_without_mutation() {
+    #[test]
+    fn packet_engine_rejects_oversized_response_without_mutation() {
         let mut packet = udp_query(b"query", 53);
         let original = packet.payload().to_vec();
         let original_length = packet.buf_len();
 
-        assert!(
-            !process_magic_dns_packet(
-                &mut packet,
-                "100.100.100.101".parse().unwrap(),
-                42,
-                |_| async { Some(vec![0; u16::MAX as usize]) },
-            )
-            .await
-        );
+        let info = MagicDnsPacketInfo::parse(&packet, "100.100.100.101".parse().unwrap()).unwrap();
+        assert!(!info.apply_response(&mut packet, 42, Some(&vec![0; u16::MAX as usize])));
         assert_eq!(packet.buf_len(), original_length);
         assert_eq!(packet.payload(), original);
     }
 
-    #[tokio::test]
-    async fn packet_engine_replies_to_icmp_without_calling_dns() {
+    #[test]
+    fn packet_engine_replies_to_icmp_without_calling_dns() {
         let mut packet = icmp_echo_request();
-        let handled = process_magic_dns_packet(
-            &mut packet,
-            "100.100.100.101".parse().unwrap(),
-            7,
-            |_| async { panic!("ICMP must not invoke DNS") },
-        )
-        .await;
+        let info = MagicDnsPacketInfo::parse(&packet, "100.100.100.101".parse().unwrap()).unwrap();
+        assert!(info.query(&packet).is_none());
 
-        assert!(handled);
+        assert!(info.apply_response(&mut packet, 7, None));
         let ip = Ipv4Packet::new_checked(packet.payload()).unwrap();
         assert_eq!(
             ip.src_addr(),
@@ -748,17 +668,9 @@ mod tests {
         assert_eq!(packet.get_dst_peer_id(), Some(7));
     }
 
-    #[tokio::test]
-    async fn packet_engine_ignores_non_dns_udp() {
-        let mut packet = udp_query(b"query", 5353);
-        assert!(
-            !process_magic_dns_packet(
-                &mut packet,
-                "100.100.100.101".parse().unwrap(),
-                42,
-                |_| async { Some(Vec::new()) },
-            )
-            .await
-        );
+    #[test]
+    fn packet_engine_ignores_non_dns_udp() {
+        let packet = udp_query(b"query", 5353);
+        assert!(MagicDnsPacketInfo::parse(&packet, "100.100.100.101".parse().unwrap()).is_none());
     }
 }

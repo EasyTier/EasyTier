@@ -184,34 +184,17 @@ impl RequestHandler for CatalogRequestHandler {
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
-        handle_request(&self.catalog, request, response_handle).await
+        select_authority(&self.catalog, request)
+            .await
+            .catalog
+            .handle_request(request, response_handle)
+            .await
     }
-}
-
-async fn handle_request<R: ResponseHandler>(
-    catalog: &RwLock<Catalog>,
-    request: &Request,
-    response_handle: R,
-) -> ResponseInfo {
-    select_authority(catalog, request)
-        .await
-        .handle_request(request, response_handle)
-        .await
 }
 
 pub(super) struct SelectedAuthority {
-    catalog: Catalog,
+    pub catalog: Catalog,
     pub forwarding: bool,
-}
-
-impl SelectedAuthority {
-    pub async fn handle_request<R: ResponseHandler>(
-        &self,
-        request: &Request,
-        response_handle: R,
-    ) -> ResponseInfo {
-        self.catalog.handle_request(request, response_handle).await
-    }
 }
 
 async fn select_authority(catalog: &RwLock<Catalog>, request: &Request) -> SelectedAuthority {

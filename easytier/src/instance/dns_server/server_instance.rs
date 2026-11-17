@@ -43,11 +43,14 @@ use easytier_core::gateway::magic_dns::{
     MagicDnsRecordStore, MagicDnsResolverRegistration, MagicDnsRoute,
 };
 use easytier_core::instance::CorePacketPlane;
-use hickory_proto::op::{Header, MessageType, OpCode, ResponseCode};
+use hickory_proto::op::{Edns, Header, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
-use hickory_server::authority::{MessageRequest, MessageResponse, MessageResponseBuilder};
-use hickory_server::server::{Request, ResponseHandler, ResponseInfo};
+use hickory_server::authority::{
+    MessageRequest, MessageResponse, MessageResponseBuilder, ZoneType,
+};
+use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::store::in_memory::InMemoryAuthority;
 use std::sync::Mutex;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -379,30 +382,40 @@ impl ResponseHandler for ResponseWrapper {
     }
 }
 
-impl MagicDnsServerInstanceData {
-    async fn resolve_query_inner(&self, query: MagicDnsQuery) -> MagicDnsQueryResult {
+#[async_trait::async_trait]
+impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
+    async fn resolve(&self, query: MagicDnsQuery) -> MagicDnsQueryResult {
         let Ok(message) = MessageRequest::from_bytes(&query.payload) else {
             return MagicDnsQueryResult::Response(None);
         };
         let request = Request::new(message, query.source, hickory_proto::xfer::Protocol::Udp);
-        let selected = self.dns_server.select_authority(&request).await;
-        if selected.forwarding && self.is_local_reverse_query(&request) {
-            return MagicDnsQueryResult::Response(error_response(
-                &request,
-                ResponseCode::NXDomain,
-                true,
-            ));
+        let mut selected = self.dns_server.select_authority(&request).await;
+        if selected.forwarding
+            && let Some(name) = self.local_reverse_query(&request)
+        {
+            // Keep configured authorities ahead of this fallback. An empty
+            // local authority lets Catalog handle NXDOMAIN and EDNS normally.
+            selected.catalog.upsert(
+                name.clone(),
+                vec![Arc::new(InMemoryAuthority::empty(
+                    name.into(),
+                    ZoneType::Primary,
+                    false,
+                ))],
+            );
+            selected.forwarding = false;
         }
 
         let forwarding = selected.forwarding;
         let overload_response = if forwarding {
-            error_response(&request, ResponseCode::ServFail, false)
+            servfail_response(&request)
         } else {
             None
         };
         let response = async move {
             let response = Arc::new(Mutex::new(Vec::with_capacity(512)));
             selected
+                .catalog
                 .handle_request(
                     &request,
                     ResponseWrapper {
@@ -425,56 +438,56 @@ impl MagicDnsServerInstanceData {
             MagicDnsQueryResult::Response(response.await)
         }
     }
+}
 
-    fn is_local_reverse_query(&self, request: &Request) -> bool {
+impl MagicDnsServerInstanceData {
+    fn local_reverse_query(&self, request: &Request) -> Option<LowerName> {
         if request.message_type() != MessageType::Query || request.op_code() != OpCode::Query {
-            return false;
+            return None;
         }
-        let Ok(info) = request.request_info() else {
-            return false;
-        };
+        let info = request.request_info().ok()?;
         if info.query.query_type() != hickory_proto::rr::RecordType::PTR {
-            return false;
+            return None;
         }
         let name = info.query.name().to_string();
-        let Some(labels) = name.strip_suffix(".in-addr.arpa.") else {
-            return false;
-        };
+        let labels = name.strip_suffix(".in-addr.arpa.")?;
         let octets = labels
             .split('.')
             .map(str::parse::<u8>)
-            .collect::<Result<Vec<_>, _>>();
-        let Ok(octets) = octets else {
-            return false;
-        };
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
         let [a, b, c, d] = octets.as_slice() else {
-            return false;
+            return None;
         };
         let address = Ipv4Addr::new(*d, *c, *b, *a);
         self.local_ipv4_addresses
             .load()
             .iter()
             .any(|prefix| prefix.contains(&address))
+            .then(|| info.query.name().clone())
     }
 }
 
-fn error_response(request: &Request, code: ResponseCode, authoritative: bool) -> Option<Vec<u8>> {
+fn servfail_response(request: &Request) -> Option<Vec<u8>> {
     let mut header = Header::response_from_request(request.header());
-    header.set_response_code(code);
-    header.set_authoritative(authoritative);
-    let response = MessageResponseBuilder::from_message_request(request).build_no_records(header);
+    header.set_response_code(ResponseCode::ServFail);
+    let mut response = MessageResponseBuilder::from_message_request(request);
+    if let Some(request_edns) = request.edns() {
+        let mut edns = Edns::new();
+        edns.set_dnssec_ok(true);
+        edns.set_max_payload(request_edns.max_payload().max(512));
+        if request_edns.version() > 0 {
+            header.set_response_code(ResponseCode::BADVERS);
+            edns.set_rcode_high(ResponseCode::BADVERS.high());
+        }
+        response.edns(edns);
+    }
     let mut bytes = Vec::with_capacity(512);
     response
+        .build_no_records(header)
         .destructive_emit(&mut BinEncoder::new(&mut bytes))
         .ok()?;
     Some(bytes)
-}
-
-#[async_trait::async_trait]
-impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
-    async fn resolve(&self, query: MagicDnsQuery) -> MagicDnsQueryResult {
-        self.resolve_query_inner(query).await
-    }
 }
 
 #[async_trait::async_trait]
@@ -1059,6 +1072,14 @@ mod tests {
         name: &str,
         record_type: RecordType,
     ) -> MagicDnsQueryResult {
+        data.resolve(MagicDnsQuery {
+            source: "127.0.0.1:5353".parse().unwrap(),
+            payload: query_message(name, record_type).to_vec().unwrap(),
+        })
+        .await
+    }
+
+    fn query_message(name: &str, record_type: RecordType) -> Message {
         let mut request = Message::new();
         request.set_recursion_desired(true);
         request.add_query(Query::query(
@@ -1068,11 +1089,80 @@ mod tests {
             .unwrap(),
             record_type,
         ));
-        data.resolve_query_inner(MagicDnsQuery {
-            source: "127.0.0.1:5353".parse().unwrap(),
-            payload: request.to_vec().unwrap(),
-        })
-        .await
+        request
+    }
+
+    #[tokio::test]
+    async fn local_reverse_and_overload_responses_handle_edns() {
+        let data = data_with(None).await;
+        data.local_ipv4_addresses
+            .store(Arc::new(BTreeSet::from(["10.126.126.101/25"
+                .parse()
+                .unwrap()])));
+        for local in [true, false] {
+            let (name, kind, code) = if local {
+                (
+                    "100.126.126.10.in-addr.arpa.",
+                    RecordType::PTR,
+                    ResponseCode::NXDomain,
+                )
+            } else {
+                ("example.org.", RecordType::A, ResponseCode::ServFail)
+            };
+            for edns in [None, Some((0, 128)), Some((0, 1232)), Some((1, 1232))] {
+                let mut request = query_message(name, kind);
+                request.set_id(42);
+                if let Some((version, payload)) = edns {
+                    request
+                        .extensions_mut()
+                        .get_or_insert_with(Edns::new)
+                        .set_version(version)
+                        .set_max_payload(payload);
+                }
+                let code = if edns.is_some_and(|(version, _)| version > 0) {
+                    ResponseCode::BADVERS
+                } else {
+                    code
+                };
+                let result = data
+                    .resolve(MagicDnsQuery {
+                        source: "127.0.0.1:5353".parse().unwrap(),
+                        payload: request.to_vec().unwrap(),
+                    })
+                    .await;
+                let bytes = match result {
+                    MagicDnsQueryResult::Response(response) if local => response.unwrap(),
+                    MagicDnsQueryResult::Forward {
+                        response,
+                        overload_response,
+                    } if !local => {
+                        if code == ResponseCode::BADVERS {
+                            let answer = Message::from_vec(&response.await.unwrap()).unwrap();
+                            assert_eq!(u16::from(answer.response_code()), u16::from(code));
+                        }
+                        overload_response
+                    }
+                    _ => panic!("incorrect authority selection for {name}"),
+                };
+                let answer = Message::from_vec(&bytes).unwrap();
+                assert_eq!(answer.id(), request.id());
+                assert_eq!(answer.queries(), request.queries());
+                assert_eq!(u16::from(answer.response_code()), u16::from(code));
+                assert_eq!(
+                    answer.authoritative(),
+                    local && code != ResponseCode::BADVERS
+                );
+                assert!(answer.answers().is_empty());
+                assert_eq!(
+                    answer.extensions().as_ref().map(|edns| (
+                        edns.version(),
+                        edns.max_payload(),
+                        edns.rcode_high(),
+                    )),
+                    edns.map(|(_, payload)| (0, payload.max(512), code.high()))
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -1192,10 +1282,10 @@ mod tests {
             async fn send_query(name: &str, kind: RecordType) -> UdpSocket {
                 let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
                 socket.connect("100.100.100.101:53").await.unwrap();
-                let mut query = Message::new();
-                query.set_recursion_desired(true);
-                query.add_query(Query::query(name.parse().unwrap(), kind));
-                socket.send(&query.to_vec().unwrap()).await.unwrap();
+                socket
+                    .send(&query_message(name, kind).to_vec().unwrap())
+                    .await
+                    .unwrap();
                 socket
             }
 
