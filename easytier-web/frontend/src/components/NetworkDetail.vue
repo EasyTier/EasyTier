@@ -172,7 +172,7 @@ const toggleMemberSuspend = async (member: CentralNetworkMember) => {
         });
         await loadAll();
     } catch (e: any) {
-        toast.add({ severity: 'error', summary: t('web.network_detail.suspend_member'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
+        toast.add({ severity: 'error', summary: suspend ? t('web.network_detail.suspend_member') : t('web.network_detail.resume_member'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
     }
 };
 

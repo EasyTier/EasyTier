@@ -78,6 +78,8 @@ pub enum CompileError {
 ///
 /// Input order is deliberately normalized. Callers can therefore compare the
 /// result directly when deciding whether materialized desired state changed.
+/// Suspended members are validated but omitted from the result, so being
+/// absent from the compiled output is meaningful only for them.
 pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, CompileError> {
     validate_network(intent)?;
 
@@ -101,7 +103,6 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
 
     let compiled_members = members
         .into_iter()
-        .filter(|member| member.enabled)
         .map(|member| {
             let credential = member
                 .credential_id
@@ -157,13 +158,18 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                 }
             })?;
 
-            Ok(CompiledMember {
+            // Suspended members are validated like every other member but
+            // are omitted from the published configuration until enabled.
+            Ok(member.enabled.then(|| CompiledMember {
                 member_id: member.id,
                 device_id: member.device_id.clone(),
                 network_config,
-            })
+            }))
         })
-        .collect::<Result<Vec<_>, CompileError>>()?;
+        .collect::<Result<Vec<_>, CompileError>>()?
+        .into_iter()
+        .flatten()
+        .collect();
 
     Ok(CompiledNetwork {
         members: compiled_members,

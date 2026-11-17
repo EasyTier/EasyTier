@@ -315,6 +315,11 @@ impl CentralNetworkService {
             .await?;
         let mut counts = BTreeMap::new();
         for member in members {
+            // Suspended members are not part of the running network,
+            // matching what list_device_networks reports for them.
+            if !member.enabled {
+                continue;
+            }
             let (total, online_count) = counts.entry(member.network_id).or_insert((0, 0));
             *total += 1;
             *online_count += usize::from(online.contains(&member.device_id));
@@ -438,7 +443,12 @@ impl CentralNetworkService {
             secure_mode: intent.secure_mode,
             public_server_url,
             peer_urls,
-            member_count: intent.members.len(),
+            // Suspended members are omitted, matching list_networks.
+            member_count: intent
+                .members
+                .iter()
+                .filter(|member| member.enabled)
+                .count(),
         })
     }
 
@@ -2754,6 +2764,16 @@ mod tests {
         assert_eq!(suspended.allocated_ipv4.as_deref(), Some(assigned.as_str()));
         assert_eq!(suspended.virtual_ipv4, before.virtual_ipv4);
         assert_eq!(suspended.config_override, before.config_override);
+
+        let summaries = service.list_networks(user_id).await.unwrap();
+        let summary = summaries
+            .iter()
+            .find(|item| item.network_id == network.network_id)
+            .unwrap();
+        assert_eq!(summary.member_count, 0);
+        assert_eq!(summary.online_member_count, 0);
+        let detail = service.get_network(user_id, network_id).await.unwrap();
+        assert_eq!(detail.member_count, 0);
 
         let info = service
             .update_member(

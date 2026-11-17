@@ -92,22 +92,26 @@ fn prepare_intent(intent: CentralNetworkIntent) -> Result<PreparedIntent, Centra
         let device_id = Uuid::parse_str(&member.device_id)
             .map_err(|_| CentralIntentError::InvalidDeviceId(member.device_id.clone()))?;
         let compiled = compiled_by_member.get(&member.id);
-        // The compiler omits suspended members, so their address reservation
-        // is whatever the stored row already holds instead of a fresh
-        // assignment derived from the compiled output.
-        let allocated_ipv4 = member
-            .virtual_ipv4
-            .is_none()
-            .then(|| {
-                if member.enabled {
-                    compiled
-                        .map(|item| item.network_config.virtual_ipv4.clone())
-                        .flatten()
-                } else {
-                    member.allocated_ipv4.clone()
-                }
-            })
-            .flatten();
+        let allocated_ipv4 = match (member.virtual_ipv4.is_some(), member.enabled) {
+            (true, _) => None,
+            (false, true) => {
+                // Enabled members are always part of the compiled output; a
+                // missing entry means the compiler dropped the member for an
+                // unknown reason and persisting would silently clear the
+                // stored address reservation.
+                let compiled = compiled.ok_or_else(|| {
+                    CentralIntentError::InvalidStoredData(format!(
+                        "compiler omitted member {}",
+                        member.id
+                    ))
+                })?;
+                compiled.network_config.virtual_ipv4.clone()
+            }
+            // The compiler omits suspended members, so their address
+            // reservation is whatever the stored row already holds instead
+            // of a fresh assignment derived from the compiled output.
+            (false, false) => member.allocated_ipv4.clone(),
+        };
         members.push(PreparedMember {
             id: member.id.to_string(),
             device_id,
@@ -924,6 +928,38 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(after, original);
+    }
+
+    #[tokio::test]
+    async fn suspended_member_with_invalid_override_is_rejected() {
+        let db = Db::memory_db().await;
+        let user_id = db
+            .auto_create_user("central-suspended-invalid-config")
+            .await
+            .unwrap()
+            .id;
+        let network_id = Uuid::new_v4();
+        let devices = [Uuid::new_v4(), Uuid::new_v4()];
+        register_devices(&db, user_id, &devices).await;
+        db.save_central_network_intent(intent(user_id, network_id, devices))
+            .await
+            .unwrap();
+        let mut candidate = db
+            .load_central_network_intent(user_id, network_id)
+            .await
+            .unwrap()
+            .unwrap();
+        candidate.members[0].enabled = false;
+        candidate.members[0].config_override = Some(easytier::common::config::NetworkConfig {
+            proxy_cidrs: vec!["2001:db8:240::/64".to_owned()],
+            ..Default::default()
+        });
+        assert!(matches!(
+            db.save_central_network_intent(candidate).await,
+            Err(CentralIntentError::Compile(
+                CompileError::InvalidMemberConfig { .. }
+            ))
+        ));
     }
 
     #[tokio::test]
