@@ -117,7 +117,7 @@ impl MagicDnsResolverRegistration {
         Self { pipeline, state }
     }
 
-    pub async fn close(&self) {
+    pub async fn close(self) {
         self.pipeline.close();
         let mut tasks = self.state.stop();
         while tasks.join_next().await.is_some() {}

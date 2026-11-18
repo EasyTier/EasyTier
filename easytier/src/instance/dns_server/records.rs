@@ -5,10 +5,23 @@ use std::{
 };
 
 use easytier_core::gateway::magic_dns::MagicDnsRecordSnapshot;
-use hickory_proto::rr::{LowerName, Name, Record, RecordSet, RecordType, RrKey};
+use hickory_proto::rr::{LowerName, Name, RData, Record, RecordSet, RecordType, RrKey, rdata::SOA};
 use hickory_server::{authority::ZoneType, store::in_memory::InMemoryAuthority};
 
 use super::config::{RecordBuilder, RecordType as ConfigRecordType};
+
+pub(super) fn default_soa(origin: &LowerName) -> anyhow::Result<Record> {
+    let soa = SOA::new(
+        origin.prepend_label("ns")?,
+        origin.prepend_label("hostmaster")?,
+        2023101001,
+        7200,
+        3600,
+        1209600,
+        86400,
+    );
+    Ok(Record::from_rdata(origin.into(), 60, RData::SOA(soa)))
+}
 
 fn merge_configured_records(
     snapshot: &MagicDnsRecordSnapshot,
@@ -123,15 +136,7 @@ pub(super) fn build_authorities(
             }
         }
         if !has_soa {
-            let soa = RecordBuilder::default()
-                .rr_type(ConfigRecordType::SOA)
-                .name(origin.to_string())
-                .value(format!(
-                    "ns.{origin} hostmaster.{origin} 2023101001 7200 3600 1209600 86400"
-                ))
-                .ttl(Duration::from_secs(60))
-                .build()?;
-            authority.upsert_mut((&soa).try_into()?, 0);
+            authority.upsert_mut(default_soa(&origin)?, 0);
         }
         authorities.insert(origin, Arc::new(authority));
     }

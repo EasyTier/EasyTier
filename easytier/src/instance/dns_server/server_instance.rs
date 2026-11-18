@@ -9,7 +9,7 @@
 use super::{
     MAGIC_DNS_INSTANCE_SOCKET_ADDR,
     config::{GeneralConfigBuilder, RunConfigBuilder},
-    records::build_authorities,
+    records::{build_authorities, default_soa},
     server::Server,
     system_config::{OSConfig, SystemConfig},
     zone,
@@ -393,16 +393,12 @@ impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
         if selected.forwarding
             && let Some(name) = self.local_reverse_query(&request)
         {
-            // Keep configured authorities ahead of this fallback. An empty
-            // local authority lets Catalog handle NXDOMAIN and EDNS normally.
-            selected.catalog.upsert(
-                name.clone(),
-                vec![Arc::new(InMemoryAuthority::empty(
-                    name.into(),
-                    ZoneType::Primary,
-                    false,
-                ))],
-            );
+            // Keep configured authorities ahead of this fallback. The SOA at
+            // the queried name makes the negative answer specific to PTR.
+            let soa = default_soa(&name).expect("IPv4 reverse name fits the SOA names");
+            let mut authority = InMemoryAuthority::empty((&name).into(), ZoneType::Primary, false);
+            authority.upsert_mut(soa, 0);
+            selected.catalog.upsert(name, vec![Arc::new(authority)]);
             selected.forwarding = false;
         }
 
@@ -451,15 +447,8 @@ impl MagicDnsServerInstanceData {
         }
         let name = info.query.name().to_string();
         let labels = name.strip_suffix(".in-addr.arpa.")?;
-        let octets = labels
-            .split('.')
-            .map(str::parse::<u8>)
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
-        let [a, b, c, d] = octets.as_slice() else {
-            return None;
-        };
-        let address = Ipv4Addr::new(*d, *c, *b, *a);
+        let [fourth, third, second, first] = labels.parse::<Ipv4Addr>().ok()?.octets();
+        let address = Ipv4Addr::new(first, second, third, fourth);
         self.local_ipv4_addresses
             .load()
             .iter()
@@ -889,7 +878,7 @@ impl MagicDnsServerInstance {
         }
     }
 
-    pub async fn clean_env(&self) {
+    pub async fn clean_env(self) {
         let _apply = self.data.record_apply.lock().await;
         self.data
             .closing
@@ -912,12 +901,6 @@ impl MagicDnsServerInstance {
         }
 
         self.packet_filter.close().await;
-    }
-}
-
-impl Drop for MagicDnsServerInstance {
-    fn drop(&mut self) {
-        println!("MagicDnsServerInstance dropped");
     }
 }
 
@@ -1104,7 +1087,7 @@ mod tests {
                 (
                     "100.126.126.10.in-addr.arpa.",
                     RecordType::PTR,
-                    ResponseCode::NXDomain,
+                    ResponseCode::NoError,
                 )
             } else {
                 ("example.org.", RecordType::A, ResponseCode::ServFail)
@@ -1153,6 +1136,13 @@ mod tests {
                     local && code != ResponseCode::BADVERS
                 );
                 assert!(answer.answers().is_empty());
+                if local && code == ResponseCode::NoError {
+                    let [record] = answer.name_servers() else {
+                        panic!("expected one SOA in the authority section");
+                    };
+                    assert_eq!(record.name(), request.queries()[0].name());
+                    assert!(record.ttl().min(record.data().as_soa().unwrap().minimum()) > 0);
+                }
                 assert_eq!(
                     answer.extensions().as_ref().map(|edns| (
                         edns.version(),
@@ -1198,7 +1188,8 @@ mod tests {
                 RecordType::PTR,
             )
             .await;
-            assert_eq!(answer.response_code(), ResponseCode::NXDomain);
+            assert_eq!(answer.response_code(), ResponseCode::NoError);
+            assert!(answer.answers().is_empty());
             assert!(answer.authoritative());
         }
         for name in [
@@ -1207,6 +1198,7 @@ mod tests {
             "126.126.10.in-addr.arpa.",
             "invalid.126.126.10.in-addr.arpa.",
             "+100.126.126.10.in-addr.arpa.",
+            "001.126.126.10.in-addr.arpa.",
             "1.0.0.0.ip6.arpa.",
         ] {
             assert!(
@@ -1239,7 +1231,7 @@ mod tests {
             query(&data, "200.126.126.10.in-addr.arpa.", RecordType::PTR)
                 .await
                 .response_code(),
-            ResponseCode::NXDomain
+            ResponseCode::NoError
         );
         data.local_ipv4_addresses.store(Arc::default());
         assert!(matches!(
@@ -1370,7 +1362,9 @@ mod tests {
                 );
                 let reverse = send_query("42.100.100.100.in-addr.arpa.", RecordType::PTR).await;
                 let response = receive(&reverse).await;
-                assert_eq!(response.response_code(), ResponseCode::NXDomain);
+                assert_eq!(response.response_code(), ResponseCode::NoError);
+                assert!(response.answers().is_empty());
+                assert_eq!(response.name_servers()[0].record_type(), RecordType::SOA);
                 assert!(response.authoritative());
             })
             .await
@@ -1395,7 +1389,6 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), server.clean_env())
                 .await
                 .unwrap();
-            drop(server);
             let replacement = Arc::new(data_with(None).await);
             let server = MagicDnsServerInstance::start(
                 StandAloneServer::new(runtime_rpc_listener(rpc_address())),
@@ -1717,7 +1710,7 @@ mod tests {
                     assert!(system.domains.lock().unwrap().is_empty());
                     let writes = system.writes.load(Ordering::SeqCst);
                     assert!(
-                        rpc.update_dns_record(BaseController::default(), request("10.0.0.9/24"))
+                        data.update_dns_record(controller(4002), request("10.0.0.9/24"))
                             .await
                             .is_err()
                     );
