@@ -434,6 +434,11 @@ impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
             MagicDnsQueryResult::Response(response.await)
         }
     }
+
+    fn overload_response(&self, query: &MagicDnsQuery) -> Option<Vec<u8>> {
+        let message = MessageRequest::from_bytes(&query.payload).ok()?;
+        servfail_response(&message)
+    }
 }
 
 impl MagicDnsServerInstanceData {
@@ -457,7 +462,7 @@ impl MagicDnsServerInstanceData {
     }
 }
 
-fn servfail_response(request: &Request) -> Option<Vec<u8>> {
+fn servfail_response(request: &MessageRequest) -> Option<Vec<u8>> {
     let mut header = Header::response_from_request(request.header());
     header.set_response_code(ResponseCode::ServFail);
     let mut response = MessageResponseBuilder::from_message_request(request);
@@ -1107,18 +1112,18 @@ mod tests {
                 } else {
                     code
                 };
-                let result = data
-                    .resolve(MagicDnsQuery {
-                        source: "127.0.0.1:5353".parse().unwrap(),
-                        payload: request.to_vec().unwrap(),
-                    })
-                    .await;
+                let query = MagicDnsQuery {
+                    source: "127.0.0.1:5353".parse().unwrap(),
+                    payload: request.to_vec().unwrap(),
+                };
+                let result = data.resolve(query.clone()).await;
                 let bytes = match result {
                     MagicDnsQueryResult::Response(response) if local => response.unwrap(),
                     MagicDnsQueryResult::Forward {
                         response,
                         overload_response,
                     } if !local => {
+                        assert_eq!(data.overload_response(&query).unwrap(), overload_response);
                         if code == ResponseCode::BADVERS {
                             let answer = Message::from_vec(&response.await.unwrap()).unwrap();
                             assert_eq!(u16::from(answer.response_code()), u16::from(code));
