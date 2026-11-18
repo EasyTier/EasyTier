@@ -589,15 +589,17 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     struct MockHandler {
         accepted: Mutex<Vec<usize>>,
+        accepted_notify: tokio::sync::Notify,
     }
 
     #[async_trait]
     impl AcceptedSocketHandler<usize> for MockHandler {
         async fn handle_accepted_socket(&self, accepted: usize) -> anyhow::Result<()> {
             self.accepted.lock().unwrap().push(accepted);
+            self.accepted_notify.notify_one();
             Ok(())
         }
     }
@@ -635,9 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn required_listener_reuses_successful_initial_listen() {
-        let handler = Arc::new(MockHandler {
-            accepted: Mutex::new(Vec::new()),
-        });
+        let handler = Arc::new(MockHandler::default());
         let events = Arc::new(Events::default());
         let listen_count = Arc::new(AtomicUsize::new(0));
         let drop_count = Arc::new(AtomicUsize::new(0));
@@ -668,7 +668,9 @@ mod tests {
         );
 
         manager.run().await.unwrap();
-        crate::foundation::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::timeout(Duration::from_secs(1), handler.accepted_notify.notified())
+            .await
+            .expect("required listener did not handle the accepted socket");
 
         assert_eq!(listen_count.load(Ordering::Relaxed), 1);
         assert_eq!(handler.accepted.lock().unwrap().as_slice(), &[7]);
@@ -684,9 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn optional_listener_retries_until_listen_succeeds() {
-        let handler = Arc::new(MockHandler {
-            accepted: Mutex::new(Vec::new()),
-        });
+        let handler = Arc::new(MockHandler::default());
         let events = Arc::new(Events::default());
         let listen_count = Arc::new(AtomicUsize::new(0));
         let listen_results = Arc::new(Mutex::new(VecDeque::from([
@@ -720,7 +720,9 @@ mod tests {
         );
 
         manager.run().await.unwrap();
-        crate::foundation::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::timeout(Duration::from_secs(1), handler.accepted_notify.notified())
+            .await
+            .expect("optional listener did not handle the accepted socket after retry");
 
         assert!(listen_count.load(Ordering::Relaxed) >= 2);
         assert_eq!(handler.accepted.lock().unwrap().as_slice(), &[3]);
@@ -735,9 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn required_listener_failure_does_not_leave_partial_tasks_running() {
-        let handler = Arc::new(MockHandler {
-            accepted: Mutex::new(Vec::new()),
-        });
+        let handler = Arc::new(MockHandler::default());
         let events = Arc::new(Events::default());
         let first_accepts = Arc::new(Mutex::new(VecDeque::from([Ok::<_, anyhow::Error>(9)])));
         let mut manager = ListenerManager::new_with_options(
@@ -961,9 +961,7 @@ mod tests {
     async fn stop_interrupts_required_listener_startup() {
         let started = Arc::new(tokio::sync::Notify::new());
         let mut manager = ListenerManager::new_with_events(
-            Arc::new(MockHandler {
-                accepted: Mutex::new(Vec::new()),
-            }),
+            Arc::new(MockHandler::default()),
             Arc::new(Events::default()),
         );
         let listener_started = started.clone();
