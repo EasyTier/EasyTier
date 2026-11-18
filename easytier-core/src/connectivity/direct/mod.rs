@@ -63,6 +63,7 @@ mod udp;
 const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT: Duration = Duration::from_secs(300);
 const INVALID_SERVICE_BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const DIRECT_CONNECT_FALLBACK_DELAY: Duration = Duration::from_millis(200);
 const DIRECT_TASK_LOOP_INTERVAL_MS: u64 = 5000;
 const MAX_IPV6_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
 const MAX_UDP_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
@@ -449,20 +450,69 @@ where
             }
         });
 
+        let interface_ipv4s: HashSet<Ipv4Addr> = ip_list
+            .interface_ipv4s
+            .iter()
+            .copied()
+            .map(Ipv4Addr::from)
+            .collect();
+
         while !available_listeners.is_empty() {
+            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+                return Ok(());
+            }
+
+            let listener = available_listeners.last().expect("non-empty listener list");
+            let current_scheme = listener.scheme().to_owned();
+            let mut candidates = Vec::new();
             let mut tasks = JoinSet::new();
-            let current_scheme = available_listeners
-                .last()
-                .expect("non-empty listener list")
-                .scheme()
-                .to_owned();
+            let mut domain_listeners = Vec::new();
             while available_listeners
                 .last()
                 .is_some_and(|listener| listener.scheme() == current_scheme)
             {
                 let listener = available_listeners.pop().expect("listener should exist");
-                self.spawn_direct_connect_tasks(dst_peer_id, &ip_list, &listener, &mut tasks)
+                if matches!(listener.host(), Some(Host::Domain(host)) if host.parse::<IpAddr>().is_err())
+                {
+                    domain_listeners.push(listener);
+                    continue;
+                }
+                self.collect_direct_connect_candidates(&ip_list, &listener, &mut candidates)
                     .await;
+            }
+            self.listener_blacklist.cleanup();
+            let prefer_interface = candidates.iter().any(|url| {
+                is_interface_candidate(url, &interface_ipv4s)
+                    && !self
+                        .listener_blacklist
+                        .contains(&ListenerBlacklistKey(dst_peer_id, url.to_string()))
+            });
+            let fallback_at = prefer_interface
+                .then(|| crate::foundation::time::Instant::now() + DIRECT_CONNECT_FALLBACK_DELAY);
+            self.spawn_direct_connect_tasks(
+                dst_peer_id,
+                candidates,
+                &interface_ipv4s,
+                fallback_at,
+                &mut tasks,
+            );
+            // Slow DNS must not hold numeric candidates outside the window.
+            // Domains are fallback candidates because their eventual dial can
+            // resolve to a different address than this observation.
+            for listener in domain_listeners {
+                if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+                    break;
+                }
+                let mut candidates = Vec::new();
+                self.collect_direct_connect_candidates(&ip_list, &listener, &mut candidates)
+                    .await;
+                self.spawn_direct_connect_tasks(
+                    dst_peer_id,
+                    candidates,
+                    &interface_ipv4s,
+                    fallback_at,
+                    &mut tasks,
+                );
             }
             let _ = tasks.join_all().await;
             if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
@@ -472,12 +522,34 @@ where
         Ok(())
     }
 
-    async fn spawn_direct_connect_tasks(
+    fn spawn_direct_connect_tasks(
         self: &Arc<Self>,
         dst_peer_id: PeerId,
+        candidates: Vec<Url>,
+        interface_ipv4s: &HashSet<Ipv4Addr>,
+        fallback_at: Option<crate::foundation::time::Instant>,
+        tasks: &mut JoinSet<anyhow::Result<()>>,
+    ) {
+        for url in candidates {
+            let delay_until =
+                fallback_at.filter(|_| !is_interface_candidate(&url, interface_ipv4s));
+            let data = self.clone();
+            tasks.spawn(async move {
+                if let Some(deadline) = delay_until {
+                    crate::foundation::time::sleep_until(deadline).await;
+                }
+                // The existing URL guard skips dialing if another candidate
+                // authenticated during the interface candidate's head start.
+                data.try_connect_to_url(dst_peer_id, url.to_string()).await
+            });
+        }
+    }
+
+    async fn collect_direct_connect_candidates(
+        self: &Arc<Self>,
         ip_list: &GetIpListResponse,
         listener: &Url,
-        tasks: &mut JoinSet<anyhow::Result<()>>,
+        candidates: &mut Vec<Url>,
     ) {
         let Ok(mut addrs) = resolve_mapped_listener_addrs(
             listener,
@@ -516,11 +588,7 @@ where
                     }
                     let mut url = listener.clone();
                     if url.set_ip_host(target.ip()).is_ok() {
-                        tasks.spawn(Self::try_connect_to_url(
-                            self.clone(),
-                            dst_peer_id,
-                            url.to_string(),
-                        ));
+                        candidates.push(url);
                     }
                 }
             }
@@ -528,14 +596,10 @@ where
                 if (!socket_addr.ip().is_loopback() || self.options.testing)
                     && !should_deny_target(&SocketAddr::V4(socket_addr)) =>
             {
-                tasks.spawn(Self::try_connect_to_url(
-                    self.clone(),
-                    dst_peer_id,
-                    listener.to_string(),
-                ));
+                candidates.push(listener.clone());
             }
             Some(SocketAddr::V6(socket_addr)) if socket_addr.ip().is_unspecified() => {
-                let mut candidates = HashSet::new();
+                let mut ipv6_candidates = HashSet::new();
                 for ip in ip_list
                     .interface_ipv6s
                     .iter()
@@ -543,21 +607,17 @@ where
                     .map(|ip| Ipv6Addr::from(*ip))
                 {
                     if self.is_usable_public_ipv6(&ip).await {
-                        candidates.insert(ip);
+                        ipv6_candidates.insert(ip);
                     }
                 }
-                for ip in candidates {
+                for ip in ipv6_candidates {
                     let target = SocketAddr::new(IpAddr::V6(ip), socket_addr.port());
                     if should_deny_target(&target) {
                         continue;
                     }
                     let mut url = listener.clone();
                     if url.set_ip_host(target.ip()).is_ok() {
-                        tasks.spawn(Self::try_connect_to_url(
-                            self.clone(),
-                            dst_peer_id,
-                            url.to_string(),
-                        ));
+                        candidates.push(url);
                     }
                 }
             }
@@ -573,11 +633,7 @@ where
                 if (!socket_addr.ip().is_loopback() || self.options.testing)
                     && !should_deny_target(&SocketAddr::V6(socket_addr)) =>
             {
-                tasks.spawn(Self::try_connect_to_url(
-                    self.clone(),
-                    dst_peer_id,
-                    listener.to_string(),
-                ));
+                candidates.push(listener.clone());
             }
             _ => {}
         }
@@ -1214,6 +1270,13 @@ fn resolve_literal_url(url: &Url, ip_version: IpVersion) -> anyhow::Result<Socke
     }
 }
 
+fn is_interface_candidate(url: &Url, interface_ipv4s: &HashSet<Ipv4Addr>) -> bool {
+    // Non-special schemes such as tcp can expose an IPv4 literal as a domain.
+    url.host_str()
+        .and_then(|host| host.parse::<Ipv4Addr>().ok())
+        .is_some_and(|ip| interface_ipv4s.contains(&ip))
+}
+
 fn is_public_ipv4(ip: Ipv4Addr) -> bool {
     !ip.is_private()
         && !ip.is_loopback()
@@ -1224,6 +1287,8 @@ fn is_public_ipv4(ip: Ipv4Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
+    mod scheduling;
+
     use std::sync::atomic::Ordering;
 
     use super::*;
