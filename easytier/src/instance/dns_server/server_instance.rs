@@ -67,6 +67,8 @@ pub(super) struct MagicDnsServerInstanceData {
     default_zone: LowerName,
     system_dns_domains: Arc<Mutex<Vec<String>>>,
     system_dns_guards: Mutex<BTreeSet<LowerName>>,
+    #[cfg(target_os = "linux")]
+    forwarder_resolv_conf: Mutex<Option<String>>,
     system_dns_ready: std::sync::atomic::AtomicBool,
     closing: std::sync::atomic::AtomicBool,
     system_config: Option<Arc<dyn SystemConfig>>,
@@ -79,12 +81,28 @@ impl MagicDnsServerInstanceData {
         };
         let apply = self.record_apply.clone().lock_owned().await;
         let configer = configer.clone();
-        let (_apply, result) = tokio::task::spawn_blocking(move || {
-            let result = configer.prepare();
-            (apply, result)
+        let (_apply, original) = tokio::task::spawn_blocking(move || {
+            let original = configer
+                .prepare()
+                .and_then(|()| configer.original_resolv_conf());
+            (apply, original)
         })
         .await?;
-        result?;
+        self.refresh_forwarder(original?).await
+    }
+
+    async fn refresh_forwarder(&self, original: Option<String>) -> anyhow::Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(text) = original
+            && self.forwarder_resolv_conf.lock().unwrap().as_ref() != Some(&text)
+        {
+            self.dns_server
+                .set_forwarder_from_resolv_conf(&text, self.fake_ip.into())
+                .await?;
+            *self.forwarder_resolv_conf.lock().unwrap() = Some(text);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = original;
         Ok(())
     }
 
@@ -171,18 +189,32 @@ impl MagicDnsServerInstanceData {
                 search_domains: vec![domains[0].clone()],
                 match_domains: domains.clone(),
             };
+            let (guard, result) = if configer.needs_resolv_conf_recovery() {
+                let reader = configer.clone();
+                let (guard, original) =
+                    tokio::task::spawn_blocking(move || (apply, reader.original_resolv_conf()))
+                        .await?;
+                let result = match original {
+                    Ok(original) => self.refresh_forwarder(original).await,
+                    Err(error) => Err(error.into()),
+                };
+                (guard, result)
+            } else {
+                (apply, Ok(()))
+            };
             let (guard, result) = tokio::task::spawn_blocking(move || {
                 // A failed platform write can be partial. Only skip a later
                 // write when these domains were successfully configured.
                 system_dns_domains.lock().unwrap().clear();
-                let result = configer.set_dns(&cfg);
+                let result =
+                    result.and_then(|()| configer.set_dns(&cfg).map_err(anyhow::Error::from));
                 if result.is_ok() {
                     *system_dns_domains.lock().unwrap() = domains;
                 }
-                (apply, result)
+                (guard, result)
             })
             .await?;
-            system_result = result.map_err(anyhow::Error::from);
+            system_result = result;
             if let Err(error) = &system_result
                 && !withdrawing
             {
@@ -571,6 +603,11 @@ impl MagicDnsServerInstance {
         };
         let dns_config = RunConfigBuilder::default()
             .general(GeneralConfigBuilder::default().build()?)
+            .defer_system_forwarder(
+                system_config
+                    .as_ref()
+                    .is_some_and(|configer| configer.needs_resolv_conf_recovery()),
+            )
             .excluded_forward_nameservers(vec![fake_ip.into()])
             .build()?;
         let mut dns_server = Server::new(dns_config);
@@ -588,6 +625,8 @@ impl MagicDnsServerInstance {
             default_zone: default_zone.clone(),
             system_dns_domains: Arc::new(Mutex::new(Vec::new())),
             system_dns_guards: Mutex::new(BTreeSet::new()),
+            #[cfg(target_os = "linux")]
+            forwarder_resolv_conf: Mutex::new(None),
             system_dns_ready: std::sync::atomic::AtomicBool::new(false),
             closing: std::sync::atomic::AtomicBool::new(false),
             system_config,
@@ -740,12 +779,14 @@ impl MagicDnsServerInstance {
         let apply = self.data.record_apply.clone().lock_owned().await;
         let configer = configer.clone();
         let refreshed = tokio::task::spawn_blocking(move || {
-            let result = configer.refresh();
+            let result = configer
+                .refresh()
+                .and_then(|()| configer.original_resolv_conf());
             (apply, result)
         })
         .await;
-        let apply = match refreshed {
-            Ok((apply, Ok(()))) => apply,
+        let (apply, original) = match refreshed {
+            Ok((apply, Ok(original))) => (apply, original),
             Ok((_, Err(error))) => {
                 self.data.system_dns_domains.lock().unwrap().clear();
                 log::warn!(
@@ -760,6 +801,11 @@ impl MagicDnsServerInstance {
                 return;
             }
         };
+        if let Err(error) = self.data.refresh_forwarder(original).await {
+            self.data.system_dns_domains.lock().unwrap().clear();
+            log::warn!(category: "DNS", ?error, "Keeping the previous Magic DNS upstream");
+            return;
+        }
         let needs_retry = self.data.system_dns_domains.lock().unwrap().is_empty();
         if needs_retry {
             match self
@@ -907,6 +953,8 @@ mod tests {
             system_dns_domains: Arc::new(Mutex::new(Vec::new())),
             system_dns_guards: Mutex::new(BTreeSet::new()),
             system_dns_ready: std::sync::atomic::AtomicBool::new(true),
+            #[cfg(target_os = "linux")]
+            forwarder_resolv_conf: Mutex::new(None),
             closing: std::sync::atomic::AtomicBool::new(false),
             system_config: None,
         };
@@ -1140,6 +1188,48 @@ mod tests {
                 server.clean_env().await;
                 core.stop().await;
             }
+        }
+
+        #[cfg(target_os = "linux")]
+        #[tokio::test]
+        async fn startup_loads_plain_forwarder_without_recovery_storage() {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("resolv.conf");
+            let original = "nameserver 192.0.2.53\nsearch lan.test\n";
+            std::fs::write(&path, original).unwrap();
+            std::fs::write(directory.path().join(".easytier-dns"), "not a directory").unwrap();
+            let (core, _packets) = build_test_core(get_mock_global_ctx()).await;
+            let mut data = data_with(None).await;
+            data.dns_server = Server::new(
+                RunConfigBuilder::default()
+                    .general(GeneralConfigBuilder::default().build().unwrap())
+                    .defer_system_forwarder(true)
+                    .build()
+                    .unwrap(),
+            );
+            data.system_config = Some(Arc::new(
+                super::super::super::system_config::resolv_conf::ResolvConfConfigurator::new(
+                    path.clone(),
+                ),
+            ));
+            data.system_dns_ready.store(false, Ordering::SeqCst);
+            let data = Arc::new(data);
+            let server = MagicDnsServerInstance::start(
+                StandAloneServer::new(runtime_rpc_listener(rpc_address())),
+                data.clone(),
+                core.packet_plane(),
+                "100.100.100.0/24".parse().unwrap(),
+                async { Ok(()) },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                data.forwarder_resolv_conf.lock().unwrap().as_deref(),
+                Some(original)
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+            server.clean_env().await;
+            core.stop().await;
         }
 
         fn rpc_address() -> std::net::SocketAddr {

@@ -31,13 +31,15 @@ const DBUS_METHOD_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn new_configurator(interface: &str) -> io::Result<Box<dyn SystemConfig>> {
     let resolv_conf = fs::read_to_string("/etc/resolv.conf")?;
     let nsswitch = fs::read_to_string("/etc/nsswitch.conf").unwrap_or_default();
-    if !ResolvedConfigurator::uses_resolved(&resolv_conf, &nsswitch) {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Automatic Magic DNS on Linux requires systemd-resolved in the system query path",
-        ));
+    if !super::resolv_conf::ResolvConfConfigurator::needs_recovery(&resolv_conf)
+        && ResolvedConfigurator::uses_resolved(&resolv_conf, &nsswitch)
+    {
+        return Ok(Box::new(ResolvedConfigurator::new(interface)));
     }
-    Ok(Box::new(ResolvedConfigurator::new(interface)))
+
+    let configer = super::resolv_conf::ResolvConfConfigurator::new("/etc/resolv.conf".into());
+    configer.check_support()?;
+    Ok(Box::new(configer))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

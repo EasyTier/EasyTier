@@ -241,31 +241,35 @@ impl Server {
         }
 
         // use forwarder authority for the root zone
-        let system_conf =
-            read_system_conf().unwrap_or((get_default_resolver_config(), ResolverOpts::default()));
-        let forward_config = ForwardConfig {
-            name_servers: system_conf
-                .0
-                .name_servers()
-                .iter()
-                .filter(|&x| {
-                    !config
-                        .excluded_forward_nameservers()
-                        .contains(&x.socket_addr.ip())
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-                .into(),
-            options: Some(system_conf.1),
-        };
-        let auth = ForwardAuthority::builder_with_config(
-            forward_config,
-            TokioConnectionProvider::default(),
-        )
-        .build()
-        .unwrap();
+        // A persistent file takeover must recover the original resolver before
+        // reading it. Its owner installs this same root authority after election.
+        if !config.defer_system_forwarder() {
+            let system_conf = read_system_conf()
+                .unwrap_or((get_default_resolver_config(), ResolverOpts::default()));
+            let forward_config = ForwardConfig {
+                name_servers: system_conf
+                    .0
+                    .name_servers()
+                    .iter()
+                    .filter(|&x| {
+                        !config
+                            .excluded_forward_nameservers()
+                            .contains(&x.socket_addr.ip())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into(),
+                options: Some(system_conf.1),
+            };
+            let auth = ForwardAuthority::builder_with_config(
+                forward_config,
+                TokioConnectionProvider::default(),
+            )
+            .build()
+            .unwrap();
 
-        catalog.upsert(rr::Name::from_str(".")?.into(), vec![Arc::new(auth)]);
+            catalog.upsert(rr::Name::from_str(".")?.into(), vec![Arc::new(auth)]);
+        }
 
         let catalog = Arc::new(RwLock::new(catalog));
         let handler = CatalogRequestHandler::new(catalog.clone());
@@ -353,6 +357,39 @@ impl Server {
 
     pub async fn local_origins(&self) -> BTreeSet<LowerName> {
         self.local_zones.read().await.keys().cloned().collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn set_forwarder_from_resolv_conf(
+        &self,
+        text: &str,
+        excluded: std::net::IpAddr,
+    ) -> Result<()> {
+        let (config, options) = hickory_resolver::system_conf::parse_resolv_conf(text)?;
+        let name_servers: Vec<_> = config
+            .name_servers()
+            .iter()
+            .filter(|server| server.socket_addr.ip() != excluded)
+            .cloned()
+            .collect();
+        anyhow::ensure!(
+            !name_servers.is_empty(),
+            "No original DNS upstream remains after excluding Magic DNS"
+        );
+        let authority = ForwardAuthority::builder_with_config(
+            ForwardConfig {
+                name_servers: name_servers.into(),
+                options: Some(options),
+            },
+            TokioConnectionProvider::default(),
+        )
+        .build()
+        .map_err(anyhow::Error::msg)?;
+        self.catalog
+            .write()
+            .await
+            .upsert(".".parse()?, vec![Arc::new(authority)]);
+        Ok(())
     }
 
     /// Publishes a complete batch under the same Catalog write lock used by
