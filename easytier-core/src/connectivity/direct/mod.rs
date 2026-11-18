@@ -450,6 +450,13 @@ where
             }
         });
 
+        let interface_ipv4s: HashSet<Ipv4Addr> = ip_list
+            .interface_ipv4s
+            .iter()
+            .copied()
+            .map(Ipv4Addr::from)
+            .collect();
+
         while !available_listeners.is_empty() {
             if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
                 return Ok(());
@@ -475,7 +482,7 @@ where
             }
             self.listener_blacklist.cleanup();
             let prefer_interface = candidates.iter().any(|url| {
-                is_interface_candidate(url, &ip_list)
+                is_interface_candidate(url, &interface_ipv4s)
                     && !self
                         .listener_blacklist
                         .contains(&ListenerBlacklistKey(dst_peer_id, url.to_string()))
@@ -485,7 +492,7 @@ where
             self.spawn_direct_connect_tasks(
                 dst_peer_id,
                 candidates,
-                &ip_list,
+                &interface_ipv4s,
                 fallback_at,
                 &mut tasks,
             );
@@ -502,7 +509,7 @@ where
                 self.spawn_direct_connect_tasks(
                     dst_peer_id,
                     candidates,
-                    &ip_list,
+                    &interface_ipv4s,
                     fallback_at,
                     &mut tasks,
                 );
@@ -519,12 +526,13 @@ where
         self: &Arc<Self>,
         dst_peer_id: PeerId,
         candidates: Vec<Url>,
-        ip_list: &GetIpListResponse,
+        interface_ipv4s: &HashSet<Ipv4Addr>,
         fallback_at: Option<crate::foundation::time::Instant>,
         tasks: &mut JoinSet<anyhow::Result<()>>,
     ) {
         for url in candidates {
-            let delay_until = fallback_at.filter(|_| !is_interface_candidate(&url, ip_list));
+            let delay_until =
+                fallback_at.filter(|_| !is_interface_candidate(&url, interface_ipv4s));
             let data = self.clone();
             tasks.spawn(async move {
                 if let Some(deadline) = delay_until {
@@ -1248,16 +1256,11 @@ fn resolve_literal_url(url: &Url, ip_version: IpVersion) -> anyhow::Result<Socke
     }
 }
 
-fn is_interface_candidate(url: &Url, ip_list: &GetIpListResponse) -> bool {
+fn is_interface_candidate(url: &Url, interface_ipv4s: &HashSet<Ipv4Addr>) -> bool {
     // Non-special schemes such as tcp can expose an IPv4 literal as a domain.
     url.host_str()
         .and_then(|host| host.parse::<Ipv4Addr>().ok())
-        .is_some_and(|ip| {
-            ip_list
-                .interface_ipv4s
-                .iter()
-                .any(|interface_ip| Ipv4Addr::from(*interface_ip) == ip)
-        })
+        .is_some_and(|ip| interface_ipv4s.contains(&ip))
 }
 
 fn is_public_ipv4(ip: Ipv4Addr) -> bool {
