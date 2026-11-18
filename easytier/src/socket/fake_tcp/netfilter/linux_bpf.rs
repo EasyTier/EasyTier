@@ -1223,27 +1223,6 @@ mod tests {
         let src_addr: SocketAddr = "192.0.2.110:12345".parse().unwrap();
         let dst_addr: SocketAddr = "198.51.100.120:23456".parse().unwrap();
         let non_matching_dst: SocketAddr = "198.51.100.120:23457".parse().unwrap();
-        // Traffic on another interface must not enter the queue during socket setup.
-        let noise = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        let noise_addr = noise.local_addr()?;
-        let sending = AtomicBool::new(true);
-        let started = std::sync::Barrier::new(2);
-        let tun = std::thread::scope(|scope| {
-            let sender = scope.spawn(|| {
-                let first_send = noise.send_to(b"unrelated loopback traffic", noise_addr);
-                started.wait();
-                first_send?;
-                while sending.load(AtomicOrdering::Relaxed) {
-                    noise.send_to(b"unrelated loopback traffic", noise_addr)?;
-                }
-                Ok::<_, io::Error>(())
-            });
-            started.wait();
-            let tun = LinuxBpfTun::new(&veth.capture_name, None, dst_addr);
-            sending.store(false, AtomicOrdering::Relaxed);
-            sender.join().unwrap()?;
-            tun
-        })?;
         let non_matching = build_tcp_packet(
             veth.sender_mac,
             veth.capture_mac,
@@ -1254,6 +1233,32 @@ mod tests {
             TCP_FLAG_SYN,
             Some(b"nope"),
         );
+
+        // Non-matching frames must not enter the queue during socket setup.
+        let (mut noise_sender, _) = open_datalink_channel(&veth.sender_name)?;
+        let sending = AtomicBool::new(true);
+        let started = std::sync::Barrier::new(2);
+        let tun = std::thread::scope(|scope| {
+            let sender = scope.spawn(|| {
+                let mut send_noise = || {
+                    noise_sender
+                        .send_to(&non_matching, None)
+                        .ok_or_else(|| io::Error::other("could not send non-matching frame"))?
+                };
+                let first_send = send_noise();
+                started.wait();
+                first_send?;
+                while sending.load(AtomicOrdering::Relaxed) {
+                    send_noise()?;
+                }
+                Ok::<_, io::Error>(())
+            });
+            started.wait();
+            let tun = LinuxBpfTun::new(&veth.capture_name, None, dst_addr);
+            sending.store(false, AtomicOrdering::Relaxed);
+            sender.join().unwrap()?;
+            tun
+        })?;
         send_raw_frame(&veth.sender_name, &non_matching)?;
 
         let mut received = BytesMut::new();
