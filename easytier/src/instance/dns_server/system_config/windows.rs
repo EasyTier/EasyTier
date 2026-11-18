@@ -36,7 +36,7 @@ fn quoted(value: &str) -> String {
 }
 
 struct NrptRule {
-    id: String,
+    ids: [String; 2],
     domain: String,
 }
 
@@ -49,6 +49,8 @@ impl NrptRule {
         )
     }
 
+    // NRPT can carry security settings without redirecting DNS. Keep those
+    // requirements and active DirectAccess targets separate from empty targets.
     fn policy_check(&self, nameservers: &str) -> String {
         format!(
             "$domain = {}; \
@@ -61,47 +63,69 @@ impl NrptRule {
                      $name.EndsWith('.' + $domain, [StringComparison]::OrdinalIgnoreCase) \
                  }}).Count -gt 0; \
                  if (-not $covered) {{ return $false }}; \
-                 $servers = (@($policy.NameServers | ForEach-Object {{ \
+                 if ($policy.DnsSecValidationRequired -or $policy.DnsSecQueryIPsecRequired -or \
+                     ($policy.DirectAccessEnabled -and $policy.DirectAccessQueryIPsecRequired)) {{ \
+                     return $true \
+                 }}; \
+                 $addresses = @($policy.NameServers); \
+                 if ($policy.DirectAccessEnabled) {{ \
+                     $addresses += @($policy.DirectAccessDnsServers) \
+                 }}; \
+                 $servers = (@($addresses | Where-Object {{ $_ }} | ForEach-Object {{ \
                      ([ipaddress] $_).ToString() \
                  }} | Sort-Object -Unique) -join ';'); \
-                 $covered -and $servers -ne {} \
+                 $servers -and $servers -ne {} \
              }}); \
              if ($conflicts.Count -gt 0) {{ \
-                 throw 'An existing NRPT policy routes this domain or a descendant to other DNS servers' \
+                 throw 'An existing NRPT policy conflicts with Magic DNS for this domain or a descendant' \
              }};",
             quoted(&self.domain),
             quoted(nameservers),
         )
     }
 
+    fn effective_check(&self, nameservers: &str) -> String {
+        format!(
+            "$updating = $false; {} \
+             foreach ($namespace in {}) {{ \
+                 if (@($effective | Where-Object {{ \
+                     $_.Namespace -contains $namespace -and \
+                     @($_.NameServers | Where-Object {{ $_ }}).Count -gt 0 \
+                 }}).Count -eq 0) {{ throw 'EasyTier NRPT rule is not effective (check Group Policy)' }} \
+             }}",
+            self.policy_check(nameservers),
+            self.namespaces(),
+        )
+    }
+
     fn set(&self, nameservers: &str) -> io::Result<()> {
         let check = self.policy_check(nameservers);
         powershell(&format!(
-            "$updating = [bool](Get-DnsClientNrptRule | Where-Object {{ $_.Name -eq {} }}); {check}",
-            quoted(&self.id),
+            "$updating = [bool](Get-DnsClientNrptRule | Where-Object {{ \
+                 @({}, {}) -contains $_.Name \
+             }}); {check}",
+            quoted(&self.ids[0]),
+            quoted(&self.ids[1]),
         ))?;
-        // Create a known ID only after its durable ownership list was saved.
+        // Create known IDs only after their durable ownership list was saved.
         // Add-DnsClientNrptRule chooses an ID itself, leaving a crash window
         // between creating that rule and recording which ID belongs to us.
-        let (key, _) =
-            RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(format!(r"{NRPT_KEY}\{}", self.id))?;
-        key.set_value("Version", &1_u32)?;
-        key.set_value("ConfigOptions", &8_u32)?;
-        key.set_value(
-            "Name",
-            &vec![self.domain.clone(), format!(".{}", self.domain)],
-        )?;
-        key.set_value("GenericDNSServers", &nameservers)?;
-        key.set_value("Comment", &"EasyTier Magic DNS")?;
-        powershell(&format!(
-            "$updating = $false; {check} \
-             foreach ($namespace in {}) {{ \
-                 if (@($effective | Where-Object {{ \
-                     $_.Namespace -contains $namespace \
-                 }}).Count -eq 0) {{ throw 'EasyTier NRPT rule is not effective (check Group Policy)' }} \
-             }}",
-            self.namespaces(),
-        ))
+        // Keep the exact name and suffix in separate rules: older Windows can
+        // leave the second namespace without a DNS target in a combined rule.
+        for (id, namespace) in self
+            .ids
+            .iter()
+            .zip([self.domain.clone(), format!(".{}", self.domain)])
+        {
+            let (key, _) =
+                RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(format!(r"{NRPT_KEY}\{id}"))?;
+            key.set_value("Version", &1_u32)?;
+            key.set_value("ConfigOptions", &8_u32)?;
+            key.set_value("Name", &vec![namespace])?;
+            key.set_value("GenericDNSServers", &nameservers)?;
+            key.set_value("Comment", &"EasyTier Magic DNS")?;
+        }
+        powershell(&self.effective_check(nameservers))
     }
 }
 
@@ -129,7 +153,11 @@ impl WindowsDNSRecovery {
 
     fn save_rules(&self, rules: &BTreeMap<String, NrptRule>) -> io::Result<()> {
         let key = self.open()?;
-        let ids: Vec<_> = rules.values().map(|rule| rule.id.as_str()).collect();
+        let ids: Vec<_> = rules
+            .values()
+            .flat_map(|rule| &rule.ids)
+            .map(String::as_str)
+            .collect();
         key.set_value(RULE_IDS, &ids)
     }
 
@@ -411,7 +439,7 @@ impl SystemConfig for WindowsDNSManager {
                 .rules
                 .entry(domain.clone())
                 .or_insert_with(|| NrptRule {
-                    id: format!("{{{}}}", uuid::Uuid::new_v4()),
+                    ids: std::array::from_fn(|_| format!("{{{}}}", uuid::Uuid::new_v4())),
                     domain: domain.clone(),
                 });
             self.recovery.save_rules(&state.rules)?;
@@ -424,7 +452,9 @@ impl SystemConfig for WindowsDNSManager {
             .cloned()
             .collect();
         for domain in obsolete {
-            remove_rule(&state.rules[&domain].id)?;
+            for id in &state.rules[&domain].ids {
+                remove_rule(id)?;
+            }
             state.rules.remove(&domain);
             self.recovery.save_rules(&state.rules)?;
         }
@@ -447,6 +477,73 @@ impl SystemConfig for WindowsDNSManager {
 mod tests {
     use super::*;
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+
+    #[test]
+    fn nrpt_policy_checks() {
+        let rule = NrptRule {
+            ids: Default::default(),
+            domain: "et.net".to_owned(),
+        };
+        // These policies are in-memory objects; the test never changes NRPT.
+        for (fields, accepted) in [
+            ("NameServers = $null", true),
+            ("NameServers = @()", true),
+            ("NameServers = @($null, '', '100.100.100.101')", true),
+            ("NameServers = '192.0.2.53'", false),
+            (
+                "NameServers = $null; DirectAccessEnabled = $true; \
+                 DirectAccessDnsServers = @('192.0.2.53')",
+                false,
+            ),
+            (
+                "NameServers = $null; DirectAccessEnabled = $false; \
+                 DirectAccessDnsServers = @('192.0.2.53')",
+                true,
+            ),
+            (
+                "NameServers = $null; DirectAccessEnabled = $true; \
+                 DirectAccessDnsServers = @('100.100.100.101')",
+                true,
+            ),
+            (
+                "NameServers = $null; DirectAccessEnabled = $true; \
+                 DirectAccessDnsServers = @('100.100.100.101'); \
+                 DirectAccessQueryIPsecRequired = $true",
+                false,
+            ),
+            (
+                "NameServers = $null; DnsSecValidationRequired = $true",
+                false,
+            ),
+            (
+                "NameServers = $null; DnsSecQueryIPsecRequired = $true",
+                false,
+            ),
+        ] {
+            let script = format!(
+                "function Get-DnsClientNrptPolicy {{ \
+                     param([switch] $Effective); \
+                     [pscustomobject]@{{ Namespace = @('et.net', '.et.net'); {fields} }}; \
+                     [pscustomobject]@{{ Namespace = @('et.net', '.et.net'); \
+                         NameServers = '100.100.100.101' }} \
+                 }}; {}",
+                rule.effective_check("100.100.100.101"),
+            );
+            let result = powershell(&script);
+            assert_eq!(result.is_ok(), accepted, "{fields}: {result:?}");
+        }
+
+        // A non-redirecting policy must not certify our new rule as effective.
+        let script = format!(
+            "function Get-DnsClientNrptPolicy {{ \
+                 param([switch] $Effective); \
+                 [pscustomobject]@{{ Namespace = @('et.net', '.et.net'); NameServers = $null }} \
+             }}; {}",
+            rule.effective_check("100.100.100.101"),
+        );
+        let error = powershell(&script).unwrap_err();
+        assert!(error.to_string().contains("NRPT rule is not effective"));
+    }
 
     // Supply an exclusively owned disposable adapter, never a user's interface.
     #[test]
@@ -489,14 +586,48 @@ mod tests {
         let result = (|| -> io::Result<_> {
             manager.set_dns(&cfg)?;
             let ids: Vec<String> = manager.recovery.open()?.get_value(RULE_IDS)?;
-            assert_eq!(ids.len(), 1);
-            assert_eq!(ids[0], manager.state.lock().unwrap().rules[&domain].id);
+            assert_eq!(ids.len(), 2);
+            assert_eq!(ids, manager.state.lock().unwrap().rules[&domain].ids);
             let first = snapshots
                 .iter()
                 .map(|(key, _)| search_list(key))
                 .collect::<io::Result<Vec<_>>>()?;
+            cfg.nameservers = vec!["192.0.2.54".to_owned()];
             cfg.search_domains = vec![second_text.clone()];
+            // Fail the second write after the first rule has changed. Remove
+            // the test ACL before inspecting the result or retrying cleanup.
+            // Deny DELETE to fail winreg's all-access open while leaving the
+            // PowerShell provider able to restore the ACL.
+            let path = quoted(&format!(
+                r"Registry::HKEY_LOCAL_MACHINE\{NRPT_KEY}\{}",
+                ids[1]
+            ));
+            let acl = format!(
+                "$path = {path}; $acl = Get-Acl -Path $path; \
+                 $deny = [Security.AccessControl.RegistryAccessRule]::new(\
+                     [Security.Principal.SecurityIdentifier]::new('S-1-1-0'), \
+                     [Security.AccessControl.RegistryRights]::Delete, \
+                     [Security.AccessControl.AccessControlType]::Deny);"
+            );
+            powershell(&format!(
+                "{acl} $acl.AddAccessRule($deny); Set-Acl -Path $path -AclObject $acl"
+            ))?;
+            let partial = manager.set_dns(&cfg);
+            powershell(&format!(
+                "{acl} $acl.RemoveAccessRuleSpecific($deny); \
+                 Set-Acl -Path $path -AclObject $acl"
+            ))?;
+            assert_eq!(partial.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            for (id, expected) in ids.iter().zip(["192.0.2.54", "192.0.2.53"]) {
+                let key =
+                    RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(format!(r"{NRPT_KEY}\{id}"))?;
+                assert_eq!(key.get_value::<String, _>("GenericDNSServers")?, expected);
+            }
+            let partial_ids: Vec<String> = manager.recovery.open()?.get_value(RULE_IDS)?;
+            assert_eq!(partial_ids, ids);
             manager.set_dns(&cfg)?;
+            let updated_ids: Vec<String> = manager.recovery.open()?.get_value(RULE_IDS)?;
+            assert_eq!(updated_ids, ids);
             let second = snapshots
                 .iter()
                 .map(|(key, _)| search_list(key))
