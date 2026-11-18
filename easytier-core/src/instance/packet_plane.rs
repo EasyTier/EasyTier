@@ -14,7 +14,8 @@ use crate::{
 use crate::foundation::stats::{LabelSet, LabelType, MetricName};
 #[cfg(feature = "proxy-packet")]
 use crate::gateway::magic_dns::{
-    MagicDnsQueryResolver, MagicDnsResolverRegistration, magic_dns_packet_filter,
+    MagicDnsQueryResolver, MagicDnsResolverRegistration, MagicDnsResolverState,
+    magic_dns_packet_filter,
 };
 #[cfg(feature = "proxy-packet")]
 use crate::gateway::udp_broadcast::UdpBroadcastRelayStats;
@@ -111,16 +112,19 @@ impl CorePacketPlane {
         fake_ip: std::net::Ipv4Addr,
         resolver: Arc<dyn MagicDnsQueryResolver>,
     ) -> MagicDnsResolverRegistration {
-        let runtime = tokio::runtime::Handle::current();
+        let state = MagicDnsResolverState::new(
+            self.peer_manager.local_packet_sender(),
+            self.peer_manager.my_peer_id(),
+        );
         let pipeline = self
             .peer_manager
             .add_managed_nic_packet_process_pipeline(magic_dns_packet_filter(
                 fake_ip,
-                self.peer_manager.my_peer_id(),
                 resolver,
+                state.clone(),
             ))
             .await;
-        MagicDnsResolverRegistration::new(Arc::downgrade(&self.peer_manager), pipeline, runtime)
+        MagicDnsResolverRegistration::new(pipeline, state)
     }
 }
 

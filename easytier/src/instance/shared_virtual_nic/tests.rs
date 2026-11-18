@@ -97,6 +97,7 @@ fn registered_nic() -> SharedVirtualNic {
     nic.member_registrations.insert(MEMBER, REGISTRATION);
     nic.ifcfg
         .apply_member_claims(MEMBER, address_claims("10.50.0.2/24"));
+    nic.publish_ipv4_addresses();
     nic
 }
 
@@ -156,6 +157,42 @@ async fn set_ifcfg(nic: &SharedVirtualNic, ifcfg: RecordingIfConfiger) {
     let mut device = nic.nic.lock().await;
     device.set_ifname_for_test("et0".to_owned());
     device.set_ifcfg_for_test(Box::new(ifcfg));
+}
+
+#[tokio::test]
+async fn ipv4_address_snapshot_tracks_committed_member_addresses() {
+    let mut nic = SharedVirtualNic::new(virtual_nic_config(1500, None));
+    set_ifcfg(&nic, RecordingIfConfiger::default()).await;
+    let addresses = nic.ipv4_addresses.clone();
+    let second_member = uuid::Uuid::from_u128(2);
+    let mut claims = address_claims("10.50.0.2/25");
+    claims
+        .ipv4_routes
+        .insert(SharedIpv4Route::new("192.0.2.0".parse().unwrap(), 24, None));
+    nic.apply_member_claims(MEMBER, claims, false)
+        .await
+        .unwrap();
+    nic.apply_member_claims(second_member, address_claims("10.50.0.130/25"), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        **addresses.load(),
+        BTreeSet::from([
+            "10.50.0.2/25".parse().unwrap(),
+            "10.50.0.130/25".parse().unwrap(),
+        ])
+    );
+
+    nic.apply_member_claims(MEMBER, address_claims("10.51.0.2/25"), false)
+        .await
+        .unwrap();
+    nic.remove_member_claims(second_member).await.unwrap();
+    assert_eq!(
+        **addresses.load(),
+        BTreeSet::from(["10.51.0.2/25".parse().unwrap()])
+    );
+    nic.mark_invalid();
+    assert!(addresses.load().is_empty());
 }
 
 #[tokio::test]
@@ -220,6 +257,7 @@ async fn mobile_claims_do_not_configure_the_os_interface() {
             .await
             .unwrap();
         assert_eq!(nic.ifcfg.claims_of(MEMBER), claims);
+        assert_eq!(**nic.ipv4_addresses.load(), claims.ipv4_addresses);
         assert!(nic.is_valid());
     }
     #[cfg(mobile)]
@@ -248,6 +286,7 @@ async fn stale_registration_cannot_update_or_remove_current_claims() {
         .await
         .unwrap();
     assert_eq!(nic.ifcfg.effective(), original);
+    assert_eq!(**nic.ipv4_addresses.load(), original.ipv4_addresses);
     assert_eq!(nic.member_registrations.get(&MEMBER), Some(&REGISTRATION));
 }
 
@@ -275,6 +314,7 @@ async fn failed_cleanup_and_replacement_invalidate_without_committing_claims() {
         assert!(result.is_err(), "replacing={replacing}");
         assert!(!nic.is_valid());
         assert_eq!(nic.ifcfg.effective(), original);
+        assert!(nic.ipv4_addresses.load().is_empty());
         assert_eq!(
             nic.member_registrations.get(&MEMBER).copied(),
             replacing.then_some(REGISTRATION)
