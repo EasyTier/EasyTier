@@ -184,25 +184,37 @@ impl RequestHandler for CatalogRequestHandler {
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
-        handle_request(&self.catalog, request, response_handle).await
+        select_authority(&self.catalog, request)
+            .await
+            .catalog
+            .handle_request(request, response_handle)
+            .await
     }
 }
 
-async fn handle_request<R: ResponseHandler>(
-    catalog: &RwLock<Catalog>,
-    request: &Request,
-    response_handle: R,
-) -> ResponseInfo {
+pub(super) struct SelectedAuthority {
+    pub catalog: Catalog,
+    pub forwarding: bool,
+}
+
+async fn select_authority(catalog: &RwLock<Catalog>, request: &Request) -> SelectedAuthority {
     let mut selected = Catalog::new();
+    let mut forwarding = false;
     if let Ok(info) = request.request_info() {
         let name = info.query.name();
         if let Some(authorities) = catalog.read().await.find(name).cloned() {
+            forwarding = authorities
+                .iter()
+                .any(|authority| authority.zone_type() == ZoneType::External);
             selected.upsert(name.clone(), authorities);
         }
     }
     // Only authority selection needs the shared index. Upstream I/O must not
     // hold its lock or delay publication of a new batch.
-    selected.handle_request(request, response_handle).await
+    SelectedAuthority {
+        catalog: selected,
+        forwarding,
+    }
 }
 
 pub fn build_authority(origin: &rr::LowerName, records: &[Record]) -> Result<InMemoryAuthority> {
@@ -380,12 +392,8 @@ impl Server {
         }
     }
 
-    pub async fn handle_request<R: ResponseHandler>(
-        &self,
-        request: &Request,
-        response_handle: R,
-    ) -> ResponseInfo {
-        handle_request(&self.catalog, request, response_handle).await
+    pub(super) async fn select_authority(&self, request: &Request) -> SelectedAuthority {
+        select_authority(&self.catalog, request).await
     }
 
     #[cfg(test)]

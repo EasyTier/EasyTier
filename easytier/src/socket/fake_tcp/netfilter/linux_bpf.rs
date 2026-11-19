@@ -420,28 +420,13 @@ impl LinuxBpfTun {
             SocketAddr::V4(_) => ETHERTYPE_IPV4,
             SocketAddr::V6(_) => ETHERTYPE_IPV6,
         };
-        let proto = protocol.to_be() as i32;
-        let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_DGRAM, proto) };
+        // Enable reception only after the filter is installed. Attaching a filter
+        // does not remove packets already queued from other interfaces.
+        let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_DGRAM, 0) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
         let fd = Arc::new(unsafe { OwnedFd::from_raw_fd(fd) });
-
-        let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
-        addr.sll_family = libc::AF_PACKET as u16;
-        addr.sll_protocol = protocol.to_be();
-        addr.sll_ifindex = ifindex;
-
-        let bind_ret = unsafe {
-            libc::bind(
-                fd.as_ref().as_raw_fd(),
-                &addr as *const _ as *const libc::sockaddr,
-                mem::size_of::<libc::sockaddr_ll>() as u32,
-            )
-        };
-        if bind_ret != 0 {
-            return Err(io::Error::last_os_error());
-        }
 
         let actual_rcvbuf = set_socket_rcvbuf(fd.as_ref().as_raw_fd(), DEFAULT_RCVBUF_BYTES)?;
 
@@ -463,6 +448,22 @@ impl LinuxBpfTun {
             )
         };
         if opt_ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
+        addr.sll_family = libc::AF_PACKET as u16;
+        addr.sll_protocol = protocol.to_be();
+        addr.sll_ifindex = ifindex;
+
+        let bind_ret = unsafe {
+            libc::bind(
+                fd.as_ref().as_raw_fd(),
+                &addr as *const _ as *const libc::sockaddr,
+                mem::size_of::<libc::sockaddr_ll>() as u32,
+            )
+        };
+        if bind_ret != 0 {
             return Err(io::Error::last_os_error());
         }
 
@@ -1222,7 +1223,6 @@ mod tests {
         let src_addr: SocketAddr = "192.0.2.110:12345".parse().unwrap();
         let dst_addr: SocketAddr = "198.51.100.120:23456".parse().unwrap();
         let non_matching_dst: SocketAddr = "198.51.100.120:23457".parse().unwrap();
-        let tun = LinuxBpfTun::new(&veth.capture_name, None, dst_addr)?;
         let non_matching = build_tcp_packet(
             veth.sender_mac,
             veth.capture_mac,
@@ -1233,13 +1233,39 @@ mod tests {
             TCP_FLAG_SYN,
             Some(b"nope"),
         );
+
+        // Non-matching frames must not enter the queue during socket setup.
+        let (mut noise_sender, _) = open_datalink_channel(&veth.sender_name)?;
+        let sending = AtomicBool::new(true);
+        let started = std::sync::Barrier::new(2);
+        let tun = std::thread::scope(|scope| {
+            let sender = scope.spawn(|| {
+                let mut send_noise = || {
+                    noise_sender
+                        .send_to(&non_matching, None)
+                        .ok_or_else(|| io::Error::other("could not send non-matching frame"))?
+                };
+                let first_send = send_noise();
+                started.wait();
+                first_send?;
+                while sending.load(AtomicOrdering::Relaxed) {
+                    send_noise()?;
+                }
+                Ok::<_, io::Error>(())
+            });
+            started.wait();
+            let tun = LinuxBpfTun::new(&veth.capture_name, None, dst_addr);
+            sending.store(false, AtomicOrdering::Relaxed);
+            sender.join().unwrap()?;
+            tun
+        })?;
         send_raw_frame(&veth.sender_name, &non_matching)?;
 
         let mut received = BytesMut::new();
+        let result = timeout(Duration::from_millis(400), tun.recv(&mut received)).await;
         assert!(
-            timeout(Duration::from_millis(400), tun.recv(&mut received))
-                .await
-                .is_err()
+            result.is_err(),
+            "unexpected receive result: {result:?}, packet: {received:?}"
         );
 
         let matching = build_tcp_packet(

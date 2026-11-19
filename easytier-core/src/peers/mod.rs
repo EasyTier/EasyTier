@@ -97,6 +97,11 @@ impl PeerPacketEnvelope {
 pub struct PacketRecvChan(tokio::sync::mpsc::Sender<PeerPacketEnvelope>);
 
 impl PacketRecvChan {
+    #[cfg(feature = "proxy-packet")]
+    pub(crate) fn try_send(&self, packet: ZCPacket) -> bool {
+        self.0.try_send(PeerPacketEnvelope::local(packet)).is_ok()
+    }
+
     /// Injects a packet produced by a local subsystem. Local injection never carries
     /// the privileges of an attached peer connection.
     pub async fn send(&self, packet: ZCPacket) -> Result<(), SendError<ZCPacket>> {
@@ -187,7 +192,8 @@ pub trait PeerPacketFilter {
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
 pub trait NicPacketFilter {
-    async fn try_process_packet_from_nic(&self, data: &mut ZCPacket) -> bool;
+    /// Return the packet to continue forwarding, or consume it.
+    async fn try_process_packet_from_nic(&self, data: ZCPacket) -> Option<ZCPacket>;
 
     fn id(&self) -> String {
         format!("{:p}", self)

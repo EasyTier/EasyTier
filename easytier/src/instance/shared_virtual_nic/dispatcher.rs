@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use arc_swap::ArcSwap;
 use cidr::{Inet, Ipv4Inet, Ipv6Inet};
 use futures::{Sink, SinkExt, Stream, StreamExt, future::poll_fn, task::noop_waker_ref};
 use smoltcp::wire::{
@@ -517,6 +518,7 @@ impl SharedVirtualNicDispatcher {
         tunnel: Box<dyn Tunnel>,
         member_tunnel_table: SharedVirtualNicMemberTunnelTable,
         valid: Arc<AtomicBool>,
+        ipv4_addresses: Arc<ArcSwap<BTreeSet<Ipv4Inet>>>,
     ) -> Self {
         let (tun_stream, tun_sink) = tunnel.split();
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
@@ -530,6 +532,7 @@ impl SharedVirtualNicDispatcher {
             control_receiver,
             member_tunnel_table,
             valid,
+            ipv4_addresses,
             state: SharedVirtualNicDispatcherState::default(),
         };
 
@@ -545,6 +548,7 @@ impl SharedVirtualNicDispatcher {
         tun_fd: std::os::fd::RawFd,
         member_tunnel_table: SharedVirtualNicMemberTunnelTable,
         valid: Arc<AtomicBool>,
+        ipv4_addresses: Arc<ArcSwap<BTreeSet<Ipv4Inet>>>,
     ) -> Result<Self, Error> {
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
         let (first_open_sender, first_open_receiver) = oneshot::channel();
@@ -558,6 +562,7 @@ impl SharedVirtualNicDispatcher {
             control_receiver,
             member_tunnel_table: task_member_tunnel_table,
             valid,
+            ipv4_addresses,
             state: SharedVirtualNicDispatcherState {
                 translate_unknown_sources: true,
                 ..Default::default()
@@ -661,6 +666,7 @@ struct SharedVirtualNicDispatcherTask {
     control_receiver: mpsc::UnboundedReceiver<SharedVirtualNicControl>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
     valid: Arc<AtomicBool>,
+    ipv4_addresses: Arc<ArcSwap<BTreeSet<Ipv4Inet>>>,
     state: SharedVirtualNicDispatcherState,
 }
 
@@ -799,6 +805,7 @@ impl SharedVirtualNicDispatcherTask {
         self.tun_sink.take();
         if invalidate {
             self.valid.store(false, Ordering::Release);
+            self.ipv4_addresses.store(Arc::new(BTreeSet::new()));
         }
         self.member_tunnel_table.detach_dispatcher();
         self.state.close_all();
@@ -1964,6 +1971,7 @@ mod tests {
             control_receiver,
             member_tunnel_table: SharedVirtualNicMemberTunnelTable::default(),
             valid: Arc::new(AtomicBool::new(true)),
+            ipv4_addresses: Arc::default(),
             state,
         };
         let handle = tokio::spawn(task.run());
@@ -2021,6 +2029,7 @@ mod tests {
             control_receiver,
             member_tunnel_table,
             valid,
+            ipv4_addresses: Arc::default(),
             state: SharedVirtualNicDispatcherState {
                 translate_unknown_sources: true,
                 ..Default::default()
@@ -2117,8 +2126,12 @@ mod tests {
         let (tunnel, writing) = stalled_tun_for_test();
         let member_tunnel_table = SharedVirtualNicMemberTunnelTable::default();
         let valid = Arc::new(AtomicBool::new(true));
-        let dispatcher =
-            SharedVirtualNicDispatcher::start(tunnel, member_tunnel_table.clone(), valid.clone());
+        let dispatcher = SharedVirtualNicDispatcher::start(
+            tunnel,
+            member_tunnel_table.clone(),
+            valid.clone(),
+            Arc::default(),
+        );
 
         check_dispatcher_tun_write_timeout(dispatcher, member_tunnel_table, valid, writing).await;
     }
@@ -3018,10 +3031,14 @@ mod tests {
         let tunnel = TunnelWrapper::new(tun_stream, tun_sink, None);
         let member_tunnel_table = SharedVirtualNicMemberTunnelTable::default();
         let valid = Arc::new(AtomicBool::new(true));
+        let ipv4_addresses = Arc::new(ArcSwap::from_pointee(BTreeSet::from(["10.50.0.2/24"
+            .parse()
+            .unwrap()])));
         let dispatcher = SharedVirtualNicDispatcher::start(
             Box::new(tunnel),
             member_tunnel_table.clone(),
             valid.clone(),
+            ipv4_addresses.clone(),
         );
         let close_notifier = Arc::new(Notify::new());
         let _member_tunnel = member_tunnel_table
@@ -3039,6 +3056,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!valid.load(Ordering::Acquire));
+        assert!(ipv4_addresses.load().is_empty());
         assert!(member_tunnel_table.control_sender().is_none());
     }
 
@@ -3059,6 +3077,7 @@ mod tests {
             Box::new(tunnel),
             member_tunnel_table.clone(),
             valid.clone(),
+            Arc::default(),
         );
         let close_notifier = Arc::new(Notify::new());
         let _member_tunnel = member_tunnel_table

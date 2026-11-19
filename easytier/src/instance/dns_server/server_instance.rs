@@ -9,7 +9,7 @@
 use super::{
     MAGIC_DNS_INSTANCE_SOCKET_ADDR,
     config::{GeneralConfigBuilder, RunConfigBuilder},
-    records::build_authorities,
+    records::{build_authorities, default_soa},
     server::Server,
     system_config::{OSConfig, SystemConfig},
     zone,
@@ -39,14 +39,18 @@ use anyhow::Context;
 use cidr::Ipv4Inet;
 use easytier_core::config::toml::ConfigLoader as _;
 use easytier_core::gateway::magic_dns::{
-    MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordSnapshot, MagicDnsRecordStore,
-    MagicDnsResolverRegistration, MagicDnsRoute,
+    MagicDnsQuery, MagicDnsQueryResolver, MagicDnsQueryResult, MagicDnsRecordSnapshot,
+    MagicDnsRecordStore, MagicDnsResolverRegistration, MagicDnsRoute,
 };
 use easytier_core::instance::CorePacketPlane;
+use hickory_proto::op::{Edns, Header, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
-use hickory_server::authority::{MessageRequest, MessageResponse};
-use hickory_server::server::{Request, ResponseHandler, ResponseInfo};
+use hickory_server::authority::{
+    MessageRequest, MessageResponse, MessageResponseBuilder, ZoneType,
+};
+use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::store::in_memory::InMemoryAuthority;
 use std::sync::Mutex;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -60,6 +64,7 @@ pub(super) struct MagicDnsServerInstanceData {
     tun_dev: Option<String>,
     net_ns: NetNS,
     fake_ip: Ipv4Addr,
+    local_ipv4_addresses: Arc<arc_swap::ArcSwap<BTreeSet<Ipv4Inet>>>,
     manage_fake_ip_route: bool,
     route_store: MagicDnsRecordStore,
     record_apply: Arc<tokio::sync::Mutex<()>>,
@@ -377,33 +382,106 @@ impl ResponseHandler for ResponseWrapper {
     }
 }
 
-impl MagicDnsServerInstanceData {
-    async fn resolve_query_inner(&self, query: MagicDnsQuery) -> Option<Vec<u8>> {
-        let request = Request::new(
-            MessageRequest::from_bytes(&query.payload).ok()?,
-            query.source,
-            hickory_proto::xfer::Protocol::Udp,
-        );
-        let response = Arc::new(Mutex::new(Vec::with_capacity(512)));
+#[async_trait::async_trait]
+impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
+    async fn resolve(&self, query: MagicDnsQuery) -> MagicDnsQueryResult {
+        let Ok(message) = MessageRequest::from_bytes(&query.payload) else {
+            return MagicDnsQueryResult::Response(None);
+        };
+        let request = Request::new(message, query.source, hickory_proto::xfer::Protocol::Udp);
+        let mut selected = self.dns_server.select_authority(&request).await;
+        if selected.forwarding
+            && let Some(name) = self.local_reverse_query(&request)
+        {
+            // Keep configured authorities ahead of this fallback. The SOA at
+            // the queried name makes the negative answer specific to PTR.
+            let soa = default_soa(&name).expect("IPv4 reverse name fits the SOA names");
+            let mut authority = InMemoryAuthority::empty((&name).into(), ZoneType::Primary, false);
+            authority.upsert_mut(soa, 0);
+            selected.catalog.upsert(name, vec![Arc::new(authority)]);
+            selected.forwarding = false;
+        }
 
-        self.dns_server
-            .handle_request(
-                &request,
-                ResponseWrapper {
-                    response: response.clone(),
-                },
-            )
-            .await;
+        let forwarding = selected.forwarding;
+        let overload_response = if forwarding {
+            servfail_response(&request)
+        } else {
+            None
+        };
+        let response = async move {
+            let response = Arc::new(Mutex::new(Vec::with_capacity(512)));
+            selected
+                .catalog
+                .handle_request(
+                    &request,
+                    ResponseWrapper {
+                        response: response.clone(),
+                    },
+                )
+                .await;
+            Arc::into_inner(response)?.into_inner().ok()
+        };
 
-        Arc::into_inner(response)?.into_inner().ok()
+        if forwarding {
+            let Some(overload_response) = overload_response else {
+                return MagicDnsQueryResult::Response(None);
+            };
+            MagicDnsQueryResult::Forward {
+                response: Box::pin(response),
+                overload_response,
+            }
+        } else {
+            MagicDnsQueryResult::Response(response.await)
+        }
+    }
+
+    fn overload_response(&self, query: &MagicDnsQuery) -> Option<Vec<u8>> {
+        let message = MessageRequest::from_bytes(&query.payload).ok()?;
+        servfail_response(&message)
     }
 }
 
-#[async_trait::async_trait]
-impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
-    async fn resolve(&self, query: MagicDnsQuery) -> Option<Vec<u8>> {
-        self.resolve_query_inner(query).await
+impl MagicDnsServerInstanceData {
+    fn local_reverse_query(&self, request: &Request) -> Option<LowerName> {
+        if request.message_type() != MessageType::Query || request.op_code() != OpCode::Query {
+            return None;
+        }
+        let info = request.request_info().ok()?;
+        if info.query.query_type() != hickory_proto::rr::RecordType::PTR {
+            return None;
+        }
+        let name = info.query.name().to_string();
+        let labels = name.strip_suffix(".in-addr.arpa.")?;
+        let [fourth, third, second, first] = labels.parse::<Ipv4Addr>().ok()?.octets();
+        let address = Ipv4Addr::new(first, second, third, fourth);
+        self.local_ipv4_addresses
+            .load()
+            .iter()
+            .any(|prefix| prefix.contains(&address))
+            .then(|| info.query.name().clone())
     }
+}
+
+fn servfail_response(request: &MessageRequest) -> Option<Vec<u8>> {
+    let mut header = Header::response_from_request(request.header());
+    header.set_response_code(ResponseCode::ServFail);
+    let mut response = MessageResponseBuilder::from_message_request(request);
+    if let Some(request_edns) = request.edns() {
+        let mut edns = Edns::new();
+        edns.set_dnssec_ok(true);
+        edns.set_max_payload(request_edns.max_payload().max(512));
+        if request_edns.version() > 0 {
+            header.set_response_code(ResponseCode::BADVERS);
+            edns.set_rcode_high(ResponseCode::BADVERS.high());
+        }
+        response.edns(edns);
+    }
+    let mut bytes = Vec::with_capacity(512);
+    response
+        .build_no_records(header)
+        .destructive_emit(&mut BinEncoder::new(&mut bytes))
+        .ok()?;
+    Some(bytes)
 }
 
 #[async_trait::async_trait]
@@ -517,8 +595,18 @@ impl MagicDnsServerInstance {
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
+        local_ipv4_addresses: Option<Arc<arc_swap::ArcSwap<BTreeSet<Ipv4Inet>>>>,
     ) -> Result<Self, anyhow::Error> {
-        Self::new_inner(packet_plane, global_ctx, tun_dev, tun_inet, fake_ip, true).await
+        Self::new_inner(
+            packet_plane,
+            global_ctx,
+            tun_dev,
+            tun_inet,
+            fake_ip,
+            local_ipv4_addresses,
+            true,
+        )
+        .await
     }
 
     pub(crate) async fn new_with_external_fake_ip_route(
@@ -527,8 +615,18 @@ impl MagicDnsServerInstance {
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
+        local_ipv4_addresses: Option<Arc<arc_swap::ArcSwap<BTreeSet<Ipv4Inet>>>>,
     ) -> Result<Self, anyhow::Error> {
-        Self::new_inner(packet_plane, global_ctx, tun_dev, tun_inet, fake_ip, false).await
+        Self::new_inner(
+            packet_plane,
+            global_ctx,
+            tun_dev,
+            tun_inet,
+            fake_ip,
+            local_ipv4_addresses,
+            false,
+        )
+        .await
     }
 
     async fn new_inner(
@@ -537,6 +635,7 @@ impl MagicDnsServerInstance {
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
+        local_ipv4_addresses: Option<Arc<arc_swap::ArcSwap<BTreeSet<Ipv4Inet>>>>,
         manage_fake_ip_route: bool,
     ) -> Result<Self, anyhow::Error> {
         // Validate the local DNS configuration before attempting the election:
@@ -581,6 +680,9 @@ impl MagicDnsServerInstance {
             tun_dev: tun_dev.clone(),
             net_ns: global_ctx.net_ns.clone(),
             fake_ip,
+            local_ipv4_addresses: local_ipv4_addresses.unwrap_or_else(|| {
+                Arc::new(arc_swap::ArcSwap::from_pointee(BTreeSet::from([tun_inet])))
+            }),
             manage_fake_ip_route,
             route_store,
             record_apply: Arc::new(tokio::sync::Mutex::new(())),
@@ -781,7 +883,7 @@ impl MagicDnsServerInstance {
         }
     }
 
-    pub async fn clean_env(&self) {
+    pub async fn clean_env(self) {
         let _apply = self.data.record_apply.lock().await;
         self.data
             .closing
@@ -804,12 +906,6 @@ impl MagicDnsServerInstance {
         }
 
         self.packet_filter.close().await;
-    }
-}
-
-impl Drop for MagicDnsServerInstance {
-    fn drop(&mut self) {
-        println!("MagicDnsServerInstance dropped");
     }
 }
 
@@ -899,6 +995,7 @@ mod tests {
             tun_dev: None,
             net_ns: NetNS::new(None),
             fake_ip: "100.100.100.101".parse().unwrap(),
+            local_ipv4_addresses: Arc::new(arc_swap::ArcSwap::from_pointee(BTreeSet::new())),
             manage_fake_ip_route: false,
             route_store,
             record_apply: Arc::new(tokio::sync::Mutex::new(())),
@@ -949,17 +1046,203 @@ mod tests {
         name: &str,
         record_type: RecordType,
     ) -> Message {
+        let response = prepare_query(data, name, record_type).await;
+        let response = match response {
+            MagicDnsQueryResult::Response(response) => response,
+            MagicDnsQueryResult::Forward { response, .. } => response.await,
+        }
+        .unwrap();
+        Message::from_vec(&response).unwrap()
+    }
+
+    async fn prepare_query(
+        data: &MagicDnsServerInstanceData,
+        name: &str,
+        record_type: RecordType,
+    ) -> MagicDnsQueryResult {
+        data.resolve(MagicDnsQuery {
+            source: "127.0.0.1:5353".parse().unwrap(),
+            payload: query_message(name, record_type).to_vec().unwrap(),
+        })
+        .await
+    }
+
+    fn query_message(name: &str, record_type: RecordType) -> Message {
         let mut request = Message::new();
         request.set_recursion_desired(true);
-        request.add_query(Query::query(name.parse().unwrap(), record_type));
-        let response = data
-            .resolve_query_inner(MagicDnsQuery {
-                source: "127.0.0.1:5353".parse().unwrap(),
-                payload: request.to_vec().unwrap(),
-            })
-            .await
-            .unwrap();
-        Message::from_vec(&response).unwrap()
+        request.add_query(Query::query(
+            hickory_proto::rr::Name::from_labels(
+                name.trim_end_matches('.').split('.').map(str::as_bytes),
+            )
+            .unwrap(),
+            record_type,
+        ));
+        request
+    }
+
+    #[tokio::test]
+    async fn local_reverse_and_overload_responses_handle_edns() {
+        let data = data_with(None).await;
+        data.local_ipv4_addresses
+            .store(Arc::new(BTreeSet::from(["10.126.126.101/25"
+                .parse()
+                .unwrap()])));
+        for local in [true, false] {
+            let (name, kind, code) = if local {
+                (
+                    "100.126.126.10.in-addr.arpa.",
+                    RecordType::PTR,
+                    ResponseCode::NoError,
+                )
+            } else {
+                ("example.org.", RecordType::A, ResponseCode::ServFail)
+            };
+            for edns in [None, Some((0, 128)), Some((0, 1232)), Some((1, 1232))] {
+                let mut request = query_message(name, kind);
+                request.set_id(42);
+                if let Some((version, payload)) = edns {
+                    request
+                        .extensions_mut()
+                        .get_or_insert_with(Edns::new)
+                        .set_version(version)
+                        .set_max_payload(payload);
+                }
+                let code = if edns.is_some_and(|(version, _)| version > 0) {
+                    ResponseCode::BADVERS
+                } else {
+                    code
+                };
+                let query = MagicDnsQuery {
+                    source: "127.0.0.1:5353".parse().unwrap(),
+                    payload: request.to_vec().unwrap(),
+                };
+                let result = data.resolve(query.clone()).await;
+                let bytes = match result {
+                    MagicDnsQueryResult::Response(response) if local => response.unwrap(),
+                    MagicDnsQueryResult::Forward {
+                        response,
+                        overload_response,
+                    } if !local => {
+                        assert_eq!(data.overload_response(&query).unwrap(), overload_response);
+                        if code == ResponseCode::BADVERS {
+                            let answer = Message::from_vec(&response.await.unwrap()).unwrap();
+                            assert_eq!(u16::from(answer.response_code()), u16::from(code));
+                        }
+                        overload_response
+                    }
+                    _ => panic!("incorrect authority selection for {name}"),
+                };
+                let answer = Message::from_vec(&bytes).unwrap();
+                assert_eq!(answer.id(), request.id());
+                assert_eq!(answer.queries(), request.queries());
+                assert_eq!(u16::from(answer.response_code()), u16::from(code));
+                assert_eq!(
+                    answer.authoritative(),
+                    local && code != ResponseCode::BADVERS
+                );
+                assert!(answer.answers().is_empty());
+                if local && code == ResponseCode::NoError {
+                    let [record] = answer.name_servers() else {
+                        panic!("expected one SOA in the authority section");
+                    };
+                    assert_eq!(record.name(), request.queries()[0].name());
+                    assert!(record.ttl().min(record.data().as_soa().unwrap().minimum()) > 0);
+                }
+                assert_eq!(
+                    answer.extensions().as_ref().map(|edns| (
+                        edns.version(),
+                        edns.max_payload(),
+                        edns.rcode_high(),
+                    )),
+                    edns.map(|(_, payload)| (0, payload.max(512), code.high()))
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_reverse_queries_follow_committed_prefixes_and_preserve_authorities() {
+        let dns = config(&[(
+            "126.126.10.in-addr.arpa.",
+            &[record("100", DnsRecordType::Ptr, "node.et.net.", None)],
+        )]);
+        let data = data_with(Some(&dns)).await;
+        data.local_ipv4_addresses
+            .store(Arc::new(BTreeSet::from(["10.126.126.101/25"
+                .parse()
+                .unwrap()])));
+
+        let configured = query(&data, "100.126.126.10.in-addr.arpa.", RecordType::PTR).await;
+        assert_eq!(configured.response_code(), ResponseCode::NoError);
+        assert_eq!(configured.answers()[0].data().to_string(), "node.et.net.");
+        // A configured reverse zone also owns its missing records.
+        assert!(matches!(
+            prepare_query(&data, "101.126.126.10.in-addr.arpa.", RecordType::PTR).await,
+            MagicDnsQueryResult::Response(Some(_))
+        ));
+
+        let data = data_with(None).await;
+        data.local_ipv4_addresses
+            .store(Arc::new(BTreeSet::from(["10.126.126.101/25"
+                .parse()
+                .unwrap()])));
+        for host in [0, 100, 127] {
+            let answer = query(
+                &data,
+                &format!("{host}.126.126.10.in-addr.arpa."),
+                RecordType::PTR,
+            )
+            .await;
+            assert_eq!(answer.response_code(), ResponseCode::NoError);
+            assert!(answer.answers().is_empty());
+            assert!(answer.authoritative());
+        }
+        for name in [
+            "128.126.126.10.in-addr.arpa.",
+            "8.8.8.8.in-addr.arpa.",
+            "126.126.10.in-addr.arpa.",
+            "invalid.126.126.10.in-addr.arpa.",
+            "+100.126.126.10.in-addr.arpa.",
+            "001.126.126.10.in-addr.arpa.",
+            "1.0.0.0.ip6.arpa.",
+        ] {
+            assert!(
+                matches!(
+                    prepare_query(&data, name, RecordType::PTR).await,
+                    MagicDnsQueryResult::Forward { .. }
+                ),
+                "{name}"
+            );
+        }
+        // Other record types and ordinary external DNS retain forwarding.
+        assert!(matches!(
+            prepare_query(&data, "100.126.126.10.in-addr.arpa.", RecordType::TXT).await,
+            MagicDnsQueryResult::Forward { .. }
+        ));
+        assert!(matches!(
+            prepare_query(&data, "example.com.", RecordType::A).await,
+            MagicDnsQueryResult::Forward { .. }
+        ));
+
+        data.local_ipv4_addresses
+            .store(Arc::new(BTreeSet::from(["10.126.126.200/25"
+                .parse()
+                .unwrap()])));
+        assert!(matches!(
+            prepare_query(&data, "100.126.126.10.in-addr.arpa.", RecordType::PTR).await,
+            MagicDnsQueryResult::Forward { .. }
+        ));
+        assert_eq!(
+            query(&data, "200.126.126.10.in-addr.arpa.", RecordType::PTR)
+                .await
+                .response_code(),
+            ResponseCode::NoError
+        );
+        data.local_ipv4_addresses.store(Arc::default());
+        assert!(matches!(
+            prepare_query(&data, "200.126.126.10.in-addr.arpa.", RecordType::PTR).await,
+            MagicDnsQueryResult::Forward { .. }
+        ));
     }
 
     async fn a(data: &MagicDnsServerInstanceData, name: &str) -> Vec<Ipv4Addr> {
@@ -987,6 +1270,164 @@ mod tests {
             },
         };
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        #[tokio::test]
+        async fn saturated_forwarding_keeps_tun_dns_available_and_shutdown_cancels_replies() {
+            use crate::instance::dns_server::tests::prepare_env;
+            use tokio::net::UdpSocket;
+
+            async fn send_query(name: &str, kind: RecordType) -> UdpSocket {
+                let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+                socket.connect("100.100.100.101:53").await.unwrap();
+                socket
+                    .send(&query_message(name, kind).to_vec().unwrap())
+                    .await
+                    .unwrap();
+                socket
+            }
+
+            async fn receive(socket: &UdpSocket) -> Message {
+                let mut buffer = [0; 4096];
+                let length = tokio::time::timeout(Duration::from_secs(1), socket.recv(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                Message::from_vec(&buffer[..length]).unwrap()
+            }
+
+            let tun_ip = "100.100.100.1/24".parse().unwrap();
+            let (_ctx, core, _nic) = prepare_env("slow-forwarding", tun_ip).await;
+            let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let mut data = data_with(None).await;
+            data.dns_server = super::super::super::server::tests::forwarding_server(
+                upstream.local_addr().unwrap(),
+            )
+            .await
+            .unwrap();
+            data.local_ipv4_addresses
+                .store(Arc::new(BTreeSet::from([tun_ip])));
+            let data = Arc::new(data);
+            let server = MagicDnsServerInstance::start(
+                StandAloneServer::new(runtime_rpc_listener(rpc_address())),
+                data.clone(),
+                core.packet_plane(),
+                tun_ip,
+                async { Ok(()) },
+            )
+            .await
+            .unwrap();
+
+            let mut buffer = [0; 4096];
+            let mut pending = Vec::new();
+            for index in 0..128 {
+                let socket = send_query(&format!("slow{index}.example.org."), RecordType::A).await;
+                let mut reply = [0; 4096];
+                let forwarded = tokio::time::timeout(Duration::from_secs(1), async {
+                    tokio::select! {
+                        result = upstream.recv_from(&mut buffer) => {
+                            let (length, source) = result.unwrap();
+                            Some((Message::from_vec(&buffer[..length]).unwrap(), source))
+                        }
+                        result = socket.recv(&mut reply) => {
+                            let length = result.unwrap();
+                            assert_eq!(
+                                Message::from_vec(&reply[..length]).unwrap().response_code(),
+                                ResponseCode::ServFail
+                            );
+                            None
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+                if let Some((message, source)) = forwarded {
+                    pending.push((socket, message, source));
+                } else {
+                    break;
+                }
+            }
+            assert!(pending.len() > 1 && pending.len() < 128);
+            println!(
+                "forwarding overloaded after {} pending queries",
+                pending.len()
+            );
+            let (slow, mut forwarded, source) = pending.remove(0);
+
+            // Publication and local TUN queries finish with forwarding saturated.
+            tokio::time::timeout(Duration::from_secs(1), async {
+                data.update_dns_record(controller(4001), request("10.0.0.8/24"))
+                    .await
+                    .unwrap();
+                let local = send_query("node.et.net.", RecordType::A).await;
+                let response = receive(&local).await;
+                assert_eq!(response.answers().len(), 1);
+                assert_eq!(
+                    response.answers()[0].data().as_a().unwrap().0,
+                    Ipv4Addr::new(10, 0, 0, 8)
+                );
+                let reverse = send_query("42.100.100.100.in-addr.arpa.", RecordType::PTR).await;
+                let response = receive(&reverse).await;
+                assert_eq!(response.response_code(), ResponseCode::NoError);
+                assert!(response.answers().is_empty());
+                assert_eq!(response.name_servers()[0].record_type(), RecordType::SOA);
+                assert!(response.authoritative());
+            })
+            .await
+            .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), upstream.recv_from(&mut buffer),)
+                    .await
+                    .is_err()
+            );
+
+            forwarded
+                .set_message_type(MessageType::Response)
+                .set_response_code(ResponseCode::NXDomain);
+            upstream
+                .send_to(&forwarded.to_vec().unwrap(), source)
+                .await
+                .unwrap();
+            assert_eq!(receive(&slow).await.response_code(), ResponseCode::NXDomain);
+
+            // A pending reply from the old resolver cannot cross replacement.
+            let (cancelled, mut forwarded, source) = pending.remove(0);
+            tokio::time::timeout(Duration::from_secs(1), server.clean_env())
+                .await
+                .unwrap();
+            let replacement = Arc::new(data_with(None).await);
+            let server = MagicDnsServerInstance::start(
+                StandAloneServer::new(runtime_rpc_listener(rpc_address())),
+                replacement.clone(),
+                core.packet_plane(),
+                tun_ip,
+                async { Ok(()) },
+            )
+            .await
+            .unwrap();
+            forwarded
+                .set_message_type(MessageType::Response)
+                .set_response_code(ResponseCode::NXDomain);
+            upstream
+                .send_to(&forwarded.to_vec().unwrap(), source)
+                .await
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), cancelled.recv(&mut buffer))
+                    .await
+                    .is_err()
+            );
+            replacement
+                .update_dns_record(controller(4002), request("10.0.0.9/24"))
+                .await
+                .unwrap();
+            let local = send_query("node.et.net.", RecordType::A).await;
+            assert_eq!(
+                receive(&local).await.answers()[0].data().as_a().unwrap().0,
+                Ipv4Addr::new(10, 0, 0, 9)
+            );
+            server.clean_env().await;
+            core.stop().await;
+        }
 
         #[derive(Default)]
         struct StartupSystemConfig {
@@ -1274,7 +1715,7 @@ mod tests {
                     assert!(system.domains.lock().unwrap().is_empty());
                     let writes = system.writes.load(Ordering::SeqCst);
                     assert!(
-                        rpc.update_dns_record(BaseController::default(), request("10.0.0.9/24"))
+                        data.update_dns_record(controller(4002), request("10.0.0.9/24"))
                             .await
                             .is_err()
                     );

@@ -12,8 +12,8 @@ pub use records::{
 };
 
 #[cfg(feature = "proxy-packet")]
-pub(crate) use packet::magic_dns_packet_filter;
-#[cfg(feature = "proxy-packet")]
 pub use packet::{
-    MagicDnsQuery, MagicDnsQueryResolver, MagicDnsResolverRegistration, process_magic_dns_packet,
+    MagicDnsQuery, MagicDnsQueryResolver, MagicDnsQueryResult, MagicDnsResolverRegistration,
 };
+#[cfg(feature = "proxy-packet")]
+pub(crate) use packet::{MagicDnsResolverState, magic_dns_packet_filter};

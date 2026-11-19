@@ -326,11 +326,11 @@ impl<H> crate::peers::NicPacketFilter for WrappedTransportSourceFilter<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
-    async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
-        let Some(source) = self.source.upgrade() else {
-            return false;
-        };
-        source.try_process_nic_packet(packet).await
+    async fn try_process_packet_from_nic(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
+        if let Some(source) = self.source.upgrade() {
+            source.try_process_nic_packet(&mut packet).await;
+        }
+        Some(packet)
     }
 }
 

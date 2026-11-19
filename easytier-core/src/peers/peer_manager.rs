@@ -1690,11 +1690,8 @@ impl PeerManagerCore {
     }
 
     #[cfg(feature = "proxy-packet")]
-    pub(crate) async fn remove_managed_nic_packet_process_pipeline(
-        &self,
-        registration: &PipelineRegistrationGuard,
-    ) {
-        registration.close();
+    pub(crate) fn local_packet_sender(&self) -> super::PacketRecvChan {
+        self.peers.local_packet_sender()
     }
 
     pub async fn add_route<T>(&self, route: Arc<T>)
@@ -2548,26 +2545,26 @@ impl PeerOutboundPacketRouter {
         );
     }
 
-    async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) -> bool {
+    async fn run_nic_packet_process_pipeline(&self, mut data: ZCPacket) -> Option<ZCPacket> {
         // Enforce ACL for outbound (NIC-originated) packets. If ACL denies, stop processing.
         if !self.acl_filter.process_packet_with_acl(
-            data,
+            &data,
             false,
             None,
             |_| false,
             self.route.as_ref(),
         ) {
-            return false;
+            return None;
         }
 
         let pipelines = self.nic_packet_process_pipeline.load_full();
         for pipeline in pipelines.iter().rev() {
             if let Some(filter) = pipeline.filter_if_active() {
-                let _ = filter.try_process_packet_from_nic(data).await;
+                data = filter.try_process_packet_from_nic(data).await?;
             }
         }
 
-        true
+        Some(data)
     }
 
     fn check_p2p_only_before_send(
@@ -2814,9 +2811,9 @@ impl PeerOutboundPacketRouter {
 
         msg.fill_peer_manager_hdr(self.my_peer_id, 0, PacketType::Data as u8);
         let filters_registered = !self.nic_packet_process_pipeline.load().is_empty();
-        if !self.run_nic_packet_process_pipeline(&mut msg).await {
+        let Some(mut msg) = self.run_nic_packet_process_pipeline(msg).await else {
             return Ok(());
-        }
+        };
 
         if filters_registered
             && let Ok(meta) = crate::instance::packet_io::parse_ip_packet(msg.payload())
@@ -3766,8 +3763,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl super::super::NicPacketFilter for DropCountingNicFilter {
-        async fn try_process_packet_from_nic(&self, _data: &mut ZCPacket) -> bool {
-            true
+        async fn try_process_packet_from_nic(&self, data: ZCPacket) -> Option<ZCPacket> {
+            Some(data)
         }
     }
 
@@ -4089,11 +4086,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl super::super::NicPacketFilter for DestinationRewriteNicFilter {
-        async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
+        async fn try_process_packet_from_nic(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
             // Leave to_peer_id unset: the router must use the rewritten IP header.
             assert_eq!(packet.peer_manager_header().unwrap().to_peer_id.get(), 0);
             set_packet_destination(packet.mut_payload(), self.0);
-            true
+            Some(packet)
         }
     }
 

@@ -556,11 +556,11 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDestinationConnector>
     NicPacketFilter for TcpProxyServiceFilter<R, F, C>
 {
-    async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
-        let Some(service) = self.service.upgrade() else {
-            return false;
-        };
-        service.handle_nic_packet(packet).await
+    async fn try_process_packet_from_nic(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
+        if let Some(service) = self.service.upgrade() {
+            service.handle_nic_packet(&mut packet).await;
+        }
+        Some(packet)
     }
 }
 
