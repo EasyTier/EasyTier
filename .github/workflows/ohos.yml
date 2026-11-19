@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish this non-main branch and dispatch downstream builds
+        description: Publish this non-main branch to OHPM
         required: false
         default: false
         type: boolean
@@ -190,16 +190,33 @@ jobs:
           ohrs artifact
           mv package.har "$package_name.har"
 
+          jq -n \
+            --arg package_name "$package_name" \
+            --arg version "$package_version" \
+            --arg har_file "$package_name.har" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg ref "$GITHUB_REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            '{schema_version: 1, package_name: $package_name, version: $version,
+              har_file: $har_file, repository: $repository, commit_sha: $commit_sha,
+              ref: $ref, run_id: $run_id, run_attempt: $run_attempt}' \
+            > "$package_name.metadata.json"
+
       - name: Upload HAR
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.package.outputs.name }}
-          path: easytier-contrib/easytier-ohrs/${{ steps.package.outputs.name }}.har
+          path: |
+            easytier-contrib/easytier-ohrs/${{ steps.package.outputs.name }}.har
+            easytier-contrib/easytier-ohrs/${{ steps.package.outputs.name }}.metadata.json
           retention-days: 5
           if-no-files-found: error
 
-      - name: Publish and dispatch
+      - name: Publish to OHPM
+        id: publish
         if: >-
           (github.event_name == 'push' &&
            github.ref_type == 'branch' &&
@@ -212,7 +229,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CODEARTS_PRIVATE_OHPM: ${{ secrets.CODEARTS_PRIVATE_OHPM }}
-          DOWNSTREAM_DISPATCH_TOKEN: ${{ secrets.DOWNSTREAM_DISPATCH_TOKEN }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = push ]; then
@@ -239,7 +255,15 @@ jobs:
           printf '%s' "$CODEARTS_PRIVATE_OHPM" > "$HOME/.ohpm/.ohpmrc"
           trap 'rm -f "$HOME/.ohpm/.ohpmrc"' EXIT
           ohpm publish "$EASYTIER_PACKAGE_NAME.har"
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
+      # AGCD consumes the artifact/OHPM release. Opt in only for legacy CI consumers.
+      - name: Dispatch legacy downstream builds
+        if: steps.publish.outputs.published == 'true' && vars.ENABLE_DOWNSTREAM_DISPATCH == 'true'
+        env:
+          DOWNSTREAM_DISPATCH_TOKEN: ${{ secrets.DOWNSTREAM_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
           payload=$(jq -nc \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg ref "refs/heads/$GITHUB_REF_NAME" \
