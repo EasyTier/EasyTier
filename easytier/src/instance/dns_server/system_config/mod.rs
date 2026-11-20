@@ -13,6 +13,9 @@ pub mod linux;
 #[cfg(target_os = "linux")]
 pub mod openresolv;
 
+#[cfg(target_os = "linux")]
+pub mod networkmanager;
+
 #[derive(Clone, Default, Debug)]
 pub struct OSConfig {
     pub nameservers: Vec<String>,

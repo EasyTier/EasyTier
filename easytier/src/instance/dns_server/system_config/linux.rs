@@ -37,6 +37,9 @@ pub fn new_configurator(interface: &str) -> io::Result<Box<dyn SystemConfig>> {
     // Another resolver is in the query path. Managers that publish their own
     // per-interface API are configured through it, so that several of them can
     // own DNS on the same host without overwriting each other's settings.
+    if let Some(configurator) = super::networkmanager::NetworkManagerConfigurator::detect() {
+        return Ok(Box::new(configurator));
+    }
     if super::openresolv::OpenResolvConfigurator::available() {
         return Ok(Box::new(super::openresolv::OpenResolvConfigurator::new(
             interface,
@@ -45,7 +48,8 @@ pub fn new_configurator(interface: &str) -> io::Result<Box<dyn SystemConfig>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "automatic Magic DNS needs a resolver with a configuration interface: \
-         systemd-resolved in the query path, or resolvconf (openresolv) installed",
+         systemd-resolved in the query path, NetworkManager managing DNS, \
+         or resolvconf (openresolv) installed",
     ))
 }
 
