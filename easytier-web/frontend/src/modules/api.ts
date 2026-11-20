@@ -103,6 +103,7 @@ export interface CentralNetworkMember {
     has_override?: boolean;
     proxy_cidrs?: string[];
     temporary?: boolean;
+    enabled?: boolean;
     credential_id?: string | null;
     credential_expiry_unix?: number | null;
 }
@@ -397,7 +398,7 @@ export class ApiClient {
         return response;
     }
 
-    public async update_network_member(network_id: string, device_id: string, update: { hostname_override?: string | null, virtual_ipv4?: string | null, proxy_cidrs?: string[] }): Promise<CentralNetworkMember> {
+    public async update_network_member(network_id: string, device_id: string, update: { hostname_override?: string | null, virtual_ipv4?: string | null, proxy_cidrs?: string[], enabled?: boolean }): Promise<CentralNetworkMember> {
         return await this.client.patch<any, CentralNetworkMember>(`/networks/${network_id}/members/${device_id}`, update);
     }
 
