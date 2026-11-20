@@ -29,15 +29,28 @@ const LINK_BUSY_ERROR: &str = "org.freedesktop.resolve1.LinkBusy";
 const DBUS_METHOD_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn new_configurator(interface: &str) -> io::Result<Box<dyn SystemConfig>> {
-    let resolv_conf = fs::read_to_string("/etc/resolv.conf")?;
+    let resolv_conf = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
     let nsswitch = fs::read_to_string("/etc/nsswitch.conf").unwrap_or_default();
-    if !ResolvedConfigurator::uses_resolved(&resolv_conf, &nsswitch) {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Automatic Magic DNS on Linux requires systemd-resolved in the system query path",
-        ));
+    if ResolvedConfigurator::uses_resolved(&resolv_conf, &nsswitch) {
+        return Ok(Box::new(ResolvedConfigurator::new(interface)));
     }
-    Ok(Box::new(ResolvedConfigurator::new(interface)))
+    // Another resolver is in the query path. Managers that publish their own
+    // per-interface API are configured through it, so that several of them can
+    // own DNS on the same host without overwriting each other's settings.
+    if let Some(configurator) = super::networkmanager::NetworkManagerConfigurator::detect() {
+        return Ok(Box::new(configurator));
+    }
+    if super::openresolv::OpenResolvConfigurator::available() {
+        return Ok(Box::new(super::openresolv::OpenResolvConfigurator::new(
+            interface,
+        )));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "automatic Magic DNS needs a resolver with a configuration interface: \
+         systemd-resolved in the query path, NetworkManager managing DNS, \
+         or resolvconf (openresolv) installed",
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

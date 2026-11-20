@@ -519,6 +519,7 @@ pub struct MagicDnsServerInstance {
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     packet_filter: MagicDnsResolverRegistration,
     tun_inet: Ipv4Inet,
+    _udp_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 fn get_system_config(
@@ -761,11 +762,19 @@ impl MagicDnsServerInstance {
         rpc_server
             .registry()
             .register(MagicDnsServerRpcServer::new_arc(data.clone()), "");
+
+        // A query sent to the fake IP from this host cannot round-trip through
+        // the TUN pipeline: the response is handed back to the TUN device that
+        // originated it and never delivered. Answer the fake IP on loopback so
+        // local lookups have a path the kernel can complete; the pipeline stays
+        // registered for remote clients.
+        let udp_task = Self::start_loopback_listener(data.clone()).await;
         Ok(Self {
             _rpc_server: rpc_server,
             data,
             packet_filter,
             tun_inet,
+            _udp_task: udp_task,
         })
     }
 
@@ -883,6 +892,96 @@ impl MagicDnsServerInstance {
         }
     }
 
+    /// Serve the fake IP on loopback for clients running on this host.
+    ///
+    /// Best effort by construction: assigning the address needs CAP_NET_ADMIN
+    /// and binding port 53 needs CAP_NET_BIND_SERVICE. When either is missing,
+    /// the listener is skipped and only the local shortcut is lost — never the
+    /// whole Magic DNS instance, whose packet pipeline keeps serving remote
+    /// clients.
+    async fn start_loopback_listener(
+        data: Arc<MagicDnsServerInstanceData>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let fake_ip = data.fake_ip;
+        let ifcfg = IfConfiger::default();
+        if let Err(error) = ifcfg.add_ipv4_ip("lo", fake_ip, 32).await {
+            log::warn!(
+                category: "DNS",
+                ?error,
+                "Magic DNS could not assign {} to loopback; local lookups keep using the packet pipeline",
+                fake_ip
+            );
+            return None;
+        }
+        let socket = match tokio::net::UdpSocket::bind(std::net::SocketAddrV4::new(fake_ip, 53))
+            .await
+        {
+            Ok(socket) => socket,
+            Err(error) => {
+                log::warn!(
+                    category: "DNS",
+                    ?error,
+                    "Magic DNS could not bind {}:53; local lookups keep using the packet pipeline",
+                    fake_ip
+                );
+                if let Ok(inet) = Ipv4Inet::new(fake_ip, 32) {
+                    if let Err(error) = ifcfg.remove_ip("lo", Some(inet)).await {
+                        log::warn!(
+                            category: "DNS",
+                            ?error,
+                            "Magic DNS could not undo {} on loopback",
+                            fake_ip
+                        );
+                    }
+                }
+                return None;
+            }
+        };
+        log::info!(category: "DNS", "Magic DNS answers {} on loopback", fake_ip);
+
+        Some(tokio::spawn(async move {
+            let mut buffer = vec![0u8; 1500];
+            loop {
+                let (length, source) = match socket.recv_from(&mut buffer).await {
+                    Ok(received) => received,
+                    Err(error) => {
+                        log::error!(
+                            category: "DNS",
+                            ?error,
+                            "Magic DNS loopback receive failed"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+                // Reuse the pipeline's resolver so a local query takes the same
+                // authority selection, reverse lookup and forwarding decisions
+                // as a packet arriving on the TUN device.
+                let query = MagicDnsQuery {
+                    source,
+                    payload: buffer[..length].to_vec(),
+                };
+                let payload = match data.resolve(query).await {
+                    MagicDnsQueryResult::Response(response) => response,
+                    MagicDnsQueryResult::Forward {
+                        response,
+                        overload_response,
+                    } => response.await.or(Some(overload_response)),
+                };
+                let Some(payload) = payload else {
+                    continue;
+                };
+                if let Err(error) = socket.send_to(&payload, source).await {
+                    log::error!(
+                        category: "DNS",
+                        ?error,
+                        "Magic DNS loopback send failed"
+                    );
+                }
+            }
+        }))
+    }
+
     pub async fn clean_env(self) {
         let _apply = self.data.record_apply.lock().await;
         self.data
@@ -906,6 +1005,18 @@ impl MagicDnsServerInstance {
         }
 
         self.packet_filter.close().await;
+
+        let ifcfg = IfConfiger::default();
+        if let Ok(inet) = Ipv4Inet::new(self.data.fake_ip, 32) {
+            if let Err(error) = ifcfg.remove_ip("lo", Some(inet)).await {
+                log::warn!(
+                    category: "DNS",
+                    ?error,
+                    "Magic DNS could not remove {} from loopback",
+                    self.data.fake_ip
+                );
+            }
+        }
     }
 }
 
