@@ -545,6 +545,12 @@ impl TunnelInfo {
         self.effective_remote_addr()
             .map(Url::normalized_tunnel_display)
     }
+
+    pub fn display_local_addr(&self) -> Option<String> {
+        self.local_addr
+            .as_ref()
+            .map(Url::normalized_tunnel_display)
+    }
 }
 
 impl fmt::Debug for Ipv4Addr {
@@ -733,6 +739,46 @@ mod tests {
         assert_eq!(
             tunnel.effective_remote_addr().map(|url| url.url.as_str()),
             Some("tcp://[2001:db8::3]:11010")
+        );
+    }
+
+    #[test]
+    fn tunnel_info_display_local_addr() {
+        let tunnel = TunnelInfo {
+            tunnel_type: "quic".to_string(),
+            local_addr: Some(Url {
+                url: "quic://192.168.1.2:54321".to_string(),
+            }),
+            remote_addr: Some(Url {
+                url: "quic://203.0.113.5:443".to_string(),
+            }),
+            resolved_remote_addr: Some(Url {
+                url: "quic://203.0.113.5:443".to_string(),
+            }),
+        };
+        assert_eq!(
+            tunnel.display_local_addr().as_deref(),
+            Some("quic://192.168.1.2:54321")
+        );
+    }
+
+    #[test]
+    fn tunnel_info_display_local_addr_prefers_local() {
+        // local and remote may differ; both should be independently accessible
+        let tunnel = TunnelInfo {
+            tunnel_type: "tcp".to_string(),
+            local_addr: Some(Url {
+                url: "tcp://0.0.0.0:0".to_string(),
+            }),
+            remote_addr: Some(Url {
+                url: "tcp://1.2.3.4:11010".to_string(),
+            }),
+            resolved_remote_addr: None,
+        };
+        assert_eq!(tunnel.display_local_addr().as_deref(), Some("tcp://0.0.0.0:0"));
+        assert_eq!(
+            tunnel.display_remote_addr().as_deref(),
+            Some("tcp://1.2.3.4:11010")
         );
     }
 }

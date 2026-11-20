@@ -73,7 +73,7 @@ use easytier::{
                 WebClientServiceClientFactory,
             },
         },
-        common::{NatType, PortForwardConfigPb, SocketType},
+        common::{NatType, PortForwardConfigPb, SocketType, TunnelInfo},
         peer_rpc::{
             GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory, PeerIdentityType,
             SecureAuthLevel,
@@ -193,7 +193,11 @@ impl From<&InstanceSelectArgs> for InstanceIdentifier {
 }
 
 #[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 struct PeerArgs {
+    /// Output complete peer and route RPC responses as JSON
+    #[arg(long)]
+    all_json: bool,
     #[command(subcommand)]
     sub_command: Option<PeerSubCommand>,
 }
@@ -202,6 +206,8 @@ struct PeerArgs {
 enum PeerSubCommand {
     /// List connected peers
     List,
+    /// Show peer connection details (local/remote addresses)
+    Conns,
     /// Show public IPv6 address information
     Ipv6,
     /// List foreign networks discovered by this instance
@@ -1196,6 +1202,101 @@ records = [
             vec!["--daemon"]
         );
     }
+
+    #[test]
+    fn peer_all_json_command_parses() {
+        let cli = Cli::try_parse_from(["easytier-cli", "peer", "--all-json"]).unwrap();
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Peer(PeerArgs {
+                all_json: true,
+                sub_command: None
+            })
+        ));
+        assert!(
+            Cli::try_parse_from(["easytier-cli", "peer", "--all-json", "conns"]).is_err()
+        );
+    }
+
+    #[test]
+    fn peer_conns_command_parses() {
+        let cli = Cli::try_parse_from(["easytier-cli", "peer", "conns"]).unwrap();
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Peer(PeerArgs {
+                sub_command: Some(PeerSubCommand::Conns),
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "easytier-cli", "-n", "net1", "-o", "json", "peer", "conns",
+        ])
+        .unwrap();
+        assert_eq!(cli.instance_select.name.as_deref(), Some("net1"));
+        assert_eq!(cli.output_format, OutputFormat::Json);
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Peer(PeerArgs {
+                sub_command: Some(PeerSubCommand::Conns),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn peer_conns_keeps_requested_and_resolved_addresses_distinct() {
+        use easytier::proto::common::Url;
+
+        let tunnel = TunnelInfo {
+            remote_addr: Some(Url { url: "tcp://example.com:11010".to_string() }),
+            resolved_remote_addr: Some(Url { url: "tcp://203.0.113.5:11010".to_string() }),
+            ..Default::default()
+        };
+        assert_eq!(
+            peer_conn_remote_addrs(Some(&tunnel)),
+            ("tcp://example.com:11010".to_string(), "tcp://203.0.113.5:11010".to_string())
+        );
+        let unresolved = TunnelInfo {
+            resolved_remote_addr: None,
+            ..tunnel.clone()
+        };
+        assert_eq!(
+            peer_conn_remote_addrs(Some(&unresolved)),
+            ("tcp://example.com:11010".to_string(), "-".to_string())
+        );
+        let resolved_only = TunnelInfo {
+            remote_addr: None,
+            ..tunnel
+        };
+        assert_eq!(
+            peer_conn_remote_addrs(Some(&resolved_only)),
+            ("-".to_string(), "tcp://203.0.113.5:11010".to_string())
+        );
+        assert_eq!(peer_conn_remote_addrs(None), ("-".to_string(), "-".to_string()));
+    }
+
+    #[test]
+    fn peer_list_command_still_parses_without_subcommand() {
+        let cli = Cli::try_parse_from(["easytier-cli", "peer"]).unwrap();
+        assert!(matches!(
+            cli.sub_command,
+            SubCommand::Peer(PeerArgs {
+                sub_command: None,
+                all_json: false
+            })
+        ));
+    }
+}
+
+fn peer_conn_remote_addrs(tunnel: Option<&TunnelInfo>) -> (String, String) {
+    let display = |addr: Option<&easytier::proto::common::Url>| {
+        addr.map(|url| url.normalized_tunnel_display())
+            .unwrap_or_else(|| "-".to_string())
+    };
+    (
+        display(tunnel.and_then(|info| info.remote_addr.as_ref())),
+        display(tunnel.and_then(|info| info.resolved_remote_addr.as_ref())),
+    )
 }
 
 fn format_proxy_cidrs(value: &str) -> String {
@@ -1210,6 +1311,12 @@ fn format_proxy_cidrs(value: &str) -> String {
 struct PeerListData {
     node_info: NodeInfo,
     peer_routes: Vec<PeerRoutePair>,
+}
+
+#[derive(serde::Serialize)]
+struct PeerAllJsonData {
+    peers: ListPeerResponse,
+    routes: ListRouteResponse,
 }
 
 #[derive(serde::Serialize)]
@@ -1936,6 +2043,20 @@ impl<'a> CommandHandler<'a> {
         .await
     }
 
+    async fn handle_peer_all_json(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| {
+                Box::pin(async move {
+                    Ok(PeerAllJsonData {
+                        peers: handler.list_peers().await?,
+                        routes: handler.list_routes().await?,
+                    })
+                })
+            })
+            .await?;
+        self.print_json_results(results)
+    }
+
     async fn handle_peer_list(&self) -> Result<(), Error> {
         #[derive(tabled::Tabled, serde::Serialize)]
         struct PeerTableItem {
@@ -1957,6 +2078,8 @@ impl<'a> CommandHandler<'a> {
             tunnel_proto: String,
             #[tabled(rename = "NAT")]
             nat_type: String,
+            #[tabled(rename = "remote")]
+            remote_addr: String,
             #[tabled(skip)]
             id: String,
             version: String,
@@ -1985,6 +2108,12 @@ impl<'a> CommandHandler<'a> {
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tunnel_proto: p.get_conn_protos().unwrap_or_default().join(","),
                     nat_type: p.get_udp_nat_type(),
+                    remote_addr: peer_conn_remote_addrs(
+                        p.peer.as_ref().and_then(|peer| {
+                            peer.conns.iter().find_map(|conn| conn.tunnel.as_ref())
+                        }),
+                    )
+                    .0,
                     id: route.peer_id.to_string(),
                     version: if route.version.is_empty() {
                         "unknown".to_string()
@@ -2014,6 +2143,7 @@ impl<'a> CommandHandler<'a> {
                     } else {
                         "Unknown".to_string()
                     },
+                    remote_addr: "-".to_string(),
                     id: p.peer_id.to_string(),
                     version: p.version,
                 }
@@ -2091,6 +2221,91 @@ impl<'a> CommandHandler<'a> {
                 &["version", "tunnel", "nat", "tx", "rx", "loss", "lat(ms)"],
                 self.no_trunc,
             )
+        })
+    }
+
+    async fn handle_peer_conns(&self) -> Result<(), Error> {
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct ConnRow {
+            peer_id: String,
+            conn_id: String,
+            #[tabled(rename = "proto")]
+            proto: String,
+            #[tabled(rename = "local")]
+            local_addr: String,
+            #[tabled(rename = "remote")]
+            remote_addr: String,
+            #[tabled(rename = "resolved")]
+            resolved_remote_addr: String,
+            #[tabled(rename = "lat(ms)")]
+            lat_ms: String,
+            #[tabled(rename = "rx")]
+            rx_bytes: String,
+            #[tabled(rename = "tx")]
+            tx_bytes: String,
+            loss_rate: String,
+        }
+
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_peer_list_data()))
+            .await?;
+
+        let rows = results.into_iter().map(|result| result.map(|data| {
+            let mut rows: Vec<ConnRow> = Vec::new();
+            for pair in &data.peer_routes {
+                let peer = pair.peer.as_ref();
+                let route = pair.route.clone().unwrap_or_default();
+                let peer_id = route.peer_id.to_string();
+                for conn in peer.into_iter().flat_map(|p| &p.conns) {
+                    let proto = conn
+                        .tunnel
+                        .as_ref()
+                        .map(|t| t.display_tunnel_type())
+                        .unwrap_or_else(|| "-".to_string());
+                    let local = conn
+                        .tunnel
+                        .as_ref()
+                        .and_then(|t| t.display_local_addr())
+                        .unwrap_or_else(|| "-".to_string());
+                    let (remote, resolved) = peer_conn_remote_addrs(conn.tunnel.as_ref());
+                    let stats = conn
+                        .stats
+                        .as_ref()
+                        .map(|s| (s.rx_bytes, s.tx_bytes, s.latency_us));
+                    rows.push(ConnRow {
+                        peer_id: peer_id.clone(),
+                        conn_id: conn.conn_id.clone(),
+                        proto,
+                        local_addr: local,
+                        remote_addr: remote,
+                        resolved_remote_addr: resolved,
+                        lat_ms: format!("{:.2}", stats.map(|(_, _, l)| l as f64 / 1000.0).unwrap_or(0.0)),
+                        rx_bytes: format_size(stats.map(|(r, _, _)| r).unwrap_or(0), humansize::DECIMAL),
+                        tx_bytes: format_size(stats.map(|(_, t, _)| t).unwrap_or(0), humansize::DECIMAL),
+                        loss_rate: format!("{:.1}%", conn.loss_rate * 100.0),
+                    });
+                }
+            }
+            rows
+        })).collect::<Vec<_>>();
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(rows);
+        }
+
+        self.print_results(&rows, |rows| {
+            if rows.is_empty() {
+                println!("no peer connections found");
+            } else {
+                print_output(
+                    rows,
+                    self.output_format,
+                    &[],
+                    &["resolved"],
+                    self.no_trunc,
+                )?;
+            }
+            Ok(())
         })
     }
 
@@ -3897,9 +4112,15 @@ async fn main() -> Result<(), Error> {
     };
 
     match cli.sub_command {
+        SubCommand::Peer(peer_args) if peer_args.all_json => {
+            handler.handle_peer_all_json().await?;
+        }
         SubCommand::Peer(peer_args) => match &peer_args.sub_command {
             Some(PeerSubCommand::List) => {
                 handler.handle_peer_list().await?;
+            }
+            Some(PeerSubCommand::Conns) => {
+                handler.handle_peer_conns().await?;
             }
             Some(PeerSubCommand::Ipv6) => {
                 handler.handle_peer_ipv6().await?;
