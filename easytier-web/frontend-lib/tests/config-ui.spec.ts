@@ -236,6 +236,8 @@ const UrlListInputStub = defineComponent({
     modelValue: Array,
     id: String,
     addLabel: String,
+    protos: Object,
+    portlessProtos: Array,
   },
   emits: ['update:modelValue'],
   setup(props, { attrs, emit }) {
@@ -245,6 +247,8 @@ const UrlListInputStub = defineComponent({
       value: (props.modelValue ?? []).join(','),
       'data-stub': 'url-list-input',
       'data-add-label': props.addLabel,
+      'data-protos': JSON.stringify(props.protos),
+      'data-portless-protos': JSON.stringify(props.portlessProtos),
       onInput: (event: Event) => emit('update:modelValue', splitList((event.target as HTMLInputElement).value)),
     })
   },
@@ -427,6 +431,16 @@ describe('Config.vue network config projection', () => {
     expect(input(wrapper, '#exit_nodes').value).toBe('exit-a')
     expect(input(wrapper, 'input[data-add-label="add_listener_url"]').value).toBe('tcp://0.0.0.0:12010')
     expect(input(wrapper, 'input[data-add-label="add_mapped_listener"]').value).toBe('tcp://127.0.0.1:22000')
+
+    const listener = input(wrapper, 'input[data-add-label="add_listener_url"]')
+    expect(JSON.parse(listener.dataset.protos!)).toEqual({
+      tcp: 0, udp: 0, wg: 0, ws: 0, wss: 0, quic: 0, faketcp: 0,
+    })
+    expect(JSON.parse(listener.dataset.portlessProtos!)).toEqual([])
+    for (const selector of ['#initial_nodes', 'input[data-add-label="add_mapped_listener"]']) {
+      expect(JSON.parse(input(wrapper, selector).dataset.protos!)).toMatchObject({ tcp: 11010, wg: 11011 })
+    }
+
 
     expect(wrapper.find<HTMLSelectElement>('select[data-stub="select-button"]').element.value).toBe('udp')
     expect(input(wrapper, 'input[placeholder="port_forwards_bind_addr"]').value).toBe('0.0.0.0')
@@ -665,5 +679,13 @@ describe('Config.vue network config projection', () => {
 
     expect(wrapper.emitted('runNetwork')?.[0]).toEqual([curNetwork])
     expect((wrapper.emitted('runNetwork')?.[0][0] as NetworkConfig).network_name).toBe('mesh-running')
+  })
+})
+
+describe('default listener ports', () => {
+  it('uses dynamic ports for new networks', () => {
+    expect(DEFAULT_NETWORK_CONFIG().listener_urls).toEqual([
+      'tcp://0.0.0.0:0', 'udp://0.0.0.0:0', 'wg://0.0.0.0:0',
+    ])
   })
 })

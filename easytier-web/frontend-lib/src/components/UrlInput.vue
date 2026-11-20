@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n'
 const props = defineProps<{
     placeholder?: string
     protos: { [proto: string]: number }
+    portlessProtos?: string[]
 }>()
 
 const { t } = useI18n()
@@ -72,6 +73,9 @@ const parseUrl = (val: string | null | undefined): ParsedUrlValue => {
 
 const internalValue = ref(parseUrl(url.value))
 const defaultHost = '0.0.0.0'
+// An explicit list distinguishes dynamic port 0 from protocols without ports.
+const isPortlessProto = (proto: string) =>
+    props.portlessProtos?.includes(proto) ?? props.protos[proto] === 0
 
 const buildUrlValue = (value: ParsedUrlValue, forceDefaultHost = false) => {
     const proto = value.proto || 'tcp'
@@ -81,10 +85,10 @@ const buildUrlValue = (value: ParsedUrlValue, forceDefaultHost = false) => {
     if (!host) {
         return null
     }
-    // Omit port when the protocol uses no port (protos value = 0), or when the
+    // Omit port when the protocol uses no port, or when the
     // original URL had no explicit port (port === null) – avoids overwriting an
     // implicit standard port (e.g. 443 for wss) with an EasyTier default (11012).
-    if (props.protos[proto] === 0 || value.port === null) {
+    if (isPortlessProto(proto) || value.port === null) {
         return `${proto}://${host}${path}`
     }
     return `${proto}://${host}:${value.port}${path}`
@@ -113,8 +117,10 @@ const onDialogConfirm = () => {
 }
 
 const isNoPortProto = computed(() => {
-    return props.protos[internalValue.value.proto] === 0
+    return isPortlessProto(internalValue.value.proto)
 })
+
+const portInputMin = computed(() => props.protos[internalValue.value.proto] === 0 ? 0 : 1)
 
 const supportsPath = computed(() => {
     const proto = internalValue.value.proto
@@ -186,7 +192,7 @@ const onProtoChange = (newProto: string) => {
                 <InputGroupAddon>
                     <span style="font-weight: bold">:</span>
                 </InputGroupAddon>
-                <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="max-w-24"
+                <InputNumber v-model="internalValue.port" :format="false" :min="portInputMin" :max="65535" class="max-w-24"
                     :placeholder="String(protos[internalValue.proto] ?? 11010)" fluid />
             </template>
             <template v-if="supportsPath">
@@ -220,7 +226,7 @@ const onProtoChange = (newProto: string) => {
                 </div>
                 <div v-if="!isNoPortProto" class="flex flex-col gap-2">
                     <label>{{ t('port') }}</label>
-                    <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="w-full"
+                    <InputNumber v-model="internalValue.port" :format="false" :min="portInputMin" :max="65535" class="w-full"
                         :placeholder="String(protos[internalValue.proto] ?? 11010)" />
                 </div>
                 <div v-if="supportsPath" class="flex flex-col gap-2">
