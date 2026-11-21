@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::Ipv4Addr;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -17,7 +18,7 @@ use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 use crate::{
-    connectivity::protocol::raw::TunnelDialer,
+    connectivity::{protocol::raw::TunnelDialer, stun::StunInfoProvider},
     foundation::time,
     instance::{CoreInstance, CoreInstanceHost, manager::InstanceFactory},
     rpc::{bidirect::BidirectRpcManager, service_registry::ServiceRegistry},
@@ -152,6 +153,8 @@ pub struct WebClientConfig {
     pub device_os: DeviceOsInfo,
     pub easytier_version: String,
     pub secure_mode: bool,
+    /// STUN collector whose observed public IP heartbeats report.
+    pub stun: Option<Arc<dyn StunInfoProvider>>,
 }
 
 #[async_trait]
@@ -436,8 +439,24 @@ fn build_heartbeat_request(
             .collect(),
         support_heartbeat_policy: true,
         support_manual_routes_patch: true,
+        public_ip: config
+            .stun
+            .as_deref()
+            .map(reported_public_ip)
+            .unwrap_or_default(),
         support_dns_config_patch: Some(true),
     }
+}
+
+/// Picks one STUN-observed public IP for the console, preferring IPv4.
+fn reported_public_ip(stun: &dyn StunInfoProvider) -> String {
+    let public_ip = stun.get_stun_info().public_ip;
+    public_ip
+        .iter()
+        .find(|ip| ip.parse::<Ipv4Addr>().is_ok())
+        .or(public_ip.first())
+        .cloned()
+        .unwrap_or_default()
 }
 
 async fn wait_for_next_heartbeat(
@@ -581,7 +600,29 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::tunnel::ring::create_ring_tunnel_pair;
+    use crate::{proto::common::StunInfo, tunnel::ring::create_ring_tunnel_pair};
+
+    struct FixedStunInfo(Vec<&'static str>);
+
+    #[async_trait]
+    impl StunInfoProvider for FixedStunInfo {
+        fn get_stun_info(&self) -> StunInfo {
+            StunInfo {
+                public_ip: self.0.iter().map(|ip| ip.to_string()).collect(),
+                ..Default::default()
+            }
+        }
+
+        async fn get_udp_port_mapping(&self, _: u16) -> anyhow::Result<std::net::SocketAddr> {
+            anyhow::bail!("unused")
+        }
+
+        async fn get_tcp_port_mapping(&self, _: u16) -> anyhow::Result<std::net::SocketAddr> {
+            anyhow::bail!("unused")
+        }
+
+        fn update_stun_info(&self) {}
+    }
 
     struct StalledThenReadyDialer {
         attempts: AtomicUsize,
@@ -726,6 +767,7 @@ mod tests {
                 device_os: DeviceOsInfo::default(),
                 easytier_version: "test-version".to_owned(),
                 secure_mode: false,
+                stun: Some(Arc::new(FixedStunInfo(vec!["2001:db8::7", "203.0.113.7"]))),
             },
             runtime_id,
             vec![registered],
@@ -733,6 +775,7 @@ mod tests {
         );
 
         assert_eq!(request.inst_id.map(uuid::Uuid::from), Some(runtime_id));
+        assert_eq!(request.public_ip, "203.0.113.7");
         assert_eq!(
             request
                 .running_network_instances

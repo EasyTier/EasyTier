@@ -296,9 +296,9 @@ where
     /// Host OS policy and build capabilities used during configuration
     /// normalization. It contains no portable TOML-derived state.
     pub config: CoreInstanceHostConfig,
-    #[cfg(any(test, feature = "test-utils"))]
-    /// Optional construction-time STUN provider used by deterministic tests.
-    stun_override: Option<Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>>,
+    /// Optional host-owned STUN provider, such as a process-wide collector,
+    /// used instead of a collector built for this instance.
+    stun_provider: Option<Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>>,
     dns: Arc<dyn StunDnsRuntime>,
     process_runtime: Arc<CoreProcessRuntime>,
     pub packet_egress: Arc<dyn PacketEgressHost>,
@@ -358,8 +358,7 @@ where
         Self {
             host,
             config: CoreInstanceHostConfig::default(),
-            #[cfg(any(test, feature = "test-utils"))]
-            stun_override: None,
+            stun_provider: None,
             dns,
             process_runtime,
             packet_egress,
@@ -384,6 +383,15 @@ where
             #[cfg(feature = "vpn-portal")]
             vpn_portal: None,
         }
+    }
+
+    /// Shares a host-owned STUN provider with this instance instead of
+    /// building a collector for it.
+    pub fn replace_stun_provider(
+        &mut self,
+        provider: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
+    ) {
+        self.stun_provider = Some(provider);
     }
 }
 
@@ -459,9 +467,8 @@ where
         adapters: &CoreHostAdapters<H>,
         config: &CoreConnectivityConfig,
     ) -> Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>> {
-        #[cfg(any(test, feature = "test-utils"))]
-        if let Some(stun_override) = &adapters.stun_override {
-            return stun_override.clone();
+        if let Some(stun_provider) = &adapters.stun_provider {
+            return stun_provider.clone();
         }
         Arc::new(StunInfoCollector::new_with_socket_contexts(
             adapters.host.clone(),
@@ -572,8 +579,7 @@ where
         let CoreHostAdapters {
             host,
             config: _,
-            #[cfg(any(test, feature = "test-utils"))]
-                stun_override: _,
+            stun_provider: _,
             dns,
             process_runtime,
             packet_egress,

@@ -1,12 +1,9 @@
-//! Per-instance STUN state and background detection lifecycle.
+//! STUN state and background detection lifecycle, shareable across instances.
 
 use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -89,7 +86,6 @@ where
     nat_test_result_time: Arc<RwLock<i64>>,
     redetect_notify: Arc<tokio::sync::Notify>,
     tasks: Mutex<JoinSet<()>>,
-    started: AtomicBool,
 }
 
 impl<R, D> StunInfoCollector<R, D>
@@ -139,7 +135,6 @@ where
             nat_test_result_time: Arc::new(RwLock::new(unix_timestamp())),
             redetect_notify: Arc::new(tokio::sync::Notify::new()),
             tasks: Mutex::new(JoinSet::new()),
-            started: AtomicBool::new(false),
         }
     }
 
@@ -233,7 +228,11 @@ where
     }
 
     fn start_stun_routine(&self) {
-        if self.started.swap(true, Ordering::AcqRel) {
+        let mut tasks = self.tasks.lock().unwrap();
+        // A collector shared across instances can outlive the runtime that
+        // first started its routines; restart them once that runtime is gone.
+        while tasks.try_join_next().is_some() {}
+        if !tasks.is_empty() {
             return;
         }
 
@@ -244,7 +243,7 @@ where
         let udp_nat_test_result = self.udp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        tasks.spawn(async move {
             loop {
                 let servers = sampled_servers(&stun_servers.read().unwrap());
                 let detector = UdpNatTypeDetector::new(
@@ -300,7 +299,7 @@ where
         let tcp_nat_test_result = self.tcp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        tasks.spawn(async move {
             loop {
                 let servers = sampled_servers(&tcp_stun_servers.read().unwrap());
                 let detector = TcpNatTypeDetector::new(
@@ -336,7 +335,7 @@ where
         let stun_servers_v6 = self.stun_servers_v6.clone();
         let public_ipv6 = self.public_ipv6.clone();
         let redetect_notify = self.redetect_notify.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        tasks.spawn(async move {
             loop {
                 let servers = stun_servers_v6.read().unwrap().clone();
                 if let Some(ip) = Self::get_public_ipv6(
@@ -764,5 +763,34 @@ mod tests {
             binds[0].context.netns.as_ref().map(|netns| netns.token()),
             Some("instance-a")
         );
+    }
+
+    #[test]
+    fn routines_restart_after_their_runtime_shuts_down() {
+        let collector = StunInfoCollector::new(
+            Arc::new(MockRuntime::default()),
+            Arc::new(MockDns),
+            SocketContext::default(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        };
+
+        let first = runtime();
+        first.block_on(async { collector.get_stun_info() });
+        drop(first);
+
+        runtime().block_on(async {
+            collector.get_stun_info();
+            let mut tasks = collector.tasks.lock().unwrap();
+            assert_eq!(tasks.len(), 3);
+            assert!(tasks.try_join_next().is_none());
+        });
     }
 }
