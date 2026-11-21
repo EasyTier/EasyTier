@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use rand::seq::SliceRandom as _;
 use url::Url;
 
+use crate::socket::{BindConfig, SocketContext};
 use crate::{
     connectivity::{
         manual::resolve_url_addrs,
@@ -14,13 +15,12 @@ use crate::{
     socket::{
         IpVersion, ListenerConnectionCounter, SocketListener,
         tcp::{
-            TcpBindOptions, TcpListenOptions, TcpSocketListener, TcpSocketPurpose,
-            VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
-            is_retryable_tcp_io_error,
+            TcpListenOptions, TcpSocketListener, TcpSocketPurpose, VirtualTcpListenerFactory,
+            VirtualTcpSocket, VirtualTcpSocketFactory, is_retryable_tcp_io_error,
         },
         udp::{
-            UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
-            UdpSessionSocket, UdpSessionSocketListener, VirtualUdpSocketFactory,
+            UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocket,
+            UdpSessionSocketListener, VirtualUdpSocketFactory,
         },
     },
     tunnel::{Tunnel, TunnelError, tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
@@ -49,7 +49,7 @@ where
     factory: Arc<F>,
     dns: Arc<dyn DnsResolver>,
     ip_version: IpVersion,
-    bind: TcpBindOptions,
+    bind: BindConfig,
 }
 
 impl<F> TcpTunnelDialer<F>
@@ -62,7 +62,7 @@ where
             factory,
             dns,
             ip_version: IpVersion::Both,
-            bind: TcpBindOptions::default(),
+            bind: BindConfig::default(),
         }
     }
 
@@ -71,7 +71,7 @@ where
         self
     }
 
-    pub fn with_bind(mut self, bind: TcpBindOptions) -> Self {
+    pub fn with_bind(mut self, bind: BindConfig) -> Self {
         self.bind = bind;
         self
     }
@@ -89,7 +89,10 @@ where
         let remote_addr = resolve_url_addrs(
             &self.remote_url,
             TCP_DEFAULT_PORT,
-            self.bind.context.clone().with_ip_version(self.ip_version),
+            SocketContext {
+                ip_version: self.ip_version,
+                ..self.bind.context.clone()
+            },
             self.dns.as_ref(),
         )
         .await?
@@ -125,13 +128,15 @@ where
     F: VirtualTcpListenerFactory,
 {
     pub fn new(local_addr: SocketAddr, factory: Arc<F>) -> Self {
-        let bind = TcpBindOptions::default()
-            .with_local_addr(Some(local_addr))
-            .with_only_v6(true);
+        let bind = BindConfig {
+            local_addr: Some(local_addr),
+            only_v6: true,
+            ..BindConfig::default()
+        };
         Self::new_with_bind(local_addr, bind, factory)
     }
 
-    pub fn new_with_bind(local_addr: SocketAddr, bind: TcpBindOptions, factory: Arc<F>) -> Self {
+    pub fn new_with_bind(local_addr: SocketAddr, bind: BindConfig, factory: Arc<F>) -> Self {
         Self {
             inner: TcpSocketListener::new_with_options(
                 socket_url("tcp", local_addr),
@@ -197,7 +202,7 @@ where
     dns: Arc<dyn DnsResolver>,
     ip_version: IpVersion,
     bind_addrs: Vec<SocketAddr>,
-    bind: UdpBindOptions,
+    bind: BindConfig,
 }
 
 impl<H> UdpTunnelDialer<H>
@@ -211,7 +216,10 @@ where
             dns,
             ip_version: IpVersion::Both,
             bind_addrs: Vec::new(),
-            bind: UdpBindOptions::direct_connect(),
+            bind: BindConfig {
+                reuse_addr: Some(false),
+                ..BindConfig::default()
+            },
         }
     }
 
@@ -225,7 +233,7 @@ where
         self
     }
 
-    pub fn with_bind(mut self, bind: UdpBindOptions) -> Self {
+    pub fn with_bind(mut self, bind: BindConfig) -> Self {
         self.bind = bind;
         self
     }
@@ -243,7 +251,10 @@ where
         let remote_addr = resolve_url_addrs(
             &self.remote_url,
             UDP_DEFAULT_PORT,
-            self.bind.context.clone().with_ip_version(self.ip_version),
+            SocketContext {
+                ip_version: self.ip_version,
+                ..self.bind.context.clone()
+            },
             self.dns.as_ref(),
         )
         .await?

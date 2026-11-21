@@ -12,9 +12,10 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::socket::BindConfig;
 use crate::{
     foundation::time,
-    socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+    socket::udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
 };
 
 use super::{
@@ -242,7 +243,7 @@ where
 {
     factory: Arc<F>,
     policy: Arc<P>,
-    bind_options: UdpBindOptions,
+    bind_options: BindConfig,
     receive_timeout: Duration,
     entries: Arc<DashMap<UdpNatEntryId, Arc<UdpSocketEntrySlot<F::Socket>>>>,
     closing: AtomicBool,
@@ -256,7 +257,7 @@ where
     pub fn new(
         factory: Arc<F>,
         policy: Arc<P>,
-        bind_options: UdpBindOptions,
+        bind_options: BindConfig,
         receive_timeout: Duration,
     ) -> Self {
         Self {
@@ -419,7 +420,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::socket::udp::UdpSocketPurpose;
 
     #[derive(Default)]
     struct RecordingSocket {
@@ -444,7 +444,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingFactory {
-        options: std::sync::Mutex<Vec<UdpBindOptions>>,
+        options: std::sync::Mutex<Vec<BindConfig>>,
         socket: Arc<RecordingSocket>,
     }
 
@@ -452,7 +452,7 @@ mod tests {
     impl VirtualUdpSocketFactory for RecordingFactory {
         type Socket = RecordingSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.options.lock().unwrap().push(options);
             Ok(self.socket.clone())
         }
@@ -470,7 +470,7 @@ mod tests {
     impl VirtualUdpSocketFactory for DelayedFactory {
         type Socket = RecordingSocket;
 
-        async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, _options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.bind_calls.fetch_add(1, AtomicOrdering::AcqRel);
             self.bind_started.notify_one();
             self.release_bind.notified().await;
@@ -519,7 +519,10 @@ mod tests {
         let runtime = UdpSocketProxyRuntime::new(
             factory.clone(),
             Arc::new(TestPolicy),
-            UdpBindOptions::proxy_nat(),
+            BindConfig {
+                bind_device: Some("".into()),
+                ..BindConfig::default()
+            },
             Duration::from_secs(120),
         );
         let sink: Arc<dyn UdpProxyResponseSink> = Arc::new(NoopResponseSink);
@@ -547,8 +550,11 @@ mod tests {
 
         assert_eq!(factory.options.lock().unwrap().len(), 1);
         assert_eq!(
-            factory.options.lock().unwrap()[0].purpose,
-            UdpSocketPurpose::ProxyNat
+            factory.options.lock().unwrap()[0],
+            BindConfig {
+                bind_device: Some("".into()),
+                ..BindConfig::default()
+            }
         );
         assert_eq!(factory.socket.sent.lock().unwrap().len(), 2);
 
@@ -571,7 +577,10 @@ mod tests {
         let runtime = Arc::new(UdpSocketProxyRuntime::new(
             factory.clone(),
             Arc::new(TestPolicy),
-            UdpBindOptions::proxy_nat(),
+            BindConfig {
+                bind_device: Some("".into()),
+                ..BindConfig::default()
+            },
             Duration::from_secs(120),
         ));
         let sink: Arc<dyn UdpProxyResponseSink> = Arc::new(NoopResponseSink);
@@ -604,7 +613,10 @@ mod tests {
         let runtime = Arc::new(UdpSocketProxyRuntime::new(
             factory.clone(),
             Arc::new(TestPolicy),
-            UdpBindOptions::proxy_nat(),
+            BindConfig {
+                bind_device: Some("".into()),
+                ..BindConfig::default()
+            },
             Duration::from_secs(120),
         ));
         let sink: Arc<dyn UdpProxyResponseSink> = Arc::new(NoopResponseSink);

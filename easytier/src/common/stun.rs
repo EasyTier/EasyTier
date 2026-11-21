@@ -5,11 +5,10 @@ use std::{net::SocketAddr, sync::Arc};
 
 #[cfg(test)]
 use async_trait::async_trait;
+use easytier_core::connectivity::stun::StunInfoCollector as CoreStunInfoCollector;
 #[cfg(test)]
 use easytier_core::connectivity::stun::{StunInfoProvider, StunSocketMapper};
-use easytier_core::{
-    connectivity::stun::StunInfoCollector as CoreStunInfoCollector, socket::SocketContext,
-};
+use easytier_core::socket::SocketContext;
 #[cfg(test)]
 use easytier_proto::common::{NatType, StunInfo};
 
@@ -138,9 +137,11 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_collector_starts_with_native_runtime() {
-        let context = SocketContext::default()
-            .with_socket_mark(Some(0))
-            .with_netns(Some(NetNamespace::new("instance-a")));
+        let context = SocketContext {
+            socket_mark: Some(0),
+            netns: Some(NetNamespace::new("instance-a")),
+            ..SocketContext::default()
+        };
         let collector = runtime_stun_info_collector(context);
 
         assert_eq!(

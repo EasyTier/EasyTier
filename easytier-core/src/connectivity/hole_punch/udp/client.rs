@@ -12,11 +12,12 @@ use rand::Rng;
 use tokio::sync::RwLock;
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::socket::{BindConfig, SocketContext};
 use crate::{
     config::PeerId,
     connectivity::stun::StunInfoProvider,
     packet::{HOLE_PUNCH_PACKET_BODY_LEN, new_hole_punch_packet},
-    socket::udp::{UdpBindOptions, VirtualUdpSocket},
+    socket::udp::VirtualUdpSocket,
 };
 
 use super::{
@@ -88,11 +89,15 @@ where
 
     let local_socket = UdpHolePunchRuntime::bind_udp(
         runtime.as_ref(),
-        UdpBindOptions::hole_punch_control().with_context(
-            runtime
-                .socket_context()
-                .with_ip_version(crate::socket::IpVersion::V4),
-        ),
+        BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            context: SocketContext {
+                ip_version: crate::socket::IpVersion::V4,
+                ..runtime.socket_context()
+            },
+            ..BindConfig::default()
+        },
     )
     .await?;
     let resolved = runtime
@@ -682,7 +687,7 @@ mod tests {
     struct MockRuntime {
         bind_count: AtomicUsize,
         resolve_count: AtomicUsize,
-        bind_options: tokio::sync::Mutex<Vec<UdpBindOptions>>,
+        bind_options: tokio::sync::Mutex<Vec<BindConfig>>,
         sockets: std::sync::Mutex<Vec<std::sync::Weak<MockSocket>>>,
         drop_syn_packets: usize,
         required_punch_packets: usize,
@@ -705,7 +710,7 @@ mod tests {
     impl UdpHolePunchRuntime for MockRuntime {
         type Socket = MockSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.bind_options.lock().await.push(options);
             let bind_idx = self.bind_count.fetch_add(1, Ordering::Relaxed);
             let socket = Arc::new(MockSocket {
@@ -856,7 +861,14 @@ mod tests {
         let bind_options = runtime.bind_options.lock().await;
         assert_eq!(
             bind_options.as_slice(),
-            &[UdpBindOptions::direct_connect().with_ip_version(crate::socket::IpVersion::V4)]
+            &[BindConfig {
+                reuse_addr: Some(false),
+                context: crate::socket::SocketContext {
+                    ip_version: crate::socket::IpVersion::V4,
+                    ..SocketContext::default()
+                },
+                ..BindConfig::default()
+            }]
         );
     }
 

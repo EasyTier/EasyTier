@@ -27,7 +27,7 @@ use crate::{
     instance::test_instance::TestInstance as Instance,
     proto::api::config::InstanceConfigPatch,
     tests::three_node::{generate_secure_mode_config, generate_secure_mode_config_with_key},
-    tunnel::common::tests::wait_for_condition,
+    tunnel::tests::wait_for_condition,
 };
 #[cfg(feature = "wireguard")]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};

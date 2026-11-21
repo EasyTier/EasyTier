@@ -9,15 +9,15 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func applyTCPSocketOptions(
+func applySocketOptions(
 	descriptor uintptr,
 	network string,
-	options platform.TCPBindOptions,
+	options platform.BindConfig,
 ) error {
 	reuseAddr := options.ReuseAddr
 	if options.ReusePort {
 		if reuseAddr != nil && !*reuseAddr {
-			return fmt.Errorf("TCP reuse_port requires reuse_addr on Windows")
+			return fmt.Errorf("socket reuse_port requires reuse_addr on Windows")
 		}
 		enabled := true
 		reuseAddr = &enabled
@@ -25,13 +25,13 @@ func applyTCPSocketOptions(
 	if reuseAddr != nil {
 		if err := windows.SetsockoptInt(windows.Handle(descriptor),
 			windows.SOL_SOCKET, windows.SO_REUSEADDR, boolInt(*reuseAddr)); err != nil {
-			return fmt.Errorf("set TCP SO_REUSEADDR: %w", err)
+			return fmt.Errorf("set socket SO_REUSEADDR: %w", err)
 		}
 	}
-	if options.OnlyV6 && network == "tcp6" {
+	if options.OnlyV6 && (network == "tcp6" || network == "udp6") {
 		if err := windows.SetsockoptInt(windows.Handle(descriptor),
 			windows.IPPROTO_IPV6, windows.IPV6_V6ONLY, 1); err != nil {
-			return fmt.Errorf("set TCP IPV6_V6ONLY: %w", err)
+			return fmt.Errorf("set socket IPV6_V6ONLY: %w", err)
 		}
 	}
 	return nil

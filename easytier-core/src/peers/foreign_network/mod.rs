@@ -467,7 +467,10 @@ impl ForeignNetworkEntry {
         rpc_registrar.register_peer_rpc_services(
             &peer_rpc,
             &network.network_name,
-            SocketContext::default().with_socket_mark(socket_mark),
+            SocketContext {
+                socket_mark,
+                ..SocketContext::default()
+            },
         );
 
         let bps_limiter = parent_context.foreign_forward_limiter(&network.network_name);

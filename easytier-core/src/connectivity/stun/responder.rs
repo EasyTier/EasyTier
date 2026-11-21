@@ -10,7 +10,8 @@ use stun_codec::rfc5389::methods::BINDING;
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
 use crate::packet::stun::{Attribute, ChangeRequest, tid_to_u32, u32_to_tid};
-use crate::socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory};
+use crate::socket::BindConfig;
+use crate::socket::udp::{VirtualUdpSocket, VirtualUdpSocketFactory};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StunResponseSendSource {
@@ -90,11 +91,13 @@ where
                 "[::]:0".parse().unwrap()
             };
             let socket = factory
-                .bind_udp(
-                    UdpBindOptions::hole_punch_control()
-                        .with_context(socket.socket_context())
-                        .with_local_addr(Some(bind_addr)),
-                )
+                .bind_udp(BindConfig {
+                    bind_device: Some("".into()),
+                    reuse_addr: Some(false),
+                    context: socket.socket_context(),
+                    local_addr: Some(bind_addr),
+                    ..BindConfig::default()
+                })
                 .await?;
             socket.send_to(&response.bytes, addr).await?;
         }
@@ -160,12 +163,12 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct MockFactory {
-        bind_options: Mutex<Vec<UdpBindOptions>>,
+        bind_options: Mutex<Vec<BindConfig>>,
         sockets: Mutex<Vec<Arc<MockSocket>>>,
     }
 
     impl MockFactory {
-        fn bind_options(&self) -> Vec<UdpBindOptions> {
+        fn bind_options(&self) -> Vec<BindConfig> {
             self.bind_options.lock().unwrap().clone()
         }
 
@@ -178,7 +181,7 @@ mod tests {
     impl VirtualUdpSocketFactory for MockFactory {
         type Socket = MockSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.bind_options.lock().unwrap().push(options);
             let socket = Arc::new(MockSocket::default());
             self.sockets.lock().unwrap().push(socket.clone());
@@ -235,10 +238,12 @@ mod tests {
         assert!(listener_socket.sent().is_empty());
         assert_eq!(
             factory.bind_options(),
-            vec![
-                UdpBindOptions::hole_punch_control()
-                    .with_local_addr(Some("[::]:0".parse().unwrap()))
-            ]
+            vec![BindConfig {
+                bind_device: Some("".into()),
+                reuse_addr: Some(false),
+                local_addr: Some("[::]:0".parse().unwrap()),
+                ..BindConfig::default()
+            }]
         );
         let sockets = factory.sockets();
         assert_eq!(sockets.len(), 1);

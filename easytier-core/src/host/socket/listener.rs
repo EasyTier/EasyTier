@@ -178,7 +178,8 @@ mod tests {
         sync::Mutex,
     };
 
-    use crate::socket::tcp::{TcpBindOptions, TcpListenPurpose, VirtualTcpSocket};
+    use crate::socket::tcp::{TcpListenPurpose, VirtualTcpSocket};
+    use crate::socket::{BindConfig, SocketContext};
 
     use super::*;
 
@@ -373,11 +374,16 @@ mod tests {
         let runtime = HostSocketRuntime::new();
         let factory = HostTcpListenerFactory::new(runtime.clone(), io.clone());
         let options = TcpListenOptions {
-            bind: TcpBindOptions::default()
-                .with_local_addr(Some("192.0.2.1:0".parse().unwrap()))
-                .with_socket_mark(Some(7))
-                .with_bind_device(Some("host-device".to_owned()))
-                .with_reuse_port(true),
+            bind: BindConfig {
+                local_addr: Some("192.0.2.1:0".parse().unwrap()),
+                context: crate::socket::SocketContext {
+                    socket_mark: Some(7),
+                    ..SocketContext::default()
+                },
+                bind_device: Some("host-device".to_owned()),
+                reuse_port: true,
+                ..BindConfig::default()
+            },
             purpose: TcpListenPurpose::ManualConnect,
         };
         let bind_task = tokio::spawn({
