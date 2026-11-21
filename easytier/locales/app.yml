@@ -34,6 +34,9 @@ core_clap:
   network_secret:
     en: "network secret to verify this node belongs to the vpn network"
     zh-CN: "网络密钥，用于验证此节点属于VPN网络"
+  private_group:
+    en: "foreign networks allowed into this node while private mode is on, in NAME#SECRET form, repeatable, e.g. --private-group office-net#office-secret; without #SECRET the network is admitted by name alone"
+    zh-CN: "私有模式开启时允许接入本节点的外来网络清单，格式为 名称#密钥，可重复使用，如 --private-group office-net#office-secret；不带 #密钥 时仅按网络名放行"
   ipv4:
     en: "ipv4 address of this vpn node, if empty, this node will only forward packets and no TUN device will be created"
     zh-CN: "此VPN节点的IPv4地址，如果为空，则此节点将仅转发数据包，不会创建TUN设备"

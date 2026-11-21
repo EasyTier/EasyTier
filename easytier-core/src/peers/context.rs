@@ -24,8 +24,8 @@ use crate::{
     config::peers::{HostRoutingPolicy, PeerGroupIdentity, PeerRuntimeConfig, PeerRuntimeSnapshot},
     config::runtime::CoreRuntimeConfigStore,
     config::{
-        CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, ProxyNetworkConfig,
-        RouteConfig, TrafficConfig,
+        CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, PrivateGroupConfig,
+        ProxyNetworkConfig, RouteConfig, TrafficConfig,
     },
     events::{CoreEvent, CoreEventSink},
     foundation::small_map_shard_amount,
@@ -82,6 +82,7 @@ pub struct PeerRuntimeSnapshotInput {
     pub ospf_update_my_foreign_network_interval_sec: u64,
     pub max_direct_conns_per_peer_in_foreign_network: usize,
     pub hmac_secret_digest: bool,
+    pub private_groups: Vec<PrivateGroupConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -131,6 +132,7 @@ impl PeerRuntimeSnapshot {
             ospf_update_my_foreign_network_interval_sec,
             max_direct_conns_per_peer_in_foreign_network,
             hmac_secret_digest,
+            private_groups,
         } = input;
         let feature_flags = PeerFeatureFlag {
             kcp_input: !flags.disable_kcp_input,
@@ -189,6 +191,7 @@ impl PeerRuntimeSnapshot {
             ospf_update_my_foreign_network_interval_sec,
             max_direct_conns_per_peer_in_foreign_network,
             hmac_secret_digest,
+            private_groups,
         }
     }
 
@@ -555,6 +558,11 @@ pub(crate) trait PeerContext: Send + Sync {
         Flags::default()
     }
 
+    /// (network_name, network_secret) pairs admitted while private_mode is on.
+    fn private_groups(&self) -> Vec<PrivateGroupConfig> {
+        Vec::new()
+    }
+
     fn packet_policy(&self) -> PeerPacketPolicy {
         PeerPacketPolicy::from_flags(&self.flags())
     }
@@ -751,6 +759,10 @@ impl PeerContext for CorePeerContext {
 
     fn flags(&self) -> Flags {
         self.snapshot().flags.clone()
+    }
+
+    fn private_groups(&self) -> Vec<PrivateGroupConfig> {
+        self.snapshot().private_groups.clone()
     }
 
     fn packet_policy(&self) -> PeerPacketPolicy {
@@ -1144,6 +1156,7 @@ pub(crate) mod tests {
             ospf_update_my_foreign_network_interval_sec: 17,
             max_direct_conns_per_peer_in_foreign_network: 5,
             hmac_secret_digest: true,
+            private_groups: Vec::new(),
         }
     }
 

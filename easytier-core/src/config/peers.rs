@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::proto::acl::{Acl, AclV1, Action, Chain, ChainType, GroupInfo, Protocol, Rule};
 
-use super::{CoreConfig, NetworkIdentity};
+use super::{CoreConfig, NetworkIdentity, PrivateGroupConfig};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AclRuleConfig {
@@ -243,6 +243,9 @@ pub struct PeerRuntimeSnapshot {
     pub ospf_update_my_foreign_network_interval_sec: u64,
     pub max_direct_conns_per_peer_in_foreign_network: usize,
     pub hmac_secret_digest: bool,
+    /// (network_name, network_secret) pairs admitted in private mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub private_groups: Vec<PrivateGroupConfig>,
 }
 
 impl PeerRuntimeSnapshot {
@@ -259,6 +262,7 @@ impl PeerRuntimeSnapshot {
             ospf_update_my_foreign_network_interval_sec: 10,
             max_direct_conns_per_peer_in_foreign_network: 3,
             hmac_secret_digest: false,
+            private_groups: Vec::new(),
         }
     }
 }
