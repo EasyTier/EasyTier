@@ -1,0 +1,59 @@
+name: Update Npcap dependencies
+
+on:
+  workflow_dispatch:
+    inputs:
+      npcap-version:
+        description: 'Npcap installer version (e.g. 1.90 or latest)'
+        required: true
+        type: string
+        default: '1.90'
+      sdk-version:
+        description: 'Npcap SDK version (e.g. 1.17 or latest)'
+        required: true
+        type: string
+        default: '1.17'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-npcap-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install extraction tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y 7zip
+
+      - name: Refresh Npcap DLLs and import libraries
+        env:
+          NPCAP_VERSION: ${{ inputs['npcap-version'] }}
+          SDK_VERSION: ${{ inputs['sdk-version'] }}
+        run: python3 .github/scripts/update-npcap.py "$NPCAP_VERSION" "$SDK_VERSION"
+
+      - name: Create dependency update pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: ${{ github.ref_name }}
+          branch: deps/update-npcap-${{ github.ref_name }}
+          delete-branch: true
+          add-paths: easytier/third_party
+          commit-message: 'chore(deps): update Npcap DLLs and import libraries'
+          title: 'chore(deps): update Npcap DLLs and import libraries'
+          body: |
+            Update Npcap Windows DLLs and import libraries using
+            `.github/scripts/update-npcap.py`.
+
+            Requested Npcap version: ${{ inputs['npcap-version'] }}
+            Requested SDK version: ${{ inputs['sdk-version'] }}
+
+            Review binary changes and redistribution permissions before merging.
