@@ -1352,10 +1352,10 @@ mod tests {
     async fn dns_edit_readback_preserves_saved_intent_without_replacing_observed_fields() {
         use easytier::proto::{
             api::manage::{
-                GetNetworkInstanceConfigRequest, GetNetworkInstanceConfigResponse,
-                ListNetworkInstanceMetaResponse, ListNetworkInstanceResponse,
-                RunNetworkInstanceRequest, RunNetworkInstanceResponse, ValidateConfigRequest,
-                ValidateConfigResponse, WebClientServiceDescriptor,
+                DeleteNetworkInstanceRequest, GetNetworkInstanceConfigRequest,
+                GetNetworkInstanceConfigResponse, ListNetworkInstanceMetaResponse,
+                ListNetworkInstanceResponse, RunNetworkInstanceRequest, RunNetworkInstanceResponse,
+                ValidateConfigRequest, ValidateConfigResponse, WebClientServiceDescriptor,
                 WebClientServiceMethodDescriptor,
             },
             rpc::bidirect::BidirectRpcManager,
@@ -1368,6 +1368,7 @@ mod tests {
         struct Requests {
             runs: Vec<RunNetworkInstanceRequest>,
             validations: Vec<ValidateConfigRequest>,
+            deletes: Vec<DeleteNetworkInstanceRequest>,
             runtime_config: Option<NetworkConfig>,
         }
         #[derive(Clone)]
@@ -1416,6 +1417,9 @@ mod tests {
                         .encode_to_vec()
                     }
                     WebClientServiceMethodDescriptor::DeleteNetworkInstance => {
+                        requests
+                            .deletes
+                            .push(DeleteNetworkInstanceRequest::decode(input)?);
                         requests.runtime_config = None;
                         easytier::proto::api::manage::DeleteNetworkInstanceResponse::default()
                             .encode_to_vec()
@@ -1625,6 +1629,14 @@ mod tests {
             assert!(observed.runs.iter().all(|request| {
                 request.source == easytier::proto::api::manage::ConfigSource::User as i32
             }));
+            // Disabling keeps the configuration here, so the device is told not to forget it.
+            assert_eq!(
+                observed.deletes,
+                vec![DeleteNetworkInstanceRequest {
+                    inst_ids: vec![instance_id.into()],
+                    disable_only: true,
+                }]
+            );
         }
         let persisted = db
             .get_network_config(identify, &instance_id.to_string())

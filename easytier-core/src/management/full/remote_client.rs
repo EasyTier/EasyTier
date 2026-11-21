@@ -268,6 +268,7 @@ where
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: inst_ids.into_iter().map(|id| id.into()).collect(),
+                    disable_only: false,
                 },
             )
             .await?;
@@ -305,6 +306,8 @@ where
                     BaseController::default(),
                     DeleteNetworkInstanceRequest {
                         inst_ids: vec![inst_id.into()],
+                        // The configuration stays stored here and can be run again.
+                        disable_only: true,
                     },
                 )
                 .await?;
