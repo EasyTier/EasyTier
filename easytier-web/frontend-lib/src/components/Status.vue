@@ -5,7 +5,7 @@ import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { latencyMs, lossRate, numericValue, peerConns, udpNatTypeName } from '../modules/statusDisplay';
+import { latencyMs, lossRate, numericValue, peerConns, trafficCounters, trafficRate, udpNatTypeName, type TrafficCounters } from '../modules/statusDisplay';
 import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 import VpnPortalDialog from './VpnPortalDialog.vue';
@@ -229,27 +229,6 @@ const myNodeInfoChips = computed(() => {
   return chips
 })
 
-function globalSumCommon(field: string) {
-  let sum = 0
-  if (!peerRouteInfos.value)
-    return sum
-
-  for (const info of peerRouteInfos.value) {
-    const tx = statsCommon(info, field)
-    if (tx)
-      sum += tx
-  }
-  return sum
-}
-
-function txGlobalSum() {
-  return globalSumCommon('stats.tx_bytes')
-}
-
-function rxGlobalSum() {
-  return globalSumCommon('stats.rx_bytes')
-}
-
 function natType(info: PeerRoutePair): string {
   return udpNatTypeName(info.route?.stun_info)
 }
@@ -272,24 +251,28 @@ const peerCount = computed(() => {
 // calculate tx/rx rate every 2 seconds
 let rateIntervalId = 0
 const rateInterval = 2000
-let prevTxSum = 0
-let prevRxSum = 0
+let prevCounters: TrafficCounters | undefined
+let prevSampleAt = 0
 const txRate = ref('0')
 const rxRate = ref('0')
 
 // 控制节点详细信息chips的显示/隐藏
 const showNodeDetails = ref(false)
 
-onMounted(() => {
-  rateIntervalId = window.setInterval(() => {
-    const curTxSum = txGlobalSum()
-    txRate.value = humanFileSize((curTxSum - prevTxSum) / (rateInterval / 1000))
-    prevTxSum = curTxSum
+function sampleRate() {
+  const counters = trafficCounters(props.curNetworkInst?.detail?.peer_route_pairs ?? [])
+  const now = Date.now()
+  // the first sample only sets the baseline; timers can fire late, so use the real elapsed time
+  const rate = prevCounters ? trafficRate(prevCounters, counters, (now - prevSampleAt) / 1000) : { tx: 0, rx: 0 }
+  txRate.value = humanFileSize(rate.tx)
+  rxRate.value = humanFileSize(rate.rx)
+  prevCounters = counters
+  prevSampleAt = now
+}
 
-    const curRxSum = rxGlobalSum()
-    rxRate.value = humanFileSize((curRxSum - prevRxSum) / (rateInterval / 1000))
-    prevRxSum = curRxSum
-  }, rateInterval)
+onMounted(() => {
+  sampleRate()
+  rateIntervalId = window.setInterval(sampleRate, rateInterval)
 })
 
 onUnmounted(() => {
@@ -307,6 +290,7 @@ const vpnPortalEnabled = computed(() => props.curNetworkInst?.running
 
 watch(() => props.curNetworkInst?.instance_id, async (instanceId, _, onCleanup) => {
   let active = true
+  prevCounters = undefined
   vpnPortalVisible.value = false
   networkConfig.value = undefined
   if (!instanceId) return
