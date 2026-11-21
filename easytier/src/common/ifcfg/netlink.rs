@@ -14,11 +14,11 @@ use std::{
 use super::{
     Error, IfConfiguerTrait,
     netlink_wire::{
-        AddressMessage, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP,
-        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NeighborMessage,
-        NetlinkDecode, NetlinkEncode, RTM_DELADDR, RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH,
-        RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder,
-        RouteType, netlink_error_code,
+        AddressMessage, IFINFOMSG_LEN, LinkMessage, MessageBuilder, MessageIter, NLM_F_ACK,
+        NLM_F_CREATE, NLM_F_DUMP, NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE,
+        NLMSG_ERROR, NeighborMessage, NetlinkDecode, NetlinkEncode, RTM_DELADDR, RTM_DELNEIGH,
+        RTM_DELROUTE, RTM_GETLINK, RTM_GETNEIGH, RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH,
+        RTM_NEWROUTE, RouteMessage, RouteMessageBuilder, RouteType, netlink_error_code,
     },
 };
 use crate::common::network::ip_mask_to_prefix;
@@ -290,6 +290,17 @@ impl NetlinkIfConfiger {
 
     fn list_routes() -> Result<Vec<RouteMessage>, Error> {
         Self::list_route_messages(libc::AF_INET as u8)
+    }
+
+    /// Names of TUN/TAP links in the calling thread's network namespace.
+    pub(crate) fn list_tun_links() -> Result<BTreeSet<String>, Error> {
+        Ok(
+            dump_netlink_messages::<LinkMessage>(RTM_GETLINK, &[0; IFINFOMSG_LEN])?
+                .into_iter()
+                .filter(|link| link.kind.as_deref() == Some("tun"))
+                .map(|link| link.name)
+                .collect(),
+        )
     }
 
     pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
