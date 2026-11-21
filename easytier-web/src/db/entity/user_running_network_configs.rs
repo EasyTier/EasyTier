@@ -54,4 +54,7 @@ impl PersistentConfig<DbErr> for Model {
     fn get_network_config_source(&self) -> ConfigSource {
         self.source.parse().unwrap_or(ConfigSource::User)
     }
+    fn is_disabled(&self) -> bool {
+        self.disabled
+    }
 }

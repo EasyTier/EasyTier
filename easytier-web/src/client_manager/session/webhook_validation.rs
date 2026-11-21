@@ -371,9 +371,21 @@ pub(super) async fn apply_rejected(
     };
     if let Some(storage_token) = storage_token {
         let report_time = SessionRpcService::heartbeat_report_timestamp(&input.req);
+        input.storage.update_session_client(
+            storage_token.clone(),
+            report_time,
+            false,
+            session_epoch,
+        );
         input
             .storage
-            .update_session_client(storage_token, report_time, false, session_epoch);
+            .persist_device_metadata(
+                &storage_token,
+                input.req.hostname.clone(),
+                input.req.easytier_version.clone(),
+                input.req.report_time.clone(),
+            )
+            .await;
     }
     if disconnect_notification.is_some() {
         wait_webhook_connection_transition(
@@ -536,7 +548,7 @@ pub(super) async fn apply_success(
     let report_time = SessionRpcService::heartbeat_report_timestamp(&runtime_req);
     input
         .storage
-        .update_session_client(storage_token, report_time, true, session_epoch);
+        .update_session_client(storage_token.clone(), report_time, true, session_epoch);
 
     if let Some(validation_notify) = validation_notify {
         validation_notify.notify_one();
@@ -550,6 +562,16 @@ pub(super) async fn apply_success(
         )
         .await;
     }
+
+    input
+        .storage
+        .persist_device_metadata(
+            &storage_token,
+            runtime_req.hostname.clone(),
+            runtime_req.easytier_version.clone(),
+            runtime_req.report_time.clone(),
+        )
+        .await;
 
     if notify_runtime {
         let _ = notifier.send(());
