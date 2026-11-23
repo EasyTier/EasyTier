@@ -83,7 +83,8 @@ use super::{
 pub type Version = u32;
 
 // the cost (latency between two peers) is i32, i32::MAX is large enough.
-const AVOID_RELAY_COST: usize = i32::MAX as usize;
+// Accumulating two penalized edges can exceed u32::MAX.
+const AVOID_RELAY_COST: u64 = i32::MAX as u64;
 
 /// Check if `child` CIDR is a subset of `parent` CIDR.
 /// Returns true if `child` is contained within `parent`, or if they are equal.
@@ -200,7 +201,7 @@ impl OspfRouteSnapshotLookup<'_> {
     }
 }
 
-type PeerGraph = Graph<PeerId, usize, Directed>;
+type PeerGraph = Graph<PeerId, u64, Directed>;
 type PeerIdToNodeIdxMap = HashMap<PeerId, NodeIndex>;
 
 #[derive(Debug, Clone, Copy)]
@@ -337,7 +338,7 @@ impl OspfRouteTable {
                     continue;
                 };
 
-                let mut cost = cost_calc.calculate_cost(src_peer_id, *dst_peer_id) as usize;
+                let mut cost = cost_calc.calculate_cost(src_peer_id, *dst_peer_id) as u64;
                 if peer_avoid_relay_data {
                     cost += AVOID_RELAY_COST;
                 }
@@ -389,7 +390,7 @@ impl OspfRouteTable {
             );
             return;
         }
-        let normalize_edge_cost = |e: petgraph::graph::EdgeReference<usize>| {
+        let normalize_edge_cost = |e: petgraph::graph::EdgeReference<u64>| {
             if *e.weight() >= AVOID_RELAY_COST {
                 AVOID_RELAY_COST + 1
             } else {
@@ -6488,6 +6489,39 @@ mod tests {
 
         assert!(route.service_impl.sessions.is_empty());
         assert_eq!(route.task_count(), 0);
+    }
+
+    #[test]
+    fn repeated_avoid_relay_penalties_preserve_routes_and_latency() {
+        let mut source = peer(1);
+        let mut non_relay = peer(2);
+        for peer in [&mut source, &mut non_relay] {
+            peer.info
+                .feature_flag
+                .get_or_insert_default()
+                .avoid_relay_data = true;
+        }
+        let snapshot = OspfRouteSnapshot {
+            peer_infos: vec![source, non_relay, peer(3), peer(4), peer(5)],
+            conn_map: vec![
+                connected(1, [2, 3]),
+                connected(2, [4, 5]),
+                connected(3, [4]),
+            ],
+            suppressed_peer_ids: BTreeSet::new(),
+            version: 1,
+        };
+
+        for policy in [NextHopPolicy::LeastCost, NextHopPolicy::LeastHop] {
+            let table = OspfRouteTable::new();
+            table.build_from_snapshot(1, &snapshot, policy, &DefaultRouteCostCalculator);
+
+            assert_eq!(table.get_next_hop(2).unwrap().next_hop_peer_id, 2);
+            assert_eq!(table.get_next_hop(4).unwrap().next_hop_peer_id, 3);
+            // Peer 5 is reachable only through peer 2; neither penalty is latency.
+            let forced = table.get_next_hop(5).unwrap();
+            assert_eq!((forced.next_hop_peer_id, forced.path_latency), (2, 2));
+        }
     }
 
     #[test]
