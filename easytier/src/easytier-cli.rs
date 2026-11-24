@@ -2739,13 +2739,9 @@ impl<'a> CommandHandler<'a> {
         &self,
         action: ConfigPatchAction,
         protocol: &str,
-        bind_addr: &str,
-        dst_addr: Option<&str>,
+        bind_addr: SocketAddr,
+        dst_addr: Option<SocketAddr>,
     ) -> Result<(), Error> {
-        let bind_addr: std::net::SocketAddr = bind_addr
-            .parse()
-            .with_context(|| format!("Invalid bind address: {}", bind_addr))?;
-
         let socket_type = match protocol {
             "tcp" => SocketType::Tcp,
             "udp" => SocketType::Udp,
@@ -2760,7 +2756,7 @@ impl<'a> CommandHandler<'a> {
                     action: action.into(),
                     cfg: Some(PortForwardConfigPb {
                         bind_addr: Some(bind_addr.into()),
-                        dst_addr: dst_addr.map(|s| s.parse::<SocketAddr>().unwrap().into()),
+                        dst_addr: dst_addr.map(Into::into),
                         socket_type: socket_type.into(),
                     }),
                 }],
@@ -2788,15 +2784,20 @@ impl<'a> CommandHandler<'a> {
         dst_addr: Option<&str>,
     ) -> Result<(), Error> {
         let protocol = protocol.to_string();
-        let bind_addr = bind_addr.to_string();
-        let dst_addr = dst_addr.map(str::to_string);
+        let bind_addr = bind_addr
+            .parse()
+            .with_context(|| format!("Invalid bind address: {bind_addr}"))?;
+        let dst_addr = dst_addr
+            .map(|addr| {
+                addr.parse()
+                    .with_context(|| format!("Invalid destination address: {addr}"))
+            })
+            .transpose()?;
         self.apply_to_instances(|handler| {
             let protocol = protocol.clone();
-            let bind_addr = bind_addr.clone();
-            let dst_addr = dst_addr.clone();
             Box::pin(async move {
                 handler
-                    .apply_port_forward_modify(action, &protocol, &bind_addr, dst_addr.as_deref())
+                    .apply_port_forward_modify(action, &protocol, bind_addr, dst_addr)
                     .await
             })
         })
