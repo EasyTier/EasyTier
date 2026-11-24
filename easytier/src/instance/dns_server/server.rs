@@ -74,7 +74,8 @@ impl ZoneHandler for LocalAuthority {
         options: LookupOptions,
     ) -> LookupControlFlow<AuthLookup> {
         let result = self.inner.lookup(name, record_type, info, options).await;
-        if !matches!(record_type, RecordType::A | RecordType::AAAA) {
+        // Explicit CNAME and minimal ANY answers report the alias itself.
+        if matches!(record_type, RecordType::CNAME | RecordType::ANY) {
             return result;
         }
         // Hickory chases aliases within one zone. Re-select the most specific
@@ -91,6 +92,7 @@ impl ZoneHandler for LocalAuthority {
         };
         let zones = self.zones.read().await;
         let mut answers = Vec::new();
+        let mut additionals = None;
         let mut visited = HashSet::from([name.clone()]);
         let mut next_lookup;
         loop {
@@ -120,12 +122,13 @@ impl ZoneHandler for LocalAuthority {
                 alias = cname;
             } else {
                 answers.extend(std::iter::once(first).chain(records).cloned());
+                additionals = next_lookup.take_additionals();
                 break;
             }
         }
         LookupControlFlow::Continue(Ok(AuthLookup::answers(
             LookupRecords::Section(answers),
-            None,
+            additionals,
         )))
     }
 
@@ -137,22 +140,19 @@ impl ZoneHandler for LocalAuthority {
         LookupControlFlow<AuthLookup>,
         Option<rr::TSigResponseContext>,
     ) {
-        if let Ok(info) = request.request_info()
-            && matches!(info.query.query_type(), RecordType::A | RecordType::AAAA)
-        {
-            (
+        let result = match request.request_info() {
+            Ok(info) => {
                 self.lookup(
                     info.query.name(),
                     info.query.query_type(),
                     Some(&info),
                     options,
                 )
-                .await,
-                None,
-            )
-        } else {
-            self.inner.search(request, options).await
-        }
+                .await
+            }
+            Err(error) => LookupControlFlow::Break(Err(error)),
+        };
+        (result, None)
     }
 
     async fn nsec_records(

@@ -1761,6 +1761,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cname_into_child_zone_uses_child_answers_and_additionals() {
+        let dns = config(&[
+            (
+                "et.net.",
+                &[
+                    record("alias", DnsRecordType::Cname, "svc.sub", None),
+                    record("svc.sub", DnsRecordType::Txt, "parent", None),
+                ],
+            ),
+            (
+                "sub.et.net.",
+                &[
+                    record("svc", DnsRecordType::Txt, "child", None),
+                    record("svc", DnsRecordType::Mx, "10 host", None),
+                    record("svc", DnsRecordType::Srv, "0 5 443 host", None),
+                    record("host", DnsRecordType::A, "192.0.2.42", None),
+                ],
+            ),
+        ]);
+        let data = data_with(Some(&dns)).await;
+        for kind in [RecordType::TXT, RecordType::MX, RecordType::SRV] {
+            let direct = query(&data, "svc.sub.et.net.", kind).await;
+            let alias = query(&data, "alias.et.net.", kind).await;
+            assert_eq!(direct.answers.len(), 1);
+            assert_eq!(direct.answers[0].record_type(), kind);
+            assert_eq!(alias.answers[0].record_type(), RecordType::CNAME);
+            assert_eq!(alias.answers[1..], direct.answers);
+            if kind != RecordType::TXT {
+                assert!(
+                    direct
+                        .additionals
+                        .iter()
+                        .any(|r| r.record_type() == RecordType::A)
+                );
+                assert_eq!(alias.additionals, direct.additionals);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn custom_records_survive_route_refresh_and_support_common_types() {
         let dns = config(&[
             (
