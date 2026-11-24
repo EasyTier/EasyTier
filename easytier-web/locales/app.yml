@@ -67,6 +67,9 @@ cli:
   oidc_scopes:
     en: "OIDC scopes to request during login. Supports comma-separated values or repeated --oidc-scopes flags, default: openid,profile"
     zh-CN: "登录时请求的 OIDC scopes。支持逗号分隔或多次指定 --oidc-scopes，默认: openid,profile"
+  oidc_extra_audiences:
+    en: "Comma-separated list of trusted extra ID token audiences, such as a ZITADEL project ID. Default: none. The token must still include this application's client ID."
+    zh-CN: "ID Token 中受信任的额外 audience，多个值用逗号分隔，例如 ZITADEL 项目 ID。默认不信任额外 audience；令牌仍须包含本应用的客户端 ID。"
   oidc_redirect_url:
     en: "The OIDC redirect URL (callback URL), must match exactly what is registered with your Identity Provider. Required when using OIDC. Example: http://your-domain.com:11211/api/v1/auth/oidc/callback"
     zh-CN: "OIDC 重定向 URL（回调 URL），必须与身份提供商注册的地址完全一致。使用 OIDC 时必须提供。示例: http://your-domain.com:11211/api/v1/auth/oidc/callback"

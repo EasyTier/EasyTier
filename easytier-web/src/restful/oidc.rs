@@ -8,9 +8,10 @@ use subtle::ConstantTimeEq;
 use axum::Router;
 use axum::routing::get;
 use openidconnect::core::{
-    CoreAuthDisplay, CoreAuthPrompt, CoreErrorResponseType, CoreGenderClaim, CoreJsonWebKey,
-    CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm, CoreProviderMetadata,
-    CoreRevocableToken, CoreRevocationErrorResponse, CoreTokenIntrospectionResponse, CoreTokenType,
+    CoreAuthDisplay, CoreAuthPrompt, CoreErrorResponseType, CoreGenderClaim, CoreIdTokenVerifier,
+    CoreJsonWebKey, CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm,
+    CoreProviderMetadata, CoreRevocableToken, CoreRevocationErrorResponse,
+    CoreTokenIntrospectionResponse, CoreTokenType,
 };
 use openidconnect::{
     Client, ClientId, ClientSecret, EmptyExtraTokenFields, EndpointMaybeSet, EndpointNotSet,
@@ -146,6 +147,14 @@ pub struct OidcOptions {
     )]
     pub oidc_scopes: Vec<String>,
 
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        help = t!("cli.oidc_extra_audiences").to_string()
+    )]
+    pub oidc_extra_audiences: Vec<String>,
+
     #[arg(long, help = t!("cli.oidc_redirect_url").to_string())]
     pub oidc_redirect_url: Option<String>,
 
@@ -165,6 +174,7 @@ impl OidcOptions {
             || self.oidc_frontend_base_url.is_some()
             || self.oidc_username_claim != "preferred_username"
             || self.oidc_scopes != DEFAULT_OIDC_SCOPES
+            || !self.oidc_extra_audiences.is_empty()
             || self.oidc_disable_pkce
     }
 }
@@ -178,6 +188,7 @@ pub struct OidcConfig {
     pub redirect_url: Option<RedirectUrl>,
     pub username_claim: String,
     pub scopes: Vec<String>,
+    extra_audiences: Vec<String>,
     pub pkce_enabled: bool,
     pub frontend_base_url: Option<String>,
     pub http_client: Option<ReqwestClient>,
@@ -197,6 +208,7 @@ impl OidcConfig {
                 .iter()
                 .map(|scope| scope.to_string())
                 .collect(),
+            extra_audiences: Vec::new(),
             pkce_enabled: false,
             frontend_base_url: None,
             http_client: None,
@@ -211,6 +223,7 @@ impl OidcConfig {
             oidc_client_secret,
             oidc_username_claim,
             oidc_scopes,
+            oidc_extra_audiences,
             oidc_redirect_url,
             oidc_disable_pkce,
             oidc_frontend_base_url,
@@ -269,6 +282,7 @@ impl OidcConfig {
             redirect_url: Some(redirect_url),
             username_claim: oidc_username_claim,
             scopes: normalize_oidc_scopes(&oidc_scopes),
+            extra_audiences: oidc_extra_audiences,
             pkce_enabled: !oidc_disable_pkce,
             frontend_base_url: oidc_frontend_base_url,
             http_client: Some(http_client),
@@ -279,6 +293,15 @@ impl OidcConfig {
     pub fn client(&self) -> Option<&ConfiguredAppClient> {
         self.cached_client.as_deref()
     }
+}
+
+fn with_extra_audiences<'a>(
+    verifier: CoreIdTokenVerifier<'a>,
+    extra_audiences: &'a [String],
+) -> CoreIdTokenVerifier<'a> {
+    verifier.set_other_audience_verifier_fn(move |aud| {
+        extra_audiences.iter().any(|id| id == aud.as_str())
+    })
 }
 
 pub fn router() -> Router<AppStateInner> {
@@ -576,7 +599,9 @@ mod route {
             }
         };
 
-        let claims = match id_token.claims(&client.id_token_verifier(), &Nonce::new(stored_nonce)) {
+        let id_token_verifier =
+            super::with_extra_audiences(client.id_token_verifier(), &oidc.extra_audiences);
+        let claims = match id_token.claims(&id_token_verifier, &Nonce::new(stored_nonce)) {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to verify ID token: {:?}", e);
@@ -589,7 +614,6 @@ mod route {
         };
 
         if let Some(expected_at_hash) = claims.access_token_hash() {
-            let id_token_verifier = client.id_token_verifier();
             let (Ok(signing_alg), Ok(signing_key)) = (
                 id_token.signing_alg(),
                 id_token.signing_key(&id_token_verifier),
@@ -777,6 +801,7 @@ mod tests {
             oidc_client_secret: Some("test-secret".to_owned()),
             oidc_username_claim: "preferred_username".to_owned(),
             oidc_scopes: vec!["openid".to_owned()],
+            oidc_extra_audiences: vec![],
             oidc_redirect_url: Some("http://localhost/callback".to_owned()),
             oidc_disable_pkce: false,
             oidc_frontend_base_url: None,
@@ -814,6 +839,73 @@ mod tests {
                 .is_err()
         );
         assert_eq!(redirect_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn extra_audiences_require_client_id_and_trust_for_every_other_audience() {
+        use chrono::Utc;
+        use clap::Parser;
+        use openidconnect::core::{CoreHmacKey, CoreIdToken, CoreIdTokenClaims, CoreJsonWebKeySet};
+        use openidconnect::{
+            Audience, ClaimsVerificationError, Nonce, StandardClaims, SubjectIdentifier,
+        };
+
+        let issuer = IssuerUrl::new("https://issuer.example".into()).unwrap();
+        let alg = CoreJwsSigningAlgorithm::HmacSha256;
+        let verifier = CoreIdTokenVerifier::new_confidential_client(
+            ClientId::new("client".into()),
+            ClientSecret::new("test-secret".into()),
+            issuer.clone(),
+            CoreJsonWebKeySet::default(),
+        )
+        .set_allowed_algs([alg.clone()]);
+        let nonce = Nonce::new_random();
+        let now = Utc::now();
+        let default = crate::Cli::try_parse_from(["easytier-web"]).unwrap().oidc;
+        let configured = crate::Cli::try_parse_from([
+            "easytier-web",
+            "--oidc-extra-audiences",
+            "project,other-client",
+        ])
+        .unwrap()
+        .oidc;
+        for (trusted, audiences, accept) in [
+            (&default, vec!["client"], true),
+            (&default, vec!["client", "project"], false),
+            (&configured, vec!["client", "project", "other-client"], true),
+            (&configured, vec!["project"], false),
+            (&configured, vec!["client", "project", "unknown"], false),
+        ] {
+            let token = CoreIdToken::new(
+                CoreIdTokenClaims::new(
+                    issuer.clone(),
+                    audiences
+                        .iter()
+                        .map(|&id| Audience::new(id.into()))
+                        .collect(),
+                    now + chrono::Duration::minutes(5),
+                    now,
+                    StandardClaims::new(SubjectIdentifier::new("user".into())),
+                    Default::default(),
+                )
+                .set_nonce(Some(nonce.clone())),
+                &CoreHmacKey::new("test-secret"),
+                alg.clone(),
+                None,
+                None,
+            )
+            .unwrap();
+            let verifier = with_extra_audiences(verifier.clone(), &trusted.oidc_extra_audiences);
+            let result = token.claims(&verifier, &nonce);
+            if accept {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(result, Err(ClaimsVerificationError::InvalidAudience(_))),
+                    "{audiences:?}: {result:?}"
+                );
+            }
+        }
     }
 
     #[test]
