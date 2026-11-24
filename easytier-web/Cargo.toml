@@ -75,7 +75,10 @@ uuid = { workspace = true, features = [
 
 chrono = { workspace = true, features = ["serde"] }
 # Keep the bundled reqwest 0.12 client disabled; use the official 0.13 adapter.
-openidconnect = { version = "4.0", default-features = false, features = ["accept-rfc3339-timestamps"] }
+# Use openidconnect-rs#244 until a release supports rsa 0.10 (RUSTSEC-2023-0071).
+openidconnect = { git = "https://github.com/ramosbugs/openidconnect-rs", rev = "af14915667e259deb418a4ccb3f95ae751d42339", default-features = false, features = ["accept-rfc3339-timestamps"] }
+# rsa 0.10 makes the PKCS#1 v1.5 signatures used by OIDC RS256/384/512 opt-in.
+rsa = { version = "0.10", default-features = false, features = ["pkcs1v15"] }
 # Pin the adapter until its API stabilizes.
 oauth2-reqwest = "=0.1.0-alpha.3"
 # Reuse EasyTier's ring provider. reqwest 0.13's rustls feature adds aws-lc,
@@ -97,6 +100,7 @@ embed = ["dep:axum-embed"]
 
 [package.metadata.cargo-machete]
 ignored = [
+    "rsa", # Enables RS256/384/512 for openidconnect.
     # Windows-only build.rs setup calls thunk::thunk().
     "thunk-rs",
 ]

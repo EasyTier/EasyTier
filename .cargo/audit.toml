@@ -1,3 +1,0 @@
-[advisories]
-# openidconnect 4.1 still requires rsa 0.9, which has no fixed release.
-ignore = ["RUSTSEC-2023-0071"]

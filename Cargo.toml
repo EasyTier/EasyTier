@@ -104,6 +104,10 @@ x25519-dalek = "2.0.1"
 # zerocopy 0.8 requires migrating the packet layout and casting APIs.
 zerocopy = "0.7.35"
 
+[patch.crates-io]
+# openidconnect-rs#244 requires the unreleased OAuth2 5.1 API (oauth2-rs#352).
+oauth2 = { git = "https://github.com/ramosbugs/oauth2-rs", rev = "89585f4a280afd7b285eaf1c9be0068874e03d22" }
+
 [profile.dev]
 panic = "unwind"
 debug = 2
