@@ -796,10 +796,8 @@ async fn wait_shared_magic_dns_record(
 
     let expected_source = expected_source.parse::<Ipv4Addr>().unwrap();
     let expected_ip = expected_ip.parse::<Ipv4Addr>().unwrap();
-    let mut query = Message::new();
-    query
-        .set_id(rand::random())
-        .add_query(Query::query(domain.parse().unwrap(), RecordType::A));
+    let mut query = Message::query();
+    query.add_query(Query::query(domain.parse().unwrap(), RecordType::A));
     let payload = query.to_vec().unwrap();
     wait_for_condition(
         || async {
@@ -825,11 +823,11 @@ async fn wait_shared_magic_dns_record(
             };
             let response = Message::from_vec(&buffer[..len]).unwrap();
             source == std::net::IpAddr::V4(expected_source)
-                && response.id() == query.id()
-                && response.message_type() == MessageType::Response
-                && response.response_code() == ResponseCode::NoError
-                && response.answers().len() == 1
-                && matches!(response.answers()[0].data(), RData::A(ip) if ip.0 == expected_ip)
+                && response.id == query.id
+                && response.message_type == MessageType::Response
+                && response.response_code == ResponseCode::NoError
+                && response.answers.len() == 1
+                && matches!(response.answers[0].data, RData::A(ip) if ip.0 == expected_ip)
         },
         WAIT,
     )

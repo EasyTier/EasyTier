@@ -5,14 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, bail, ensure};
 use easytier_proto::core_config::{DnsConfigRaw, DnsRecordRaw, DnsRecordType, DnsZoneConfigRaw};
 use hickory_proto::{
-    rr::{
-        LowerName, Name, RData, Record, RecordSet, RecordType, RrKey,
-        rdata::{HTTPS, SVCB},
-    },
-    serialize::{
-        binary::{BinEncodable, BinEncoder, EncodeMode},
-        txt::RDataParser,
-    },
+    rr::{LowerName, Name, RData, Record, RecordSet, RecordType, RrKey, rdata::TXT},
+    serialize::binary::{BinEncodable, BinEncoder},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,7 +69,7 @@ pub fn compile_zone(input: &DnsZoneConfigRaw) -> anyhow::Result<DnsZone> {
             record_input.ttl.or(input.ttl).unwrap_or_default(),
         )
         .map_err(|error| anyhow::anyhow!("{path}.{error:#}"))?;
-        let owner = LowerName::new(record.name());
+        let owner = LowerName::new(&record.name);
         let record_type = record.record_type();
         let types = owner_types.entry(owner.clone()).or_default();
         ensure!(
@@ -91,13 +85,13 @@ pub fn compile_zone(input: &DnsZoneConfigRaw) -> anyhow::Result<DnsZone> {
         let key = RrKey::new(owner, record_type);
         let (ttl, values) = records
             .entry(key)
-            .or_insert_with(|| (record.ttl(), BTreeMap::new()));
-        ensure!(*ttl == record.ttl(), "{path}.ttl: RRset TTLs must match");
+            .or_insert_with(|| (record.ttl, BTreeMap::new()));
+        ensure!(*ttl == record.ttl, "{path}.ttl: RRset TTLs must match");
         let mut bytes = Vec::new();
-        let mut encoder = BinEncoder::with_mode(&mut bytes, EncodeMode::Signing);
-        encoder.set_canonical_names(true);
+        let mut encoder = BinEncoder::new(&mut bytes);
+        encoder.set_canonical_form(true);
         record
-            .data()
+            .data
             .emit(&mut encoder)
             .with_context(|| format!("{path}.value"))?;
         ensure!(
@@ -121,7 +115,7 @@ pub fn compile_zone(input: &DnsZoneConfigRaw) -> anyhow::Result<DnsZone> {
             .map(|(key, (_, values))| {
                 let mut records = values.into_values();
                 let first = records.next().expect("each RRset has a record");
-                let mut set = RecordSet::new(first.name().clone(), first.record_type(), 0);
+                let mut set = RecordSet::new(first.name.clone(), first.record_type(), 0);
                 set.insert(first, 0);
                 for record in records {
                     set.insert(record, 0);
@@ -154,10 +148,10 @@ fn compile_record(input: &DnsRecordRaw, origin: &Name, ttl: u32) -> anyhow::Resu
     let rdata = parse_value(record_type, value, origin).context("value")?;
     if let RData::TXT(txt) = &rdata {
         ensure!(
-            !txt.txt_data().is_empty(),
+            !txt.txt_data.is_empty(),
             "value: at least one TXT character-string is required"
         );
-        for (index, segment) in txt.txt_data().iter().enumerate() {
+        for (index, segment) in txt.txt_data.iter().enumerate() {
             ensure!(
                 segment.len() <= 255,
                 "value: TXT character-string {index} exceeds 255 UTF-8 bytes"
@@ -181,42 +175,57 @@ fn parse_value(kind: RecordType, value: &str, origin: &Name) -> anyhow::Result<R
         RecordType::SRV => &[3],
         _ => &[],
     };
+    if kind == RecordType::TXT {
+        return Ok(RData::TXT(TXT::new(tokens)));
+    }
+    // Hickory's public text parser does not expose the remaining tokens or accept a zone origin.
+    let fields = match kind {
+        RecordType::A
+        | RecordType::AAAA
+        | RecordType::ANAME
+        | RecordType::CNAME
+        | RecordType::NS
+        | RecordType::PTR
+        | RecordType::OPENPGPKEY => Some(1),
+        RecordType::HINFO | RecordType::MX => Some(2),
+        RecordType::CAA | RecordType::SSHFP => Some(3),
+        RecordType::CERT | RecordType::SRV => Some(4),
+        RecordType::NAPTR => Some(6),
+        RecordType::SOA => Some(7),
+        _ => None,
+    };
+    ensure!(
+        fields.is_none_or(|n| tokens.len() == n),
+        "invalid {kind} field count"
+    );
     for &index in name_fields {
-        if let Some(token) = tokens.get_mut(index)
-            && token == "@"
-        {
-            *token = origin.to_string();
+        let token = tokens.get_mut(index).context("missing DNS target")?;
+        *token = if token == "@" {
+            origin.clone()
+        } else {
+            Name::parse(token, Some(origin))?
         }
+        .to_ascii();
     }
     if matches!(kind, RecordType::SVCB | RecordType::HTTPS) {
         validate_svcb_params(&tokens)?;
     }
-    let mut tokens = tokens.iter().map(String::as_str);
-    let mut data = RData::parse(kind, &mut tokens, Some(origin))?;
-    ensure!(tokens.next().is_none(), "unexpected trailing RDATA tokens");
-    // Hickory 0.25's SVCB parser does not accept an origin. Complete only its
-    // DNS target, leaving parameter strings and opaque values untouched.
-    let complete = |data: &SVCB| -> anyhow::Result<SVCB> {
-        let target = if data.target_name().is_fqdn() {
-            data.target_name().clone()
-        } else {
-            data.target_name().clone().append_domain(origin)?
-        };
-        Ok(SVCB::new(
-            data.svc_priority(),
-            target,
-            data.svc_params().to_vec(),
-        ))
-    };
-    match &data {
-        RData::SVCB(svcb) => data = RData::SVCB(complete(svcb)?),
-        RData::HTTPS(https) => data = RData::HTTPS(HTTPS(complete(https)?)),
-        _ => {}
+    // Preserve token boundaries and literal escapes when passing decoded fields to the lexer.
+    let mut presentation = String::new();
+    for token in tokens {
+        presentation.push_str(" \"");
+        for ch in token.chars() {
+            if matches!(ch, '\\' | '"') {
+                presentation.push('\\');
+            }
+            presentation.push(ch);
+        }
+        presentation.push('"');
     }
-    Ok(data)
+    Ok(RData::try_from_str(kind, &presentation)?)
 }
 
-// Hickory 0.25.2 slices quoted values and expects ALPN decoding to be infallible.
+// Hickory slices quoted values and expects ALPN decoding to be infallible.
 // Reject malformed quotes and list members before entering those parser paths.
 fn validate_svcb_params(tokens: &[String]) -> anyhow::Result<()> {
     for token in tokens.iter().skip(2) {
@@ -320,8 +329,7 @@ fn rdata_tokens(value: &str, decode_txt: bool) -> anyhow::Result<Vec<String>> {
                 }
                 let end = end.context("unclosed RDATA quoted string")?;
                 let token = &value[start..end];
-                // The dependency's lexer asserts after 4096 steps per token.
-                // Values that exceed that bound must fail rather than panic.
+                // Preserve the zone input's existing per-token limit.
                 ensure!(steps <= 4093, "RDATA token exceeds parser limit");
                 if decode_txt {
                     tokens.push(decode_txt_string(&token[1..token.len() - 1])?);
@@ -334,7 +342,7 @@ fn rdata_tokens(value: &str, decode_txt: bool) -> anyhow::Result<Vec<String>> {
                 else {
                     unreachable!("the TXT parser returns TXT");
                 };
-                for segment in decoded.txt_data() {
+                for segment in &decoded.txt_data {
                     tokens.push(String::from_utf8(segment.to_vec())?);
                 }
             }
@@ -369,7 +377,7 @@ fn rdata_tokens(value: &str, decode_txt: bool) -> anyhow::Result<Vec<String>> {
     Ok(tokens)
 }
 
-// Hickory 0.25.2 decodes decimal escapes as shifted Unicode digits, not octets.
+// TXT decimal escapes represent octets, not Unicode code points.
 fn decode_txt_string(value: &str) -> anyhow::Result<String> {
     let mut chars = value.chars();
     let mut bytes = Vec::new();
@@ -464,14 +472,14 @@ mod tests {
             let decoded = Record::from_bytes(&record.to_bytes().unwrap()).unwrap();
             assert_eq!(&decoded, record, "{kind:?}");
             assert_eq!(record.record_type(), (kind as u16).into());
-            assert_eq!(record.ttl(), 60);
-            match record.data() {
+            assert_eq!(record.ttl, 60);
+            match &record.data {
                 RData::CNAME(name) => assert_eq!(name.to_string(), "target.example.test."),
                 RData::SVCB(data) => {
-                    assert_eq!(data.target_name().to_string(), "target.example.test.")
+                    assert_eq!(data.target_name.to_string(), "target.example.test.")
                 }
                 RData::HTTPS(data) => {
-                    assert_eq!(data.target_name().to_string(), "target.example.test.")
+                    assert_eq!(data.target_name.to_string(), "target.example.test.")
                 }
                 _ => {}
             }
@@ -508,11 +516,11 @@ mod tests {
             .next()
             .unwrap();
         let decoded = Record::from_bytes(&record.to_bytes().unwrap()).unwrap();
-        let RData::TXT(txt) = decoded.data() else {
+        let RData::TXT(txt) = decoded.data else {
             panic!("expected TXT")
         };
         assert_eq!(
-            txt.txt_data(),
+            txt.txt_data.as_ref(),
             segments
                 .iter()
                 .map(|s| s.as_bytes().to_vec().into_boxed_slice())
@@ -572,9 +580,9 @@ mod tests {
             .records_without_rrsigs()
             .next()
             .unwrap();
-        assert_eq!(rr.name().to_string(), "_service._tcp.example.test.");
-        assert_eq!(rr.ttl(), 0);
-        assert_eq!(rr.data().to_string(), "example.test.");
+        assert_eq!(rr.name.to_string(), "_service._tcp.example.test.");
+        assert_eq!(rr.ttl, 0);
+        assert_eq!(rr.data.to_string(), "example.test.");
         for value in ["external.invalid.", "."] {
             let input = record(DnsRecordType::Srv, &format!("0 0 0 {value}"));
             assert!(compile_zone(&zone(vec![input])).is_ok());
@@ -617,10 +625,9 @@ mod tests {
         );
         assert!(compile_zone(&zone(vec![input])).is_err());
         for target in [r"host\065label.example.test.", r"host\-label.example.test."] {
-            let expected =
-                RData::parse(RecordType::CNAME, [target].into_iter(), Some(&origin)).unwrap();
+            let expected = RData::try_from_str(RecordType::CNAME, target).unwrap();
             let parsed = compile_zone(&zone(vec![record(DnsRecordType::Cname, target)])).unwrap();
-            let actual = parsed
+            let actual = &parsed
                 .records
                 .values()
                 .next()
@@ -628,7 +635,7 @@ mod tests {
                 .records_without_rrsigs()
                 .next()
                 .unwrap()
-                .data();
+                .data;
             assert_eq!(actual, &expected);
         }
     }

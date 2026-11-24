@@ -6,7 +6,10 @@ use std::{
 
 use easytier_core::gateway::magic_dns::MagicDnsRecordSnapshot;
 use hickory_proto::rr::{LowerName, Name, RData, Record, RecordSet, RecordType, RrKey, rdata::SOA};
-use hickory_server::{authority::ZoneType, store::in_memory::InMemoryAuthority};
+use hickory_server::{
+    store::in_memory::InMemoryZoneHandler,
+    zone_handler::{AxfrPolicy, ZoneType},
+};
 
 use super::config::{RecordBuilder, RecordType as ConfigRecordType};
 
@@ -82,11 +85,12 @@ fn merge_configured_records(
 pub(super) fn build_authorities(
     snapshot: &MagicDnsRecordSnapshot,
     origins: BTreeSet<LowerName>,
-) -> anyhow::Result<BTreeMap<LowerName, Arc<InMemoryAuthority>>> {
+) -> anyhow::Result<BTreeMap<LowerName, Arc<InMemoryZoneHandler>>> {
     let configured = merge_configured_records(snapshot)?;
     let mut authorities = BTreeMap::new();
     for origin in origins {
-        let mut authority = InMemoryAuthority::empty(Name::from(&origin), ZoneType::Primary, false);
+        let mut authority =
+            InMemoryZoneHandler::empty(Name::from(&origin), ZoneType::Primary, AxfrPolicy::Deny);
         for route in snapshot.zones.get(&origin).into_iter().flatten() {
             if route.hostname.is_empty() {
                 continue;
@@ -108,16 +112,16 @@ pub(super) fn build_authorities(
                 }
             };
             if let Some(records) = configured.get(&origin) {
-                let name = LowerName::new(record.name());
+                let name = LowerName::new(&record.name);
                 anyhow::ensure!(
                     !records.contains_key(&RrKey::new(name.clone(), RecordType::CNAME)),
                     "automatic DNS record {} conflicts with configured records in {origin}",
-                    record.name()
+                    record.name
                 );
                 // Hickory's insert changes the set TTL without changing all
                 // existing records, so normalize automatic values up front.
                 if let Some(set) = records.get(&RrKey::new(name, RecordType::A)) {
-                    record.set_ttl(set.ttl());
+                    record.ttl = set.ttl();
                 }
             }
             // A route can be advertised by several local instances.

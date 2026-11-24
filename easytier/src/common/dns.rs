@@ -7,15 +7,13 @@ use async_trait::async_trait;
 use easytier_core::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
 use easytier_core::socket::SocketContext;
 #[cfg(feature = "dns-resolver")]
-use hickory_proto::runtime::{RuntimeProvider, TokioRuntimeProvider, iocompat::AsyncIoTokioAsStd};
-#[cfg(feature = "dns-resolver")]
-use hickory_proto::xfer::Protocol;
+use hickory_proto::rr::rdata::{SRV, TXT};
 #[cfg(feature = "dns-resolver")]
 use hickory_resolver::config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};
 #[cfg(feature = "dns-resolver")]
-use hickory_resolver::name_server::{GenericConnector, TokioConnectionProvider};
-#[cfg(feature = "dns-resolver")]
-use hickory_resolver::system_conf::read_system_conf;
+use hickory_resolver::net::runtime::{
+    RuntimeProvider, TokioRuntimeProvider, iocompat::AsyncIoTokioAsStd,
+};
 #[cfg(feature = "dns-resolver")]
 use hickory_resolver::{Resolver, TokioResolver};
 #[cfg(feature = "dns-resolver")]
@@ -38,24 +36,30 @@ use easytier_core::socket::{NetNamespace, tcp::TcpBindOptions, udp::UdpBindOptio
 
 #[cfg(feature = "dns-resolver")]
 pub fn get_default_resolver_config() -> ResolverConfig {
-    let mut default_resolve_config = ResolverConfig::new();
-    default_resolve_config.add_name_server(NameServerConfig::new(
-        "223.5.5.5:53".parse().unwrap(),
-        Protocol::Udp,
-    ));
-    default_resolve_config.add_name_server(NameServerConfig::new(
-        "180.184.1.1:53".parse().unwrap(),
-        Protocol::Udp,
-    ));
-    default_resolve_config
+    ResolverConfig::from_name_servers(vec![
+        NameServerConfig::udp("223.5.5.5".parse().unwrap()),
+        NameServerConfig::udp("180.184.1.1".parse().unwrap()),
+    ])
+}
+
+#[cfg(feature = "dns-resolver")]
+pub(crate) fn system_resolver_config() -> Option<(ResolverConfig, ResolverOpts)> {
+    #[cfg(not(target_os = "android"))]
+    {
+        hickory_resolver::system_conf::read_system_conf().ok()
+    }
+    // Standalone Android binaries have no Java Context for Hickory's JNI lookup.
+    #[cfg(target_os = "android")]
+    {
+        None
+    }
 }
 
 #[cfg(feature = "dns-resolver")]
 fn resolver_config() -> (ResolverConfig, ResolverOpts) {
-    let system_cfg = read_system_conf();
     let mut config = get_default_resolver_config();
     let mut options = ResolverOpts::default();
-    if let Ok(system) = system_cfg {
+    if let Some(system) = system_resolver_config() {
         for name_server in system.0.name_servers() {
             config.add_name_server(name_server.clone());
         }
@@ -66,11 +70,11 @@ fn resolver_config() -> (ResolverConfig, ResolverOpts) {
 }
 
 #[cfg(feature = "dns-resolver")]
-static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> = Lazy::new(|| {
+static RESOLVER: Lazy<TokioResolver> = Lazy::new(|| {
     let (config, options) = resolver_config();
-    let builder = TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
+    let builder = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
         .with_options(options);
-    Arc::new(builder.build())
+    builder.build().expect("failed to build DNS resolver")
 });
 
 #[cfg(feature = "dns-resolver")]
@@ -252,7 +256,7 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
 }
 
 #[cfg(feature = "dns-resolver")]
-type ContextualResolver = Resolver<GenericConnector<RuntimeDnsIoProvider>>;
+type ContextualResolver = Resolver<RuntimeDnsIoProvider>;
 
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeDnsResolver {
@@ -268,12 +272,13 @@ impl RuntimeDnsResolver {
     // A netns token can be deleted and recreated. Keep contextual resolvers
     // request-scoped so pooled DNS sockets cannot outlive that namespace.
     #[cfg(feature = "dns-resolver")]
-    fn contextual_resolver(context: RuntimeDnsIoContext) -> ContextualResolver {
+    fn contextual_resolver(context: RuntimeDnsIoContext) -> anyhow::Result<ContextualResolver> {
         let (config, options) = resolver_config();
-        let provider = GenericConnector::new(RuntimeDnsIoProvider::new(context));
+        let provider = RuntimeDnsIoProvider::new(context);
         Resolver::builder_with_config(config, provider)
             .with_options(options)
             .build()
+            .context("failed to build contextual DNS resolver")
     }
 
     #[cfg(feature = "dns-resolver")]
@@ -281,7 +286,7 @@ impl RuntimeDnsResolver {
         context: RuntimeDnsIoContext,
         host: String,
     ) -> anyhow::Result<Vec<IpAddr>> {
-        let resolver = Self::contextual_resolver(context);
+        let resolver = Self::contextual_resolver(context)?;
         let response = resolver
             .lookup_ip(&host)
             .await
@@ -389,21 +394,22 @@ impl DnsResolver for RuntimeDnsResolver {
 impl DnsRecordResolver for RuntimeDnsResolver {
     async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
         let context = RuntimeDnsIoContext::from_socket_context(&query.context);
-        if context.is_process_default() {
-            return Ok(resolve_txt_record(&query.host).await?);
+        let response = if context.is_process_default() {
+            RESOLVER.txt_lookup(&query.host).await
+        } else {
+            Self::contextual_resolver(context)?
+                .txt_lookup(&query.host)
+                .await
         }
-
-        let resolver = Self::contextual_resolver(context);
-        let response = resolver
-            .txt_lookup(&query.host)
-            .await
-            .with_context(|| format!("txt_lookup failed, domain_name: {}", query.host))?;
+        .with_context(|| format!("txt_lookup failed, domain_name: {}", query.host))?;
         let record = response
+            .answers()
             .iter()
-            .next()
+            .find_map(|r| r.try_borrow::<TXT>())
             .with_context(|| format!("no txt record found, domain_name: {}", query.host))?;
         let data = record
-            .txt_data()
+            .data()
+            .txt_data
             .first()
             .with_context(|| format!("empty txt record, domain_name: {}", query.host))?;
         Ok(String::from_utf8_lossy(data).into_owned())
@@ -414,17 +420,19 @@ impl DnsRecordResolver for RuntimeDnsResolver {
         let response = if context.is_process_default() {
             RESOLVER.srv_lookup(&query.host).await?
         } else {
-            Self::contextual_resolver(context)
+            Self::contextual_resolver(context)?
                 .srv_lookup(&query.host)
                 .await?
         };
         Ok(response
+            .answers()
             .iter()
+            .filter_map(|record| record.try_borrow::<SRV>())
             .map(|record| DnsSrvRecord {
-                priority: record.priority(),
-                weight: record.weight(),
-                port: record.port(),
-                target: record.target().to_utf8(),
+                priority: record.data().priority,
+                weight: record.data().weight,
+                port: record.data().port,
+                target: record.data().target.to_utf8(),
             })
             .collect())
     }
@@ -440,25 +448,6 @@ impl DnsRecordResolver for RuntimeDnsResolver {
     async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
         anyhow::bail!("this build does not include SRV DNS resolution")
     }
-}
-
-#[cfg(feature = "dns-resolver")]
-async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
-    let r = RESOLVER.clone();
-    let response = r
-        .txt_lookup(domain_name)
-        .await
-        .with_context(|| format!("txt_lookup failed, domain_name: {}", domain_name))?;
-
-    let txt_record = response
-        .iter()
-        .next()
-        .with_context(|| format!("no txt record found, domain_name: {}", domain_name))?;
-
-    let txt_data = String::from_utf8_lossy(&txt_record.txt_data()[0]);
-    tracing::info!(?txt_data, ?domain_name, "get txt record");
-
-    Ok(txt_data.to_string())
 }
 
 pub async fn socket_addrs(

@@ -10,10 +10,10 @@ use easytier_core::{
     host::packet::{HostPacket, HostPacketChannelSink, HostPacketReceiver},
     process_runtime::CoreProcessRuntime,
 };
-use hickory_client::client::{Client, ClientHandle as _};
 use hickory_proto::rr;
-use hickory_proto::runtime::TokioRuntimeProvider;
-use hickory_proto::udp::UdpClientStream;
+use hickory_resolver::net::client::{Client, ClientHandle as _};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::net::udp::UdpClientStream;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -93,7 +93,7 @@ pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &st
         TokioRuntimeProvider::default(),
     )
     .build();
-    let (mut client, background) = Client::connect(stream).await.unwrap();
+    let (mut client, background) = Client::<TokioRuntimeProvider>::from_sender(stream);
     let background_task = tokio::spawn(background);
     let response = client
         .query(
@@ -108,10 +108,10 @@ pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &st
 
     println!("Response: {:?}", response);
 
-    assert_eq!(response.answers().len(), 1, "{:?}", response.answers());
-    let resp = response.answers().first().unwrap();
+    assert_eq!(response.answers.len(), 1, "{:?}", response.answers);
+    let resp = response.answers.first().unwrap();
     assert_eq!(
-        resp.clone().into_parts().rdata.into_a().unwrap().0,
+        resp.try_borrow::<rr::rdata::A>().unwrap().data().0,
         expected_ip.parse::<Ipv4Addr>().unwrap()
     );
 }
@@ -410,7 +410,7 @@ async fn dns_address(server: &MagicDnsServerInstance, name: &str) -> Option<Ipv4
     use easytier_core::gateway::magic_dns::{MagicDnsQuery, MagicDnsQueryResolver};
     use hickory_proto::op::{Message, Query};
 
-    let mut message = Message::new();
+    let mut message = Message::query();
     message.add_query(Query::query(name.parse().unwrap(), rr::RecordType::A));
     let bytes = server
         .data
@@ -428,9 +428,9 @@ async fn dns_address(server: &MagicDnsServerInstance, name: &str) -> Option<Ipv4
     .unwrap();
     Message::from_vec(&bytes)
         .unwrap()
-        .answers()
+        .answers
         .iter()
-        .find_map(|record| record.data().as_a().map(|address| address.0))
+        .find_map(|record| record.try_borrow::<rr::rdata::A>().map(|r| r.data().0))
 }
 
 #[cfg(target_os = "linux")]

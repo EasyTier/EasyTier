@@ -316,12 +316,10 @@ pub async fn admin_login(
         iat: now.timestamp() as usize,
     };
 
-    let token = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(config.security.jwt_secret.as_ref()),
-    )
-    .map_err(|e| ApiError::Internal(format!("Token generation failed: {}", e)))?;
+    let key = EncodingKey::from_secret(config.security.jwt_secret.as_bytes())
+        .map_err(|e| ApiError::Internal(format!("Invalid JWT secret: {e}")))?;
+    let token = encode(&Header::default(), &claims, &key)
+        .map_err(|e| ApiError::Internal(format!("Token generation failed: {e}")))?;
 
     Ok(Json(ApiResponse::success(AdminLoginResponse {
         token,
@@ -589,12 +587,10 @@ fn verify_admin_token(headers: &HeaderMap) -> ApiResult<()> {
         .strip_prefix("Bearer ")
         .ok_or_else(|| ApiError::Unauthorized("Invalid authorization format".to_string()))?;
 
-    let _claims = decode::<AdminClaims>(
-        token,
-        &DecodingKey::from_secret(config.security.jwt_secret.as_ref()),
-        &Validation::default(),
-    )
-    .map_err(|_| ApiError::Unauthorized("Invalid token".to_string()))?;
+    let key = DecodingKey::from_secret(config.security.jwt_secret.as_bytes())
+        .map_err(|e| ApiError::Internal(format!("Invalid JWT secret: {e}")))?;
+    decode::<AdminClaims>(token, &key, &Validation::default())
+        .map_err(|_| ApiError::Unauthorized("Invalid token".to_string()))?;
 
     Ok(())
 }
