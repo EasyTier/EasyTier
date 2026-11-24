@@ -511,6 +511,11 @@ impl Default for TomlConfig {
 }
 
 impl TomlConfig {
+    /// The ID supplied by the source, before `get_id` generates a missing ID.
+    pub fn configured_id(&self) -> Option<uuid::Uuid> {
+        self.config.lock().unwrap().instance_id
+    }
+
     fn normalize_config_source(config: &mut Config) {
         if matches!(
             config.source.as_ref().map(|source| source.source),

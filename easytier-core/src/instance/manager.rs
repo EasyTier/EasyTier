@@ -375,6 +375,15 @@ where
         config: TomlConfig,
         control: ConfigFileControl,
     ) -> anyhow::Result<Uuid> {
+        Ok(self.spawn_network_instance(config, control)?.0)
+    }
+
+    /// Returns the startup result to callers that must confirm a replacement is running.
+    pub fn spawn_network_instance(
+        &self,
+        config: TomlConfig,
+        control: ConfigFileControl,
+    ) -> anyhow::Result<(Uuid, tokio::task::JoinHandle<anyhow::Result<()>>)> {
         let runtime = self
             .runtime_handle
             .clone()
@@ -385,8 +394,9 @@ where
         self.config_controls.insert(instance_id, control);
         let notifier = self.notifier.clone();
         let instance_state_changes = self.instance_state_changes.clone();
-        runtime.spawn(async move {
-            if let Err(error) = instance.start().await {
+        let started = runtime.spawn(async move {
+            let result = instance.start().await;
+            if let Err(error) = &result {
                 tracing::error!(
                     error = %format_args!("{error:#}"),
                     %instance_id,
@@ -395,8 +405,9 @@ where
             }
             instance_state_changes.mark_changed();
             notifier.notify_one();
+            result
         });
-        Ok(instance_id)
+        Ok((instance_id, started))
     }
 
     pub async fn delete_network_instances(

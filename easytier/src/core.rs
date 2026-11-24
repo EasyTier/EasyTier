@@ -38,6 +38,9 @@ use std::{
 use strum::VariantArray;
 use tokio::io::AsyncReadExt;
 
+mod remote_config;
+use remote_config::RemoteConfig;
+
 use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
@@ -124,6 +127,14 @@ struct Cli {
         num_args = 1..,
     )]
     config_file: Option<Vec<PathBuf>>,
+
+    #[arg(long, env = "ET_CONFIG_URL", value_parser = remote_config::parse_url,
+          help = t!("core_clap.config_url").to_string())]
+    config_url: Option<url::Url>,
+
+    #[arg(long, env = "ET_CONFIG_REFRESH_INTERVAL", requires = "config_url",
+          value_name = "SECONDS", help = t!("core_clap.config_refresh_interval").to_string())]
+    config_refresh_interval: Option<std::num::NonZeroU32>,
 
     #[arg(
         long,
@@ -1328,7 +1339,8 @@ async fn run_with_manager(
         None
     };
 
-    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len());
+    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len())
+        + usize::from(cli.config_url.is_some());
     let mut config_dir_file_count = 0;
     let mut config_files = if let Some(v) = cli.config_file {
         v.iter()
@@ -1363,7 +1375,8 @@ async fn run_with_manager(
     let mut crate_cli_network = {
         if cli.daemon {
             false
-        } else if config_file_count == 0 && cli.config_server.is_none() {
+        } else if config_file_count == 0 && cli.config_server.is_none() && cli.config_url.is_none()
+        {
             true
         } else {
             cli.network_options.network_name.is_some()
@@ -1405,6 +1418,32 @@ async fn run_with_manager(
         manager.run_network_instance(cfg, control)?;
     }
 
+    let mut remote = None;
+    if let Some(url) = cli.config_url {
+        let source = RemoteConfig::new(url)?;
+        let body = source.fetch().await?;
+        let cfg = remote_config::parse(&body)?;
+        let overrides = cli
+            .network_options
+            .can_merge(
+                &cfg,
+                ConfigFileSource::CliConfigFile,
+                explicit_config_file_count,
+                config_dir_file_count,
+            )
+            .then_some(&cli.network_options);
+        if overrides.is_some() {
+            crate_cli_network = false;
+        }
+        remote_config::prepare(&cfg, overrides)?;
+        let (id, started) =
+            manager.spawn_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
+        started.await??;
+        if let Some(interval) = cli.config_refresh_interval {
+            remote = Some(source.watch(&manager, interval, id, body, overrides));
+        }
+    }
+
     if crate_cli_network {
         let cfg = TomlConfigLoader::default();
         cli.network_options
@@ -1437,6 +1476,12 @@ async fn run_with_manager(
     };
 
     tokio::select! {
+        result = async {
+            match remote {
+                Some(watch) => watch.await,
+                None => std::future::pending().await,
+            }
+        } => return result,
         _ = manager.wait() => {
             let infos = manager.collect_network_infos().await?;
             let mut errors = String::new();
@@ -1590,13 +1635,14 @@ pub async fn main() -> ExitCode {
 }
 
 async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
-    // Check if a config file is provided
-    let config_files = cli
-        .config_file
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--config-file is required when using --check-config"))?;
+    if let Some(url) = cli.config_url.clone() {
+        let body = RemoteConfig::new(url)?.fetch().await?;
+        remote_config::parse(&body)?;
+    } else if cli.config_file.is_none() {
+        anyhow::bail!("--config-file or --config-url is required when using --check-config");
+    }
 
-    for config_file in config_files {
+    for config_file in cli.config_file.iter().flatten() {
         if config_file == &PathBuf::from("-") {
             let mut stdin = String::new();
             _ = tokio::io::stdin()

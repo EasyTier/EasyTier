@@ -191,6 +191,16 @@ sudo easytier-core -i 10.144.144.3 -p udp://ANY_EXISTING_NODE_PUBLIC_IP:11010
 
 ### 🔍 Advanced Features
 
+#### Load a configuration from a URL
+
+```bash
+easytier-core --config-url https://config.example.org/node.toml --config-refresh-interval 300
+```
+
+Omit the interval to fetch only at startup. Use `--check-config` to check the remote TOML without starting a network. The URL must serve a UTF-8 TOML file (up to 1 MiB); use HTTPS for configurations containing secrets.
+
+When the content changes, EasyTier restarts only that instance, keeping its ID. A failed download or invalid configuration leaves it running. If the replacement fails to start, EasyTier attempts to restore the previous instance.
+
 #### Subnet Proxy
 
 Assuming the network topology is as follows, Node B wants to share its accessible subnet 10.1.1.0/24 with other nodes:
