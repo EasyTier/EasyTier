@@ -4,7 +4,6 @@ use axum::extract::{DefaultBodyLimit, Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{delete, post, put};
 use axum::{Extension, Json, Router, extract::State, routing::get};
-use axum_login::AuthUser;
 use easytier::common::config::{
     ConfigSource as RuntimeConfigSource, NetworkConfig, config_source_from_rpc,
 };
@@ -248,10 +247,6 @@ impl NetworkApi {
         )
     }
 
-    fn get_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, (StatusCode, Json<Error>)> {
-        super::authed_user_id(auth_session)
-    }
-
     async fn handle_validate_config(
         auth_session: AuthSession,
         State(client_mgr): AppState,
@@ -260,7 +255,7 @@ impl NetworkApi {
     ) -> Result<Json<ValidateConfigResponse>, HttpHandleError> {
         Ok(client_mgr
             .handle_validate_config(
-                (Self::get_user_id(&auth_session)?, machine_id),
+                (super::authed_user_id(&auth_session).await?, machine_id),
                 payload.config,
             )
             .await
@@ -275,7 +270,7 @@ impl NetworkApi {
         Path(machine_id): Path<uuid::Uuid>,
         Json(mut payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
-        let user_id = Self::get_user_id(&auth_session)?;
+        let user_id = super::authed_user_id(&auth_session).await?;
         let instance_id = match payload.config.instance_id.as_deref() {
             Some(raw) => uuid::Uuid::parse_str(raw).map_err(|error| {
                 (
@@ -320,7 +315,7 @@ impl NetworkApi {
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
         Ok(client_mgr
             .handle_collect_network_info(
-                (Self::get_user_id(&auth_session)?, machine_id),
+                (super::authed_user_id(&auth_session).await?, machine_id),
                 Some(vec![inst_id]),
             )
             .await
@@ -336,7 +331,7 @@ impl NetworkApi {
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
         Ok(client_mgr
             .handle_collect_network_info(
-                (Self::get_user_id(&auth_session)?, machine_id),
+                (super::authed_user_id(&auth_session).await?, machine_id),
                 payload.inst_ids,
             )
             .await
@@ -350,7 +345,10 @@ impl NetworkApi {
         Path(machine_id): Path<uuid::Uuid>,
     ) -> Result<Json<ListNetworkInstanceIdsJsonResp>, HttpHandleError> {
         Ok(client_mgr
-            .handle_list_network_instance_ids((Self::get_user_id(&auth_session)?, machine_id))
+            .handle_list_network_instance_ids((
+                super::authed_user_id(&auth_session).await?,
+                machine_id,
+            ))
             .await
             .map_err(convert_error)?
             .into())
@@ -362,7 +360,7 @@ impl NetworkApi {
         Extension(network_service): Extension<Arc<CentralNetworkService>>,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<(), HttpHandleError> {
-        let user_id = Self::get_user_id(&auth_session)?;
+        let user_id = super::authed_user_id(&auth_session).await?;
         let _mutation = network_service.lock_mutations().await;
         ensure_direct_mutation_allowed(&network_service, user_id, machine_id, inst_id, None)
             .await?;
@@ -387,7 +385,7 @@ impl NetworkApi {
     ) -> Result<StatusCode, HttpHandleError> {
         let deleted = network_service
             .delete_device(
-                Self::get_user_id(&auth_session)?,
+                super::authed_user_id(&auth_session).await?,
                 machine_id,
                 params.block.unwrap_or(false),
             )
@@ -420,7 +418,10 @@ impl NetworkApi {
         }
         let updated = network_service
             .db
-            .set_device_alias((Self::get_user_id(&auth_session)?, machine_id), alias)
+            .set_device_alias(
+                (super::authed_user_id(&auth_session).await?, machine_id),
+                alias,
+            )
             .await
             .map_err(convert_db_error)?;
         if !updated {
@@ -438,7 +439,7 @@ impl NetworkApi {
     ) -> Result<Json<ListBlockedDevicesJsonResp>, HttpHandleError> {
         let blocked = network_service
             .db
-            .list_blocked_devices(Self::get_user_id(&auth_session)?)
+            .list_blocked_devices(super::authed_user_id(&auth_session).await?)
             .await
             .map_err(convert_db_error)?
             .into_iter()
@@ -454,7 +455,7 @@ impl NetworkApi {
     ) -> Result<StatusCode, HttpHandleError> {
         network_service
             .db
-            .unblock_device((Self::get_user_id(&auth_session)?, machine_id))
+            .unblock_device((super::authed_user_id(&auth_session).await?, machine_id))
             .await
             .map_err(convert_db_error)?;
         Ok(StatusCode::NO_CONTENT)
@@ -466,7 +467,7 @@ impl NetworkApi {
         Extension(config): Extension<super::ConsoleInfoConfig>,
         Extension(network_service): Extension<Arc<CentralNetworkService>>,
     ) -> Result<Json<ListMachineJsonResp>, HttpHandleError> {
-        let user_id = Self::get_user_id(&auth_session)?;
+        let user_id = super::authed_user_id(&auth_session).await?;
         if config.webhook_auth {
             let client_urls = client_mgr.list_machine_by_user_id(user_id).await;
             let mut machines = Vec::with_capacity(client_urls.len());
@@ -572,7 +573,7 @@ impl NetworkApi {
             ));
         };
 
-        let user_id = Self::get_user_id(&auth_session)?;
+        let user_id = super::authed_user_id(&auth_session).await?;
         let _mutation = network_service.lock_mutations().await;
         ensure_direct_mutation_allowed(&network_service, user_id, machine_id, inst_id, None)
             .await?;
@@ -598,7 +599,7 @@ impl NetworkApi {
         Ok(Json(
             client_mgr
                 .handle_get_network_metas(
-                    (Self::get_user_id(&auth_session)?, machine_id),
+                    (super::authed_user_id(&auth_session).await?, machine_id),
                     payload.instance_ids,
                 )
                 .await
@@ -619,7 +620,7 @@ impl NetworkApi {
                 other_error("Instance ID mismatch".to_string()).into(),
             ));
         }
-        let user_id = Self::get_user_id(&auth_session)?;
+        let user_id = super::authed_user_id(&auth_session).await?;
         let _mutation = network_service.lock_mutations().await;
         ensure_direct_mutation_allowed(
             &network_service,
@@ -653,7 +654,10 @@ impl NetworkApi {
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<Json<NetworkConfig>, HttpHandleError> {
         Ok(client_mgr
-            .handle_get_network_config((auth_session.user.unwrap().id(), machine_id), inst_id)
+            .handle_get_network_config(
+                (super::authed_user_id(&auth_session).await?, machine_id),
+                inst_id,
+            )
             .await
             .map_err(convert_error)?
             .into())
@@ -666,7 +670,7 @@ impl NetworkApi {
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Json(payload): Json<PatchVpnPortalClientsJsonReq>,
     ) -> Result<(), HttpHandleError> {
-        let user_id = Self::get_user_id(&auth_session)?;
+        let user_id = super::authed_user_id(&auth_session).await?;
         let _mutation = network_service.lock_mutations().await;
         ensure_direct_mutation_allowed(&network_service, user_id, machine_id, inst_id, None)
             .await?;
@@ -1053,11 +1057,13 @@ mod tests {
         let response = Router::new()
             .route(
                 "/views",
-                get(move |mut auth: AuthSession| async move {
-                    auth.user = Some(super::super::users::User {
+                get(move |auth: AuthSession| async move {
+                    auth.login(&super::super::users::User {
                         db_user,
                         tokens: vec![],
-                    });
+                    })
+                    .await
+                    .unwrap();
                     let config = super::super::ConsoleInfoConfig {
                         config_server_protocol: "tcp".into(),
                         config_server_port: 22020,

@@ -23,13 +23,11 @@ prost.workspace = true
 maxminddb = "0.32"
 
 axum = { workspace = true, features = ["macros"] }
-axum-login = { version = "0.18" }
+axum-login = "0.19"
 password-auth = { version = "1.0.0" }
-axum-messages = "0.8.0"
 axum-embed = { version = "0.1.0", optional = true }
-tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
-# Match axum-login 0.18 and the SQLx session store.
-tower-sessions = { version = "0.14.0", default-features = false, features = [
+tower-sessions-sqlx-store = { version = "0.16.0", features = ["sqlite"] }
+tower-sessions = { version = "0.15", default-features = false, features = [
     "signed",
     "axum-core",
 ] }

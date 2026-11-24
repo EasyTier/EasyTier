@@ -16,7 +16,6 @@ use axum::routing::{delete, post};
 use axum::{Extension, Json, Router, extract::State, routing::get};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthUser, login_required};
-use axum_messages::MessagesManagerLayer;
 use easytier::common::config::{ConfigLoader, NetworkConfig, NetworkConfigExt, TomlConfigLoader};
 use easytier::proto::rpc_types;
 use network::NetworkApi;
@@ -128,9 +127,10 @@ pub fn other_error<T: ToString>(error_message: T) -> Error {
     }
 }
 
-fn authed_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, HttpHandleError> {
+async fn authed_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, HttpHandleError> {
     auth_session
-        .user
+        .user()
+        .await
         .as_ref()
         .map(|user| user.id())
         .ok_or_else(|| {
@@ -186,7 +186,7 @@ impl RestfulServer {
         auth_session: AuthSession,
         State(client_mgr): AppState,
     ) -> Result<Json<ListSessionJsonResp>, HttpHandleError> {
-        let Some(user) = auth_session.user else {
+        let Some(user) = auth_session.user().await else {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
         let ret = client_mgr.list_sessions_by_user_id(user.id()).await;
@@ -199,7 +199,7 @@ impl RestfulServer {
         Extension(config): Extension<ConsoleInfoConfig>,
         Extension(service): Extension<Arc<CentralNetworkService>>,
     ) -> Result<Json<GetSummaryJsonResp>, HttpHandleError> {
-        let Some(user) = auth_session.user else {
+        let Some(user) = auth_session.user().await else {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
@@ -224,7 +224,7 @@ impl RestfulServer {
         auth_session: AuthSession,
         Extension(config): Extension<ConsoleInfoConfig>,
     ) -> Result<Json<GetConsoleInfoJsonResp>, HttpHandleError> {
-        let Some(user) = auth_session.user else {
+        let Some(user) = auth_session.user().await else {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
@@ -375,7 +375,6 @@ impl RestfulServer {
                 config_server_host: self.config_server_host.clone(),
                 webhook_auth: self.webhook_config.has_external_endpoint(),
             }))
-            .layer(MessagesManagerLayer)
             .layer(auth_layer)
             .layer(tower_http::cors::CorsLayer::very_permissive())
             .layer(compression_layer);

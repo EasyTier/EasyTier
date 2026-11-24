@@ -44,7 +44,7 @@ mod tests {
         let manager = SchemaManager::new(&db);
         Migration.up(&manager).await.unwrap();
         let row = db
-            .query_one(Statement::from_string(
+            .query_one_raw(Statement::from_string(
                 db.get_database_backend(),
                 "SELECT virtual_ipv4, allocated_ipv4 FROM network_members".to_owned(),
             ))

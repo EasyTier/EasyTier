@@ -169,7 +169,8 @@ async fn upsert_network_config(
     web_only_update: bool,
 ) -> Result<bool, DbErr> {
     let now = chrono::Local::now().fixed_offset();
-    let mut query = r#"
+    let result = sqlx::query(
+        r#"
         INSERT INTO user_running_network_configs (
             user_id, device_id, network_instance_id, network_config,
             source, disabled, create_time, update_time
@@ -179,23 +180,21 @@ async fn upsert_network_config(
             source = excluded.source,
             disabled = excluded.disabled,
             update_time = excluded.update_time
-    "#
-    .to_string();
-    if web_only_update {
-        query.push_str(" WHERE user_running_network_configs.source = 'web'");
-    }
-    let result = sqlx::query(&query)
-        .bind(user_id)
-        .bind(device_id.to_string())
-        .bind(instance_id.to_string())
-        .bind(network_config)
-        .bind(source.as_str())
-        .bind(false)
-        .bind(now)
-        .bind(now)
-        .execute(&mut **transaction)
-        .await
-        .map_err(sqlx_db_error)?;
+        WHERE NOT ? OR user_running_network_configs.source = 'web'
+    "#,
+    )
+    .bind(user_id)
+    .bind(device_id.to_string())
+    .bind(instance_id.to_string())
+    .bind(network_config)
+    .bind(source.as_str())
+    .bind(false)
+    .bind(now)
+    .bind(now)
+    .bind(web_only_update)
+    .execute(&mut **transaction)
+    .await
+    .map_err(sqlx_db_error)?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -387,7 +386,7 @@ impl Db {
 
         mcr::Entity::insert(insert_m)
             .on_conflict(on_conflict)
-            .do_nothing()
+            .try_insert()
             .exec(self.orm_db())
             .await?;
         Ok(())

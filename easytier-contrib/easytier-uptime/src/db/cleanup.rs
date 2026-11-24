@@ -197,14 +197,7 @@ impl CleanupManager {
         let mut analyze_performed = false;
 
         // 执行 ANALYZE
-        match db
-            .orm_db()
-            .execute(Statement::from_string(
-                DatabaseBackend::Sqlite,
-                "ANALYZE".to_string(),
-            ))
-            .await
-        {
+        match db.orm_db().execute_unprepared("ANALYZE").await {
             Ok(_) => {
                 analyze_performed = true;
                 info!("Database ANALYZE completed");
@@ -216,14 +209,7 @@ impl CleanupManager {
 
         // 执行 VACUUM（仅在需要时）
         if vacuum_performed || analyze_performed {
-            match db
-                .orm_db()
-                .execute(Statement::from_string(
-                    DatabaseBackend::Sqlite,
-                    "VACUUM".to_string(),
-                ))
-                .await
-            {
+            match db.orm_db().execute_unprepared("VACUUM").await {
                 Ok(_) => {
                     vacuum_performed = true;
                     info!("Database VACUUM completed");
