@@ -1305,6 +1305,21 @@ mod tests {
                 Message::from_vec(&buffer[..length]).unwrap()
             }
 
+            async fn next_new_query(
+                upstream: &UdpSocket,
+                seen: &mut std::collections::HashSet<Query>,
+            ) -> (Message, std::net::SocketAddr) {
+                let mut buffer = [0; 4096];
+                loop {
+                    let (length, source) = upstream.recv_from(&mut buffer).await.unwrap();
+                    let message = Message::from_vec(&buffer[..length]).unwrap();
+                    // Hickory may retransmit unanswered UDP queries while the test fills the queue.
+                    if seen.insert(message.queries[0].clone()) {
+                        return (message, source);
+                    }
+                }
+            }
+
             let tun_ip = "100.100.100.1/24".parse().unwrap();
             let (_ctx, core, _nic) = prepare_env("slow-forwarding", tun_ip).await;
             let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -1327,16 +1342,17 @@ mod tests {
             .await
             .unwrap();
 
-            let mut buffer = [0; 4096];
+            let mut seen = std::collections::HashSet::new();
             let mut pending = Vec::new();
             for index in 0..128 {
-                let socket = send_query(&format!("slow{index}.example.org."), RecordType::A).await;
+                let name = format!("slow{index}.example.org.");
+                let socket = send_query(&name, RecordType::A).await;
                 let mut reply = [0; 4096];
                 let forwarded = tokio::time::timeout(Duration::from_secs(1), async {
                     tokio::select! {
-                        result = upstream.recv_from(&mut buffer) => {
-                            let (length, source) = result.unwrap();
-                            Some((Message::from_vec(&buffer[..length]).unwrap(), source))
+                        result = next_new_query(&upstream, &mut seen) => {
+                            assert_eq!(result.0.queries, query_message(&name, RecordType::A).queries);
+                            Some(result)
                         }
                         result = socket.recv(&mut reply) => {
                             let length = result.unwrap();
@@ -1389,9 +1405,12 @@ mod tests {
             .await
             .unwrap();
             assert!(
-                tokio::time::timeout(Duration::from_millis(20), upstream.recv_from(&mut buffer),)
-                    .await
-                    .is_err()
+                tokio::time::timeout(
+                    Duration::from_millis(20),
+                    next_new_query(&upstream, &mut seen)
+                )
+                .await
+                .is_err()
             );
 
             forwarded.metadata.message_type = MessageType::Response;
@@ -1424,7 +1443,7 @@ mod tests {
                 .await
                 .unwrap();
             assert!(
-                tokio::time::timeout(Duration::from_millis(50), cancelled.recv(&mut buffer))
+                tokio::time::timeout(Duration::from_millis(50), cancelled.recv(&mut [0; 4096]))
                     .await
                     .is_err()
             );
