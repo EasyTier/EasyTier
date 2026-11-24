@@ -359,7 +359,6 @@ struct AclSetArgs {
     /// The TOML uses the same shape as the `[acl]` section of an easytier
     /// configuration file, for example:
     ///
-    /// ```toml
     /// [acl.acl_v1]
     /// [[acl.acl_v1.chains]]
     /// name = "Inbound"
@@ -369,12 +368,14 @@ struct AclSetArgs {
     /// [[acl.acl_v1.chains.rules]]
     /// protocol = 3
     /// action = 1
-    /// ```
     ///
     /// Using `@/path/to/acl.toml` makes it easy to manage and debug the full
     /// ACL offline. The whole ACL is replaced at runtime without restarting
     /// easytier-core.
-    #[arg(help = "full ACL TOML string or '@path/to/acl.toml'")]
+    #[arg(
+        verbatim_doc_comment,
+        help = "full ACL TOML string or '@path/to/acl.toml'"
+    )]
     acl: String,
 }
 
