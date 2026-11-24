@@ -3979,7 +3979,7 @@ async fn main() -> Result<(), Error> {
                 }
             })
             .await
-            .unwrap();
+            .context("STUN probe timed out after 25 seconds")?;
         }
         SubCommand::PeerCenter => {
             handler.handle_peer_center().await?;
