@@ -778,6 +778,20 @@ mod tests {
     use super::*;
     use easytier::proto::api::instance::PeerConnInfo;
 
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn mapped_listener_accepts_wss_with_default_port() {
+        let url = CommandHandler::mapped_listener_validate_url("wss://example.com/path").unwrap();
+        assert_eq!(url.port_or_known_default(), Some(443));
+        assert_eq!(url.path(), "/path");
+    }
+
+    #[test]
+    fn mapped_listener_rejects_invalid_urls() {
+        assert!(CommandHandler::mapped_listener_validate_url("not a URL").is_err());
+        assert!(CommandHandler::mapped_listener_validate_url("ring://peer-id").is_err());
+    }
+
     #[test]
     fn dns_commands_parse_and_files_preserve_clear_semantics() {
         let cli = Cli::try_parse_from([
@@ -2725,13 +2739,7 @@ impl<'a> CommandHandler<'a> {
 
     fn mapped_listener_validate_url(url: &str) -> Result<url::Url, Error> {
         let url = url::Url::parse(url)?;
-        if url.scheme() != "tcp" && url.scheme() != "udp" {
-            return Err(anyhow::anyhow!(
-                "Url ({url}) must start with tcp:// or udp://"
-            ));
-        } else if url.port().is_none() {
-            return Err(anyhow::anyhow!("Url ({url}) is missing port num"));
-        }
+        easytier::common::config::mapped_listener_policy().validate(&url)?;
         Ok(url)
     }
 
