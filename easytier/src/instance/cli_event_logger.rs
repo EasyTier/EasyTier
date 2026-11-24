@@ -142,7 +142,7 @@ fn log_event(instance_id: Uuid, event: GlobalCtxEvent) {
         }
         GlobalCtxEvent::Connecting(dst) => {
             event!(
-                info,
+                debug,
                 category: "CONNECTION",
                 %dst,
                 "[{}] connecting to peer",
@@ -151,7 +151,7 @@ fn log_event(instance_id: Uuid, event: GlobalCtxEvent) {
         }
         GlobalCtxEvent::ConnectError(dst, ip_version, error) => {
             event!(
-                info,
+                debug,
                 category: "CONNECTION",
                 dst,
                 ip_version,
