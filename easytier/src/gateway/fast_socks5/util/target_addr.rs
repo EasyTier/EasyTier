@@ -1,6 +1,6 @@
-use crate::gateway::fast_socks5::SocksError;
 use crate::gateway::fast_socks5::consts;
 use crate::gateway::fast_socks5::consts::SOCKS5_ADDR_TYPE_IPV4;
+use crate::gateway::fast_socks5::{ReplyError, SocksError};
 use crate::read_exact;
 
 use anyhow::Context;
@@ -51,6 +51,13 @@ pub enum TargetAddr {
 
 impl TargetAddr {
     pub async fn resolve_dns(self) -> anyhow::Result<TargetAddr> {
+        Ok(self.resolve_with_ipv6(true).await?)
+    }
+
+    pub(crate) async fn resolve_with_ipv6(
+        self,
+        enable_ipv6: bool,
+    ) -> Result<TargetAddr, SocksError> {
         match self {
             TargetAddr::Ip(ip) => Ok(TargetAddr::Ip(ip)),
             TargetAddr::Domain(domain, port) => {
@@ -59,10 +66,8 @@ impl TargetAddr {
                 let socket_addr = lookup_host((&domain[..], port))
                     .await
                     .context(AddrError::DNSResolutionFailed)?
-                    .next()
-                    .ok_or(AddrError::Custom(
-                        "Can't fetch DNS to the domain.".to_string(),
-                    ))?;
+                    .find(|addr| enable_ipv6 || addr.is_ipv4())
+                    .ok_or(ReplyError::HostUnreachable)?;
                 debug!("domain name resolved to {}", socket_addr);
 
                 // has been converted to an ip

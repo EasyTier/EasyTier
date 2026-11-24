@@ -30,6 +30,7 @@ pub struct Config<A: Authentication = DenyAuthentication> {
     skip_auth: bool,
     /// Enable dns-resolving
     dns_resolve: bool,
+    pub(crate) enable_ipv6: bool,
     /// Enable command execution
     execute_command: bool,
     /// Enable UDP support
@@ -47,6 +48,7 @@ impl<A: Authentication> Default for Config<A> {
             request_timeout: 10,
             skip_auth: false,
             dns_resolve: true,
+            enable_ipv6: true,
             execute_command: true,
             allow_udp: false,
             allow_no_auth: false,
@@ -148,6 +150,7 @@ impl<A: Authentication> Config<A> {
             request_timeout: self.request_timeout,
             skip_auth: self.skip_auth,
             dns_resolve: self.dns_resolve,
+            enable_ipv6: self.enable_ipv6,
             execute_command: self.execute_command,
             allow_udp: self.allow_udp,
             allow_no_auth: self.allow_no_auth,
@@ -569,7 +572,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
         if let Some(target_addr) = self.target_addr.take() {
             // decide whether we have to resolve DNS or not
             self.target_addr = match target_addr {
-                TargetAddr::Domain(_, _) => Some(target_addr.resolve_dns().await?),
+                TargetAddr::Domain(_, _) => Some(
+                    target_addr
+                        .resolve_with_ipv6(self.config.enable_ipv6)
+                        .await?,
+                ),
                 TargetAddr::Ip(_) => Some(target_addr),
             };
         }
@@ -607,6 +614,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
             .to_socket_addrs()?
             .next()
             .context("unreachable")?;
+
+        if addr.is_ipv6() && !self.config.enable_ipv6 {
+            return Err(ReplyError::AddressTypeNotSupported.into());
+        }
 
         // TCP connect with timeout, to avoid memory leak for connection that takes forever
         let outbound = self
@@ -839,4 +850,37 @@ fn new_reply(error: &ReplyError, sock_addr: SocketAddr) -> Vec<u8> {
     reply.append(&mut port);
 
     reply
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ipv4_only_connect_rejects_ipv6() {
+        let config = Config::<AcceptAuthentication> {
+            enable_ipv6: false,
+            ..Default::default()
+        };
+        let (stream, _) = tokio::io::duplex(64);
+        let mut socket = Socks5Socket::new(stream, Arc::new(config), DefaultTcpConnector {});
+        socket.target_addr = Some(TargetAddr::Ip("[::1]:0".parse().unwrap()));
+        assert!(matches!(
+            socket.execute_command_connect().await,
+            Err(SocksError::ReplyError(ReplyError::AddressTypeNotSupported))
+        ));
+    }
+
+    #[tokio::test]
+    async fn domain_resolution_respects_ipv6_setting() {
+        let target = TargetAddr::Domain("::1".into(), 443);
+        assert!(matches!(
+            target.clone().resolve_with_ipv6(false).await,
+            Err(SocksError::ReplyError(ReplyError::HostUnreachable))
+        ));
+        assert_eq!(
+            target.resolve_with_ipv6(true).await.unwrap(),
+            TargetAddr::Ip("[::1]:443".parse().unwrap())
+        );
+    }
 }

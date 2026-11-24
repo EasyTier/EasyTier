@@ -417,8 +417,13 @@ impl Socks5ServerNet {
         }
     }
 
-    async fn handle_tcp_stream_task(stream: tokio::net::TcpStream, connector: Socks5AutoConnector) {
+    async fn handle_tcp_stream_task(
+        stream: tokio::net::TcpStream,
+        connector: Socks5AutoConnector,
+        enable_ipv6: bool,
+    ) {
         let mut config = Config::<AcceptAuthentication>::default();
+        config.enable_ipv6 = enable_ipv6;
         config.set_request_timeout(10);
         config.set_skip_auth(false);
         config.set_allow_no_auth(true);
@@ -433,13 +438,6 @@ impl Socks5ServerNet {
                 tracing::error!("socks5 handshake failed: {:?}", e);
             }
         };
-    }
-
-    fn handle_tcp_stream(&self, stream: tokio::net::TcpStream, connector: Socks5AutoConnector) {
-        self.forward_tasks
-            .lock()
-            .unwrap()
-            .spawn(Self::handle_tcp_stream_task(stream, connector));
     }
 }
 
@@ -674,6 +672,7 @@ impl Socks5Server {
             let entry_count = self.entry_count.clone();
             let peer_manager = self.peer_manager.clone();
             let net = self.net.clone();
+            let enable_ipv6 = self.global_ctx.get_flags().enable_ipv6;
             self.tasks.lock().unwrap().spawn(async move {
                 loop {
                     match listener.accept().await {
@@ -693,12 +692,15 @@ impl Socks5Server {
                                 inner_connector: parking_lot::Mutex::new(None),
                                 entry_count: entry_count.clone(),
                             };
+                            let session = Socks5ServerNet::handle_tcp_stream_task(
+                                socket,
+                                connector,
+                                enable_ipv6,
+                            );
                             if let Some(net) = net.lock().await.as_ref() {
-                                net.handle_tcp_stream(socket, connector);
+                                net.forward_tasks.lock().unwrap().spawn(session);
                             } else {
-                                tokio::spawn(Socks5ServerNet::handle_tcp_stream_task(
-                                    socket, connector,
-                                ));
+                                tokio::spawn(session);
                             }
                         }
                         Err(err) => tracing::error!("accept error = {:?}", err),
