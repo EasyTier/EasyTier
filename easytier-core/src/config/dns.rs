@@ -178,6 +178,12 @@ fn parse_value(kind: RecordType, value: &str, origin: &Name) -> anyhow::Result<R
     if kind == RecordType::TXT {
         return Ok(RData::TXT(TXT::new(tokens)));
     }
+    // Hickory 0.26 expects the CERT payload as a single base64 token.
+    if kind == RecordType::CERT && tokens.len() > 4 {
+        let payload = tokens[3..].concat();
+        tokens.truncate(3);
+        tokens.push(payload);
+    }
     // Hickory's public text parser does not expose the remaining tokens or accept a zone origin.
     let fields = match kind {
         RecordType::A
@@ -484,6 +490,18 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn cert_joins_all_base64_fragments() {
+        let origin = Name::root();
+        for value in ["1 123 3 Q2VydA==", "1 123 3 ( Q2Vy\n dA== )"] {
+            let RData::CERT(cert) = parse_value(RecordType::CERT, value, &origin).unwrap() else {
+                panic!("expected CERT")
+            };
+            assert_eq!(cert.cert_data, b"Cert");
+        }
+        assert!(parse_value(RecordType::CERT, "1 123 3 Q2Vy !", &origin).is_err());
     }
 
     #[test]
