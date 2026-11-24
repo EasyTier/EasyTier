@@ -1398,12 +1398,39 @@ impl NicCtx {
         let mut event_receiver = global_ctx.subscribe();
 
         let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
+        #[cfg(windows)]
+        let relay_routes =
+            match crate::arch::windows::find_interface_index(&self.tun_ifname().await?) {
+                Ok(index) => Some(crate::common::ifcfg::relay_routes::RelayRoutes::new(index)),
+                Err(error) => {
+                    tracing::warn!(%error, "relay route protection unavailable");
+                    None
+                }
+            };
+        #[cfg(windows)]
+        let mut destinations = packet_plane.manual_ipv4_destinations();
+        #[cfg(windows)]
+        fn protect(
+            guard: Option<&crate::common::ifcfg::relay_routes::RelayRoutes>,
+            prefixes: &BTreeSet<cidr::Ipv4Cidr>,
+            destinations: &Option<easytier_core::connectivity::manual::ManualIpv4Destinations>,
+        ) {
+            if let Some(guard) = guard {
+                let ips = destinations
+                    .as_ref()
+                    .map(|d| d.borrow().values().copied().collect())
+                    .unwrap_or_default();
+                guard.update(prefixes, ips);
+            }
+        }
 
         // Initial sync: get current proxy_cidrs state and apply routes
         let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await else {
             tracing::error!("proxy CIDR monitor host is unavailable");
             return Ok(());
         };
+        #[cfg(windows)]
+        protect(relay_routes.as_ref(), &diff.current, &destinations);
         if let Err(err) =
             Self::apply_route_changes(&backend, &mut cur_proxy_cidrs, diff.added, diff.removed)
                 .await
@@ -1413,8 +1440,30 @@ impl NicCtx {
         }
 
         self.tasks.spawn(async move {
+            #[cfg(windows)]
+            let mut refresh = tokio::time::interval(std::time::Duration::from_secs(15));
             loop {
-                let should_sync = match event_receiver.recv().await {
+                #[cfg(windows)]
+                let event = tokio::select! {
+                    event = event_receiver.recv() => event,
+                    _ = refresh.tick() => {
+                        protect(relay_routes.as_ref(), &cur_proxy_cidrs, &destinations);
+                        continue;
+                    }
+                    changed = async {
+                        match destinations.as_mut() {
+                            Some(rx) => rx.changed().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        if changed.is_err() { destinations = None; }
+                        protect(relay_routes.as_ref(), &cur_proxy_cidrs, &destinations);
+                        continue;
+                    }
+                };
+                #[cfg(not(windows))]
+                let event = event_receiver.recv().await;
+                let should_sync = match event {
                     Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => true,
                     Ok(_) => false,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -1439,6 +1488,12 @@ impl NicCtx {
                     return;
                 };
 
+                #[cfg(windows)]
+                protect(
+                    relay_routes.as_ref(),
+                    &cur_proxy_cidrs.union(&diff.current).copied().collect(),
+                    &destinations,
+                );
                 if let Err(err) = Self::apply_route_changes(
                     &backend,
                     &mut cur_proxy_cidrs,
@@ -1449,6 +1504,8 @@ impl NicCtx {
                 {
                     tracing::error!(?err, "failed to update proxy CIDR routes");
                 }
+                #[cfg(windows)]
+                protect(relay_routes.as_ref(), &cur_proxy_cidrs, &destinations);
             }
         });
 
