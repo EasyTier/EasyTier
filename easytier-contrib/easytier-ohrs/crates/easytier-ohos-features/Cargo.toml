@@ -13,7 +13,7 @@ flate2 = "1.1"
 gethostname.workspace = true
 once_cell.workspace = true
 prost-reflect = { version = "0.14.5", default-features = false, features = ["derive"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true

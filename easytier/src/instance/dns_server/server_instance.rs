@@ -43,14 +43,15 @@ use easytier_core::gateway::magic_dns::{
     MagicDnsRecordStore, MagicDnsResolverRegistration, MagicDnsRoute,
 };
 use easytier_core::instance::CorePacketPlane;
-use hickory_proto::op::{Edns, Header, MessageType, OpCode, ResponseCode};
+use hickory_proto::op::{Edns, MessageType, Metadata, OpCode, ResponseCode};
 use hickory_proto::rr::LowerName;
-use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
-use hickory_server::authority::{
-    MessageRequest, MessageResponse, MessageResponseBuilder, ZoneType,
-};
+use hickory_proto::serialize::binary::BinEncoder;
+use hickory_server::net::{NetError, runtime::TokioTime, xfer::Protocol};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
-use hickory_server::store::in_memory::InMemoryAuthority;
+use hickory_server::store::in_memory::InMemoryZoneHandler;
+use hickory_server::zone_handler::{
+    AxfrPolicy, MessageRequest, MessageResponse, MessageResponseBuilder, ZoneType,
+};
 use std::sync::Mutex;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -360,35 +361,35 @@ impl ResponseHandler for ResponseWrapper {
             impl RecordIter<'a>,
             impl RecordIter<'a>,
         >,
-    ) -> io::Result<ResponseInfo> {
+    ) -> Result<ResponseInfo, NetError> {
         let mut buffer = self
             .response
             .lock()
             .map_err(|_| io::Error::other("lock poisoned"))?;
 
+        buffer.clear();
         let mut encoder = BinEncoder::new(&mut buffer);
 
         // `max_size` should be u16::MAX for protocol other than UDP.
-        let max_size = if let Some(edns) = response.get_edns() {
+        let max_size = if let Some(edns) = response.edns() {
             edns.max_payload()
         } else {
-            hickory_proto::udp::MAX_RECEIVE_BUFFER_SIZE as u16
+            hickory_resolver::net::udp::MAX_RECEIVE_BUFFER_SIZE as u16
         };
 
         encoder.set_max_size(max_size);
         response
             .destructive_emit(&mut encoder)
-            .map_err(io::Error::other)
+            .map_err(NetError::from)
     }
 }
 
 #[async_trait::async_trait]
 impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
     async fn resolve(&self, query: MagicDnsQuery) -> MagicDnsQueryResult {
-        let Ok(message) = MessageRequest::from_bytes(&query.payload) else {
+        let Ok(request) = Request::from_bytes(query.payload, query.source, Protocol::Udp) else {
             return MagicDnsQueryResult::Response(None);
         };
-        let request = Request::new(message, query.source, hickory_proto::xfer::Protocol::Udp);
         let mut selected = self.dns_server.select_authority(&request).await;
         if selected.forwarding
             && let Some(name) = self.local_reverse_query(&request)
@@ -396,7 +397,8 @@ impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
             // Keep configured authorities ahead of this fallback. The SOA at
             // the queried name makes the negative answer specific to PTR.
             let soa = default_soa(&name).expect("IPv4 reverse name fits the SOA names");
-            let mut authority = InMemoryAuthority::empty((&name).into(), ZoneType::Primary, false);
+            let mut authority: InMemoryZoneHandler =
+                InMemoryZoneHandler::empty((&name).into(), ZoneType::Primary, AxfrPolicy::Deny);
             authority.upsert_mut(soa, 0);
             selected.catalog.upsert(name, vec![Arc::new(authority)]);
             selected.forwarding = false;
@@ -412,7 +414,7 @@ impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
             let response = Arc::new(Mutex::new(Vec::with_capacity(512)));
             selected
                 .catalog
-                .handle_request(
+                .handle_request::<_, TokioTime>(
                     &request,
                     ResponseWrapper {
                         response: response.clone(),
@@ -436,14 +438,17 @@ impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
     }
 
     fn overload_response(&self, query: &MagicDnsQuery) -> Option<Vec<u8>> {
-        let message = MessageRequest::from_bytes(&query.payload).ok()?;
+        let message =
+            Request::from_bytes(query.payload.clone(), query.source, Protocol::Udp).ok()?;
         servfail_response(&message)
     }
 }
 
 impl MagicDnsServerInstanceData {
     fn local_reverse_query(&self, request: &Request) -> Option<LowerName> {
-        if request.message_type() != MessageType::Query || request.op_code() != OpCode::Query {
+        if request.metadata.message_type != MessageType::Query
+            || request.metadata.op_code != OpCode::Query
+        {
             return None;
         }
         let info = request.request_info().ok()?;
@@ -463,18 +468,18 @@ impl MagicDnsServerInstanceData {
 }
 
 fn servfail_response(request: &MessageRequest) -> Option<Vec<u8>> {
-    let mut header = Header::response_from_request(request.header());
-    header.set_response_code(ResponseCode::ServFail);
+    let mut header = Metadata::response_from_request(&request.metadata);
+    header.response_code = ResponseCode::ServFail;
     let mut response = MessageResponseBuilder::from_message_request(request);
-    if let Some(request_edns) = request.edns() {
-        let mut edns = Edns::new();
+    let mut edns = Edns::new();
+    if let Some(request_edns) = request.edns.as_ref() {
         edns.set_dnssec_ok(true);
         edns.set_max_payload(request_edns.max_payload().max(512));
         if request_edns.version() > 0 {
-            header.set_response_code(ResponseCode::BADVERS);
+            header.response_code = ResponseCode::BADVERS;
             edns.set_rcode_high(ResponseCode::BADVERS.high());
         }
-        response.edns(edns);
+        response.edns(&edns);
     }
     let mut bytes = Vec::with_capacity(512);
     response
@@ -1068,8 +1073,8 @@ mod tests {
     }
 
     fn query_message(name: &str, record_type: RecordType) -> Message {
-        let mut request = Message::new();
-        request.set_recursion_desired(true);
+        let mut request = Message::query();
+        request.metadata.recursion_desired = true;
         request.add_query(Query::query(
             hickory_proto::rr::Name::from_labels(
                 name.trim_end_matches('.').split('.').map(str::as_bytes),
@@ -1099,10 +1104,10 @@ mod tests {
             };
             for edns in [None, Some((0, 128)), Some((0, 1232)), Some((1, 1232))] {
                 let mut request = query_message(name, kind);
-                request.set_id(42);
+                request.metadata.id = 42;
                 if let Some((version, payload)) = edns {
                     request
-                        .extensions_mut()
+                        .edns
                         .get_or_insert_with(Edns::new)
                         .set_version(version)
                         .set_max_payload(payload);
@@ -1126,30 +1131,35 @@ mod tests {
                         assert_eq!(data.overload_response(&query).unwrap(), overload_response);
                         if code == ResponseCode::BADVERS {
                             let answer = Message::from_vec(&response.await.unwrap()).unwrap();
-                            assert_eq!(u16::from(answer.response_code()), u16::from(code));
+                            assert_eq!(u16::from(answer.response_code), u16::from(code));
                         }
                         overload_response
                     }
                     _ => panic!("incorrect authority selection for {name}"),
                 };
                 let answer = Message::from_vec(&bytes).unwrap();
-                assert_eq!(answer.id(), request.id());
-                assert_eq!(answer.queries(), request.queries());
-                assert_eq!(u16::from(answer.response_code()), u16::from(code));
-                assert_eq!(
-                    answer.authoritative(),
-                    local && code != ResponseCode::BADVERS
-                );
-                assert!(answer.answers().is_empty());
+                assert_eq!(answer.id, request.id);
+                assert_eq!(answer.queries, request.queries);
+                assert_eq!(u16::from(answer.response_code), u16::from(code));
+                assert_eq!(answer.authoritative, local && code != ResponseCode::BADVERS);
+                assert!(answer.answers.is_empty());
                 if local && code == ResponseCode::NoError {
-                    let [record] = answer.name_servers() else {
+                    let [record] = answer.authorities.as_slice() else {
                         panic!("expected one SOA in the authority section");
                     };
-                    assert_eq!(record.name(), request.queries()[0].name());
-                    assert!(record.ttl().min(record.data().as_soa().unwrap().minimum()) > 0);
+                    assert_eq!(&record.name, request.queries[0].name());
+                    assert!(
+                        record.ttl.min(
+                            record
+                                .try_borrow::<hickory_proto::rr::rdata::SOA>()
+                                .unwrap()
+                                .data()
+                                .minimum
+                        ) > 0
+                    );
                 }
                 assert_eq!(
-                    answer.extensions().as_ref().map(|edns| (
+                    answer.edns.as_ref().map(|edns| (
                         edns.version(),
                         edns.max_payload(),
                         edns.rcode_high(),
@@ -1173,8 +1183,8 @@ mod tests {
                 .unwrap()])));
 
         let configured = query(&data, "100.126.126.10.in-addr.arpa.", RecordType::PTR).await;
-        assert_eq!(configured.response_code(), ResponseCode::NoError);
-        assert_eq!(configured.answers()[0].data().to_string(), "node.et.net.");
+        assert_eq!(configured.response_code, ResponseCode::NoError);
+        assert_eq!(configured.answers[0].data.to_string(), "node.et.net.");
         // A configured reverse zone also owns its missing records.
         assert!(matches!(
             prepare_query(&data, "101.126.126.10.in-addr.arpa.", RecordType::PTR).await,
@@ -1193,9 +1203,9 @@ mod tests {
                 RecordType::PTR,
             )
             .await;
-            assert_eq!(answer.response_code(), ResponseCode::NoError);
-            assert!(answer.answers().is_empty());
-            assert!(answer.authoritative());
+            assert_eq!(answer.response_code, ResponseCode::NoError);
+            assert!(answer.answers.is_empty());
+            assert!(answer.authoritative);
         }
         for name in [
             "128.126.126.10.in-addr.arpa.",
@@ -1235,7 +1245,7 @@ mod tests {
         assert_eq!(
             query(&data, "200.126.126.10.in-addr.arpa.", RecordType::PTR)
                 .await
-                .response_code(),
+                .response_code,
             ResponseCode::NoError
         );
         data.local_ipv4_addresses.store(Arc::default());
@@ -1248,9 +1258,9 @@ mod tests {
     async fn a(data: &MagicDnsServerInstanceData, name: &str) -> Vec<Ipv4Addr> {
         let mut answers = query(data, name, RecordType::A)
             .await
-            .answers()
+            .answers
             .iter()
-            .filter_map(|record| match record.data() {
+            .filter_map(|record| match &record.data {
                 RData::A(ip) => Some(ip.0),
                 _ => None,
             })
@@ -1295,6 +1305,21 @@ mod tests {
                 Message::from_vec(&buffer[..length]).unwrap()
             }
 
+            async fn next_new_query(
+                upstream: &UdpSocket,
+                seen: &mut std::collections::HashSet<Query>,
+            ) -> (Message, std::net::SocketAddr) {
+                let mut buffer = [0; 4096];
+                loop {
+                    let (length, source) = upstream.recv_from(&mut buffer).await.unwrap();
+                    let message = Message::from_vec(&buffer[..length]).unwrap();
+                    // Hickory may retransmit unanswered UDP queries while the test fills the queue.
+                    if seen.insert(message.queries[0].clone()) {
+                        return (message, source);
+                    }
+                }
+            }
+
             let tun_ip = "100.100.100.1/24".parse().unwrap();
             let (_ctx, core, _nic) = prepare_env("slow-forwarding", tun_ip).await;
             let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -1317,21 +1342,22 @@ mod tests {
             .await
             .unwrap();
 
-            let mut buffer = [0; 4096];
+            let mut seen = std::collections::HashSet::new();
             let mut pending = Vec::new();
             for index in 0..128 {
-                let socket = send_query(&format!("slow{index}.example.org."), RecordType::A).await;
+                let name = format!("slow{index}.example.org.");
+                let socket = send_query(&name, RecordType::A).await;
                 let mut reply = [0; 4096];
                 let forwarded = tokio::time::timeout(Duration::from_secs(1), async {
                     tokio::select! {
-                        result = upstream.recv_from(&mut buffer) => {
-                            let (length, source) = result.unwrap();
-                            Some((Message::from_vec(&buffer[..length]).unwrap(), source))
+                        result = next_new_query(&upstream, &mut seen) => {
+                            assert_eq!(result.0.queries, query_message(&name, RecordType::A).queries);
+                            Some(result)
                         }
                         result = socket.recv(&mut reply) => {
                             let length = result.unwrap();
                             assert_eq!(
-                                Message::from_vec(&reply[..length]).unwrap().response_code(),
+                                Message::from_vec(&reply[..length]).unwrap().response_code,
                                 ResponseCode::ServFail
                             );
                             None
@@ -1360,34 +1386,40 @@ mod tests {
                     .unwrap();
                 let local = send_query("node.et.net.", RecordType::A).await;
                 let response = receive(&local).await;
-                assert_eq!(response.answers().len(), 1);
+                assert_eq!(response.answers.len(), 1);
                 assert_eq!(
-                    response.answers()[0].data().as_a().unwrap().0,
+                    response.answers[0]
+                        .try_borrow::<hickory_proto::rr::rdata::A>()
+                        .unwrap()
+                        .data()
+                        .0,
                     Ipv4Addr::new(10, 0, 0, 8)
                 );
                 let reverse = send_query("42.100.100.100.in-addr.arpa.", RecordType::PTR).await;
                 let response = receive(&reverse).await;
-                assert_eq!(response.response_code(), ResponseCode::NoError);
-                assert!(response.answers().is_empty());
-                assert_eq!(response.name_servers()[0].record_type(), RecordType::SOA);
-                assert!(response.authoritative());
+                assert_eq!(response.response_code, ResponseCode::NoError);
+                assert!(response.answers.is_empty());
+                assert_eq!(response.authorities[0].record_type(), RecordType::SOA);
+                assert!(response.authoritative);
             })
             .await
             .unwrap();
             assert!(
-                tokio::time::timeout(Duration::from_millis(20), upstream.recv_from(&mut buffer),)
-                    .await
-                    .is_err()
+                tokio::time::timeout(
+                    Duration::from_millis(20),
+                    next_new_query(&upstream, &mut seen)
+                )
+                .await
+                .is_err()
             );
 
-            forwarded
-                .set_message_type(MessageType::Response)
-                .set_response_code(ResponseCode::NXDomain);
+            forwarded.metadata.message_type = MessageType::Response;
+            forwarded.metadata.response_code = ResponseCode::NXDomain;
             upstream
                 .send_to(&forwarded.to_vec().unwrap(), source)
                 .await
                 .unwrap();
-            assert_eq!(receive(&slow).await.response_code(), ResponseCode::NXDomain);
+            assert_eq!(receive(&slow).await.response_code, ResponseCode::NXDomain);
 
             // A pending reply from the old resolver cannot cross replacement.
             let (cancelled, mut forwarded, source) = pending.remove(0);
@@ -1404,15 +1436,14 @@ mod tests {
             )
             .await
             .unwrap();
-            forwarded
-                .set_message_type(MessageType::Response)
-                .set_response_code(ResponseCode::NXDomain);
+            forwarded.metadata.message_type = MessageType::Response;
+            forwarded.metadata.response_code = ResponseCode::NXDomain;
             upstream
                 .send_to(&forwarded.to_vec().unwrap(), source)
                 .await
                 .unwrap();
             assert!(
-                tokio::time::timeout(Duration::from_millis(50), cancelled.recv(&mut buffer))
+                tokio::time::timeout(Duration::from_millis(50), cancelled.recv(&mut [0; 4096]))
                     .await
                     .is_err()
             );
@@ -1422,7 +1453,11 @@ mod tests {
                 .unwrap();
             let local = send_query("node.et.net.", RecordType::A).await;
             assert_eq!(
-                receive(&local).await.answers()[0].data().as_a().unwrap().0,
+                receive(&local).await.answers[0]
+                    .try_borrow::<hickory_proto::rr::rdata::A>()
+                    .unwrap()
+                    .data()
+                    .0,
                 Ipv4Addr::new(10, 0, 0, 9)
             );
             server.clean_env().await;
@@ -1530,15 +1565,14 @@ mod tests {
                         .unwrap()
                         .unwrap();
                 let mut response = Message::from_vec(&packet[..length]).unwrap();
-                response
-                    .set_message_type(MessageType::Response)
-                    .set_response_code(ResponseCode::NXDomain);
+                response.metadata.message_type = MessageType::Response;
+                response.metadata.response_code = ResponseCode::NXDomain;
                 upstream
                     .send_to(&response.to_vec().unwrap(), source)
                     .await
                     .unwrap();
                 assert_eq!(
-                    forwarding.await.unwrap().response_code(),
+                    forwarding.await.unwrap().response_code,
                     ResponseCode::NXDomain
                 );
 
@@ -1554,7 +1588,7 @@ mod tests {
                     assert_eq!(
                         query(&data, "svc.new.test.", RecordType::A)
                             .await
-                            .response_code(),
+                            .response_code,
                         ResponseCode::NXDomain
                     );
                     assert_eq!(data.route_store.snapshot().clients.len(), 1);
@@ -1727,6 +1761,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cname_into_child_zone_uses_child_answers_and_additionals() {
+        let dns = config(&[
+            (
+                "et.net.",
+                &[
+                    record("alias", DnsRecordType::Cname, "svc.sub", None),
+                    record("svc.sub", DnsRecordType::Txt, "parent", None),
+                ],
+            ),
+            (
+                "sub.et.net.",
+                &[
+                    record("svc", DnsRecordType::Txt, "child", None),
+                    record("svc", DnsRecordType::Mx, "10 host", None),
+                    record("svc", DnsRecordType::Srv, "0 5 443 host", None),
+                    record("host", DnsRecordType::A, "192.0.2.42", None),
+                ],
+            ),
+        ]);
+        let data = data_with(Some(&dns)).await;
+        for kind in [RecordType::TXT, RecordType::MX, RecordType::SRV] {
+            let direct = query(&data, "svc.sub.et.net.", kind).await;
+            let alias = query(&data, "alias.et.net.", kind).await;
+            assert_eq!(direct.answers.len(), 1);
+            assert_eq!(direct.answers[0].record_type(), kind);
+            assert_eq!(alias.answers[0].record_type(), RecordType::CNAME);
+            assert_eq!(alias.answers[1..], direct.answers);
+            if kind != RecordType::TXT {
+                assert!(
+                    direct
+                        .additionals
+                        .iter()
+                        .any(|r| r.record_type() == RecordType::A)
+                );
+                assert_eq!(alias.additionals, direct.additionals);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn custom_records_survive_route_refresh_and_support_common_types() {
         let dns = config(&[
             (
@@ -1741,6 +1815,8 @@ mod tests {
                     record("node-alias", DnsRecordType::Cname, "node", None),
                     record("nas.sub", DnsRecordType::A, "10.0.0.98", None),
                     record("specific", DnsRecordType::Cname, "nas.sub", None),
+                    record("hidden.sub", DnsRecordType::A, "10.0.0.98", None),
+                    record("shadowed", DnsRecordType::Cname, "hidden.sub", None),
                     record("missing", DnsRecordType::Cname, "absent", None),
                     record("cycle", DnsRecordType::Cname, "cycle.example.test.", None),
                     record("info", DnsRecordType::Txt, "\"local record\"", None),
@@ -1805,14 +1881,14 @@ mod tests {
                     }));
                     let response = query(&data, name, record_type).await;
                     let actual = response
-                        .answers()
+                        .answers
                         .iter()
                         .map(|record| {
                             (
-                                record.name().to_string(),
-                                record.ttl(),
+                                record.name.to_string(),
+                                record.ttl,
                                 record.record_type(),
-                                record.data().to_string(),
+                                record.data.to_string(),
                             )
                         })
                         .collect::<Vec<_>>();
@@ -1833,12 +1909,12 @@ mod tests {
             );
         }
         let cname = query(&data, "chain.et.net.", RecordType::CNAME).await;
-        assert_eq!(cname.answers().len(), 1);
+        assert_eq!(cname.answers.len(), 1);
         assert!(matches!(
-            cname.answers()[0].data(),
+            &cname.answers[0].data,
             RData::CNAME(name) if name.0.to_string() == "alias.et.net."
         ));
-        for name in ["missing.et.net.", "cycle.et.net."] {
+        for name in ["missing.et.net.", "cycle.et.net.", "shadowed.et.net."] {
             assert!(
                 tokio::time::timeout(Duration::from_secs(1), a(&data, name))
                     .await
@@ -1847,21 +1923,15 @@ mod tests {
             );
         }
         assert!(matches!(
-            query(&data, "nas.et.net.", RecordType::AAAA)
-                .await
-                .answers()[0]
-                .data(),
+            query(&data, "nas.et.net.", RecordType::AAAA).await.answers[0].data,
             RData::AAAA(_)
         ));
         assert!(matches!(
-            query(&data, "info.et.net.", RecordType::TXT)
-                .await
-                .answers()[0]
-                .data(),
+            query(&data, "info.et.net.", RecordType::TXT).await.answers[0].data,
             RData::TXT(_)
         ));
         assert_eq!(
-            query(&data, "nas.et.net.", RecordType::A).await.answers()[0].ttl(),
+            query(&data, "nas.et.net.", RecordType::A).await.answers[0].ttl,
             60
         );
         // Disconnecting a client removes its node records, not the server's
@@ -1871,7 +1941,7 @@ mod tests {
         assert!(
             query(&data, "node.et.net.", RecordType::A)
                 .await
-                .answers()
+                .answers
                 .is_empty()
         );
         assert_eq!(
@@ -2264,11 +2334,11 @@ mod tests {
         );
         let response = query(&data, "svc.shared.test.", RecordType::AAAA).await;
         let mut values = response
-            .answers()
+            .answers
             .iter()
             .map(|record| {
-                assert_eq!(record.ttl(), 60);
-                record.data().to_string()
+                assert_eq!(record.ttl, 60);
+                record.data.to_string()
             })
             .collect::<Vec<_>>();
         values.sort();
@@ -2382,14 +2452,14 @@ mod tests {
                 format!("{name}.shared.test.")
             };
             let response = query(&data, &name, kind).await;
-            assert_eq!(response.answers().len(), count, "{name} {kind}");
+            assert_eq!(response.answers.len(), count, "{name} {kind}");
             let values = response
-                .answers()
+                .answers
                 .iter()
                 .map(|record| {
                     assert_eq!(record.record_type(), kind);
-                    assert_eq!(record.ttl(), 60);
-                    record.data().to_string()
+                    assert_eq!(record.ttl, 60);
+                    record.data.to_string()
                 })
                 .collect::<BTreeSet<_>>();
             assert_eq!(values.len(), count, "{name} {kind}");
@@ -2427,8 +2497,8 @@ mod tests {
             data.update_dns_record(controller(54003), contribution(1, config(&[])))
                 .await
                 .unwrap();
-            for answer in query(&data, "node.et.net.", RecordType::A).await.answers() {
-                assert_eq!(answer.ttl(), ttl);
+            for answer in query(&data, "node.et.net.", RecordType::A).await.answers {
+                assert_eq!(answer.ttl, ttl);
             }
             // Clearing the final static contribution keeps automatic values
             // and restores their TTL instead of retaining the static TTL.
@@ -2439,8 +2509,8 @@ mod tests {
                 a(&data, "node.et.net.").await,
                 ["10.0.0.8", "10.0.0.10"].map(|ip| ip.parse::<Ipv4Addr>().unwrap())
             );
-            for answer in query(&data, "node.et.net.", RecordType::A).await.answers() {
-                assert_eq!(answer.ttl(), 1);
+            for answer in query(&data, "node.et.net.", RecordType::A).await.answers {
+                assert_eq!(answer.ttl, 1);
             }
             data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
                 .await;
@@ -2620,8 +2690,8 @@ mod tests {
         assert_eq!(
             query(&data, "svc.shared.test.", RecordType::A)
                 .await
-                .answers()[0]
-                .ttl(),
+                .answers[0]
+                .ttl,
             43
         );
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2677,7 +2747,7 @@ mod tests {
                     .await
                     .unwrap();
                 let response = query(&data, "svc.et.net.", RecordType::A).await;
-                assert_eq!(response.answers()[0].ttl(), ttl);
+                assert_eq!(response.answers[0].ttl, ttl);
                 assert_eq!(
                     a(&data, "svc.et.net.").await,
                     vec![ip.parse::<Ipv4Addr>().unwrap()]
@@ -2689,7 +2759,7 @@ mod tests {
             assert!(
                 query(&data, "svc.et.net.", RecordType::A)
                     .await
-                    .answers()
+                    .answers
                     .is_empty()
             );
             assert!(!forwarding.is_finished());
@@ -2698,15 +2768,14 @@ mod tests {
         .unwrap();
 
         let mut response = Message::from_vec(&packet[..length]).unwrap();
-        response
-            .set_message_type(MessageType::Response)
-            .set_response_code(ResponseCode::NXDomain);
+        response.metadata.message_type = MessageType::Response;
+        response.metadata.response_code = ResponseCode::NXDomain;
         upstream
             .send_to(&response.to_vec().unwrap(), source)
             .await
             .unwrap();
         assert_eq!(
-            forwarding.await.unwrap().response_code(),
+            forwarding.await.unwrap().response_code,
             ResponseCode::NXDomain
         );
     }
@@ -2761,7 +2830,7 @@ mod tests {
         assert_eq!(
             query(&data, "svc.rejected.test.", RecordType::A)
                 .await
-                .response_code(),
+                .response_code,
             ResponseCode::NXDomain
         );
         data.on_client_disconnected(controller(54001).get_tunnel_info().cloned())
@@ -2775,7 +2844,7 @@ mod tests {
         assert_eq!(
             query(&data, "svc.new.test.", RecordType::A)
                 .await
-                .response_code(),
+                .response_code,
             ResponseCode::NXDomain
         );
         data.system_config = Some(Arc::new(SystemConfigSpy(calls.clone())));
@@ -2887,7 +2956,7 @@ mod tests {
         assert!(task.await.unwrap().is_err());
         assert_eq!(parent.unwrap(), ["10.0.0.1".parse::<Ipv4Addr>().unwrap()]);
         assert_eq!(child.unwrap(), ["10.0.0.2".parse::<Ipv4Addr>().unwrap()]);
-        assert_eq!(guarded.unwrap().response_code(), ResponseCode::NXDomain);
+        assert_eq!(guarded.unwrap().response_code, ResponseCode::NXDomain);
         assert_eq!(data.route_store.snapshot().clients, previous);
         assert!(
             !data
@@ -2899,7 +2968,7 @@ mod tests {
         assert_eq!(
             query(&data, "new.outside.test.", RecordType::A)
                 .await
-                .response_code(),
+                .response_code,
             ResponseCode::NXDomain
         );
         let mut packet = [0; 4096];

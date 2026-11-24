@@ -37,10 +37,6 @@ pub(super) fn convert_error(error: CentralNetworkServiceError) -> HttpHandleErro
     )
 }
 
-fn user_id(auth_session: &AuthSession) -> Result<i32, HttpHandleError> {
-    authed_user_id(auth_session)
-}
-
 #[derive(Debug, serde::Deserialize)]
 struct CreateNetworkJsonReq {
     settings: NetworkSettings,
@@ -83,7 +79,7 @@ impl CentralNetworkApi {
         Extension(service): Service,
     ) -> Result<Json<ListNetworksJsonResp>, HttpHandleError> {
         let networks = service
-            .list_networks(user_id(&auth)?)
+            .list_networks(authed_user_id(&auth).await?)
             .await
             .map_err(convert_error)?;
         Ok(Json(ListNetworksJsonResp { networks }))
@@ -95,7 +91,11 @@ impl CentralNetworkApi {
         Json(request): Json<CreateNetworkJsonReq>,
     ) -> Result<Json<NetworkDetail>, HttpHandleError> {
         service
-            .create_network(user_id(&auth)?, request.settings, request.network_secret)
+            .create_network(
+                authed_user_id(&auth).await?,
+                request.settings,
+                request.network_secret,
+            )
             .await
             .map(Json)
             .map_err(convert_error)
@@ -107,7 +107,7 @@ impl CentralNetworkApi {
         Path(network_id): Path<Uuid>,
     ) -> Result<Json<NetworkDetail>, HttpHandleError> {
         service
-            .get_network(user_id(&auth)?, network_id)
+            .get_network(authed_user_id(&auth).await?, network_id)
             .await
             .map(Json)
             .map_err(convert_error)
@@ -120,7 +120,7 @@ impl CentralNetworkApi {
         Json(request): Json<UpdateNetworkReq>,
     ) -> Result<Json<NetworkDetail>, HttpHandleError> {
         service
-            .update_network(user_id(&auth)?, network_id, request)
+            .update_network(authed_user_id(&auth).await?, network_id, request)
             .await
             .map(Json)
             .map_err(convert_error)
@@ -132,7 +132,7 @@ impl CentralNetworkApi {
         Path(network_id): Path<Uuid>,
     ) -> Result<StatusCode, HttpHandleError> {
         service
-            .delete_network(user_id(&auth)?, network_id)
+            .delete_network(authed_user_id(&auth).await?, network_id)
             .await
             .map_err(convert_error)?;
         Ok(StatusCode::NO_CONTENT)
@@ -144,7 +144,7 @@ impl CentralNetworkApi {
         Path(network_id): Path<Uuid>,
     ) -> Result<Json<MembersView>, HttpHandleError> {
         service
-            .list_members(user_id(&auth)?, network_id)
+            .list_members(authed_user_id(&auth).await?, network_id)
             .await
             .map(Json)
             .map_err(convert_error)
@@ -157,7 +157,7 @@ impl CentralNetworkApi {
         Json(request): Json<AddMembersReq>,
     ) -> Result<StatusCode, HttpHandleError> {
         service
-            .add_members(user_id(&auth)?, network_id, request)
+            .add_members(authed_user_id(&auth).await?, network_id, request)
             .await
             .map_err(convert_error)?;
         Ok(StatusCode::NO_CONTENT)
@@ -170,7 +170,7 @@ impl CentralNetworkApi {
         Json(request): Json<UpdateMemberReq>,
     ) -> Result<Json<MemberInfo>, HttpHandleError> {
         service
-            .update_member(user_id(&auth)?, network_id, device_id, request)
+            .update_member(authed_user_id(&auth).await?, network_id, device_id, request)
             .await
             .map(Json)
             .map_err(convert_error)
@@ -182,7 +182,7 @@ impl CentralNetworkApi {
         Path((network_id, device_id)): Path<(Uuid, Uuid)>,
     ) -> Result<StatusCode, HttpHandleError> {
         service
-            .remove_member(user_id(&auth)?, network_id, device_id)
+            .remove_member(authed_user_id(&auth).await?, network_id, device_id)
             .await
             .map_err(convert_error)?;
         Ok(StatusCode::NO_CONTENT)
@@ -194,7 +194,7 @@ impl CentralNetworkApi {
         Path((network_id, device_id)): Path<(Uuid, Uuid)>,
     ) -> Result<Json<easytier::common::config::NetworkConfig>, HttpHandleError> {
         service
-            .get_member_config(user_id(&auth)?, network_id, device_id)
+            .get_member_config(authed_user_id(&auth).await?, network_id, device_id)
             .await
             .map(Json)
             .map_err(convert_error)
@@ -207,7 +207,12 @@ impl CentralNetworkApi {
         Json(request): Json<SetMemberConfigJsonReq>,
     ) -> Result<Json<MemberInfo>, HttpHandleError> {
         service
-            .set_member_config(user_id(&auth)?, network_id, device_id, request.config)
+            .set_member_config(
+                authed_user_id(&auth).await?,
+                network_id,
+                device_id,
+                request.config,
+            )
             .await
             .map(Json)
             .map_err(convert_error)
@@ -219,7 +224,7 @@ impl CentralNetworkApi {
         Path((network_id, device_id)): Path<(Uuid, Uuid)>,
     ) -> Result<StatusCode, HttpHandleError> {
         service
-            .clear_member_config(user_id(&auth)?, network_id, device_id)
+            .clear_member_config(authed_user_id(&auth).await?, network_id, device_id)
             .await
             .map_err(convert_error)?;
         Ok(StatusCode::NO_CONTENT)
@@ -231,7 +236,7 @@ impl CentralNetworkApi {
         Path(network_id): Path<Uuid>,
     ) -> Result<Json<AclPolicyInfo>, HttpHandleError> {
         let policy = service
-            .get_acl_policy(user_id(&auth)?, network_id)
+            .get_acl_policy(authed_user_id(&auth).await?, network_id)
             .await
             .map_err(convert_error)?;
         Ok(Json(AclPolicyInfo { policy }))
@@ -244,7 +249,7 @@ impl CentralNetworkApi {
         Json(policy): Json<AclPolicy>,
     ) -> Result<Json<AclPolicyInfo>, HttpHandleError> {
         let policy = service
-            .update_acl_policy(user_id(&auth)?, network_id, policy)
+            .update_acl_policy(authed_user_id(&auth).await?, network_id, policy)
             .await
             .map_err(convert_error)?;
         Ok(Json(AclPolicyInfo { policy }))
@@ -256,7 +261,7 @@ impl CentralNetworkApi {
         Path(network_id): Path<Uuid>,
     ) -> Result<Json<ListCredentialsJsonResp>, HttpHandleError> {
         let credentials = service
-            .list_credentials(user_id(&auth)?, network_id)
+            .list_credentials(authed_user_id(&auth).await?, network_id)
             .await
             .map_err(convert_error)?;
         Ok(Json(ListCredentialsJsonResp { credentials }))
@@ -269,7 +274,7 @@ impl CentralNetworkApi {
         Json(request): Json<GenerateCredentialReq>,
     ) -> Result<Json<NetworkCredentialInfo>, HttpHandleError> {
         service
-            .generate_credential(user_id(&auth)?, network_id, request)
+            .generate_credential(authed_user_id(&auth).await?, network_id, request)
             .await
             .map(Json)
             .map_err(convert_error)
@@ -281,7 +286,7 @@ impl CentralNetworkApi {
         Path((network_id, credential_id)): Path<(Uuid, String)>,
     ) -> Result<StatusCode, HttpHandleError> {
         service
-            .revoke_credential(user_id(&auth)?, network_id, &credential_id)
+            .revoke_credential(authed_user_id(&auth).await?, network_id, &credential_id)
             .await
             .map_err(convert_error)?;
         Ok(StatusCode::NO_CONTENT)

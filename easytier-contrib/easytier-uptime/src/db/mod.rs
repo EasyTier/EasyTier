@@ -71,11 +71,7 @@ impl Db {
         ];
 
         for pragma in pragmas {
-            db.execute(sea_orm::Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                pragma.to_string(),
-            ))
-            .await?;
+            db.execute_unprepared(pragma).await?;
         }
 
         Ok(())

@@ -29,12 +29,12 @@ sea-orm = { workspace = true, features = [
     "with-json"
 ] }
 sea-orm-migration.workspace = true
-sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls", "chrono", "uuid"] }
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio", "chrono", "uuid"] }
 
 # Validation
 validator = { version = "0.21", features = ["derive"] }
 thiserror.workspace = true
-jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "12.0", features = ["rust_crypto"] }
 
 # Network and async
 async-trait.workspace = true

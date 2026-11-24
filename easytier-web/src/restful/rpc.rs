@@ -351,7 +351,8 @@ pub async fn handle_proxy_rpc(
     Json(mut req): Json<ProxyRpcRequest>,
 ) -> Result<Json<serde_json::Value>, HttpHandleError> {
     let user_id = auth_session
-        .user
+        .user()
+        .await
         .as_ref()
         .ok_or((StatusCode::UNAUTHORIZED, other_error("Unauthorized").into()))?
         .id();

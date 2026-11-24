@@ -446,7 +446,7 @@ mod route {
         Extension(oidc): Extension<OidcConfig>,
         Query(params): Query<CallbackParams>,
         session: tower_sessions::Session,
-        mut auth_session: AuthSession,
+        auth_session: AuthSession,
     ) -> Response {
         if !oidc.enabled {
             return (
@@ -686,7 +686,7 @@ mod route {
         };
 
         let user = match auth_session
-            .backend
+            .backend()
             .find_or_create_oidc_user(&username)
             .await
         {

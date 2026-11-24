@@ -4,8 +4,6 @@ use axum::{
     routing::{get, post, put},
 };
 use axum_login::login_required;
-use axum_messages::Message;
-use serde::{Deserialize, Serialize};
 
 use crate::restful::users::Backend;
 
@@ -17,11 +15,6 @@ use super::{
     AppStateInner,
     users::{AuthSession, Credentials},
 };
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct LoginResult {
-    messages: Vec<Message>,
-}
 
 pub fn router() -> Router<AppStateInner> {
     let r = Router::new()
@@ -41,7 +34,6 @@ pub fn router() -> Router<AppStateInner> {
 
 mod put {
     use axum::Json;
-    use axum_login::AuthUser;
     use easytier::proto::common::Void;
 
     use crate::restful::{HttpHandleError, other_error, users::ChangePassword};
@@ -49,12 +41,12 @@ mod put {
     use super::*;
 
     pub async fn change_password(
-        mut auth_session: AuthSession,
+        auth_session: AuthSession,
         Json(req): Json<ChangePassword>,
     ) -> Result<Json<Void>, HttpHandleError> {
         if let Err(e) = auth_session
-            .backend
-            .change_password(auth_session.user.as_ref().unwrap().id(), &req)
+            .backend()
+            .change_password(crate::restful::authed_user_id(&auth_session).await?, &req)
             .await
         {
             tracing::error!("Failed to change password: {:?}", e);
@@ -84,7 +76,7 @@ mod post {
     use super::*;
 
     pub async fn login(
-        mut auth_session: AuthSession,
+        auth_session: AuthSession,
         Json(creds): Json<Credentials>,
     ) -> Result<Json<Void>, HttpHandleError> {
         let user = match auth_session.authenticate(creds.clone()).await {
@@ -136,7 +128,7 @@ mod post {
             ));
         }
 
-        if let Err(e) = auth_session.backend.register_new_user(&req).await {
+        if let Err(e) = auth_session.backend().register_new_user(&req).await {
             tracing::error!("Failed to register new user: {:?}", e);
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -164,7 +156,7 @@ mod get {
 
     use super::*;
 
-    pub async fn logout(mut auth_session: AuthSession) -> Result<Json<Void>, HttpHandleError> {
+    pub async fn logout(auth_session: AuthSession) -> Result<Json<Void>, HttpHandleError> {
         match auth_session.logout().await {
             Ok(_) => Ok(Json(Void::default())),
             Err(e) => {
@@ -191,7 +183,7 @@ mod get {
     pub async fn check_login_status(
         auth_session: AuthSession,
     ) -> Result<Json<Void>, HttpHandleError> {
-        if auth_session.user.is_some() {
+        if auth_session.user().await.is_some() {
             Ok(Json(Void::default()))
         } else {
             Err((

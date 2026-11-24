@@ -74,15 +74,14 @@ rand = "0.8.8"
 reqwest = { version = "0.13.5", default-features = false }
 rust-i18n = "4"
 rustls = { version = "0.23.45", default-features = false }
-# tower-sessions-sqlx-store 0.15 requires SQLx 0.8; SeaORM 2 requires SQLx 0.9.
-sea-orm = "1.1.20"
-sea-orm-migration = "1.1.20"
+sea-orm = "2.0"
+sea-orm-migration = "2.0"
 serde = "1.0.229"
 serde_json = "1.0"
 # See the HMAC constraint above; SHA2 must use the same digest generation.
 sha2 = "0.10.9"
 smoltcp = { version = "0.14.0", default-features = false }
-sqlx = "0.8.6"
+sqlx = "0.9"
 strum = "0.28.0"
 stun_codec = "0.4.0"
 sys-locale = "0.3"
@@ -104,6 +103,10 @@ windows = "0.62"
 x25519-dalek = "2.0.1"
 # zerocopy 0.8 requires migrating the packet layout and casting APIs.
 zerocopy = "0.7.35"
+
+[patch.crates-io]
+# openidconnect-rs#244 requires the unreleased OAuth2 5.1 API (oauth2-rs#352).
+oauth2 = { git = "https://github.com/ramosbugs/oauth2-rs", rev = "89585f4a280afd7b285eaf1c9be0068874e03d22" }
 
 [profile.dev]
 panic = "unwind"
