@@ -435,6 +435,67 @@ async fn dns_address(server: &MagicDnsServerInstance, name: &str) -> Option<Ipv4
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn runner_reconnects_publisher_without_replacing_server() {
+    use crate::proto::{
+        magic_dns::MagicDnsServerRpcClientFactory, rpc::standalone::runtime_rpc_client,
+    };
+
+    let ctx = get_mock_global_ctx();
+    let inet = "100.100.100.8/24".parse::<Ipv4Inet>().unwrap();
+    ctx.set_ipv4(Some(inet));
+    let (core, _packets) = build_test_core(ctx.clone()).await;
+    let mut runner = DnsRunner::new(
+        core.packet_plane(),
+        ctx.clone(),
+        None,
+        inet,
+        MAGIC_DNS_FAKE_IP.parse().unwrap(),
+    );
+    let stop = CancellationToken::new();
+    let token = stop.clone();
+    let task = tokio::spawn(async move { runner.run(token).await });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (_observer, rpc) = loop {
+            let mut observer = runtime_rpc_client(super::MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
+            if let Ok(rpc) = observer
+                .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>(String::new())
+                .await
+                && rpc
+                    .heartbeat(Default::default(), Default::default())
+                    .await
+                    .is_ok()
+            {
+                break (observer, rpc);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        // An invalid live configuration makes the local publisher exit. Check all
+        // three transitions through the same observer connection.
+        for (domain, published) in [("retry.test.", true), (".", false), ("retry.test.", true)] {
+            ctx.config.set_dns(Some(DnsConfig {
+                domain: Some(domain.to_string()),
+                ..Default::default()
+            }));
+            loop {
+                let response = rpc
+                    .get_dns_record(Default::default(), Default::default())
+                    .await
+                    .unwrap();
+                if response.records.contains_key("retry.test.") == published {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    stop.cancel();
+    task.await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn test_magic_dns_live_configuration_and_publisher_lifecycle() {
     let ctx = get_mock_global_ctx();
     ctx.set_hostname("live-node".to_owned());

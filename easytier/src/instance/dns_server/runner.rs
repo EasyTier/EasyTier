@@ -10,7 +10,6 @@ use crate::{common::global_ctx::ArcGlobalCtx, instance::virtual_nic::NicBackend}
 use super::{client_instance::MagicDnsClientInstance, server_instance::MagicDnsServerInstance};
 
 pub struct DnsRunner {
-    client: Option<MagicDnsClientInstance>,
     server: Option<MagicDnsServerInstance>,
     packet_plane: Arc<CorePacketPlane>,
     global_ctx: ArcGlobalCtx,
@@ -56,7 +55,6 @@ impl DnsRunner {
         fake_ip: Ipv4Addr,
     ) -> Self {
         Self {
-            client: None,
             server: None,
             packet_plane,
             global_ctx,
@@ -80,7 +78,6 @@ impl DnsRunner {
         if let Some(claim) = self.active_fake_ip_route.take() {
             claim.remove().await;
         }
-        self.client.take();
     }
 
     fn should_manage_fake_ip_route_externally(&self) -> bool {
@@ -149,23 +146,36 @@ impl DnsRunner {
 
         // Every runner must run a client. Do not recreate its publisher when a
         // maintenance tick fires, or cancel an OS write before cleanup.
-        let client = tokio::select! {
-            _ = cancel_token.cancelled() => return Ok(()),
-            result = MagicDnsClientInstance::new(
-                self.packet_plane.clone(),
-                self.global_ctx.clone(),
-            ) => result?,
+        let publishing = async {
+            loop {
+                let error = match MagicDnsClientInstance::new(
+                    self.packet_plane.clone(),
+                    self.global_ctx.clone(),
+                )
+                .await
+                {
+                    Ok(mut client) => {
+                        client.run_and_wait().await;
+                        anyhow::anyhow!("Magic DNS client exited")
+                    }
+                    Err(error) => error,
+                };
+                // If another runner owned the listener, retry the server election.
+                if self.server.is_none() {
+                    return Err(error);
+                }
+                tracing::warn!(?error, "reconnecting Magic DNS client");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
         };
-        self.client = Some(client);
-        let waiting = self.client.as_mut().unwrap().run_and_wait();
-        tokio::pin!(waiting);
+        tokio::pin!(publishing);
         let mut maintenance = tokio::time::interval(Duration::from_secs(30));
         maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         maintenance.tick().await;
         loop {
             tokio::select! {
                 _ = cancel_token.cancelled() => return Ok(()),
-                _ = &mut waiting => return Err(anyhow::anyhow!("Client instance exit")),
+                result = &mut publishing => return result,
                 _ = maintenance.tick() => {
                     if let Some(server) = &self.server {
                         server.refresh_system_dns().await;
