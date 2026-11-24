@@ -101,6 +101,7 @@ openssl = { version = "0.10", optional = true, features = ["vendored"] }
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom-02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
 getrandom-03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }
+getrandom-04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"], optional = true }
 rustls-pki-types = { version = "1.15.1", features = ["web"], optional = true }
 uuid = { workspace = true, features = ["js"] }
@@ -192,6 +193,7 @@ ignored = [
     # Enable browser entropy backends for transitive rand/snow/AEAD dependencies.
     "getrandom-02",
     "getrandom-03",
+    "getrandom-04",
     # Enable browser time for rustls certificate validation.
     "rustls-pki-types",
 ]
