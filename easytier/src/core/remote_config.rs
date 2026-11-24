@@ -32,8 +32,8 @@ fn prepare(cfg: &TomlConfigLoader, overrides: Option<&NetworkOptions>) -> anyhow
         cfg,
         &crate::instance::config::runtime_core_host_config(),
     )
-    .map_err(|_| anyhow::anyhow!("invalid remote instance configuration"))?
-    .validate_build_capabilities()
+    .and_then(|config| config.validate_build_capabilities())
+    .map_err(|_| anyhow::anyhow!("invalid remote instance configuration"))
 }
 
 pub(super) struct RemoteConfig {
@@ -217,7 +217,7 @@ mod tests {
                 respond(
                     request(&listener).await,
                     "200 OK",
-                    "[flags]\nenable_udp_fec = true\nmtu = 1",
+                    "[flags]\nenable_encryption = false\nenable_udp_fec = true\nmtu = 1",
                 )
                 .await;
             };
@@ -248,7 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_refresh_keeps_good_instance_until_valid_change() {
-        const FIRST: &str = "hostname = 'first'\nlisteners = []\nstun_servers = []\nstun_servers_v6 = []\ntcp_stun_servers = []\n[flags]\nno_tun = true\ndisable_upnp = true";
+        const FIRST: &str = "hostname = 'first'\nlisteners = []\nstun_servers = []\nstun_servers_v6 = []\ntcp_stun_servers = []\n[flags]\nno_tun = true\ndisable_upnp = true\nenable_encryption = false";
         let second = FIRST.replace("first", "second");
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         #[cfg(any(feature = "socks5", not(feature = "smoltcp")))]
