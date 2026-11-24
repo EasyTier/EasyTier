@@ -29,6 +29,35 @@ the requirement as a no-op.
   host must protect their underlying sockets before querying/probing, including
   DNS TCP fallback, rather than letting system DNS silently bypass this contract.
 
+## Windows IPv4 relay route exceptions
+
+When a proxy route would cover a configured outbound peer's IPv4 endpoint,
+the native Windows NIC updater protects the endpoint with a temporary host
+route on the non-EasyTier path. This applies to numeric transport addresses
+after TXT/SRV/redirect discovery. It does not resolve the discovery URL a
+second time. A reconnect retains the last destination until a new one is
+selected or the connector is removed.
+
+The exception affects **all applications connecting to that IP**, not just
+the EasyTier socket. Other addresses in the advertised prefix keep their
+normal routes. The updater excludes this process's registered TUN interfaces,
+uses prefix length and Windows route plus interface metrics to select an
+underlay route, and preserves its next hop, including on-link routes. Existing
+underlay host routes are not adopted or deleted.
+
+Instances in one process share claims. The NIC updater checks route changes
+before adding an overlapping prefix and renews its finite-lifetime rows every
+15 seconds, so gateway changes can be picked up without a peer reconnect.
+Removing the last claim releases the row; the 60-second lifetime bounds a
+stale exception after an unclean shutdown. Errors from the Windows routing
+API are logged and the updater retries. This policy covers IPv4 system
+routes managed by the Windows NIC updater, not IPv6 or externally managed TUNs.
+
+On Windows, compare `Find-NetRoute -RemoteIPAddress <resolved-relay-IP>`
+with the result for a different IP inside the same advertised prefix. Look
+for `installed temporary relay /32` in the EasyTier log for the actual
+destination, LUID and gateway.
+
 ## TUN-facing ingress and port forwarding
 
 The extra `force_smoltcp` wildcard port-forward ingress listener has been removed.
