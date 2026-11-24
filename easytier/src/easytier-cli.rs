@@ -2476,10 +2476,20 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
-    async fn handle_connector_list(&self) -> Result<(), Error> {
-        let results = self
+    async fn handle_connector_list(&self, peers: &[String]) -> Result<(), Error> {
+        let mut results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_connector_list()))
             .await?;
+        if !peers.is_empty() {
+            for result in &mut results {
+                result.value.retain(|connector| {
+                    connector
+                        .url
+                        .as_ref()
+                        .is_some_and(|url| peers.contains(&url.url))
+                });
+            }
+        }
         if self.verbose || *self.output_format == OutputFormat::Json {
             return self.print_json_results(results);
         }
@@ -3927,11 +3937,8 @@ async fn main() -> Result<(), Error> {
                     .await?;
                 println!("connector remove applied to selected instance(s): {url}");
             }
-            Some(ConnectorSubCommand::List) => {
-                handler.handle_connector_list().await?;
-            }
-            None => {
-                handler.handle_connector_list().await?;
+            Some(ConnectorSubCommand::List) | None => {
+                handler.handle_connector_list(&conn_args.peers).await?;
             }
         },
         SubCommand::MappedListener(mapped_listener_args) => {
