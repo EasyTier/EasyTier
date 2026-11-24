@@ -194,6 +194,42 @@ fn tun_ifindex(ns: &str, dev_name: &str) -> Option<u64> {
     links[0]["ifindex"].as_u64()
 }
 
+#[cfg(feature = "linux-netlink")]
+#[tokio::test]
+async fn missing_static_ipv4_is_restored_on_the_same_tun() {
+    use crate::common::ifcfg::IfConfiger;
+
+    let mut network = TestNetwork::new();
+    network.create_empty_namespace("repair");
+    let ns = network.namespace("repair");
+    let dev = test_dev_name();
+    let ip = "198.18.1.1/24";
+    let extra = "198.18.2.1/32";
+    let config = test_config("repair", "repair", "repair", Some(ns), Some(&dev), ip);
+    let mut instance = SharedTestRuntime::new().instance(config);
+    instance.run().await.unwrap();
+    let index = tun_ifindex(ns, &dev).unwrap();
+    for (op, address) in [("add", extra), ("del", ip)] {
+        assert!(
+            Command::new("ip")
+                .args(["-n", ns, "addr", op, address, "dev", &dev])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let netns = NetNS::new(Some(ns.to_owned()));
+    let addresses = || netns.run(|| IfConfiger::list_addresses(&dev).unwrap());
+    wait_for_condition(
+        || async { addresses().contains(&ip.parse().unwrap()) },
+        Duration::from_secs(30),
+    )
+    .await;
+    assert!(addresses().contains(&extra.parse().unwrap()));
+    assert_eq!(tun_ifindex(ns, &dev), Some(index));
+    instance.clear_resources().await;
+}
+
 #[cfg(feature = "proxy-cidr-monitor")]
 async fn patch_proxy_cidr(
     instance: &Instance,
