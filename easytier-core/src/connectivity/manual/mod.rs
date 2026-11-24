@@ -39,6 +39,9 @@ use crate::{
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
 const MAX_MANUAL_ENDPOINT_HOPS: usize = 16;
 
+pub type ManualIpv4Destinations =
+    tokio::sync::watch::Receiver<std::collections::BTreeMap<Url, Ipv4Addr>>;
+
 fn manual_default_port(url: &Url) -> u16 {
     crate::connectivity::protocol::protocol_default_port(url.scheme()).unwrap_or(11010)
 }
@@ -344,6 +347,27 @@ struct ManualConnectorState {
     reconnecting: DashSet<Url>,
     removed: DashSet<Url>,
     state_lock: Mutex<()>,
+    resolved_ipv4: tokio::sync::watch::Sender<std::collections::BTreeMap<Url, Ipv4Addr>>,
+}
+
+impl ManualConnectorState {
+    fn remember_destination(&self, url: &Url, addr: Option<SocketAddr>) {
+        let _guard = self.state_lock.lock().unwrap();
+        if self.removed.contains(url) || !self.reconnecting.contains(url) {
+            return;
+        }
+        self.resolved_ipv4.send_if_modified(|known| {
+            if let Some(SocketAddr::V4(addr)) = addr {
+                if known.get(url) == Some(addr.ip()) {
+                    return false;
+                }
+                known.insert(url.clone(), *addr.ip());
+                true
+            } else {
+                known.remove(url).is_some()
+            }
+        });
+    }
 }
 
 struct ManualConnectorData<H>
@@ -448,6 +472,10 @@ where
         });
     }
 
+    pub(crate) fn resolved_ipv4(&self) -> ManualIpv4Destinations {
+        self.data.state.resolved_ipv4.subscribe()
+    }
+
     pub async fn stop(&self) {
         let task = self.task.lock().unwrap().take();
         if let Some(task) = task {
@@ -456,6 +484,10 @@ where
         }
         let _state_guard = self.data.state.state_lock.lock().unwrap();
         restore_interrupted_connectors(&self.data.state);
+        self.data
+            .state
+            .resolved_ipv4
+            .send_replace(Default::default());
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
@@ -470,6 +502,10 @@ where
 
     pub fn remove_connector(&self, url: &Url) -> bool {
         let _state_guard = self.data.state.state_lock.lock().unwrap();
+        self.data
+            .state
+            .resolved_ipv4
+            .send_if_modified(|known| known.remove(url).is_some());
         if self.data.state.connectors.remove(url).is_some() {
             tracing::warn!(%url, "manual connector removed");
             return true;
@@ -483,6 +519,10 @@ where
 
     pub fn clear_connectors(&self) {
         let _state_guard = self.data.state.state_lock.lock().unwrap();
+        self.data
+            .state
+            .resolved_ipv4
+            .send_replace(Default::default());
         self.data.state.connectors.clear();
         for url in self.data.state.reconnecting.iter() {
             self.data.state.removed.insert(url.key().clone());
@@ -845,6 +885,9 @@ where
             .await?,
         ),
     };
+    // Protect the numeric transport endpoint, not a TXT owner, redirect URL or peer ID.
+    data.state
+        .remember_destination(&requested_url, resolved.as_ref().map(|(addr, _)| *addr));
     data.events.emit(CoreEvent::ManualConnecting {
         url: requested_url.clone(),
     });
@@ -1462,6 +1505,27 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("connect timeout after"));
+    }
+
+    #[test]
+    fn relay_destination_follows_discovery_and_is_retained_for_retries() {
+        let state = ManualConnectorState::default();
+        let url: Url = "txt://relay.test".parse().unwrap();
+        let rx = state.resolved_ipv4.subscribe();
+        state.reconnecting.insert(url.clone());
+        let first: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        let second: SocketAddr = "192.0.2.2:443".parse().unwrap();
+        state.remember_destination(&url, Some(first));
+        finish_reconnect_attempt(&state, &url);
+        assert_eq!(IpAddr::V4(rx.borrow()[&url]), first.ip());
+        state.reconnecting.insert(url.clone());
+        state.remember_destination(&url, Some(second));
+        assert_eq!(IpAddr::V4(rx.borrow()[&url]), second.ip());
+        state.remember_destination(&url, Some("[2001:db8::1]:443".parse().unwrap()));
+        assert!(rx.borrow().is_empty());
+        state.removed.insert(url.clone());
+        state.remember_destination(&url, Some(first));
+        assert!(rx.borrow().is_empty());
     }
 
     #[test]

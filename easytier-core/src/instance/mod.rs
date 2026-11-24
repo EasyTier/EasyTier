@@ -851,6 +851,7 @@ where
             peer_manager.clone(),
             runtime_config.clone(),
             proxy_cidr_monitor_available,
+            manual.as_ref().map(ManualConnectorManager::resolved_ipv4),
         ));
 
         Ok(Arc::new(Self {

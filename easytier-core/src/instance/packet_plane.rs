@@ -4,6 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
+    connectivity::manual::ManualIpv4Destinations,
     gateway::magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
     host::packet::HostPacket,
@@ -27,6 +28,7 @@ pub struct CorePacketPlane {
     peer_manager: Arc<PeerManagerCore>,
     runtime_config: CoreRuntimeConfigStore,
     proxy_cidr_monitor_available: bool,
+    manual_destinations: Option<ManualIpv4Destinations>,
 }
 
 impl CorePacketPlane {
@@ -34,12 +36,19 @@ impl CorePacketPlane {
         peer_manager: Arc<PeerManagerCore>,
         runtime_config: CoreRuntimeConfigStore,
         proxy_cidr_monitor_available: bool,
+        manual_destinations: Option<ManualIpv4Destinations>,
     ) -> Self {
         Self {
             peer_manager,
             runtime_config,
             proxy_cidr_monitor_available,
+            manual_destinations,
         }
+    }
+
+    /// Last resolved IPv4 destination per configured connector, retained across retries.
+    pub fn manual_ipv4_destinations(&self) -> Option<ManualIpv4Destinations> {
+        self.manual_destinations.clone()
     }
 
     pub async fn send_ip_packet(&self, packet: HostPacket) -> anyhow::Result<()> {

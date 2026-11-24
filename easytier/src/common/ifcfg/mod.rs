@@ -13,6 +13,8 @@ mod netlink;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 mod netlink_wire;
 #[cfg(target_os = "windows")]
+pub(crate) mod relay_routes;
+#[cfg(target_os = "windows")]
 mod win;
 #[cfg(target_os = "windows")]
 mod windows;
