@@ -46,13 +46,17 @@ where
                 tracing::debug!(%domain, "attempting SOCKS DNS resolution");
                 let address = self
                     .dns
-                    .resolve(DnsQuery::new(domain.clone(), self.socket_context.clone()))
+                    .resolve(DnsQuery::new(
+                        domain.clone(),
+                        self.socket_context.clone().with_ip_version(IpVersion::V4),
+                    ))
                     .await
                     .map_err(|error| {
                         SocksError::Other(error.context(AddrError::DNSResolutionFailed))
                     })?
                     .into_iter()
-                    .next()
+                    // The TCP data plane only routes IPv4. Preserve its reply for IPv6-only targets.
+                    .min_by_key(IpAddr::is_ipv6)
                     .ok_or_else(|| {
                         SocksError::Other(anyhow::Error::new(AddrError::Custom(format!(
                             "cannot resolve SOCKS domain {domain}"
@@ -221,7 +225,11 @@ mod tests {
     impl DnsResolver for StaticDns {
         async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
             assert_eq!(query.host, "peer.example");
-            Ok(vec!["192.0.2.8".parse().unwrap()])
+            assert_eq!(query.context.ip_version, IpVersion::V4);
+            Ok(vec![
+                "2001:db8::8".parse().unwrap(),
+                "192.0.2.8".parse().unwrap(),
+            ])
         }
     }
 
