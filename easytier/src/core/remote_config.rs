@@ -7,8 +7,8 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
-    ConfigFileControl, ConfigLoader as _, NativeInstanceManager, NetworkOptions, TomlConfigLoader,
-    load_toml_config_from_str_with_source, log,
+    ConfigFileControl, ConfigFileSource, ConfigLoader as _, NativeInstanceManager, NetworkOptions,
+    TomlConfigLoader, load_toml_config_from_str_with_source, log,
 };
 
 pub(super) fn parse_url(input: &str) -> anyhow::Result<Url> {
@@ -17,17 +17,14 @@ pub(super) fn parse_url(input: &str) -> anyhow::Result<Url> {
     Ok(url)
 }
 
-pub(super) fn parse(body: &str) -> anyhow::Result<TomlConfigLoader> {
+fn parse(body: &str) -> anyhow::Result<TomlConfigLoader> {
     ensure!(!body.trim().is_empty(), "empty remote configuration");
     // TOML diagnostics may quote lines containing credentials.
     load_toml_config_from_str_with_source("remote config", body)
         .map_err(|_| anyhow::anyhow!("invalid remote TOML configuration"))
 }
 
-pub(super) fn prepare(
-    cfg: &TomlConfigLoader,
-    overrides: Option<&NetworkOptions>,
-) -> anyhow::Result<()> {
+fn prepare(cfg: &TomlConfigLoader, overrides: Option<&NetworkOptions>) -> anyhow::Result<()> {
     if let Some(options) = overrides {
         options.merge_into(cfg)?;
     }
@@ -35,8 +32,8 @@ pub(super) fn prepare(
         cfg,
         &crate::instance::config::runtime_core_host_config(),
     )
-    .map_err(|_| anyhow::anyhow!("invalid remote instance configuration"))?;
-    Ok(())
+    .map_err(|_| anyhow::anyhow!("invalid remote instance configuration"))?
+    .validate_build_capabilities()
 }
 
 pub(super) struct RemoteConfig {
@@ -54,7 +51,27 @@ impl RemoteConfig {
         Ok(Self { url, client })
     }
 
-    pub(super) async fn fetch(&self) -> anyhow::Result<String> {
+    pub(super) async fn load_initial<'a>(
+        &self,
+        options: &'a NetworkOptions,
+        explicit_file_count: usize,
+        dir_file_count: usize,
+    ) -> anyhow::Result<(String, TomlConfigLoader, Option<&'a NetworkOptions>)> {
+        let body = self.fetch().await?;
+        let cfg = parse(&body)?;
+        let overrides = options
+            .can_merge(
+                &cfg,
+                ConfigFileSource::CliConfigFile,
+                explicit_file_count,
+                dir_file_count,
+            )
+            .then_some(options);
+        prepare(&cfg, overrides)?;
+        Ok((body, cfg, overrides))
+    }
+
+    async fn fetch(&self) -> anyhow::Result<String> {
         let mut response = self
             .client
             .get(self.url.clone())
@@ -146,12 +163,68 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::core::{Cli, cli_command, run_with_manager};
+    use crate::core::{Cli, cli_command, flags_from, run_with_manager, validate_config};
     use clap::FromArgMatches as _;
     use tokio::{
         io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},
-        net::TcpListener,
+        net::{TcpListener, TcpStream},
     };
+
+    async fn request(listener: &TcpListener) -> BufReader<TcpStream> {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = BufReader::new(socket);
+        let mut line = String::new();
+        socket.read_line(&mut line).await.unwrap();
+        assert_eq!(line, "GET /node.toml HTTP/1.1\r\n");
+        loop {
+            line.clear();
+            assert!(socket.read_line(&mut line).await.unwrap() > 0);
+            if line == "\r\n" {
+                return socket;
+            }
+        }
+    }
+
+    async fn respond(mut socket: BufReader<TcpStream>, status: &str, body: &str) {
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_config_validates_remote_settings_after_cli_overrides() {
+        crate::utils::init_crypto_provider();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/node.toml", listener.local_addr().unwrap());
+        for (extra, valid) in [(vec![], false), (vec!["--mtu", "1400"], true)] {
+            let matches = cli_command()
+                .try_get_matches_from(
+                    ["easytier-core", "--check-config", "--config-url", &url]
+                        .into_iter()
+                        .chain(extra),
+                )
+                .unwrap();
+            let mut cli = Cli::from_arg_matches(&matches).unwrap();
+            cli.network_options.flags = flags_from(&matches).unwrap();
+            let serve = async {
+                respond(
+                    request(&listener).await,
+                    "200 OK",
+                    "[flags]\nenable_udp_fec = true\nmtu = 1",
+                )
+                .await;
+            };
+            let (result, ()) = tokio::join!(validate_config(cli), serve);
+            assert_eq!(result.is_ok(), valid, "{result:?}");
+        }
+    }
 
     #[test]
     fn refresh_requires_http_url_and_positive_interval() {
@@ -178,8 +251,8 @@ mod tests {
         const FIRST: &str = "hostname = 'first'\nlisteners = []\nstun_servers = []\nstun_servers_v6 = []\ntcp_stun_servers = []\n[flags]\nno_tun = true\ndisable_upnp = true";
         let second = FIRST.replace("first", "second");
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        #[cfg(feature = "socks5")]
-        let occupied = format!(
+        #[cfg(any(feature = "socks5", not(feature = "smoltcp")))]
+        let port_forward = format!(
             "{second}\n[[port_forward]]\nproto = 'tcp'\nbind_addr = '{}'\ndst_addr = '127.0.0.1:9'",
             listener.local_addr().unwrap()
         );
@@ -204,23 +277,14 @@ mod tests {
                 ("200 OK", FIRST, Some(("first", true))),
                 ("503 Service Unavailable", &second, Some(("first", true))),
                 ("200 OK", "hostname = [", Some(("first", true))),
+                #[cfg(not(feature = "smoltcp"))]
+                ("200 OK", &port_forward, Some(("first", true))),
                 ("200 OK", &second, Some(("first", true))),
                 #[cfg(feature = "socks5")]
-                ("200 OK", &occupied, Some(("second", false))),
+                ("200 OK", &port_forward, Some(("second", false))),
                 ("200 OK", &second, Some(("second", false))),
             ] {
-                let (socket, _) = listener.accept().await.unwrap();
-                let mut socket = BufReader::new(socket);
-                let mut line = String::new();
-                socket.read_line(&mut line).await.unwrap();
-                assert_eq!(line, "GET /node.toml HTTP/1.1\r\n");
-                loop {
-                    line.clear();
-                    assert!(socket.read_line(&mut line).await.unwrap() > 0);
-                    if line == "\r\n" {
-                        break;
-                    }
-                }
+                let socket = request(&listener).await;
                 if let Some((hostname, unchanged)) = before {
                     let instances = manager.instances();
                     assert_eq!(instances.len(), 1);
@@ -244,14 +308,32 @@ mod tests {
                         hostname
                     );
                 }
-                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                respond(socket, status, body).await;
             }
-            stop.notify_one();
+            let socket = request(&listener).await;
+            let (other, started) = manager
+                .spawn_network_instance(parse(FIRST).unwrap(), ConfigFileControl::STATIC_CONFIG)
+                .unwrap();
+            started.await.unwrap().unwrap();
+            manager.retain_network_instances(&[other]).await.unwrap();
+            respond(socket, "200 OK", FIRST).await;
+            assert!(
+                tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                    .await
+                    .is_err(),
+                "watcher continued polling after removal"
+            );
+            assert!(manager.instance(other).unwrap().is_ready());
         };
         let run = run_with_manager(cli, manager.clone(), Some(stop.clone()));
         tokio::time::timeout(Duration::from_secs(30), async {
-            let (result, ()) = tokio::join!(run, serve);
-            result.unwrap();
+            tokio::pin!(run);
+            tokio::select! {
+                result = &mut run => panic!("service stopped before shutdown: {result:?}"),
+                () = serve => {}
+            }
+            stop.notify_one();
+            run.await.unwrap();
         })
         .await
         .unwrap();

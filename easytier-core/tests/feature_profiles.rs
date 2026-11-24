@@ -1,8 +1,4 @@
-#![cfg(all(
-    feature = "test-utils",
-    feature = "proxy-cidr-monitor",
-    not(feature = "wrapped-transport")
-))]
+#![cfg(all(feature = "proxy-cidr-monitor", not(feature = "wrapped-transport")))]
 
 use easytier_core::{config::toml::TomlConfig, instance::CoreInstanceConfig};
 
@@ -17,5 +13,5 @@ fn manual_routes_require_cidr_monitor_not_wrapped_transport() {
     .unwrap();
     let config = CoreInstanceConfig::from_toml(&toml).unwrap();
 
-    config.validate_build_capabilities_for_test().unwrap();
+    config.validate_build_capabilities().unwrap();
 }

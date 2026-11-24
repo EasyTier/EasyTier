@@ -527,6 +527,28 @@ struct RpcPortalOptions {
 }
 
 impl Cli {
+    fn explicit_config_file_count(&self) -> usize {
+        self.config_file.as_ref().map_or(0, Vec::len) + usize::from(self.config_url.is_some())
+    }
+
+    fn config_dir_files(&self) -> anyhow::Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        if let Some(dir) = &self.config_dir {
+            anyhow::ensure!(
+                dir.is_dir(),
+                "config_dir {} is not a directory",
+                dir.display()
+            );
+            for entry in std::fs::read_dir(dir)? {
+                let path = entry?.path();
+                if path.is_file() && path.extension().is_some_and(|ext| ext == "toml") {
+                    files.push(path);
+                }
+            }
+        }
+        Ok(files)
+    }
+
     fn take_runtime_thread_count(&mut self) -> u32 {
         let count = self
             .network_options
@@ -1298,6 +1320,8 @@ async fn run_with_manager(
     manager: Arc<NativeInstanceManager>,
     stop_notify: Option<Arc<tokio::sync::Notify>>,
 ) -> anyhow::Result<()> {
+    let explicit_config_file_count = cli.explicit_config_file_count();
+    let dir_files = cli.config_dir_files()?;
     let _rpc_server = ApiRpcServer::new(
         cli.rpc_portal_options.rpc_portal,
         cli.rpc_portal_options.rpc_portal_whitelist,
@@ -1339,43 +1363,23 @@ async fn run_with_manager(
         None
     };
 
-    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len())
-        + usize::from(cli.config_url.is_some());
-    let mut config_dir_file_count = 0;
-    let mut config_files = if let Some(v) = cli.config_file {
-        v.iter()
-            .cloned()
-            .map(|path| (path, ConfigFileSource::CliConfigFile))
-            .collect()
-    } else {
-        vec![]
-    };
-    if let Some(config_dir) = cli.config_dir.as_ref() {
-        if !config_dir.is_dir() {
-            anyhow::bail!("config_dir {} is not a directory", config_dir.display());
-        }
-
-        for entry in std::fs::read_dir(config_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(ext) = path.extension() else {
-                continue;
-            };
-            if ext != "toml" {
-                continue;
-            }
-            config_dir_file_count += 1;
-            config_files.push((path, ConfigFileSource::ConfigDir));
-        }
-    }
-    let config_file_count = config_files.len();
+    let config_dir_file_count = dir_files.len();
+    let config_files = cli
+        .config_file
+        .into_iter()
+        .flatten()
+        .map(|path| (path, ConfigFileSource::CliConfigFile))
+        .chain(
+            dir_files
+                .into_iter()
+                .map(|path| (path, ConfigFileSource::ConfigDir)),
+        );
     let mut crate_cli_network = {
         if cli.daemon {
             false
-        } else if config_file_count == 0 && cli.config_server.is_none() && cli.config_url.is_none()
+        } else if explicit_config_file_count == 0
+            && config_dir_file_count == 0
+            && cli.config_server.is_none()
         {
             true
         } else {
@@ -1421,21 +1425,16 @@ async fn run_with_manager(
     let mut remote = None;
     if let Some(url) = cli.config_url {
         let source = RemoteConfig::new(url)?;
-        let body = source.fetch().await?;
-        let cfg = remote_config::parse(&body)?;
-        let overrides = cli
-            .network_options
-            .can_merge(
-                &cfg,
-                ConfigFileSource::CliConfigFile,
+        let (body, cfg, overrides) = source
+            .load_initial(
+                &cli.network_options,
                 explicit_config_file_count,
                 config_dir_file_count,
             )
-            .then_some(&cli.network_options);
+            .await?;
         if overrides.is_some() {
             crate_cli_network = false;
         }
-        remote_config::prepare(&cfg, overrides)?;
         let (id, started) =
             manager.spawn_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
         started.await??;
@@ -1476,12 +1475,12 @@ async fn run_with_manager(
     };
 
     tokio::select! {
-        result = async {
-            match remote {
-                Some(watch) => watch.await,
-                None => std::future::pending().await,
+        _ = async {
+            if let Some(watch) = remote && let Err(error) = watch.await {
+                log::warn!(%error, "Remote config watcher stopped");
             }
-        } => return result,
+            std::future::pending::<()>().await
+        } => unreachable!(),
         _ = manager.wait() => {
             let infos = manager.collect_network_infos().await?;
             let mut errors = String::new();
@@ -1613,7 +1612,7 @@ pub async fn main() -> ExitCode {
             eprintln!("Failed to initialize logging: {error}");
             return ExitCode::FAILURE;
         }
-        if let Err(error) = validate_config(&cli).await {
+        if let Err(error) = validate_config(cli).await {
             log::error!(%error, "Config validation failed");
             return ExitCode::FAILURE;
         } else {
@@ -1634,10 +1633,16 @@ pub async fn main() -> ExitCode {
     ExitCode::from(ret_code)
 }
 
-async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
+async fn validate_config(mut cli: Cli) -> anyhow::Result<()> {
     if let Some(url) = cli.config_url.clone() {
-        let body = RemoteConfig::new(url)?.fetch().await?;
-        remote_config::parse(&body)?;
+        cli.take_runtime_thread_count();
+        RemoteConfig::new(url)?
+            .load_initial(
+                &cli.network_options,
+                cli.explicit_config_file_count(),
+                cli.config_dir_files()?.len(),
+            )
+            .await?;
     } else if cli.config_file.is_none() {
         anyhow::bail!("--config-file or --config-url is required when using --check-config");
     }

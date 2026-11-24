@@ -65,13 +65,16 @@ fn validate_snapshot(
     Ok(())
 }
 
-pub(super) fn validate(config: &CoreInstanceConfig) -> anyhow::Result<()> {
-    validate_snapshot(&config.connectivity.runtime, &config.peer.snapshot)?;
-    require(
-        VPN_PORTAL_AVAILABLE,
-        config.vpn_portal.is_some(),
-        "the VPN portal",
-    )
+impl CoreInstanceConfig {
+    /// Check that this build supports the services requested by the configuration.
+    pub fn validate_build_capabilities(&self) -> anyhow::Result<()> {
+        validate_snapshot(&self.connectivity.runtime, &self.peer.snapshot)?;
+        require(
+            VPN_PORTAL_AVAILABLE,
+            self.vpn_portal.is_some(),
+            "the VPN portal",
+        )
+    }
 }
 
 pub(super) fn validate_runtime(
