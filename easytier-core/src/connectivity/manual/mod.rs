@@ -849,6 +849,7 @@ where
         url: requested_url.clone(),
     });
 
+    let mut interface_connect_pending = false;
     let tunnel = with_timeout_budget("connect", started_at, connect_timeout, async {
         if endpoint.url.scheme() == "ring" {
             return connect_ring_tunnel(&data.ring_registry, &endpoint.url);
@@ -865,7 +866,8 @@ where
         let transport = transport.expect("non-Ring endpoint should have a transport");
         let connected = match resolved {
             Some((remote_addr, bind_addrs)) => {
-                connect_resolved(
+                interface_connect_pending = !bind_addrs.is_empty();
+                let result = connect_resolved(
                     data.host.clone(),
                     transport,
                     remote_addr,
@@ -873,7 +875,9 @@ where
                     data.options.tcp_bind.clone(),
                     data.options.udp_bind.clone(),
                 )
-                .await?
+                .await;
+                interface_connect_pending = false;
+                result?
             }
             None => {
                 ConnectedTransport::ByteStream(data.host.connect_byte_stream(&endpoint.url).await?)
@@ -881,7 +885,14 @@ where
         };
         data.protocol.upgrade_client(connected, endpoint.url).await
     })
-    .await?;
+    .await
+    .map_err(|error| {
+        if interface_connect_pending {
+            anyhow::anyhow!("{error}; if the peer is otherwise reachable, try --bind-device false")
+        } else {
+            error
+        }
+    })?;
     let tunnel =
         apply_resolved_endpoint_info(tunnel, requested_url.clone(), endpoint.tunnel_prefixes);
     let peer_manager = data
