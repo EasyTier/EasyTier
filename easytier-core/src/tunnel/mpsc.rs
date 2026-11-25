@@ -1,4 +1,11 @@
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use futures::SinkExt;
 use tokio::{
@@ -10,8 +17,9 @@ use tokio::{
 };
 
 use crate::{
-    foundation::time::timeout,
+    foundation::time::{Instant, timeout},
     packet::{PacketType, ZCPacket},
+    peers::traffic_metrics::{TrafficKind, traffic_kind},
     proto::common::TunnelInfo,
     tunnel::{Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };
@@ -22,6 +30,7 @@ pub(crate) const NETWORK_QUEUE_SLOTS: usize = 480;
 struct QueuedPacket {
     packet: ZCPacket,
     _slot: Option<OwnedSemaphorePermit>,
+    enqueued_at: Option<Instant>,
 }
 
 pub(crate) fn is_heartbeat(packet: &ZCPacket) -> bool {
@@ -30,17 +39,37 @@ pub(crate) fn is_heartbeat(packet: &ZCPacket) -> bool {
     })
 }
 
+fn can_expire(packet: &ZCPacket) -> bool {
+    let Some(header) = packet.peer_manager_header() else {
+        return false;
+    };
+    if header.packet_type == PacketType::ForeignNetworkPacket as u8 {
+        return !header.is_encrypted()
+            && packet
+                .foreign_network_inner_packet_type()
+                .is_some_and(|kind| traffic_kind(kind) == TrafficKind::Data);
+    }
+    traffic_kind(header.packet_type) == TrafficKind::Data
+}
+
 #[derive(Clone)]
 pub struct MpscTunnelSender {
     sender: Sender<QueuedPacket>,
     heartbeat: Option<Sender<QueuedPacket>>,
     base_slots: Option<Arc<Semaphore>>,
     network_slots: Option<Arc<Semaphore>>,
+    max_queue_delay_us: Option<Arc<AtomicU32>>,
 }
 
 impl MpscTunnelSender {
     pub(crate) fn set_network_slots(&mut self, slots: Arc<Semaphore>) {
         self.network_slots = Some(slots);
+    }
+
+    pub(crate) fn set_max_queue_delay_us(&self, delay: u32) {
+        if let Some(max_queue_delay_us) = &self.max_queue_delay_us {
+            max_queue_delay_us.store(delay, Ordering::Relaxed);
+        }
     }
 
     fn prepare(
@@ -55,6 +84,7 @@ impl MpscTunnelSender {
                 QueuedPacket {
                     packet,
                     _slot: None,
+                    enqueued_at: None,
                 },
             ));
         }
@@ -79,11 +109,13 @@ impl MpscTunnelSender {
         } else {
             None
         };
+        let enqueued_at = (slot.is_some() && can_expire(&packet)).then(Instant::now);
         Ok((
             &self.sender,
             QueuedPacket {
                 packet,
                 _slot: slot,
+                enqueued_at,
             },
         ))
     }
@@ -117,6 +149,7 @@ impl MpscTunnelSender {
 pub(crate) struct MpscTunnelReceiver {
     receiver: Receiver<QueuedPacket>,
     heartbeat: Option<Receiver<QueuedPacket>>,
+    max_queue_delay_us: Option<Arc<AtomicU32>>,
     pending: std::vec::IntoIter<ZCPacket>,
 }
 
@@ -133,60 +166,81 @@ impl MpscTunnelReceiver {
         } else {
             (None, None)
         };
+        let max_queue_delay_us = connection.then(|| Arc::new(AtomicU32::new(0)));
         (
             MpscTunnelSender {
                 sender,
                 heartbeat: heartbeat_tx,
                 base_slots: connection.then(|| Arc::new(Semaphore::new(ORDINARY_QUEUE_CAPACITY))),
                 network_slots: None,
+                max_queue_delay_us: max_queue_delay_us.clone(),
             },
             Self {
                 receiver,
                 heartbeat: heartbeat_rx,
+                max_queue_delay_us,
                 pending: Vec::new().into_iter(),
             },
         )
     }
 
-    fn expand(&mut self, QueuedPacket { mut packet, .. }: QueuedPacket) -> ZCPacket {
+    fn dequeue(&mut self, queued: QueuedPacket) -> Option<ZCPacket> {
+        if let Some(enqueued_at) = queued.enqueued_at
+            && let Some(max_queue_delay_us) = &self.max_queue_delay_us
+        {
+            let limit_us = max_queue_delay_us.load(Ordering::Relaxed);
+            let age = enqueued_at.elapsed();
+            if limit_us != 0 && age > Duration::from_micros(limit_us.into()) {
+                tracing::trace!(?age, limit_us, "dropping expired peer send packet");
+                return None;
+            }
+        }
+
+        let QueuedPacket { mut packet, .. } = queued;
         if self.heartbeat.is_some() {
             self.pending = packet.take_batch();
         }
-        packet
+        Some(packet)
     }
 
     fn try_recv(&mut self) -> Option<ZCPacket> {
-        if let Some(heartbeat) = &mut self.heartbeat
-            && let Ok(packet) = heartbeat.try_recv()
-        {
-            return Some(packet.packet);
-        }
-        if let Some(packet) = self.pending.next() {
-            if self.pending.as_slice().is_empty() {
-                self.pending = Vec::new().into_iter();
+        loop {
+            if let Some(heartbeat) = &mut self.heartbeat
+                && let Ok(packet) = heartbeat.try_recv()
+            {
+                return Some(packet.packet);
             }
-            return Some(packet);
+            if let Some(packet) = self.pending.next() {
+                if self.pending.as_slice().is_empty() {
+                    self.pending = Vec::new().into_iter();
+                }
+                return Some(packet);
+            }
+            let queued = self.receiver.try_recv().ok()?;
+            if let Some(packet) = self.dequeue(queued) {
+                return Some(packet);
+            }
         }
-        self.receiver
-            .try_recv()
-            .ok()
-            .map(|packet| self.expand(packet))
     }
 
     pub(crate) async fn recv(&mut self) -> Option<ZCPacket> {
-        if let Some(packet) = self.try_recv() {
-            return Some(packet);
-        }
-        let packet = if let Some(heartbeat) = &mut self.heartbeat {
-            tokio::select! {
-                biased;
-                packet = heartbeat.recv() => packet,
-                packet = self.receiver.recv() => packet,
+        loop {
+            if let Some(packet) = self.try_recv() {
+                return Some(packet);
             }
-        } else {
-            self.receiver.recv().await
-        };
-        packet.map(|packet| self.expand(packet))
+            let queued = if let Some(heartbeat) = &mut self.heartbeat {
+                tokio::select! {
+                    biased;
+                    packet = heartbeat.recv() => packet,
+                    packet = self.receiver.recv() => packet,
+                }
+            } else {
+                self.receiver.recv().await
+            }?;
+            if let Some(packet) = self.dequeue(queued) {
+                return Some(packet);
+            }
+        }
     }
 
     pub(crate) fn close(&mut self) {
@@ -349,6 +403,7 @@ mod tests {
             heartbeat: None,
             base_slots: None,
             network_slots: None,
+            max_queue_delay_us: None,
         };
         sender
             .send(ZCPacket::new_with_payload(b"first"))
@@ -374,6 +429,57 @@ mod tests {
         let mut packet = ZCPacket::new_with_payload(payload);
         packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
         packet
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_data_releases_shared_slots_and_preserves_control_and_fifo() {
+        let network_slots = Arc::new(Semaphore::new(1));
+        let (mut sender, mut receiver) = MpscTunnelReceiver::channel(true);
+        sender.set_network_slots(network_slots.clone());
+        let make_packet = |kind: PacketType, payload: &[u8]| {
+            let mut packet = ZCPacket::new_with_payload(payload);
+            packet.fill_peer_manager_hdr(1, 2, kind as u8);
+            packet
+        };
+        sender
+            .try_send(make_packet(PacketType::Data, b"no RTT sample"))
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"no RTT sample");
+
+        sender.set_max_queue_delay_us(50_000);
+        sender
+            .try_send(ZCPacket::batch(vec![
+                rpc_fragment(b"rpc"),
+                rpc_fragment(b"tail"),
+            ]))
+            .unwrap();
+        for _ in 1..ORDINARY_QUEUE_CAPACITY {
+            sender
+                .try_send(make_packet(PacketType::Data, b"expired"))
+                .unwrap();
+        }
+        sender
+            .try_send(ZCPacket::batch(vec![
+                make_packet(PacketType::Data, b"expired batch head"),
+                make_packet(PacketType::Data, b"expired batch tail"),
+            ]))
+            .unwrap();
+        assert_eq!(network_slots.available_permits(), 0);
+        sender
+            .try_send(make_packet(PacketType::Ping, b"ping"))
+            .unwrap();
+        tokio::time::advance(Duration::from_millis(51)).await;
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"ping");
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"rpc");
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"tail");
+
+        sender
+            .try_send(make_packet(PacketType::Data, b"fresh"))
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"fresh");
+        assert_eq!(network_slots.available_permits(), 1);
+        assert!(receiver.try_recv().is_none());
     }
 
     #[test]

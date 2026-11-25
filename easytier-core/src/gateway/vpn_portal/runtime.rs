@@ -1736,7 +1736,7 @@ mod tests {
         })
         .await
         .expect("client packet did not reach the mesh");
-        for _ in 0..512 {
+        for _ in 0..to_runtime.capacity() {
             to_runtime.try_send(client_packet.clone()).unwrap();
             submitted += 1;
         }
