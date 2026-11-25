@@ -1470,6 +1470,10 @@ impl PeerConn {
         );
     }
 
+    pub(super) fn set_network_queue_slots(&mut self, slots: Arc<tokio::sync::Semaphore>) {
+        self.sink.set_network_slots(slots);
+    }
+
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         // A slow ordinary queue must not stall a shared packet dispatcher.
         // Drop the current item (including its whole RPC batch) on overflow.
@@ -1477,7 +1481,7 @@ impl PeerConn {
             self.sink.send(msg).await
         } else {
             let result = self.sink.try_send(msg);
-            if result.is_ok() && self.sink.ordinary_queue_is_full() {
+            if result.is_ok() && self.sink.should_yield_after_send() {
                 // Let the writer run before a ready producer fills the next
                 // turn with drops. Do not wait for capacity or retry the item.
                 tokio::task::yield_now().await;
@@ -1650,12 +1654,14 @@ mod tests {
                 tunnel_type: tunnel_type.to_owned(),
                 ..Default::default()
             };
-            let conn = PeerConn::new(
+            let mut conn = PeerConn::new(
                 1,
                 Arc::new(NoopPeerContext::default()),
                 Box::new(RingTunnel::new(local, Some(info))),
                 Arc::new(PeerSessionStore::new()),
             );
+            let network_slots = Arc::new(tokio::sync::Semaphore::new(1));
+            conn.set_network_queue_slots(network_slots.clone());
             let packet = |kind| {
                 let mut packet = ZCPacket::new_with_payload(b"queued");
                 packet.fill_peer_manager_hdr(1, 2, kind as u8);
@@ -1666,6 +1672,12 @@ mod tests {
             for _ in 0..32 {
                 conn.sink.try_send(packet(PacketType::Data)).unwrap();
             }
+            assert_eq!(network_slots.available_permits(), 1);
+            conn.send_msg(packet(PacketType::Data))
+                .now_or_never()
+                .unwrap()
+                .unwrap();
+            assert_eq!(network_slots.available_permits(), 0, "{tunnel_type}");
             let session = Arc::new(PeerSession::new(
                 2,
                 [7; 32],

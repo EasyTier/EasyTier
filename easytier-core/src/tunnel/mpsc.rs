@@ -1,8 +1,11 @@
-use std::{pin::Pin, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use futures::SinkExt;
 use tokio::{
-    sync::mpsc::{Receiver, Sender, channel, error::TrySendError},
+    sync::{
+        OwnedSemaphorePermit, Semaphore,
+        mpsc::{Receiver, Sender, channel, error::TrySendError},
+    },
     task::JoinHandle,
 };
 
@@ -13,6 +16,14 @@ use crate::{
     tunnel::{Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
+const ORDINARY_QUEUE_CAPACITY: usize = 32;
+pub(crate) const NETWORK_QUEUE_SLOTS: usize = 480;
+
+struct QueuedPacket {
+    packet: ZCPacket,
+    _slot: Option<OwnedSemaphorePermit>,
+}
+
 pub(crate) fn is_heartbeat(packet: &ZCPacket) -> bool {
     packet.peer_manager_header().is_some_and(|header| {
         header.packet_type == PacketType::Ping as u8 || header.packet_type == PacketType::Pong as u8
@@ -21,22 +32,64 @@ pub(crate) fn is_heartbeat(packet: &ZCPacket) -> bool {
 
 #[derive(Clone)]
 pub struct MpscTunnelSender {
-    sender: Sender<ZCPacket>,
-    heartbeat: Option<Sender<ZCPacket>>,
+    sender: Sender<QueuedPacket>,
+    heartbeat: Option<Sender<QueuedPacket>>,
+    base_slots: Option<Arc<Semaphore>>,
+    network_slots: Option<Arc<Semaphore>>,
 }
 
 impl MpscTunnelSender {
-    fn sender(&self, item: &ZCPacket) -> &Sender<ZCPacket> {
+    pub(crate) fn set_network_slots(&mut self, slots: Arc<Semaphore>) {
+        self.network_slots = Some(slots);
+    }
+
+    fn prepare(
+        &self,
+        packet: ZCPacket,
+    ) -> Result<(&Sender<QueuedPacket>, QueuedPacket), TunnelError> {
         if let Some(heartbeat) = &self.heartbeat
-            && is_heartbeat(item)
+            && is_heartbeat(&packet)
         {
-            return heartbeat;
+            return Ok((
+                heartbeat,
+                QueuedPacket {
+                    packet,
+                    _slot: None,
+                },
+            ));
         }
-        &self.sender
+        if self.sender.is_closed() {
+            return Err(TunnelError::Shutdown);
+        }
+        let slot = if let Some(base_slots) = &self.base_slots {
+            Some(
+                base_slots
+                    .clone()
+                    .try_acquire_owned()
+                    .ok()
+                    .or_else(|| {
+                        self.network_slots
+                            .as_ref()?
+                            .clone()
+                            .try_acquire_owned()
+                            .ok()
+                    })
+                    .ok_or(TunnelError::BufferFull)?,
+            )
+        } else {
+            None
+        };
+        Ok((
+            &self.sender,
+            QueuedPacket {
+                packet,
+                _slot: slot,
+            },
+        ))
     }
 
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
-        let sender = self.sender(&item);
+        let (sender, item) = self.prepare(item)?;
         match sender.try_send(item) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(item)) => {
@@ -47,28 +100,33 @@ impl MpscTunnelSender {
     }
 
     pub fn try_send(&self, item: ZCPacket) -> Result<(), TunnelError> {
-        self.sender(&item).try_send(item).map_err(|e| match e {
+        let (sender, item) = self.prepare(item)?;
+        sender.try_send(item).map_err(|e| match e {
             TrySendError::Full(_) => TunnelError::BufferFull,
             TrySendError::Closed(_) => TunnelError::Shutdown,
         })
     }
 
-    pub(crate) fn ordinary_queue_is_full(&self) -> bool {
-        self.sender.capacity() == 0
+    pub(crate) fn should_yield_after_send(&self) -> bool {
+        self.sender.max_capacity() - self.sender.capacity() == ORDINARY_QUEUE_CAPACITY
     }
 }
 
 /// Only connection writers expand batches. Internal RPC rings keep one entry
 /// per RPC. Ordinary fragments stay FIFO, including pre-encrypted relay traffic.
 pub(crate) struct MpscTunnelReceiver {
-    receiver: Receiver<ZCPacket>,
-    heartbeat: Option<Receiver<ZCPacket>>,
+    receiver: Receiver<QueuedPacket>,
+    heartbeat: Option<Receiver<QueuedPacket>>,
     pending: std::vec::IntoIter<ZCPacket>,
 }
 
 impl MpscTunnelReceiver {
     pub(crate) fn channel(connection: bool) -> (MpscTunnelSender, Self) {
-        let (sender, receiver) = channel(32);
+        let (sender, receiver) = channel(if connection {
+            ORDINARY_QUEUE_CAPACITY + NETWORK_QUEUE_SLOTS
+        } else {
+            ORDINARY_QUEUE_CAPACITY
+        });
         let (heartbeat_tx, heartbeat_rx) = if connection {
             let (tx, rx) = channel(8);
             (Some(tx), Some(rx))
@@ -79,6 +137,8 @@ impl MpscTunnelReceiver {
             MpscTunnelSender {
                 sender,
                 heartbeat: heartbeat_tx,
+                base_slots: connection.then(|| Arc::new(Semaphore::new(ORDINARY_QUEUE_CAPACITY))),
+                network_slots: None,
             },
             Self {
                 receiver,
@@ -88,7 +148,7 @@ impl MpscTunnelReceiver {
         )
     }
 
-    fn expand(&mut self, mut packet: ZCPacket) -> ZCPacket {
+    fn expand(&mut self, QueuedPacket { mut packet, .. }: QueuedPacket) -> ZCPacket {
         if self.heartbeat.is_some() {
             self.pending = packet.take_batch();
         }
@@ -99,9 +159,12 @@ impl MpscTunnelReceiver {
         if let Some(heartbeat) = &mut self.heartbeat
             && let Ok(packet) = heartbeat.try_recv()
         {
-            return Some(packet);
+            return Some(packet.packet);
         }
         if let Some(packet) = self.pending.next() {
+            if self.pending.as_slice().is_empty() {
+                self.pending = Vec::new().into_iter();
+            }
             return Some(packet);
         }
         self.receiver
@@ -143,15 +206,22 @@ pub struct MpscTunnel<T> {
 
 impl<T: Tunnel> MpscTunnel<T> {
     pub fn new(tunnel: T, send_timeout: Option<Duration>) -> Self {
-        Self::new_inner(tunnel, send_timeout, false)
+        Self::new_inner(tunnel, send_timeout, MpscTunnelReceiver::channel(false))
     }
 
     pub(crate) fn new_peer_conn(tunnel: T, send_timeout: Duration) -> Self {
-        Self::new_inner(tunnel, Some(send_timeout), true)
+        Self::new_inner(
+            tunnel,
+            Some(send_timeout),
+            MpscTunnelReceiver::channel(true),
+        )
     }
 
-    fn new_inner(tunnel: T, send_timeout: Option<Duration>, connection: bool) -> Self {
-        let (tx, mut rx) = MpscTunnelReceiver::channel(connection);
+    fn new_inner(
+        tunnel: T,
+        send_timeout: Option<Duration>,
+        (tx, mut rx): (MpscTunnelSender, MpscTunnelReceiver),
+    ) -> Self {
         let (stream, mut sink) = tunnel.split();
 
         let task = tokio::spawn(async move {
@@ -277,6 +347,8 @@ mod tests {
         let sender = MpscTunnelSender {
             sender: tx,
             heartbeat: None,
+            base_slots: None,
+            network_slots: None,
         };
         sender
             .send(ZCPacket::new_with_payload(b"first"))
@@ -291,17 +363,105 @@ mod tests {
                 .is_err()
         );
 
-        assert_eq!(rx.recv().await.unwrap().payload(), b"first");
+        assert_eq!(rx.recv().await.unwrap().packet.payload(), b"first");
         tokio::time::timeout(Duration::from_secs(1), &mut blocked_send)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(rx.recv().await.unwrap().payload(), b"second");
+        assert_eq!(rx.recv().await.unwrap().packet.payload(), b"second");
     }
     fn rpc_fragment(payload: &[u8]) -> ZCPacket {
         let mut packet = ZCPacket::new_with_payload(payload);
         packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
         packet
+    }
+
+    #[test]
+    fn connections_compete_for_shared_slots_and_keep_their_base() {
+        let network_slots = Arc::new(Semaphore::new(1));
+        let (mut first, first_rx) = MpscTunnelReceiver::channel(true);
+        let (mut second, second_rx) = MpscTunnelReceiver::channel(true);
+        for sender in [&mut first, &mut second] {
+            sender.set_network_slots(network_slots.clone());
+            for _ in 0..ORDINARY_QUEUE_CAPACITY {
+                sender.try_send(rpc_fragment(b"base")).unwrap();
+            }
+        }
+        assert_eq!(network_slots.available_permits(), 1);
+
+        let barrier = std::sync::Barrier::new(2);
+        let send = |sender: &MpscTunnelSender| {
+            barrier.wait();
+            sender.try_send(rpc_fragment(b"borrow"))
+        };
+        let (first_result, second_result) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| send(&first));
+            let second = send(&second);
+            (first.join().unwrap(), second)
+        });
+        let (winner_rx, loser, loser_rx) = match (first_result, second_result) {
+            (Ok(()), Err(TunnelError::BufferFull)) => (first_rx, second, second_rx),
+            (Err(TunnelError::BufferFull), Ok(())) => (second_rx, first, first_rx),
+            results => panic!("expected exactly one borrower, got {results:?}"),
+        };
+        assert_eq!(network_slots.available_permits(), 0);
+
+        let (mut newcomer, _newcomer_rx) = MpscTunnelReceiver::channel(true);
+        newcomer.set_network_slots(network_slots.clone());
+        let (mut other, _other_rx) = MpscTunnelReceiver::channel(true);
+        other.set_network_slots(Arc::new(Semaphore::new(1)));
+        for _ in 0..ORDINARY_QUEUE_CAPACITY {
+            newcomer.try_send(rpc_fragment(b"base")).unwrap();
+            other.try_send(rpc_fragment(b"base")).unwrap();
+        }
+        assert!(matches!(
+            newcomer.try_send(rpc_fragment(b"borrow")),
+            Err(TunnelError::BufferFull)
+        ));
+        other.try_send(rpc_fragment(b"borrow")).unwrap();
+
+        drop(winner_rx);
+        let (channel, queued) = loser.prepare(rpc_fragment(b"borrow")).unwrap();
+        assert_eq!(network_slots.available_permits(), 0);
+        drop(loser_rx);
+        assert!(matches!(
+            channel.try_send(queued),
+            Err(TrySendError::Closed(_))
+        ));
+        assert_eq!(network_slots.available_permits(), 1);
+        newcomer.try_send(rpc_fragment(b"borrow")).unwrap();
+    }
+
+    #[test]
+    fn borrowed_rpc_batch_uses_one_slot_and_expands_in_fifo_order() {
+        let network_slots = Arc::new(Semaphore::new(1));
+        let (mut sender, mut receiver) = MpscTunnelReceiver::channel(true);
+        sender.set_network_slots(network_slots.clone());
+        for _ in 0..ORDINARY_QUEUE_CAPACITY {
+            sender.try_send(rpc_fragment(b"base")).unwrap();
+        }
+
+        let batch = ZCPacket::batch(vec![rpc_fragment(b"first"), rpc_fragment(b"last")]);
+        sender.try_send(batch).unwrap();
+        assert_eq!(network_slots.available_permits(), 0);
+        assert!(matches!(
+            sender.try_send(rpc_fragment(b"full")),
+            Err(TunnelError::BufferFull)
+        ));
+
+        for _ in 0..ORDINARY_QUEUE_CAPACITY {
+            assert_eq!(receiver.try_recv().unwrap().payload(), b"base");
+        }
+        assert_eq!(network_slots.available_permits(), 0);
+        assert_eq!(receiver.try_recv().unwrap().payload(), b"first");
+        assert_eq!(network_slots.available_permits(), 1);
+        sender.try_send(rpc_fragment(b"next")).unwrap();
+        let mut pong = rpc_fragment(b"pong");
+        pong.fill_peer_manager_hdr(1, 2, PacketType::Pong as u8);
+        sender.try_send(pong).unwrap();
+        assert_eq!(receiver.try_recv().unwrap().payload(), b"pong");
+        assert_eq!(receiver.try_recv().unwrap().payload(), b"last");
+        assert_eq!(receiver.try_recv().unwrap().payload(), b"next");
     }
 
     #[tokio::test(start_paused = true)]

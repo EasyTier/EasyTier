@@ -72,7 +72,10 @@ impl PeerMap {
         self.context.issue_event(PeerEvent::PeerAdded(peer_id));
     }
 
-    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
+    pub async fn add_new_peer_conn(&self, mut peer_conn: PeerConn) -> Result<(), Error> {
+        if let Some(slots) = self.context.send_queue_slots() {
+            peer_conn.set_network_queue_slots(slots);
+        }
         let _ = self.maintain_alive_client_urls(&peer_conn);
         let peer_id = peer_conn.get_peer_id();
         let no_entry = self.peer_map.get(&peer_id).is_none();
