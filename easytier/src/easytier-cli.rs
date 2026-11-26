@@ -4105,7 +4105,6 @@ async fn main() -> Result<(), Error> {
                             .disable_restart_on_failure
                             .unwrap_or(false),
                     };
-                    println!("install_options: {:#?}", install_options);
                     service.install(&install_options)?;
                 }
                 ServiceSubCommand::Uninstall => {
