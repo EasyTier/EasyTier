@@ -190,6 +190,7 @@ main() {
   cat >"$TMPDIR_PATH/inst-a.toml" <<'EOF'
 instance_name = "e2e-inst-a"
 listeners = []
+peer = [{ uri = "tcp://127.0.0.1:11001" }]
 
 [network_identity]
 network_name = "e2e-net-a"
@@ -203,6 +204,7 @@ EOF
   cat >"$TMPDIR_PATH/inst-b.toml" <<'EOF'
 instance_name = "e2e-inst-b"
 listeners = []
+peer = [{ uri = "tcp://127.0.0.1:11002" }]
 
 [network_identity]
 network_name = "e2e-net-b"
@@ -290,6 +292,19 @@ import json
 import os
 
 assert json.loads(os.environ["JSON_PAYLOAD"]) == {"credentials": []}
+PY
+
+  local connector_json
+  run_cmd connector_json \
+    "Case 11: connector peer filter applies to each instance" \
+    "$CLI_BIN" -p "127.0.0.1:${rpc_port}" -o json connector --peers tcp://127.0.0.1:11001
+  JSON_PAYLOAD="$connector_json" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+
+urls = {item["instance_name"]: [c["url"]["url"] for c in item["result"]]
+        for item in json.loads(os.environ["JSON_PAYLOAD"])}
+assert urls == {"e2e-inst-a": ["tcp://127.0.0.1:11001"], "e2e-inst-b": []}, urls
 PY
 
   print_section "Result"
