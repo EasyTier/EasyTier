@@ -6,9 +6,46 @@ pub mod tun_watcher;
 
 use easytier::instance::factory::{NativeInstanceManager, native_instance_manager_with_runtime};
 use once_cell::sync::Lazy;
-use std::sync::Arc;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::runtime::{Builder, Runtime};
+
+const DEFAULT_STATE_SUBDIR: &str = "easytier-state";
+
+static STATE_DIR: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None));
+
+pub fn set_state_dir(path: PathBuf) -> bool {
+    if path.as_os_str().is_empty() {
+        return false;
+    }
+    if fs::create_dir_all(&path).is_err() {
+        return false;
+    }
+    if let Ok(mut guard) = STATE_DIR.lock() {
+        *guard = Some(path);
+        return true;
+    }
+    false
+}
+
+pub fn set_default_state_dir_from_root(root_dir: &str) {
+    let trimmed = root_dir.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let default_dir = Path::new(trimmed).join(DEFAULT_STATE_SUBDIR);
+    if let Ok(mut guard) = STATE_DIR.lock()
+        && guard.is_none()
+    {
+        *guard = Some(default_dir);
+    }
+}
+
+pub fn get_state_dir() -> Option<PathBuf> {
+    STATE_DIR.lock().ok().and_then(|guard| guard.clone())
+}
 
 /// Compact Tokio runtime for HarmonyOS control-plane tasks (event watchers,
 /// local authoritative DNS, web-client, and N-API bridge calls).

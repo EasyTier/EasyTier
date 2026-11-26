@@ -8,6 +8,10 @@ use crate::runtime::state::{
     runtime_instance_from_running_info,
 };
 use crate::runtime::{ASYNC_RUNTIME, INSTANCE_MANAGER, local_dns, tun_watcher};
+use easytier::common::config::ConfigLoader;
+use easytier::proto::api::manage::NetworkConfig;
+use easytier_core::config::api_input::NetworkConfigExt;
+use uuid::Uuid;
 
 pub(crate) fn stop_kernel(
     config_id: String,
@@ -137,23 +141,42 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
     for config_id in active_config_ids {
         if let Some(info) = live_infos.remove(&config_id) {
             let snapshot = get_runtime_config_snapshot(&config_id);
+            let live_loader = snapshot.is_none().then(|| {
+                Uuid::parse_str(&config_id)
+                    .ok()
+                    .and_then(|id| INSTANCE_MANAGER.config(id))
+            });
+            let live_loader = live_loader.flatten();
             let display_name = snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.display_name.clone())
+                .or_else(|| {
+                    live_loader
+                        .as_ref()
+                        .map(|loader| loader.get_network_identity().network_name)
+                        .filter(|name| !name.trim().is_empty())
+                })
                 .unwrap_or_else(|| config_id.clone());
+            let effective_config = snapshot
+                .map(|snapshot| snapshot.config)
+                .or_else(|| {
+                    live_loader.and_then(|loader| NetworkConfig::new_from_config(loader).ok())
+                });
             instances.push(runtime_instance_from_running_info(
                 config_id,
                 display_name,
-                snapshot.map(|snapshot| snapshot.config),
+                effective_config,
                 info,
             ));
         } else if let Some(snapshot) = get_runtime_config_snapshot(&config_id) {
-            instances.push(runtime_instance_from_config_snapshot(
+            let mut inst = runtime_instance_from_config_snapshot(
                 config_id,
                 snapshot.display_name,
                 snapshot.config,
                 true,
-            ));
+            );
+            inst.tun_required = false;
+            instances.push(inst);
         } else {
             let tun_attached = is_tun_attached(&config_id);
             instances.push(RuntimeInstanceState {

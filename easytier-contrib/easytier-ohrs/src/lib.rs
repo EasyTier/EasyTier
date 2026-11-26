@@ -37,9 +37,9 @@ use config::share_link::{
     build_config_share_link_from_json as build_config_share_link_inner,
     parse_config_share_link as parse_config_share_link_inner,
 };
-use easytier::common::MachineIdOptions;
 use easytier::common::config::ConfigLoader;
 use easytier::common::constants::EASYTIER_VERSION;
+use easytier::common::{MachineIdOptions, resolve_machine_id};
 use easytier::proto::api::manage::{NetworkConfig, NetworkingMethod};
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
 use easytier_core::config::api_input::NetworkConfigExt;
@@ -184,6 +184,15 @@ fn stop_web_client(config_id: &str) -> bool {
         })
 }
 
+fn web_client_machine_id_options(explicit_machine_id: Option<String>) -> MachineIdOptions {
+    MachineIdOptions {
+        explicit_machine_id: explicit_machine_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        state_dir: runtime::get_state_dir(),
+    }
+}
+
 fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
     if !INSTANCE_MANAGER.instance_ids().is_empty() {
         ohrs_log_error!("[Rust] there is a running instance!");
@@ -201,10 +210,11 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
         .map(|mode| mode.enabled)
         .unwrap_or(false);
     let hostname = config.hostname.clone();
+    let machine_id_opts = web_client_machine_id_options(None);
 
     let client = ASYNC_RUNTIME.block_on(run_web_client(
         &config_server_url,
-        MachineIdOptions::default(),
+        machine_id_opts.clone(),
         hostname,
         secure_mode,
         INSTANCE_MANAGER.clone(),
@@ -214,7 +224,11 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
     let client = match client {
         Ok(client) => client,
         Err(err) => {
-            ohrs_log_error!("[Rust] start config server failed {}", err);
+            ohrs_log_error!(
+                "[Rust] start config server failed (state_dir={:?}): {:#}",
+                machine_id_opts.state_dir,
+                err
+            );
             return false;
         }
     };
@@ -253,13 +267,10 @@ fn run_config_server_client(
     let _ = stop_web_client(PRO_CONFIG_SERVER_CLIENT_ID);
     let hooks = Arc::new(TrackedWebClientHooks::default());
 
-    let machine_id_opts = MachineIdOptions {
-        explicit_machine_id: machine_id.filter(|value| !value.trim().is_empty()),
-        state_dir: None,
-    };
+    let machine_id_opts = web_client_machine_id_options(machine_id);
     let client = ASYNC_RUNTIME.block_on(run_web_client(
         trimmed_url,
-        machine_id_opts,
+        machine_id_opts.clone(),
         hostname.filter(|value| !value.trim().is_empty()),
         secure_mode,
         INSTANCE_MANAGER.clone(),
@@ -269,7 +280,11 @@ fn run_config_server_client(
     let client = match client {
         Ok(client) => client,
         Err(err) => {
-            ohrs_log_error!("[Rust] start pro config server client failed {}", err);
+            ohrs_log_error!(
+                "[Rust] start pro config server client failed (state_dir={:?}): {:#}",
+                machine_id_opts.state_dir,
+                err
+            );
             return false;
         }
     };
@@ -601,6 +616,54 @@ pub fn get_local_dns_state_json() -> String {
     serde_json::to_string(&state).unwrap_or_else(|_| "{}".to_string())
 }
 
+#[cfg_attr(not(test), napi)]
+pub fn set_state_dir(state_dir: String) -> bool {
+    let trimmed = state_dir.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    runtime::set_state_dir(std::path::PathBuf::from(trimmed))
+}
+
+#[cfg_attr(not(test), napi)]
+pub fn get_machine_id() -> Option<String> {
+    let opts = web_client_machine_id_options(None);
+    resolve_machine_id(&opts).ok().map(|id| id.to_string())
+}
+
 pub(crate) fn collect_runtime_state_inner() -> RuntimeAggregateState {
     exports::runtime_api::collect_runtime_state()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_client_resolves_and_persists_machine_id_in_state_dir() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "easytier-ohrs-machine-id-test-{}",
+            Uuid::new_v4()
+        ));
+        let state_dir = temp_root.join("easytier-state");
+        assert!(set_state_dir(state_dir.to_string_lossy().into_owned()));
+
+        let first = get_machine_id().expect("machine id should resolve inside state_dir");
+        let second = get_machine_id().expect("machine id should stay stable across reads");
+        assert_eq!(first, second);
+        assert!(state_dir.join("machine_id").is_file());
+
+        let config_id = Uuid::new_v4().to_string();
+        let config = NetworkConfig {
+            instance_id: Some(config_id.clone()),
+            networking_method: Some(NetworkingMethod::PublicServer as i32),
+            public_server_url: Some(format!("ring://{}/test-token", Uuid::new_v4())),
+            hostname: Some("ohos-test".to_string()),
+            ..Default::default()
+        };
+        assert!(run_config_server_instance(&config_id, &config));
+        assert!(stop_web_client(&config_id));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
 }

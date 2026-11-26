@@ -234,6 +234,7 @@ pub(crate) fn record_core_log(level: i32, target: &str, message: &str) {
 #[allow(dead_code)]
 #[cfg_attr(not(test), napi)]
 pub fn init_log_manager(root_dir: String, process_name: String) -> bool {
+    crate::runtime::set_default_state_dir_from_root(&root_dir);
     let dir = log_dir(&root_dir);
     if fs::create_dir_all(&dir).is_err() {
         return false;
