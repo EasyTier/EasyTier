@@ -120,6 +120,9 @@ core_clap:
   default_protocol:
     en: "default protocol to use when connecting to peers"
     zh-CN: "连接到对等节点时使用的默认协议"
+  enable_encryption:
+    en: "encrypt traffic between peers (enabled by default); peers must use the same setting"
+    zh-CN: "加密对等节点之间的流量（默认启用）；各节点的设置必须一致"
   disable_encryption:
     en: "disable encryption for peers communication, default is false, must be same with peers"
     zh-CN: "禁用对等节点通信的加密，默认为false，必须与对等节点相同"
