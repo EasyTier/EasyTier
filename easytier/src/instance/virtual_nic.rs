@@ -1214,6 +1214,38 @@ impl NicCtx {
         Ok(())
     }
 
+    #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+    async fn monitor_static_ipv4(&mut self, ip: Ipv4Inet) -> Result<(), Error> {
+        use std::time::Duration;
+
+        let ctx = self.global_ctx.clone();
+        let name = self.tun_ifname().await?;
+        let index = ctx.net_ns.run(|| IfConfiger::get_interface_index(&name))?;
+        self.tasks.spawn(async move {
+            const PERIOD: Duration = Duration::from_secs(10);
+            let mut delay = PERIOD;
+            loop {
+                tokio::time::sleep(delay).await;
+                if ctx.get_ipv4() != Some(ip) || ctx.config.get_dhcp() {
+                    break;
+                }
+                match ctx.net_ns.run(|| IfConfiger::restore_missing_ipv4(&name, index, ip)) {
+                    Ok(restored) => {
+                        if restored {
+                            tracing::warn!(ifname = %name, %ip, "restored missing TUN IPv4 address");
+                        }
+                        delay = PERIOD;
+                    }
+                    Err(err) => {
+                        delay = (delay * 2).min(Duration::from_secs(60));
+                        tracing::warn!(ifname = %name, %ip, ?err, ?delay, "failed to reconcile TUN IPv4 address");
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
     async fn do_forward_nic_to_peers(ret: ZCPacket, packet_plane: &CorePacketPlane) {
         if ret.payload().is_empty() {
             return;
@@ -1599,6 +1631,10 @@ impl NicCtx {
         // Assign IPv4 address if provided
         if let Some(ipv4_addr) = ipv4_addr {
             self.assign_ipv4_to_tun_device(ipv4_addr).await?;
+            #[cfg(all(target_os = "linux", feature = "linux-netlink", not(mobile)))]
+            if !self.global_ctx.config.get_dhcp() {
+                self.monitor_static_ipv4(ipv4_addr).await?;
+            }
             #[cfg(target_os = "windows")]
             self.start_windows_udp_broadcast_relay(ipv4_addr);
         }

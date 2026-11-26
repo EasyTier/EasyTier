@@ -155,6 +155,38 @@ impl NetlinkIfConfiger {
         Err(Error::NotFound)
     }
 
+    pub(crate) fn restore_missing_ipv4(
+        name: &str,
+        index: u32,
+        ip: Ipv4Inet,
+    ) -> Result<bool, Error> {
+        if Self::list_addresses(name)?.contains(&ip.into()) {
+            return Ok(false);
+        }
+        // Use the original ifindex: a replacement interface may reuse the name.
+        Self::add_ipv4_at_index(index, ip.address(), ip.network_length())?;
+        Ok(true)
+    }
+
+    fn add_ipv4_at_index(index: u32, address: Ipv4Addr, cidr_prefix: u8) -> Result<(), Error> {
+        let broadcast = if cidr_prefix == 32 {
+            address
+        } else {
+            let ip_addr = u32::from(address);
+            Ipv4Addr::from((0xffff_ffff_u32) >> u32::from(cidr_prefix) | ip_addr)
+        };
+        let message =
+            AddressMessage::new(libc::AF_INET as u8, index, cidr_prefix, IpAddr::V4(address))
+                .local(IpAddr::V4(address))
+                .broadcast(broadcast);
+        let request = message_request(
+            RTM_NEWADDR,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
+    }
+
     fn remove_one_ip(name: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<(), Error> {
         let message = AddressMessage::new(
             libc::AF_INET as u8,
@@ -452,26 +484,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let broadcast = if cidr_prefix == 32 {
-            address
-        } else {
-            let ip_addr = u32::from(address);
-            Ipv4Addr::from((0xffff_ffff_u32) >> u32::from(cidr_prefix) | ip_addr)
-        };
-        let message = AddressMessage::new(
-            libc::AF_INET as u8,
-            Self::get_interface_index(name)?,
-            cidr_prefix,
-            IpAddr::V4(address),
-        )
-        .local(IpAddr::V4(address))
-        .broadcast(broadcast);
-        let request = message_request(
-            RTM_NEWADDR,
-            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
-            &message,
-        )?;
-        send_netlink_req_and_wait_ack(request)
+        Self::add_ipv4_at_index(Self::get_interface_index(name)?, address, cidr_prefix)
     }
 
     async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
