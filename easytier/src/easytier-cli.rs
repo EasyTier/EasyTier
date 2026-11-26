@@ -3914,11 +3914,7 @@ async fn main() -> Result<(), Error> {
     rust_i18n::set_locale(&locale);
     let cli = Cli::parse();
 
-    let client = runtime_rpc_client(
-        format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
-            .parse()
-            .unwrap(),
-    );
+    let client = runtime_rpc_client(format!("tcp://{}", cli.rpc_portal).parse().unwrap());
     let handler = CommandHandler {
         client: Arc::new(tokio::sync::Mutex::new(client)),
         verbose: cli.verbose,
