@@ -1,4 +1,4 @@
-use crate::runtime::state::runtime_state::RuntimeInstanceState;
+use super::state::RuntimeInstanceState;
 use ipnet::IpNet;
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -93,7 +93,7 @@ pub fn aggregate_requested_tun_routes(instances: &[RuntimeInstanceState]) -> Vec
 #[cfg(test)]
 mod tests {
     use super::{aggregate_tun_routes, simplify_routes};
-    use crate::runtime::state::runtime_state::{RouteView, runtime_instance_from_config_snapshot};
+    use crate::runtime::state::{RouteView, runtime_instance_from_config_snapshot};
     use easytier::proto::api::manage::NetworkConfig;
 
     #[test]
