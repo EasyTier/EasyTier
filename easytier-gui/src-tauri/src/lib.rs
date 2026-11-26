@@ -823,6 +823,16 @@ mod manager {
                 .post_remote_remove_network_instances_hook(&manager::GuiHost(self.app.clone()), ids)
                 .await
         }
+
+        async fn post_disable_network_instances(&self, ids: &[uuid::Uuid]) -> Result<(), String> {
+            let client_manager = get_client_manager!()?;
+            client_manager
+                .post_remote_disable_network_instances_hook(
+                    &manager::GuiHost(self.app.clone()),
+                    ids,
+                )
+                .await
+        }
     }
 }
 

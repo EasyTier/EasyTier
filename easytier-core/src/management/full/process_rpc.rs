@@ -51,6 +51,15 @@ pub trait InstanceMutationHooks: Send + Sync + 'static {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    /// The manager stopped these Instances but keeps their configuration.
+    /// A Host without stored profiles treats this like a removal.
+    async fn post_disable_network_instances(
+        &self,
+        instance_ids: &[uuid::Uuid],
+    ) -> Result<(), String> {
+        self.post_remove_network_instances(instance_ids).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -390,6 +399,23 @@ where
         &self,
         requested: Vec<uuid::Uuid>,
     ) -> anyhow::Result<InstanceMutationResult> {
+        self.remove_network_instances(requested, false).await
+    }
+
+    /// Stops the Instances like a deletion, but tells the Host that the manager
+    /// keeps their configuration.
+    pub async fn disable_network_instances(
+        &self,
+        requested: Vec<uuid::Uuid>,
+    ) -> anyhow::Result<InstanceMutationResult> {
+        self.remove_network_instances(requested, true).await
+    }
+
+    async fn remove_network_instances(
+        &self,
+        requested: Vec<uuid::Uuid>,
+        disable_only: bool,
+    ) -> anyhow::Result<InstanceMutationResult> {
         let _mutation = self.mutation_lock.lock().await;
         let requested = requested.into_iter().collect::<HashSet<_>>();
         let remote_managed = self.hooks.manages_remote_config_instances();
@@ -417,7 +443,11 @@ where
             .instances
             .delete_network_instances(removed.clone())
             .await?;
-        self.notify_removed_instances(&removed).await?;
+        if disable_only {
+            self.notify_disabled_instances(&removed).await?;
+        } else {
+            self.notify_removed_instances(&removed).await?;
+        }
         for path in files {
             if remote_managed && self.storage.inspect(&path).await.is_read_only() {
                 continue;
@@ -516,6 +546,16 @@ where
                 anyhow::bail!("post-remove hook failed: {error}");
             }
             tracing::warn!(%error, "post-remove hook failed");
+        }
+        Ok(())
+    }
+
+    async fn notify_disabled_instances(&self, disabled: &[uuid::Uuid]) -> anyhow::Result<()> {
+        if let Err(error) = self.hooks.post_disable_network_instances(disabled).await {
+            if self.hooks.manages_remote_config_instances() {
+                anyhow::bail!("post-disable hook failed: {error}");
+            }
+            tracing::warn!(%error, "post-disable hook failed");
         }
         Ok(())
     }
@@ -682,12 +722,18 @@ where
         _: BaseController,
         request: DeleteNetworkInstanceRequest,
     ) -> rpc_types::error::Result<DeleteNetworkInstanceResponse> {
+        let disable_only = request.disable_only;
         let requested = request.inst_ids.into_iter().map(Into::into).collect();
         let management = self.management.clone();
-        let result =
-            tokio::spawn(async move { management.delete_network_instances(requested).await })
-                .await
-                .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
+        let result = tokio::spawn(async move {
+            if disable_only {
+                management.disable_network_instances(requested).await
+            } else {
+                management.delete_network_instances(requested).await
+            }
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
         Ok(DeleteNetworkInstanceResponse {
             remain_inst_ids: result
                 .remaining_instance_ids

@@ -771,6 +771,7 @@ async fn cleanup_stale_web_source_instances(
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: should_delete_ids,
+                    disable_only: false,
                 },
             )
             .await;
@@ -855,6 +856,7 @@ async fn cleanup_patch_deleted_instances(
                 inst_ids: managed_config::parse_instance_ids(
                     running_web_instance_ids.iter().cloned(),
                 ),
+                disable_only: false,
             },
         )
         .await;

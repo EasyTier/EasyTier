@@ -43,6 +43,7 @@ impl InstanceControl for RpcInstanceControl {
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: ids.iter().copied().map(Into::into).collect(),
+                    disable_only: false,
                 },
             )
             .await?;

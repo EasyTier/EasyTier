@@ -717,6 +717,20 @@ impl<H: ManagementHost> ApplicationClient<H> {
         Ok(())
     }
 
+    pub async fn post_remote_disable_network_instances_hook(
+        &self,
+        app: &H,
+        ids: &[uuid::Uuid],
+    ) -> Result<(), String> {
+        // The web client only stopped these instances; keep their profiles as stopped ones.
+        for id in ids {
+            self.storage.record_running(*id, false);
+        }
+        let effect = self.notify_vpn_stop_if_no_tun(app);
+        self.complete(app, true, vec![effect]);
+        Ok(())
+    }
+
     pub async fn post_stop_network_instances_hook(&self, app: &H) -> Result<(), String> {
         self.notify_vpn_stop_if_no_tun(app)?;
         Ok(())
@@ -1174,6 +1188,24 @@ mod tests {
             assert!(!client.storage.enabled_networks.contains(&id));
             assert!(host.0.lock().unwrap().contains(&"vpn_service_stop".into()));
         }
+    }
+
+    #[tokio::test]
+    async fn web_disable_keeps_the_profile_as_stopped() {
+        let (client, _, repository) = fault_client();
+        let host = TestHost::default();
+        let id = add(&client, PersistedConfigSource::Web, false);
+        repository.fail_configs.store(true, Ordering::SeqCst);
+
+        client
+            .post_remote_disable_network_instances_hook(&host, &[id])
+            .await
+            .unwrap();
+
+        assert!(client.storage.network_configs.contains_key(&id));
+        assert!(!client.storage.enabled_networks.contains(&id));
+        assert!(!client.storage.desired_networks.contains(&id));
+        assert!(host.0.lock().unwrap().contains(&"vpn_service_stop".into()));
     }
 
     #[tokio::test]
