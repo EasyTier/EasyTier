@@ -4,17 +4,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    host::dns::{DnsQuery, DnsResolver},
-    socket::{
-        IpVersion, SocketContext,
-        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
-    },
-};
-
 use super::{
     codec::{AddrError, Result, SocksError, TargetAddr, new_udp_header, parse_udp_request},
     server::{Socks5ServerRuntime, Socks5UdpAssociation},
+};
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
+use crate::{
+    host::dns::{DnsQuery, DnsResolver},
+    socket::{
+        IpVersion,
+        udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
+    },
 };
 
 /// Portable SOCKS command runtime backed exclusively by host capabilities.
@@ -65,16 +66,23 @@ where
         }
     }
 
-    fn udp_bind_options(&self) -> UdpBindOptions {
-        UdpBindOptions::socks5()
-            .with_need_protect(false)
-            .with_context(self.socket_context.clone().with_ip_version(IpVersion::V6))
-            .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
+    fn udp_bind_options(&self) -> BindConfig {
+        BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            need_protect: false,
+            context: SocketContext {
+                ip_version: IpVersion::V6,
+                ..self.socket_context.clone()
+            },
+            local_addr: Some(SocketAddr::V6(SocketAddrV6::new(
                 Ipv6Addr::UNSPECIFIED,
                 0,
                 0,
                 0,
-            ))))
+            ))),
+            ..BindConfig::default()
+        }
     }
 }
 
@@ -124,16 +132,21 @@ where
     async fn transfer(self: Box<Self>) -> Result<()> {
         let outbound = self
             .host
-            .bind_udp(
-                UdpBindOptions::socks5()
-                    .with_context(self.socket_context.clone().with_ip_version(IpVersion::V6))
-                    .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
-                        Ipv6Addr::UNSPECIFIED,
-                        0,
-                        0,
-                        0,
-                    )))),
-            )
+            .bind_udp(BindConfig {
+                bind_device: Some("".into()),
+                reuse_addr: Some(false),
+                context: SocketContext {
+                    ip_version: IpVersion::V6,
+                    ..self.socket_context.clone()
+                },
+                local_addr: Some(SocketAddr::V6(SocketAddrV6::new(
+                    Ipv6Addr::UNSPECIFIED,
+                    0,
+                    0,
+                    0,
+                ))),
+                ..BindConfig::default()
+            })
             .await
             .map_err(SocksError::Other)?;
         tokio::try_join!(
@@ -252,14 +265,14 @@ mod tests {
     #[derive(Default)]
     struct MockHost {
         binds: AtomicUsize,
-        options: Mutex<Vec<UdpBindOptions>>,
+        options: Mutex<Vec<BindConfig>>,
     }
 
     #[async_trait::async_trait]
     impl VirtualUdpSocketFactory for MockHost {
         type Socket = MockSocket;
 
-        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
             self.binds.fetch_add(1, Ordering::Relaxed);
             self.options.lock().unwrap().push(options);
             Ok(Arc::new(MockSocket::default()))
@@ -269,7 +282,10 @@ mod tests {
     #[tokio::test]
     async fn resolves_and_binds_only_through_host_capabilities() {
         let host = Arc::new(MockHost::default());
-        let context = SocketContext::default().with_socket_mark(Some(7));
+        let context = SocketContext {
+            socket_mark: Some(7),
+            ..SocketContext::default()
+        };
         let runtime =
             HostSocks5ServerRuntime::new(host.clone(), Arc::new(StaticDns), context.clone());
 
@@ -284,10 +300,8 @@ mod tests {
         assert_eq!(association.local_addr().unwrap().port(), 42000);
         assert_eq!(host.binds.load(Ordering::Relaxed), 1);
         let options = host.options.lock().unwrap();
-        assert_eq!(
-            options[0].purpose,
-            crate::socket::udp::UdpSocketPurpose::Socks5
-        );
+        assert_eq!(options[0].reuse_addr, Some(false));
+        assert_eq!(options[0].bind_device.as_deref(), Some(""));
         assert_eq!(options[0].context.socket_mark, context.socket_mark);
         assert_eq!(options[0].context.ip_version, IpVersion::V6);
         assert!(

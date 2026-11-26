@@ -23,8 +23,9 @@ use crate::{
 use super::{
     MAX_UDP_SESSION_DATAGRAM_SIZE, UDP_SESSION_QUEUE_CAPACITY,
     packet::{new_data_packet, udp_session_payload_len},
-    virtual_socket::{PreferredIpv6Source, UdpBindOptions, UdpSocketRecvMeta, VirtualUdpSocket},
+    virtual_socket::{PreferredIpv6Source, UdpSocketRecvMeta, VirtualUdpSocket},
 };
+use crate::socket::BindConfig;
 
 #[derive(Debug)]
 pub(crate) struct UdpSessionDatagram {
@@ -135,7 +136,7 @@ impl UdpSessionProtocol {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpSessionConnectRequest {
     pub remote_addr: SocketAddr,
-    pub bind: UdpBindOptions,
+    pub bind: BindConfig,
     pub protocol: UdpSessionProtocol,
 }
 
@@ -143,12 +144,15 @@ impl UdpSessionConnectRequest {
     pub fn wireguard(remote_addr: SocketAddr) -> Self {
         Self {
             remote_addr,
-            bind: UdpBindOptions::direct_connect(),
+            bind: BindConfig {
+                reuse_addr: Some(false),
+                ..BindConfig::default()
+            },
             protocol: UdpSessionProtocol::WireGuard,
         }
     }
 
-    pub fn with_bind(mut self, bind: UdpBindOptions) -> Self {
+    pub fn with_bind(mut self, bind: BindConfig) -> Self {
         self.bind = bind;
         self
     }
@@ -156,11 +160,11 @@ impl UdpSessionConnectRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UdpSessionListenRequest {
-    pub bind: UdpBindOptions,
+    pub bind: BindConfig,
 }
 
 impl UdpSessionListenRequest {
-    pub fn new(bind: UdpBindOptions) -> Self {
+    pub fn new(bind: BindConfig) -> Self {
         Self { bind }
     }
 }

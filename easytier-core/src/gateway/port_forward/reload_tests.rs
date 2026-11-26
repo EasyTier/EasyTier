@@ -72,7 +72,7 @@ impl VirtualTcpListenerFactory for ReloadUdpHost {
 impl VirtualUdpSocketFactory for ReloadUdpHost {
     type Socket = ReloadUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         let address = options.local_addr.unwrap();
         let incoming = if address.port() != 0 {
             self.incoming.lock().unwrap().take().map(Mutex::new)

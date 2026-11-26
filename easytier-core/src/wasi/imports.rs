@@ -120,7 +120,7 @@ unsafe extern "C" {
     /// Copies the completed TCP connection handle and addresses into `result`.
     pub(crate) fn take_tcp_connect(operation: u64, result: u32, result_len: u32) -> i32;
 
-    /// Starts a UDP bind using an encoded `UdpBindOptions` document. Requested
+    /// Starts a UDP bind using an encoded `BindConfig` document. Requested
     /// socket protection must complete before bind or datagram I/O.
     pub(crate) fn start_udp_bind(operation: u64, options: u32, options_len: u32) -> i32;
 

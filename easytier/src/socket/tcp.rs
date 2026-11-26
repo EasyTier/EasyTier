@@ -1,6 +1,6 @@
 use std::{
     io,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -8,7 +8,7 @@ use std::{
 
 use easytier_core::{
     socket::tcp::{
-        TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
+        TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
         VirtualTcpListener, VirtualTcpSocket, VirtualTcpSplit,
     },
     tunnel::TunnelError,
@@ -21,11 +21,7 @@ use tokio::{
     net::{TcpListener, TcpSocket, TcpStream},
 };
 
-use crate::{
-    common::netns::NetNS,
-    socket_protector::protect_native_socket,
-    tunnel::common::{BindDev, apply_socket_mark, bind},
-};
+use crate::socket_protector::protect_native_socket;
 
 enum RuntimeTcpSocketInner {
     Tcp(TcpStream),
@@ -205,112 +201,25 @@ impl VirtualTcpListener for RuntimeTcpListener {
     }
 }
 
-fn unspecified_bind_addr(remote_addr: SocketAddr) -> SocketAddr {
-    match remote_addr {
-        SocketAddr::V4(_) => SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 0),
-        SocketAddr::V6(_) => SocketAddr::new(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 0]), 0),
-    }
-}
-
-fn bind_dev_from_options(options: &TcpBindOptions, local_addr_was_defaulted: bool) -> BindDev {
-    options
-        .bind_device
-        .clone()
-        .map(BindDev::from)
-        .unwrap_or_else(|| {
-            if local_addr_was_defaulted {
-                BindDev::Disabled
-            } else {
-                BindDev::Auto
-            }
-        })
-}
-
-async fn bind_tcp_socket(
-    remote_addr: SocketAddr,
-    bind_options: &TcpBindOptions,
-) -> Result<TcpSocket, TunnelError> {
-    let (bind_addr, local_addr_was_defaulted) = match bind_options.local_addr {
-        Some(addr) => (addr, false),
-        None => (unspecified_bind_addr(remote_addr), true),
-    };
-    let bind_dev = bind_dev_from_options(bind_options, local_addr_was_defaulted);
-
-    bind::<TcpSocket>()
-        .addr(bind_addr)
-        .dev(bind_dev)
-        .net_ns(NetNS::from_socket_context(&bind_options.context))
-        .only_v6(bind_options.only_v6)
-        .reuse_addr(native_reuse_addr(bind_options))
-        .reuse_port(bind_options.reuse_port)
-        .maybe_socket_mark(bind_options.context.socket_mark)
-        .need_protect(bind_options.need_protect)
-        .call()
-        .await
-}
-
-pub(crate) async fn create_tcp_socket(
-    remote_addr: SocketAddr,
-    bind_options: &TcpBindOptions,
-) -> Result<TcpSocket, TunnelError> {
-    if must_bind_before_connect(bind_options) {
-        return bind_tcp_socket(remote_addr, bind_options).await;
-    }
-    // A network namespace is a thread property, but the socket retains its
-    // namespace after creation. Never keep the guard across connect().await.
-    let socket =
-        NetNS::from_socket_context(&bind_options.context).run(|| -> Result<_, TunnelError> {
-            let socket = if remote_addr.is_ipv4() {
-                TcpSocket::new_v4()?
-            } else {
-                TcpSocket::new_v6()?
-            };
-            apply_socket_mark(
-                &socket2::SockRef::from(&socket),
-                bind_options.context.socket_mark,
-            )?;
-            Ok(socket)
-        })?;
-    protect_native_socket(&SockRef::from(&socket), bind_options.need_protect).await?;
-    Ok(socket)
-}
-
-fn must_bind_before_connect(bind_options: &TcpBindOptions) -> bool {
-    bind_options.local_addr.is_some()
-        || bind_options.bind_device.is_some()
-        || bind_options.reuse_port
-        || bind_options.only_v6
-        || bind_options
-            .reuse_addr
-            .is_some_and(|reuse_addr| reuse_addr != native_reuse_addr_default())
-}
-
-fn native_reuse_addr_default() -> bool {
-    !cfg!(target_os = "windows")
-}
-
-fn native_reuse_addr(bind_options: &TcpBindOptions) -> bool {
-    bind_options
-        .reuse_addr
-        .unwrap_or_else(native_reuse_addr_default)
-}
-
 pub(crate) async fn bind_tcp_listener(
     options: TcpListenOptions,
 ) -> Result<RuntimeTcpListener, TunnelError> {
     let purpose = options.purpose;
     let mut bind_options = options.bind;
-    let addr = bind_options.local_addr.ok_or_else(|| {
-        TunnelError::InvalidAddr("tcp listener requires a local bind address".to_owned())
-    })?;
+    if bind_options.local_addr.is_none() {
+        return Err(TunnelError::InvalidAddr(
+            "tcp listener requires a local bind address".to_owned(),
+        ));
+    }
     if bind_options.bind_device.is_none() && purpose == TcpListenPurpose::PortLease {
         bind_options.bind_device = Some(String::new());
     }
-    let listener = create_tcp_socket(addr, &bind_options).await?.listen(1024)?;
+    let need_protect = bind_options.need_protect;
+    let listener = crate::socket::bind::<TcpListener>(bind_options).await?;
     Ok(RuntimeTcpListener {
         listener,
         purpose,
-        need_protect: bind_options.need_protect,
+        need_protect,
     })
 }
 
@@ -319,9 +228,14 @@ pub(crate) async fn connect_tcp(
 ) -> Result<RuntimeTcpSocket, TunnelError> {
     let remote_addr = options.remote_addr;
     let purpose = options.purpose;
-    let bind_options = options.bind;
+    let mut bind_options = options.bind;
+    bind_options.context.ip_version = if remote_addr.is_ipv6() {
+        easytier_core::socket::IpVersion::V6
+    } else {
+        easytier_core::socket::IpVersion::V4
+    };
 
-    let socket = create_tcp_socket(remote_addr, &bind_options).await?;
+    let socket = crate::socket::bind::<TcpSocket>(bind_options).await?;
     let stream = socket.connect(remote_addr).await?;
     prepare_connected_tcp_socket(&stream, purpose)?;
     Ok(RuntimeTcpSocket::new(stream))
@@ -364,6 +278,21 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn connect_tcp_selects_remote_family_without_a_local_bind_address() {
+        for ip in ["127.0.0.1", "::1"] {
+            let listener = TcpListener::bind((ip, 0)).await.unwrap();
+            let remote_addr = listener.local_addr().unwrap();
+            let socket = connect_tcp(TcpConnectOptions::direct_connect(remote_addr))
+                .await
+                .unwrap();
+            let (_, local_addr) = listener.accept().await.unwrap();
+            assert_eq!(socket.peer_addr().unwrap(), remote_addr);
+            assert_eq!(socket.local_addr().unwrap(), local_addr);
+            assert_eq!(local_addr.is_ipv6(), remote_addr.is_ipv6());
+        }
+    }
+
+    #[tokio::test]
     async fn runtime_tcp_owned_split_preserves_full_duplex_and_shutdown() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -385,32 +314,5 @@ mod tests {
         writer.shutdown().await.unwrap();
         let mut after_shutdown = [0; 1];
         assert_eq!(server.read(&mut after_shutdown).await.unwrap(), 0);
-    }
-
-    #[test]
-    fn tcp_connect_binds_when_socket_option_requires_pre_connect_setup() {
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_local_addr(Some("127.0.0.1:0".parse().unwrap()))
-        ));
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_reuse_port(true)
-        ));
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_only_v6(true)
-        ));
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_bind_device(Some("eth0".to_owned()))
-        ));
-        assert!(!must_bind_before_connect(&TcpBindOptions::default()));
-        assert!(!must_bind_before_connect(
-            &TcpBindOptions::default().with_reuse_addr(native_reuse_addr_default())
-        ));
-        assert!(must_bind_before_connect(
-            &TcpBindOptions::default().with_reuse_addr(!native_reuse_addr_default())
-        ));
-        assert_eq!(
-            native_reuse_addr(&TcpBindOptions::default()),
-            native_reuse_addr_default()
-        );
     }
 }

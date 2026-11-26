@@ -2,11 +2,10 @@ use std::{net::SocketAddr, sync::Arc};
 
 use futures::stream::FuturesUnordered;
 
+use crate::socket::{BindConfig, SocketContext};
 use crate::socket::{
     IpVersion,
-    udp::{
-        UdpBindOptions, UdpSession, UdpSessionLayer, UdpSessionProtocol, VirtualUdpSocketFactory,
-    },
+    udp::{UdpSession, UdpSessionLayer, UdpSessionProtocol, VirtualUdpSocketFactory},
 };
 
 use super::first_success;
@@ -46,7 +45,7 @@ pub async fn connect_udp<H>(
     host: Arc<H>,
     remote_addr: SocketAddr,
     bind_addrs: Vec<SocketAddr>,
-    default_bind: UdpBindOptions,
+    default_bind: BindConfig,
     mode: UdpSessionMode,
 ) -> anyhow::Result<ConnectedUdpSession>
 where
@@ -57,7 +56,14 @@ where
     } else {
         IpVersion::V6
     };
-    let default_bind = default_bind.with_ip_version(ip_version);
+    let default_bind = BindConfig {
+        context: SocketContext {
+            ip_version,
+            ..default_bind.context
+        },
+        only_v6: true,
+        ..default_bind
+    };
     let futures = FuturesUnordered::new();
     if bind_addrs.is_empty() {
         let local_addr = if remote_addr.is_ipv4() {
@@ -65,16 +71,17 @@ where
         } else {
             "[::]:0".parse().expect("static IPv6 bind address")
         };
-        let bind = default_bind
-            .with_local_addr(Some(local_addr))
-            .with_only_v6(true);
+        let bind = BindConfig {
+            local_addr: Some(local_addr),
+            ..default_bind
+        };
         futures.push(bind_and_connect(host.clone(), bind, remote_addr, mode));
     } else {
         for bind_addr in bind_addrs {
-            let bind = default_bind
-                .clone()
-                .with_local_addr(Some(bind_addr))
-                .with_only_v6(true);
+            let bind = BindConfig {
+                local_addr: Some(bind_addr),
+                ..default_bind.clone()
+            };
             futures.push(bind_and_connect(host.clone(), bind, remote_addr, mode));
         }
     }
@@ -83,7 +90,7 @@ where
 
 async fn bind_and_connect<H>(
     host: Arc<H>,
-    bind: UdpBindOptions,
+    bind: BindConfig,
     remote_addr: SocketAddr,
     mode: UdpSessionMode,
 ) -> anyhow::Result<ConnectedUdpSession>

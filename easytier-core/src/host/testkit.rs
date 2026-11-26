@@ -20,12 +20,13 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use super::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
+use crate::socket::BindConfig;
 use crate::socket::{
     tcp::{
         TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
         VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
     },
-    udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+    udp::{VirtualUdpSocket, VirtualUdpSocketFactory},
 };
 
 pub struct TestTcpSocket(pub tokio::io::DuplexStream);
@@ -228,7 +229,7 @@ impl VirtualTcpListenerFactory for TestHost {
 impl VirtualUdpSocketFactory for TestHost {
     type Socket = TestUdpSocket;
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         self.udp_binds.fetch_add(1, Ordering::Relaxed);
         let address = options
             .local_addr

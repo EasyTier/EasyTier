@@ -1,9 +1,9 @@
 use super::FromUrl;
-use crate::tunnel::common::bind;
 use crate::{proto::common::TunnelInfo, socket::tcp::RuntimeTcpSocket};
 use anyhow::Context as _;
 use bytes::BytesMut;
 use cidr::IpCidr;
+use easytier_core::socket::{BindConfig, SocketContext};
 use easytier_core::{
     packet::{ZCPacket, ZCPacketType},
     socket::tcp::VirtualTcpSocket,
@@ -310,12 +310,17 @@ impl WsTunnelListener {
         self.listener = None;
 
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let listener = bind::<TcpListener>()
-            .addr(addr)
-            .only_v6(true)
-            .maybe_socket_mark(self.socket_mark)
-            .call()
-            .await?;
+        let listener = crate::socket::bind::<TcpListener>(BindConfig {
+            local_addr: Some(addr),
+            only_v6: true,
+            context: SocketContext {
+                socket_mark: self.socket_mark,
+                ..SocketContext::default()
+            },
+            need_protect: false,
+            ..BindConfig::default()
+        })
+        .await?;
 
         self.addr
             .set_port(Some(listener.local_addr()?.port()))

@@ -219,7 +219,6 @@ hickory-server = { version = "0.25.2", features = [
     "resolver",
 ], optional = true }
 
-bon.workspace = true
 derive_builder = { version = "0.20.2", optional = true }
 humantime-serde = { version = "1.1.1", optional = true }
 shellexpand = "3.1.2"

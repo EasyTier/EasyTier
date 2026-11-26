@@ -8,6 +8,14 @@ use std::{
 use anyhow::Context as _;
 use async_trait::async_trait;
 
+use super::{
+    ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
+    UdpHolePunchRuntime, UdpPunchAcceptor, UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
+    UdpSymPunchLock,
+    rpc::{PeerRpcUdpHolePunchSignaling, UdpHolePunchRpcEndpoint, UdpHolePunchRpcSource},
+};
+use crate::socket::BindConfig;
+use crate::socket::SocketContext;
 use crate::{
     connectivity::{
         direct::DirectConnectorHost,
@@ -18,20 +26,13 @@ use crate::{
     },
     proto::peer_rpc::UdpHolePunchRpcServer,
     socket::{
-        IpVersion, ListenerConnectionCounter, SocketContext,
+        IpVersion, ListenerConnectionCounter,
         tcp::VirtualTcpSocketFactory,
         udp::{
-            UdpBindOptions, UdpSessionLayer, UdpSessionSocket, UdpSessionStunResponder,
-            VirtualUdpSocket, VirtualUdpSocketFactory,
+            UdpSessionLayer, UdpSessionSocket, UdpSessionStunResponder, VirtualUdpSocket,
+            VirtualUdpSocketFactory,
         },
     },
-};
-
-use super::{
-    ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
-    UdpHolePunchRuntime, UdpPunchAcceptor, UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
-    UdpSymPunchLock,
-    rpc::{PeerRpcUdpHolePunchSignaling, UdpHolePunchRpcEndpoint, UdpHolePunchRpcSource},
 };
 
 async fn resolve_public_addr_with_policy<S>(
@@ -312,13 +313,17 @@ where
         resolve_public_addr: bool,
         port: Option<u16>,
     ) -> anyhow::Result<UdpPunchListener<HostUdpSocket<H>>> {
-        let bind = match port {
-            Some(port) => UdpBindOptions::hole_punch_candidate().with_local_addr(Some(
-                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
-            )),
-            None => UdpBindOptions::hole_punch_control(),
-        }
-        .with_context(self.socket_context.clone().with_ip_version(IpVersion::V4));
+        let bind = BindConfig {
+            bind_device: Some("".into()),
+            reuse_addr: Some(false),
+            local_addr: port
+                .map(|port| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port))),
+            context: SocketContext {
+                ip_version: IpVersion::V4,
+                ..self.socket_context.clone()
+            },
+            ..BindConfig::default()
+        };
         let socket = self.host.bind_udp(bind).await?;
         let local_port = socket.local_addr()?.port();
         let resolved = if resolve_public_addr {
@@ -403,16 +408,21 @@ where
         self.socket_context.clone()
     }
 
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(&self, options: BindConfig) -> anyhow::Result<Arc<Self::Socket>> {
         self.host.bind_udp(options).await
     }
 
     async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
         self.host
-            .bind_udp(
-                UdpBindOptions::hole_punch_candidate()
-                    .with_context(self.socket_context.clone().with_ip_version(IpVersion::V4)),
-            )
+            .bind_udp(BindConfig {
+                bind_device: Some("".into()),
+                reuse_addr: Some(false),
+                context: SocketContext {
+                    ip_version: IpVersion::V4,
+                    ..self.socket_context.clone()
+                },
+                ..BindConfig::default()
+            })
             .await
     }
 
