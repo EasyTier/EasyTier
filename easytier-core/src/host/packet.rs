@@ -42,7 +42,7 @@ impl HostPacketReceiver {
 }
 
 pub(crate) fn host_packet_channel() -> (HostPacketSender, HostPacketReceiver) {
-    let (sender, receiver) = mpsc::channel(128);
+    let (sender, receiver) = mpsc::channel(256);
     (sender, HostPacketReceiver::new(receiver))
 }
 

@@ -1,9 +1,10 @@
 use std::{
+    collections::VecDeque,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use rand::{Rng, thread_rng};
@@ -14,7 +15,7 @@ use tokio::{
 
 use crate::{
     config::PeerId,
-    foundation::time::{Interval, interval, timeout},
+    foundation::time::{Instant, Interval, interval, timeout},
     packet::{PacketType, ZCPacket},
     peers::{conn::peer_conn_liveness::PeerConnLiveness, context::ArcPeerContext, error::Error},
     tunnel::{
@@ -27,6 +28,46 @@ use crate::{
 enum PingResponse {
     Pong(u128),
     LivenessEcho,
+}
+
+const QUEUE_RTT_WINDOW: Duration = Duration::from_secs(5 * 60);
+const QUEUE_RTT_MULTIPLIER: u32 = 2;
+const MIN_QUEUE_DELAY_US: u32 = 50_000;
+
+#[derive(Default)]
+struct QueueDelayEstimate {
+    samples: VecDeque<(Instant, u32)>,
+    baseline_us: Option<u32>,
+}
+
+impl QueueDelayEstimate {
+    fn record(&mut self, now: Instant, rtt_us: u32) -> u32 {
+        while self
+            .samples
+            .front()
+            .is_some_and(|(time, _)| now.duration_since(*time) >= QUEUE_RTT_WINDOW)
+        {
+            self.samples.pop_front();
+        }
+        self.samples.push_back((now, rtt_us));
+
+        let minimum_us = self
+            .samples
+            .iter()
+            .map(|(_, sample)| *sample)
+            .min()
+            .unwrap();
+        let baseline_us = match self.baseline_us {
+            Some(previous) if minimum_us > previous => {
+                previous + (minimum_us - previous).div_ceil(8)
+            }
+            _ => minimum_us,
+        };
+        self.baseline_us = Some(baseline_us);
+        baseline_us
+            .saturating_mul(QUEUE_RTT_MULTIPLIER)
+            .max(MIN_QUEUE_DELAY_US)
+    }
 }
 
 struct PingIntervalController {
@@ -281,6 +322,7 @@ impl PeerConnPinger {
         });
 
         let mut req_seq = 0u32;
+        let mut queue_delay_estimate = QueueDelayEstimate::default();
         while trigger_receiver.recv().await.is_some() {
             tracing::debug!(
                 "pingpong controller send pingpong task, seq: {}, node_id: {}",
@@ -301,7 +343,10 @@ impl PeerConnPinger {
                 // A liveness echo proves reachability, not prompt delivery of a
                 // queued packet. Only a matching Pong supplies an RTT sample.
                 if let PingResponse::Pong(lat) = response {
-                    self.latency_stats.record_latency(*lat as u32);
+                    let rtt_us = *lat as u32;
+                    self.latency_stats.record_latency(rtt_us);
+                    let max_delay_us = queue_delay_estimate.record(Instant::now(), rtt_us);
+                    self.sink.set_max_queue_delay_us(max_delay_us);
                 }
                 if let Some(token) = liveness_token {
                     self.liveness.finish_probe(token);
@@ -360,6 +405,21 @@ mod tests {
         },
     };
 
+    #[test]
+    fn queue_delay_uses_recent_minimum_and_adapts_upward_gradually() {
+        let start = Instant::now();
+        let mut estimate = QueueDelayEstimate::default();
+        assert_eq!(estimate.record(start, 90_000), 180_000);
+        assert_eq!(
+            estimate.record(start + Duration::from_secs(1), 400_000),
+            180_000
+        );
+        assert_eq!(estimate.record(start + QUEUE_RTT_WINDOW, 400_000), 257_500);
+        assert_eq!(
+            estimate.record(start + QUEUE_RTT_WINDOW + Duration::from_secs(1), 10_000),
+            MIN_QUEUE_DELAY_US
+        );
+    }
     #[tokio::test]
     async fn pong_latency_includes_waiting_for_send_queue_capacity() {
         use crate::tunnel::ring::{RingTunnel, create_ring_socket_pair};
