@@ -19,6 +19,20 @@ pub fn clear_tun_attached(instance_id: &str) {
     }
 }
 
+#[cfg(target_env = "ohos")]
+pub fn replace_tun_attached(instance_ids: impl IntoIterator<Item = String>) {
+    if let Ok(mut guard) = ATTACHED_TUN_INSTANCE_IDS.lock() {
+        guard.clear();
+        guard.extend(instance_ids);
+    }
+}
+
+pub fn clear_all_tun_attached() {
+    if let Ok(mut guard) = ATTACHED_TUN_INSTANCE_IDS.lock() {
+        guard.clear();
+    }
+}
+
 pub fn is_tun_attached(instance_id: &str) -> bool {
     ATTACHED_TUN_INSTANCE_IDS
         .lock()
@@ -112,6 +126,8 @@ pub struct RuntimeInstanceState {
     pub error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_server_connected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_server_id: Option<String>,
     pub my_node_info: Option<MyNodeInfo>,
     pub events: Vec<String>,
     pub routes: Vec<RouteView>,
@@ -432,6 +448,7 @@ pub fn runtime_instance_from_running_info(
         need_exit_node,
         error_message: info.error_msg,
         config_server_connected: None,
+        config_server_id: None,
         my_node_info: info.my_node_info.map(my_node_info_to_view),
         events: info.events,
         routes: info.routes.into_iter().map(route_to_view).collect(),
@@ -487,6 +504,7 @@ pub fn runtime_instance_from_config_snapshot(
         need_exit_node: !config.exit_nodes.is_empty(),
         error_message: None,
         config_server_connected: None,
+        config_server_id: None,
         my_node_info: Some(my_node_info),
         events: Vec::new(),
         routes: configured_route_views(&endpoint_urls, public_server_url.as_deref()),

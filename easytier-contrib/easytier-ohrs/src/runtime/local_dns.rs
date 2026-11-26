@@ -660,11 +660,11 @@ pub async fn clear_all_packet_dns() {
 pub async fn refresh_all_async() -> bool {
     let _guard = REFRESH_LOCK.lock().await;
     let instance_ids = INSTANCE_MANAGER.instance_ids();
+    let all_running_ids: HashSet<Uuid> = instance_ids.iter().copied().collect();
 
     let mut contributions = Vec::new();
-    let mut active_dns_instances: Vec<Uuid> = Vec::new();
 
-    for id in instance_ids {
+    for &id in &instance_ids {
         let Some(cfg) = INSTANCE_MANAGER.config(id) else {
             continue;
         };
@@ -679,7 +679,6 @@ pub async fn refresh_all_async() -> bool {
         if !magic_dns_on && !has_custom_zones {
             continue;
         }
-        active_dns_instances.push(id);
 
         let mut contrib = ZoneContribution {
             auto_domain: None,
@@ -708,14 +707,13 @@ pub async fn refresh_all_async() -> bool {
         contributions.push(contrib);
     }
 
-    let active_dns_id_set: HashSet<Uuid> = active_dns_instances.iter().copied().collect();
     let stale_ids: Vec<Uuid> = PACKET_REGISTRATIONS
         .lock()
         .ok()
         .map(|guard| {
             guard
                 .keys()
-                .filter(|id| !active_dns_id_set.contains(id))
+                .filter(|id| !all_running_ids.contains(id))
                 .copied()
                 .collect()
         })
@@ -737,9 +735,10 @@ pub async fn refresh_all_async() -> bool {
     if new_catalog.zones.is_empty() {
         clear_all_packet_dns().await;
     } else {
-        // Register the packet-plane resolver (100.100.100.101) for each DNS-active instance
-        // (shared by both ProxyHub L3 TUN and standalone :vpn modes).
-        for id in active_dns_instances {
+        // Register the shared packet-plane resolver (100.100.100.101) on every running
+        // instance whenever any zone is active, so SharedVirtualNic can deliver DNS queries
+        // arriving with any member's source IP regardless of which instance enabled MagicDNS.
+        for id in instance_ids {
             let already = PACKET_REGISTRATIONS
                 .lock()
                 .ok()

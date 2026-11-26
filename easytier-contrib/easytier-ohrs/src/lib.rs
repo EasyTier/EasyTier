@@ -153,19 +153,9 @@ impl WebClientHooks for TrackedWebClientHooks {
         }
         let _ = local_dns::refresh_all_async().await;
         tun_watcher::bump_policy_revision();
-        ohrs_log_info!(
-            "[Rust] web_client removed {} remote instance(s)",
-            ids.len()
-        );
+        ohrs_log_info!("[Rust] web_client removed {} remote instance(s)", ids.len());
         Ok(())
     }
-}
-
-fn has_active_web_clients() -> bool {
-    WEB_CLIENTS
-        .lock()
-        .map(|guard| !guard.is_empty())
-        .unwrap_or(false)
 }
 
 fn is_config_server_config(config: &NetworkConfig) -> bool {
@@ -238,8 +228,12 @@ fn web_client_machine_id_options(explicit_machine_id: Option<String>) -> Machine
 }
 
 fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
-    if !INSTANCE_MANAGER.instance_ids().is_empty() || has_active_web_clients() {
-        ohrs_log_error!("[Rust] there is a running instance!");
+    if WEB_CLIENTS
+        .lock()
+        .ok()
+        .is_some_and(|guard| guard.contains_key(config_id))
+    {
+        ohrs_log_error!("[Rust] config server instance {} already exists", config_id);
         return false;
     }
 
@@ -414,6 +408,7 @@ fn stop_runtime_inner() -> bool {
             && ok;
     }
     clear_all_runtime_config_snapshots();
+    runtime::state::clear_all_tun_attached();
     local_dns::stop_all_sync();
     tun_watcher::clear_virtual_tun_fd();
     tun_watcher::bump_policy_revision();
@@ -459,11 +454,6 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str, display_name: Optio
             return false;
         }
     };
-
-    if !INSTANCE_MANAGER.instance_ids().is_empty() || has_active_web_clients() {
-        ohrs_log_error!("[Rust] there is a running instance!");
-        return false;
-    }
 
     let inst_id = cfg.get_id();
     let tun_enabled = !cfg.get_flags().no_tun;
@@ -796,10 +786,8 @@ mod tests {
     #[test]
     fn web_client_resolves_and_persists_machine_id_in_state_dir() {
         let _ = stop_runtime_inner();
-        let temp_root = std::env::temp_dir().join(format!(
-            "easytier-ohrs-machine-id-test-{}",
-            Uuid::new_v4()
-        ));
+        let temp_root =
+            std::env::temp_dir().join(format!("easytier-ohrs-machine-id-test-{}", Uuid::new_v4()));
         let state_dir = temp_root.join("easytier-state");
         assert!(set_state_dir(state_dir.to_string_lossy().into_owned()));
 
@@ -825,10 +813,8 @@ mod tests {
     #[test]
     fn web_client_receives_console_pushed_config_without_shell_pollution() {
         let _ = stop_runtime_inner();
-        let temp_root = std::env::temp_dir().join(format!(
-            "easytier-ohrs-webclient-e2e-{}",
-            Uuid::new_v4()
-        ));
+        let temp_root =
+            std::env::temp_dir().join(format!("easytier-ohrs-webclient-e2e-{}", Uuid::new_v4()));
         let state_dir = temp_root.join("easytier-state");
         assert!(set_state_dir(state_dir.to_string_lossy().into_owned()));
 
@@ -1055,6 +1041,249 @@ mod tests {
         ));
         assert!(collect_runtime_state_inner().instances.is_empty());
 
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn concurrent_local_instances_and_config_server_preserve_earlier_state() {
+        let _ = stop_runtime_inner();
+        let temp_root =
+            std::env::temp_dir().join(format!("easytier-ohrs-multi-inst-test-{}", Uuid::new_v4()));
+        let state_dir = temp_root.join("easytier-state");
+        assert!(set_state_dir(state_dir.to_string_lossy().into_owned()));
+
+        let id_a = Uuid::new_v4().to_string();
+        let id_b = Uuid::new_v4().to_string();
+        let cfg_a = serde_json::json!({
+            "instance_id": id_a,
+            "networking_method": "Manual",
+            "dhcp": false,
+            "virtual_ipv4": "10.66.1.2",
+            "network_length": 24,
+            "hostname": "node-a",
+            "network_name": "mesh-a",
+            "network_secret": "sec-a",
+            "no_tun": true,
+            "listener_urls": []
+        })
+        .to_string();
+        let cfg_b = serde_json::json!({
+            "instance_id": id_b,
+            "networking_method": "Manual",
+            "dhcp": false,
+            "virtual_ipv4": "10.66.2.2",
+            "network_length": 24,
+            "hostname": "node-b",
+            "network_name": "mesh-b",
+            "network_secret": "sec-b",
+            "no_tun": true,
+            "listener_urls": []
+        })
+        .to_string();
+
+        assert!(run_network_instance_from_json(
+            &cfg_a,
+            Some("First".to_string())
+        ));
+        assert!(run_network_instance_from_json(
+            &cfg_b,
+            Some("Second".to_string())
+        ));
+        // Duplicate start of an already-running id must fail without disturbing running instances.
+        assert!(!run_network_instance_from_json(
+            &cfg_a,
+            Some("First".to_string())
+        ));
+
+        let wait_for_ips = |expected: &[(&str, &str)]| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let state = collect_runtime_state_inner();
+                let all_ready = expected.iter().all(|(id, ip)| {
+                    state.instances.iter().any(|inst| {
+                        inst.instance_id == *id
+                            && inst.running
+                            && inst
+                                .my_node_info
+                                .as_ref()
+                                .and_then(|n| n.virtual_ipv4.as_deref())
+                                == Some(*ip)
+                    })
+                });
+                if all_ready {
+                    return state;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for concurrent instances: {:?}",
+                    expected
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        };
+
+        let both = wait_for_ips(&[(&id_a, "10.66.1.2"), (&id_b, "10.66.2.2")]);
+        assert_eq!(both.running_instance_count, 2);
+        let inst_a = both
+            .instances
+            .iter()
+            .find(|i| i.instance_id == id_a)
+            .expect("earlier instance A must remain present");
+        assert_eq!(inst_a.display_name, "First");
+        assert!(inst_a.config_server_id.is_none());
+
+        // Start a config server alongside the two local instances and push a remote instance.
+        let mock_server = MockWebServer::default();
+        let (addr, server_rpc_slot) = ASYNC_RUNTIME.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind mock config server");
+            let addr = listener.local_addr().expect("local addr");
+            let server_rpc_slot: Arc<tokio::sync::Mutex<Option<Arc<BidirectRpcManager>>>> =
+                Arc::new(tokio::sync::Mutex::new(None));
+            let slot_clone = server_rpc_slot.clone();
+            let svc = mock_server.clone();
+            tokio::spawn(async move {
+                if let Ok((stream, _peer)) = listener.accept().await {
+                    let tunnel = TcpTunnelUpgrader::new(TunnelInfo::default())
+                        .upgrade(TestTcpSocket(stream))
+                        .expect("upgrade tcp tunnel");
+                    let rpc = Arc::new(BidirectRpcManager::new());
+                    rpc.rpc_server()
+                        .registry()
+                        .register(WebServerServiceServer::new(svc), "");
+                    rpc.run_with_tunnel(tunnel);
+                    *slot_clone.lock().await = Some(rpc);
+                }
+            });
+            (addr, server_rpc_slot)
+        });
+
+        let shell_id = Uuid::new_v4().to_string();
+        let shell_json = serde_json::json!({
+            "instance_id": shell_id,
+            "networking_method": "PublicServer",
+            "public_server_url": format!("tcp://{addr}/multi-token"),
+            "no_tun": true
+        })
+        .to_string();
+        assert!(run_network_instance_from_json(
+            &shell_json,
+            Some("Console".to_string())
+        ));
+
+        ASYNC_RUNTIME.block_on(async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while mock_server
+                .last_heartbeat
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .is_none()
+            {
+                assert!(tokio::time::Instant::now() < deadline);
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(200),
+                    mock_server.heartbeat_notify.notified(),
+                )
+                .await;
+            }
+        });
+
+        let pushed_id = Uuid::new_v4();
+        let rpc = ASYNC_RUNTIME
+            .block_on(async { server_rpc_slot.lock().await.clone() })
+            .expect("server rpc handle");
+        let client = rpc
+            .rpc_client()
+            .scoped_client::<WebClientServiceClientFactory<BaseController>>(1, 1, String::new());
+        let pushed_cfg = NetworkConfig {
+            instance_id: Some(pushed_id.to_string()),
+            networking_method: Some(NetworkingMethod::Standalone as i32),
+            dhcp: Some(false),
+            virtual_ipv4: Some("10.66.3.2".to_string()),
+            network_length: Some(24),
+            hostname: Some("remote-c".to_string()),
+            network_name: Some("mesh-c".to_string()),
+            network_secret: Some("sec-c".to_string()),
+            no_tun: Some(true),
+            listener_urls: vec![],
+            ..Default::default()
+        };
+        ASYNC_RUNTIME
+            .block_on(client.run_network_instance(
+                BaseController::default(),
+                RunNetworkInstanceRequest {
+                    inst_id: Some(pushed_id.into()),
+                    config: Some(pushed_cfg),
+                    overwrite: true,
+                    source: easytier::proto::api::manage::ConfigSource::Web as i32,
+                },
+            ))
+            .expect("push remote instance");
+
+        let pushed_id_str = pushed_id.to_string();
+        let all_three = wait_for_ips(&[
+            (&id_a, "10.66.1.2"),
+            (&id_b, "10.66.2.2"),
+            (&pushed_id_str, "10.66.3.2"),
+        ]);
+        let pushed_state = all_three
+            .instances
+            .iter()
+            .find(|i| i.instance_id == pushed_id_str)
+            .expect("pushed instance present");
+        assert_eq!(
+            pushed_state.config_server_id.as_deref(),
+            Some(shell_id.as_str())
+        );
+        let local_a_state = all_three
+            .instances
+            .iter()
+            .find(|i| i.instance_id == id_a)
+            .expect("local instance A present");
+        assert!(local_a_state.config_server_id.is_none());
+
+        // Stopping only the config server removes only the shell + its pushed instance,
+        // leaving earlier local instances A and B completely intact.
+        assert!(exports::runtime_api::stop_kernel(
+            shell_id,
+            stop_web_client,
+            parse_instance_uuid,
+        ));
+        let after_shell_stop = collect_runtime_state_inner();
+        assert_eq!(after_shell_stop.running_instance_count, 2);
+        assert!(
+            after_shell_stop
+                .instances
+                .iter()
+                .any(|i| i.instance_id == id_a)
+        );
+        assert!(
+            after_shell_stop
+                .instances
+                .iter()
+                .any(|i| i.instance_id == id_b)
+        );
+
+        // Stopping B leaves A intact.
+        assert!(exports::runtime_api::stop_kernel(
+            id_b,
+            stop_web_client,
+            parse_instance_uuid,
+        ));
+        let after_b_stop = collect_runtime_state_inner();
+        assert_eq!(after_b_stop.running_instance_count, 1);
+        assert_eq!(after_b_stop.instances[0].instance_id, id_a);
+        assert_eq!(
+            after_b_stop.instances[0]
+                .my_node_info
+                .as_ref()
+                .and_then(|n| n.virtual_ipv4.as_deref()),
+            Some("10.66.1.2")
+        );
+
+        assert!(stop_runtime_inner());
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 }

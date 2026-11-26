@@ -21,6 +21,7 @@ pub(crate) fn stop_kernel(
     clear_tun_attached(&config_id);
     if stop_web_client(&config_id) {
         clear_runtime_config_snapshot(&config_id);
+        let _ = tun_watcher::sync_shared_tun_fd_sync();
         let _ = local_dns::refresh_all_sync();
         tun_watcher::bump_policy_revision();
         return true;
@@ -39,7 +40,9 @@ pub(crate) fn stop_kernel(
         });
     if ret {
         clear_runtime_config_snapshot(&config_id);
+        ASYNC_RUNTIME.block_on(local_dns::unregister_instance_packet_dns(instance_id));
     }
+    let _ = tun_watcher::sync_shared_tun_fd_sync();
     let _ = local_dns::refresh_all_sync();
     tun_watcher::bump_policy_revision();
     ret
@@ -88,22 +91,32 @@ pub(crate) fn set_tun_fd(
         return false;
     };
 
-    INSTANCE_MANAGER
-        .attach_tun_fd(instance_id, fd)
-        .map(|_| {
-            mark_tun_attached(&config_id);
-            tun_watcher::bump_policy_revision();
-            ohrs_log_info!(
-                "[Rust] set_tun_fd success instance={} fd={} marked_attached=true",
-                config_id,
-                fd
-            );
-            true
-        })
-        .unwrap_or_else(|err| {
-            ohrs_log_error!("[Rust] set_tun_fd failed {}: {}", config_id, err);
-            false
-        })
+    #[cfg(target_env = "ohos")]
+    {
+        let _ = (instance_id, mark_tun_attached);
+        tun_watcher::set_virtual_tun_fd(fd);
+        is_tun_attached(&config_id) || fd <= 0
+    }
+
+    #[cfg(not(target_env = "ohos"))]
+    {
+        INSTANCE_MANAGER
+            .attach_tun_fd(instance_id, fd)
+            .map(|_| {
+                mark_tun_attached(&config_id);
+                tun_watcher::bump_policy_revision();
+                ohrs_log_info!(
+                    "[Rust] set_tun_fd success instance={} fd={} marked_attached=true",
+                    config_id,
+                    fd
+                );
+                true
+            })
+            .unwrap_or_else(|err| {
+                ohrs_log_error!("[Rust] set_tun_fd failed {}: {}", config_id, err);
+                false
+            })
+    }
 }
 
 pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
@@ -130,9 +143,15 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
         .collect::<std::collections::HashMap<_, _>>();
     let mut active_config_ids = live_infos.keys().cloned().collect::<Vec<_>>();
     let mut web_client_status = std::collections::HashMap::<String, bool>::new();
+    let mut remote_owner_by_instance_id = std::collections::HashMap::<String, String>::new();
     if let Ok(guard) = WEB_CLIENTS.lock() {
         for (config_id, managed) in guard.iter() {
             web_client_status.insert(config_id.clone(), managed._client.is_connected());
+            if let Ok(tracked) = managed.hooks.instance_ids.lock() {
+                for id in tracked.iter() {
+                    remote_owner_by_instance_id.insert(id.to_string(), config_id.clone());
+                }
+            }
             if !active_config_ids.iter().any(|value| value == config_id) {
                 active_config_ids.push(config_id.clone());
             }
@@ -141,6 +160,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
 
     let mut instances = Vec::with_capacity(active_config_ids.len());
     for config_id in active_config_ids {
+        let remote_owner = remote_owner_by_instance_id.get(&config_id).cloned();
         if let Some(info) = live_infos.remove(&config_id) {
             let snapshot = get_runtime_config_snapshot(&config_id);
             let live_loader = snapshot.is_none().then(|| {
@@ -159,17 +179,13 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                         .filter(|name| !name.trim().is_empty())
                 })
                 .unwrap_or_else(|| config_id.clone());
-            let effective_config = snapshot
-                .map(|snapshot| snapshot.config)
-                .or_else(|| {
-                    live_loader.and_then(|loader| NetworkConfig::new_from_config(loader).ok())
-                });
-            instances.push(runtime_instance_from_running_info(
-                config_id,
-                display_name,
-                effective_config,
-                info,
-            ));
+            let effective_config = snapshot.map(|snapshot| snapshot.config).or_else(|| {
+                live_loader.and_then(|loader| NetworkConfig::new_from_config(loader).ok())
+            });
+            let mut state =
+                runtime_instance_from_running_info(config_id, display_name, effective_config, info);
+            state.config_server_id = remote_owner;
+            instances.push(state);
         } else if let Some(&connected) = web_client_status.get(&config_id) {
             // Config-server control plane shell: never fabricate a default virtual IP,
             // peer or route from the local config draft, otherwise it shadows real
@@ -188,6 +204,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 need_exit_node: false,
                 error_message: None,
                 config_server_connected: Some(connected),
+                config_server_id: None,
                 my_node_info: None,
                 events: Vec::new(),
                 routes: Vec::new(),
@@ -202,6 +219,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 true,
             );
             inst.tun_required = false;
+            inst.config_server_id = remote_owner;
             instances.push(inst);
         } else {
             let tun_attached = is_tun_attached(&config_id);
@@ -216,6 +234,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 need_exit_node: false,
                 error_message: None,
                 config_server_connected: None,
+                config_server_id: remote_owner,
                 my_node_info: None,
                 events: Vec::new(),
                 routes: Vec::new(),
