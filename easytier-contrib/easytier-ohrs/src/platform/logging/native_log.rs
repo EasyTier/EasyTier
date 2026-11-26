@@ -1,4 +1,5 @@
 use super::log_manager;
+#[cfg(not(test))]
 use napi_derive_ohos::napi;
 use std::collections::HashMap;
 use std::panic;
@@ -13,7 +14,7 @@ fn panic_hook(info: &panic::PanicHookInfo) {
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn init_panic_hook() {
     INITIALIZED.call_once(|| {
         panic::set_hook(Box::new(panic_hook));
@@ -21,14 +22,14 @@ pub fn init_panic_hook() {
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn hilog_global_options(domain: u32, tag: String) {
     let _ = domain;
     let _ = tag;
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn init_tracing_subscriber() {
     TRACING_INITIALIZED.call_once(|| {
         let _ = tracing_subscriber::registry()

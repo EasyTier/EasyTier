@@ -113,20 +113,22 @@ jobs:
         run: |
           cargo test --locked --manifest-path \
             easytier-contrib/easytier-ohrs/Cargo.toml \
-            -p easytier-ohos-core -p easytier-ohos-features \
+            -p easytier-ohrs \
             --lib -- --test-threads=1
 
       - name: Check OHOS bindings
         run: |
           cargo check --locked --manifest-path \
             easytier-contrib/easytier-ohrs/Cargo.toml \
-            -p easytier-ohrs --tests
+            -p easytier-ohrs
 
       - name: Check OHOS target
         if: github.event_name == 'pull_request'
         working-directory: easytier-contrib/easytier-ohrs
         run: |
           source env.sh
+          cargo check --locked -p easytier-ohrs \
+            --target aarch64-unknown-linux-ohos
           cargo check --locked -p easytier-ohrs --tests \
             --target aarch64-unknown-linux-ohos
 

@@ -1,3 +1,4 @@
+#[cfg(not(test))]
 use napi_derive_ohos::napi;
 use once_cell::sync::Lazy;
 use std::collections::VecDeque;
@@ -14,8 +15,9 @@ const LOG_FILE_SUFFIX: &str = ".log";
 const MAX_LOG_FILES: usize = 10;
 const MAX_MEMORY_LINES: usize = 500;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-#[napi(object)]
+#[cfg_attr(not(test), napi(object))]
 pub struct LogFileInfo {
     pub file_name: String,
     pub display_name: String,
@@ -179,6 +181,13 @@ fn format_line(level: i32, target: &str, message: &str) -> String {
     format!("{}[{}] {}", level, target, message.replace('\n', "\\n"))
 }
 
+pub(crate) fn trim_memory_lines() {
+    if let Ok(mut guard) = LOG_MANAGER.lock() {
+        guard.lines.clear();
+        guard.lines.shrink_to_fit();
+    }
+}
+
 pub(crate) fn configure(core_log: bool, debug_log: bool) {
     CORE_LOG_ENABLED.store(core_log, Ordering::Relaxed);
     DEBUG_LOG_ENABLED.store(debug_log, Ordering::Relaxed);
@@ -223,7 +232,7 @@ pub(crate) fn record_core_log(level: i32, target: &str, message: &str) {
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn init_log_manager(root_dir: String, process_name: String) -> bool {
     let dir = log_dir(&root_dir);
     if fs::create_dir_all(&dir).is_err() {
@@ -279,19 +288,19 @@ pub fn init_log_manager(root_dir: String, process_name: String) -> bool {
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn configure_log_manager(core_log: bool, debug_log: bool) {
     configure(core_log, debug_log);
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn write_app_log(level: i32, target: String, message: String) {
     record_app_log(level, &target, &message);
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn drain_log_lines() -> Vec<String> {
     LOG_MANAGER
         .lock()
@@ -300,7 +309,7 @@ pub fn drain_log_lines() -> Vec<String> {
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn list_log_files() -> Vec<LogFileInfo> {
     let Some((log_dir, active_file)) = current_log_state() else {
         return Vec::new();
@@ -337,7 +346,7 @@ pub fn list_log_files() -> Vec<LogFileInfo> {
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn read_log_file(file_name: String) -> Option<String> {
     let (log_dir, _) = current_log_state()?;
     let path = resolve_log_file(&log_dir, &file_name)?;
@@ -345,7 +354,7 @@ pub fn read_log_file(file_name: String) -> Option<String> {
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn export_log_file(file_name: String, target_path: String) -> bool {
     let Some((log_dir, _)) = current_log_state() else {
         return false;
@@ -357,7 +366,7 @@ pub fn export_log_file(file_name: String, target_path: String) -> bool {
 }
 
 #[allow(dead_code)]
-#[napi]
+#[cfg_attr(not(test), napi)]
 pub fn export_log_archive(target_path: String) -> bool {
     let log_dir = LOG_MANAGER
         .lock()

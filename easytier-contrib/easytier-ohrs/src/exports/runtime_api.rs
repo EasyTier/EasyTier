@@ -1,36 +1,26 @@
+use crate::WEB_CLIENTS;
 use crate::config::repository::{clear_runtime_config_snapshot, get_runtime_config_snapshot};
-use crate::config::types::stored_config::KeyValuePair;
-use crate::kernel_bridge::{
-    aggregate_requested_tun_routes, start_local_socket_server as start_local_socket_server_inner,
-    stop_local_socket_server as stop_local_socket_server_inner,
-};
-use crate::runtime::state::runtime_state::{
+use crate::napi_types::KeyValuePair;
+use crate::runtime::routing::aggregate_requested_tun_routes;
+use crate::runtime::state::{
     RuntimeAggregateState, RuntimeInstanceState, TunAggregateState, clear_tun_attached,
     is_tun_attached, mark_tun_attached, runtime_instance_from_config_snapshot,
     runtime_instance_from_running_info,
 };
-use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER, WEB_CLIENTS};
-
-pub(crate) fn start_kernel(
-    config_id: String,
-    start_kernel_with_config_id: impl Fn(&str) -> bool,
-) -> bool {
-    start_kernel_with_config_id(&config_id)
-}
+use crate::runtime::{ASYNC_RUNTIME, INSTANCE_MANAGER, local_dns, tun_watcher};
 
 pub(crate) fn stop_kernel(
     config_id: String,
     stop_web_client: impl Fn(&str) -> bool,
     parse_instance_uuid: impl Fn(&str) -> Option<uuid::Uuid>,
-    maybe_stop_local_socket_server: impl Fn(),
 ) -> bool {
     clear_tun_attached(&config_id);
     if stop_web_client(&config_id) {
         clear_runtime_config_snapshot(&config_id);
+        let _ = local_dns::refresh_all_sync();
+        tun_watcher::bump_policy_revision();
         return true;
     }
-
-    let _ = stop_local_socket_server_inner();
 
     let Some(instance_id) = parse_instance_uuid(&config_id) else {
         return false;
@@ -46,15 +36,8 @@ pub(crate) fn stop_kernel(
     if ret {
         clear_runtime_config_snapshot(&config_id);
     }
-    let has_active_instances = !INSTANCE_MANAGER.instance_ids().is_empty();
-    let has_web_clients = WEB_CLIENTS
-        .lock()
-        .map(|guard| !guard.is_empty())
-        .unwrap_or(false);
-    if has_active_instances || has_web_clients {
-        let _ = start_local_socket_server_inner();
-    }
-    maybe_stop_local_socket_server();
+    let _ = local_dns::refresh_all_sync();
+    tun_watcher::bump_policy_revision();
     ret
 }
 
@@ -105,6 +88,7 @@ pub(crate) fn set_tun_fd(
         .attach_tun_fd(instance_id, fd)
         .map(|_| {
             mark_tun_attached(&config_id);
+            tun_watcher::bump_policy_revision();
             ohrs_log_info!(
                 "[Rust] set_tun_fd success instance={} fd={} marked_attached=true",
                 config_id,
