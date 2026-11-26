@@ -46,10 +46,7 @@ where
                 tracing::debug!(%domain, "attempting SOCKS DNS resolution");
                 let address = self
                     .dns
-                    .resolve(DnsQuery::new(
-                        domain.clone(),
-                        self.socket_context.clone().with_ip_version(IpVersion::V4),
-                    ))
+                    .resolve(DnsQuery::new(domain.clone(), self.socket_context.clone()))
                     .await
                     .map_err(|error| {
                         SocksError::Other(error.context(AddrError::DNSResolutionFailed))
@@ -224,12 +221,13 @@ mod tests {
     #[async_trait::async_trait]
     impl DnsResolver for StaticDns {
         async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
-            assert_eq!(query.host, "peer.example");
-            assert_eq!(query.context.ip_version, IpVersion::V4);
-            Ok(vec![
-                "2001:db8::8".parse().unwrap(),
-                "192.0.2.8".parse().unwrap(),
-            ])
+            assert_eq!(query.context.ip_version, IpVersion::Both);
+            let ipv6 = "2001:db8::8".parse().unwrap();
+            match query.host.as_str() {
+                "peer.example" => Ok(vec![ipv6, "192.0.2.8".parse().unwrap()]),
+                "ipv6-only.example" => Ok(vec![ipv6]),
+                host => panic!("unexpected DNS query for {host}"),
+            }
         }
     }
 
@@ -287,6 +285,13 @@ mod tests {
                 .await
                 .unwrap(),
             TargetAddr::Ip("192.0.2.8:443".parse().unwrap())
+        );
+        assert_eq!(
+            runtime
+                .resolve_dns(TargetAddr::Domain("ipv6-only.example".into(), 443))
+                .await
+                .unwrap(),
+            TargetAddr::Ip("[2001:db8::8]:443".parse().unwrap())
         );
         let association = runtime.bind_udp_association().await.unwrap();
         assert_eq!(association.local_addr().unwrap().port(), 42000);
