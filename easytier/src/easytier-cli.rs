@@ -392,6 +392,41 @@ enum AclSubCommand {
     Set(AclSetArgs),
 }
 
+fn parse_acl(text: &str) -> Result<Acl, Error> {
+    #[derive(serde::Deserialize)]
+    struct PatchRequestJson {
+        patch: InstanceConfigPatch,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct AclWrapper {
+        acl: Acl,
+    }
+
+    let acl = if let Ok(req) = serde_json::from_str::<PatchRequestJson>(text) {
+        req.patch.acl.and_then(|a| a.acl).unwrap_or_default()
+    } else if let Ok(wrapper) = serde_json::from_str::<AclWrapper>(text) {
+        wrapper.acl
+    } else if let Ok(acl) = serde_json::from_str::<Acl>(text) {
+        acl
+    } else {
+        #[derive(serde::Deserialize)]
+        struct AclToml {
+            acl: Option<Acl>,
+        }
+        let wrapper: AclToml = toml::from_str(text).context(
+            "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)",
+        )?;
+        wrapper.acl.unwrap_or_default()
+    };
+    if acl.is_empty() {
+        anyhow::bail!(
+            "parsed ACL is empty; provide at least one chain or a non-empty group under `[acl.acl_v1]`"
+        );
+    }
+    Ok(acl)
+}
+
 #[derive(Args, Debug)]
 struct PortForwardArgs {
     #[command(subcommand)]
@@ -814,6 +849,24 @@ mod tests {
 
         Cli::try_parse_from(["easytier-cli", "--instance-id", id, "peer"]).unwrap();
         Cli::try_parse_from(["easytier-cli", "--instance-name", "mesh", "peer"]).unwrap();
+    }
+
+    #[test]
+    fn acl_set_parses_all_json_forms() {
+        let acl = serde_json::json!({"acl_v1": {"chains": [{
+            "name": "inbound", "chain_type": 1, "rules": [{"protocol": 3, "action": 1}]
+        }]}});
+        let expected: Acl = serde_json::from_value(acl.clone()).unwrap();
+        for (form, input) in [
+            ("direct", acl.clone()),
+            ("wrapped", serde_json::json!({"acl": acl})),
+            (
+                "request",
+                serde_json::json!({"patch": {"acl": {"acl": acl}}}),
+            ),
+        ] {
+            assert_eq!(parse_acl(&input.to_string()).unwrap(), expected, "{form}");
+        }
     }
 
     #[test]
@@ -2585,45 +2638,7 @@ impl<'a> CommandHandler<'a> {
             raw.to_string()
         };
 
-        // Try parsing as JSON first, then fallback to TOML if JSON parsing fails.
-        #[derive(serde::Deserialize, Default)]
-        struct AclWrapper {
-            acl: Option<Acl>,
-        }
-
-        // Your JSON file includes a full PatchConfigRequest structure: {"instance": ..., "patch": {"acl": {"acl": ...}}}
-        // Let's support parsing full PatchConfigRequest or patch payload or Acl directly.
-        #[derive(serde::Deserialize, Default)]
-        struct PatchRequestJson {
-            patch: Option<InstanceConfigPatch>,
-        }
-
-        let acl = if let Ok(parsed_req) = serde_json::from_str::<PatchRequestJson>(&text) {
-            parsed_req
-                .patch
-                .and_then(|p| p.acl)
-                .and_then(|a| a.acl)
-                .unwrap_or_default()
-        } else if let Ok(parsed_json) = serde_json::from_str::<AclWrapper>(&text) {
-            parsed_json.acl.unwrap_or_default()
-        } else if let Ok(parsed_json_direct) = serde_json::from_str::<Acl>(&text) {
-            parsed_json_direct
-        } else {
-            // Fallback to TOML
-            #[derive(serde::Deserialize, Default)]
-            struct AclToml {
-                acl: Option<Acl>,
-            }
-            let parsed_toml: AclToml = toml::from_str(&text).with_context(
-                || "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)",
-            )?;
-            parsed_toml.acl.unwrap_or_default()
-        };
-        if acl.is_empty() {
-            anyhow::bail!(
-                "parsed ACL is empty; provide at least one chain or a non-empty group under `[acl.acl_v1]`"
-            );
-        }
+        let acl = parse_acl(&text)?;
 
         // Redact group secrets before any JSON echo so credentials are never
         // written to stdout or captured logs (matches core's dump redaction).
