@@ -82,7 +82,16 @@ fn network_name_for_instance(id: &Uuid) -> Option<String> {
 
 #[async_trait::async_trait]
 impl WebClientHooks for TrackedWebClientHooks {
+    fn manages_remote_config_instances(&self) -> bool {
+        true
+    }
+
     async fn post_run_network_instance(&self, id: &Uuid) -> Result<(), String> {
+        // Clear any stale TUN / packet-plane DNS bindings for the same instance id
+        // so overwrite=true replacements re-attach cleanly to the new CoreInstance.
+        runtime::state::clear_tun_attached(&id.to_string());
+        local_dns::unregister_instance_packet_dns(*id).await;
+
         self.instance_ids
             .lock()
             .map_err(|err| err.to_string())?
@@ -109,30 +118,54 @@ impl WebClientHooks for TrackedWebClientHooks {
                 "instance_name": id.to_string(),
                 "network_name": network_name,
             }));
+        ohrs_log_info!(
+            "[Rust] web_client started remote instance id={} network={:?} tun_enabled={}",
+            id,
+            network_name,
+            tun_enabled
+        );
         Ok(())
     }
 
     async fn post_remove_network_instances(&self, ids: &[Uuid]) -> Result<(), String> {
-        let mut guard = self.instance_ids.lock().map_err(|err| err.to_string())?;
-        let mut events = self.events.lock().map_err(|err| err.to_string())?;
-        let mut network_names_by_instance_id = self
-            .network_names_by_instance_id
-            .lock()
-            .map_err(|err| err.to_string())?;
-        for id in ids {
-            guard.remove(id);
-            let network_name = network_names_by_instance_id.remove(id);
-            events.push(serde_json::json!({
-                "event": "delete_network_instance",
-                "success": true,
-                "instance_id": id.to_string(),
-                "instance_name": id.to_string(),
-                "network_name": network_name,
-            }));
+        {
+            let mut guard = self.instance_ids.lock().map_err(|err| err.to_string())?;
+            let mut events = self.events.lock().map_err(|err| err.to_string())?;
+            let mut network_names_by_instance_id = self
+                .network_names_by_instance_id
+                .lock()
+                .map_err(|err| err.to_string())?;
+            for id in ids {
+                guard.remove(id);
+                runtime::state::clear_tun_attached(&id.to_string());
+                let network_name = network_names_by_instance_id.remove(id);
+                events.push(serde_json::json!({
+                    "event": "delete_network_instance",
+                    "success": true,
+                    "instance_id": id.to_string(),
+                    "instance_name": id.to_string(),
+                    "network_name": network_name,
+                }));
+            }
         }
+        for id in ids {
+            local_dns::unregister_instance_packet_dns(*id).await;
+        }
+        let _ = local_dns::refresh_all_async().await;
         tun_watcher::bump_policy_revision();
+        ohrs_log_info!(
+            "[Rust] web_client removed {} remote instance(s)",
+            ids.len()
+        );
         Ok(())
     }
+}
+
+fn has_active_web_clients() -> bool {
+    WEB_CLIENTS
+        .lock()
+        .map(|guard| !guard.is_empty())
+        .unwrap_or(false)
 }
 
 fn is_config_server_config(config: &NetworkConfig) -> bool {
@@ -171,8 +204,12 @@ fn stop_web_client(config_id: &str) -> bool {
         return true;
     }
 
-    ASYNC_RUNTIME
-        .block_on(INSTANCE_MANAGER.delete_network_instances(tracked_ids))
+    for id in &tracked_ids {
+        runtime::state::clear_tun_attached(&id.to_string());
+    }
+
+    let ok = ASYNC_RUNTIME
+        .block_on(INSTANCE_MANAGER.delete_network_instances(tracked_ids.clone()))
         .map(|_| true)
         .unwrap_or_else(|err| {
             ohrs_log_error!(
@@ -181,7 +218,14 @@ fn stop_web_client(config_id: &str) -> bool {
                 err
             );
             false
-        })
+        });
+    ASYNC_RUNTIME.block_on(async {
+        for id in tracked_ids {
+            local_dns::unregister_instance_packet_dns(id).await;
+        }
+        let _ = local_dns::refresh_all_async().await;
+    });
+    ok
 }
 
 fn web_client_machine_id_options(explicit_machine_id: Option<String>) -> MachineIdOptions {
@@ -194,12 +238,17 @@ fn web_client_machine_id_options(explicit_machine_id: Option<String>) -> Machine
 }
 
 fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
-    if !INSTANCE_MANAGER.instance_ids().is_empty() {
+    if !INSTANCE_MANAGER.instance_ids().is_empty() || has_active_web_clients() {
         ohrs_log_error!("[Rust] there is a running instance!");
         return false;
     }
 
-    let Some(config_server_url) = config.public_server_url.clone() else {
+    let Some(config_server_url) = config
+        .public_server_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    else {
         ohrs_log_error!("[Rust] public_server_url missing for config server mode");
         return false;
     };
@@ -209,13 +258,18 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
         .as_ref()
         .map(|mode| mode.enabled)
         .unwrap_or(false);
-    let hostname = config.hostname.clone();
+    let hostname = config
+        .hostname
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
     let machine_id_opts = web_client_machine_id_options(None);
 
     let client = ASYNC_RUNTIME.block_on(run_web_client(
-        &config_server_url,
+        config_server_url,
         machine_id_opts.clone(),
-        hostname,
+        hostname.clone(),
         secure_mode,
         INSTANCE_MANAGER.clone(),
         Some(hooks.clone()),
@@ -243,6 +297,12 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
                 },
             );
             tun_watcher::bump_policy_revision();
+            ohrs_log_info!(
+                "[Rust] started web_client config_id={} secure_mode={} has_hostname={}",
+                config_id,
+                secure_mode,
+                hostname.is_some()
+            );
             true
         }
         Err(err) => {
@@ -400,7 +460,7 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str, display_name: Optio
         }
     };
 
-    if !INSTANCE_MANAGER.instance_ids().is_empty() {
+    if !INSTANCE_MANAGER.instance_ids().is_empty() || has_active_web_clients() {
         ohrs_log_error!("[Rust] there is a running instance!");
         return false;
     }
@@ -638,9 +698,104 @@ pub(crate) fn collect_runtime_state_inner() -> RuntimeAggregateState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use easytier::proto::api::manage::{
+        DeleteNetworkInstanceRequest, RunNetworkInstanceRequest, WebClientService,
+        WebClientServiceClientFactory,
+    };
+    use easytier::proto::common::TunnelInfo;
+    use easytier::proto::rpc_types::controller::BaseController;
+    use easytier::proto::web::{
+        GetFeatureRequest, GetFeatureResponse, HeartbeatRequest, HeartbeatResponse,
+        WebServerService, WebServerServiceServer,
+    };
+    use easytier_core::rpc::bidirect::BidirectRpcManager;
+    use easytier_core::socket::tcp::VirtualTcpSocket;
+    use easytier_core::tunnel::tcp::TcpTunnelUpgrader;
+    use std::io;
+    use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Notify;
+
+    struct TestTcpSocket(TcpStream);
+
+    impl AsyncRead for TestTcpSocket {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for TestTcpSocket {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.0).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_shutdown(cx)
+        }
+    }
+
+    impl VirtualTcpSocket for TestTcpSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            self.0.local_addr()
+        }
+
+        fn peer_addr(&self) -> io::Result<SocketAddr> {
+            self.0.peer_addr()
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct MockWebServer {
+        last_heartbeat: Arc<Mutex<Option<HeartbeatRequest>>>,
+        heartbeat_notify: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl WebServerService for MockWebServer {
+        type Controller = BaseController;
+
+        async fn heartbeat(
+            &self,
+            _: BaseController,
+            req: HeartbeatRequest,
+        ) -> easytier::proto::rpc_types::error::Result<HeartbeatResponse> {
+            if let Ok(mut guard) = self.last_heartbeat.lock() {
+                *guard = Some(req);
+            }
+            self.heartbeat_notify.notify_waiters();
+            Ok(HeartbeatResponse::default())
+        }
+
+        async fn get_feature(
+            &self,
+            _: BaseController,
+            _: GetFeatureRequest,
+        ) -> easytier::proto::rpc_types::error::Result<GetFeatureResponse> {
+            Ok(GetFeatureResponse {
+                support_encryption: false,
+            })
+        }
+    }
 
     #[test]
     fn web_client_resolves_and_persists_machine_id_in_state_dir() {
+        let _ = stop_runtime_inner();
         let temp_root = std::env::temp_dir().join(format!(
             "easytier-ohrs-machine-id-test-{}",
             Uuid::new_v4()
@@ -663,6 +818,242 @@ mod tests {
         };
         assert!(run_config_server_instance(&config_id, &config));
         assert!(stop_web_client(&config_id));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn web_client_receives_console_pushed_config_without_shell_pollution() {
+        let _ = stop_runtime_inner();
+        let temp_root = std::env::temp_dir().join(format!(
+            "easytier-ohrs-webclient-e2e-{}",
+            Uuid::new_v4()
+        ));
+        let state_dir = temp_root.join("easytier-state");
+        assert!(set_state_dir(state_dir.to_string_lossy().into_owned()));
+
+        let mock_server = MockWebServer::default();
+        let (addr, server_rpc_slot) = ASYNC_RUNTIME.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind mock config server");
+            let addr = listener.local_addr().expect("local addr");
+            let server_rpc_slot: Arc<tokio::sync::Mutex<Option<Arc<BidirectRpcManager>>>> =
+                Arc::new(tokio::sync::Mutex::new(None));
+            let slot_clone = server_rpc_slot.clone();
+            let svc = mock_server.clone();
+            tokio::spawn(async move {
+                if let Ok((stream, _peer)) = listener.accept().await {
+                    let tunnel = TcpTunnelUpgrader::new(TunnelInfo::default())
+                        .upgrade(TestTcpSocket(stream))
+                        .expect("upgrade tcp tunnel");
+                    let rpc = Arc::new(BidirectRpcManager::new());
+                    rpc.rpc_server()
+                        .registry()
+                        .register(WebServerServiceServer::new(svc), "");
+                    rpc.run_with_tunnel(tunnel);
+                    *slot_clone.lock().await = Some(rpc);
+                }
+            });
+            (addr, server_rpc_slot)
+        });
+
+        let shell_config_id = Uuid::new_v4().to_string();
+        // Mirrors ArkTS ConfigDefaults.ts + DynamicFieldEditor.ets ("PublicServer" string enum,
+        // dirty default virtual_ipv4="10.0.0.1", dhcp=true, empty hostname="").
+        let shell_json = serde_json::json!({
+            "instance_id": shell_config_id,
+            "networking_method": "PublicServer",
+            "public_server_url": format!("tcp://{addr}/test-token"),
+            "dhcp": true,
+            "virtual_ipv4": "10.0.0.1",
+            "network_length": 24,
+            "hostname": "",
+            "network_name": "easytier",
+            "enable_magic_dns": true
+        })
+        .to_string();
+        assert!(run_network_instance_from_json(
+            &shell_json,
+            Some("WebConsole".to_string())
+        ));
+
+        // Wait for the client to connect and send its first heartbeat.
+        let hb = ASYNC_RUNTIME.block_on(async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(hb) = mock_server
+                    .last_heartbeat
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                {
+                    break hb;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for web client heartbeat"
+                );
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(200),
+                    mock_server.heartbeat_notify.notified(),
+                )
+                .await;
+            }
+        });
+        assert_eq!(hb.user_token, "test-token");
+        assert!(
+            !hb.hostname.trim().is_empty(),
+            "empty hostname must fall back to OS hostname"
+        );
+        assert_eq!(hb.support_dns_config_patch, Some(true));
+
+        // Before console pushes any network, the shell must NEVER expose fake 10.0.0.1 or fake peers.
+        let initial_state = collect_runtime_state_inner();
+        assert_eq!(initial_state.instances.len(), 1);
+        let shell_state = &initial_state.instances[0];
+        assert_eq!(shell_state.config_id, shell_config_id);
+        assert_eq!(shell_state.config_server_connected, Some(true));
+        assert!(shell_state.my_node_info.is_none());
+        assert!(shell_state.routes.is_empty());
+        assert!(shell_state.peers.is_empty());
+        assert!(shell_state.manual_routes.is_empty());
+        assert!(!shell_state.tun_required);
+        assert!(initial_state.tun.aggregated_routes.is_empty());
+
+        // Console pushes a real network instance over reverse RPC.
+        let pushed_id = Uuid::new_v4();
+        let rpc = ASYNC_RUNTIME
+            .block_on(async { server_rpc_slot.lock().await.clone() })
+            .expect("server rpc handle");
+        let client = rpc
+            .rpc_client()
+            .scoped_client::<WebClientServiceClientFactory<BaseController>>(1, 1, String::new());
+
+        let pushed_cfg = NetworkConfig {
+            instance_id: Some(pushed_id.to_string()),
+            networking_method: Some(NetworkingMethod::Standalone as i32),
+            dhcp: Some(false),
+            virtual_ipv4: Some("10.77.88.2".to_string()),
+            network_length: Some(24),
+            hostname: Some("ohos-pushed".to_string()),
+            network_name: Some("corp-mesh".to_string()),
+            network_secret: Some("secret-1".to_string()),
+            enable_manual_routes: Some(true),
+            routes: vec!["192.168.99.0/24".to_string()],
+            enable_magic_dns: Some(true),
+            no_tun: Some(true),
+            listener_urls: vec![],
+            ..Default::default()
+        };
+        let run_resp = ASYNC_RUNTIME
+            .block_on(client.run_network_instance(
+                BaseController::default(),
+                RunNetworkInstanceRequest {
+                    inst_id: Some(pushed_id.into()),
+                    config: Some(pushed_cfg.clone()),
+                    overwrite: true,
+                    source: easytier::proto::api::manage::ConfigSource::Web as i32,
+                },
+            ))
+            .expect("console RunNetworkInstance should succeed");
+        assert_eq!(run_resp.inst_id.map(Uuid::from), Some(pushed_id));
+
+        let wait_for_pushed_ip = |expected_ip: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let state = collect_runtime_state_inner();
+                assert!(
+                    state.instances.iter().all(|inst| {
+                        inst.my_node_info
+                            .as_ref()
+                            .and_then(|n| n.virtual_ipv4.as_deref())
+                            != Some("10.0.0.1")
+                    }),
+                    "shell default IP 10.0.0.1 must never leak into runtime state"
+                );
+                if let Some(inst) = state
+                    .instances
+                    .iter()
+                    .find(|inst| inst.instance_id == pushed_id.to_string())
+                    && inst
+                        .my_node_info
+                        .as_ref()
+                        .and_then(|n| n.virtual_ipv4.as_deref())
+                        == Some(expected_ip)
+                {
+                    return state;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for pushed instance virtual_ipv4={expected_ip}"
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        };
+
+        let after_push = wait_for_pushed_ip("10.77.88.2");
+        let pushed_state = after_push
+            .instances
+            .iter()
+            .find(|inst| inst.instance_id == pushed_id.to_string())
+            .expect("pushed instance should be present in collect_runtime_state");
+        assert_eq!(pushed_state.display_name, "corp-mesh");
+        assert!(pushed_state.config_server_connected.is_none());
+        assert_eq!(
+            pushed_state.manual_routes,
+            vec!["192.168.99.0/24".to_string()]
+        );
+        assert!(pushed_state.magic_dns_enabled);
+
+        // Console overwrites the same instance id with a new virtual IP.
+        let mut updated_cfg = pushed_cfg;
+        updated_cfg.virtual_ipv4 = Some("10.77.88.9".to_string());
+        ASYNC_RUNTIME
+            .block_on(client.run_network_instance(
+                BaseController::default(),
+                RunNetworkInstanceRequest {
+                    inst_id: Some(pushed_id.into()),
+                    config: Some(updated_cfg),
+                    overwrite: true,
+                    source: easytier::proto::api::manage::ConfigSource::Web as i32,
+                },
+            ))
+            .expect("console overwrite RunNetworkInstance should succeed");
+        let after_overwrite = wait_for_pushed_ip("10.77.88.9");
+        let overwritten_state = after_overwrite
+            .instances
+            .iter()
+            .find(|inst| inst.instance_id == pushed_id.to_string())
+            .expect("overwritten instance should remain present");
+        assert_eq!(
+            overwritten_state
+                .my_node_info
+                .as_ref()
+                .and_then(|n| n.virtual_ipv4.as_deref()),
+            Some("10.77.88.9")
+        );
+
+        // Console deletes the pushed instance.
+        ASYNC_RUNTIME
+            .block_on(client.delete_network_instance(
+                BaseController::default(),
+                DeleteNetworkInstanceRequest {
+                    inst_ids: vec![pushed_id.into()],
+                },
+            ))
+            .expect("console DeleteNetworkInstance should succeed");
+        let after_delete = collect_runtime_state_inner();
+        assert_eq!(after_delete.instances.len(), 1);
+        assert_eq!(after_delete.instances[0].config_id, shell_config_id);
+
+        // Stopping the config-server shell tears down cleanly.
+        assert!(exports::runtime_api::stop_kernel(
+            shell_config_id,
+            stop_web_client,
+            parse_instance_uuid,
+        ));
+        assert!(collect_runtime_state_inner().instances.is_empty());
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }

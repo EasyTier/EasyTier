@@ -110,11 +110,13 @@ pub struct RuntimeInstanceState {
     pub magic_dns_enabled: bool,
     pub need_exit_node: bool,
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_server_connected: Option<bool>,
     pub my_node_info: Option<MyNodeInfo>,
     pub events: Vec<String>,
     pub routes: Vec<RouteView>,
     pub peers: Vec<PeerInfo>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub manual_routes: Vec<String>,
 }
 
@@ -429,6 +431,7 @@ pub fn runtime_instance_from_running_info(
         magic_dns_enabled,
         need_exit_node,
         error_message: info.error_msg,
+        config_server_connected: None,
         my_node_info: info.my_node_info.map(my_node_info_to_view),
         events: info.events,
         routes: info.routes.into_iter().map(route_to_view).collect(),
@@ -451,9 +454,14 @@ pub fn runtime_instance_from_config_snapshot(
     let endpoint_urls = config_endpoint_urls(&config);
     let public_server_url = non_empty_string(config.public_server_url.clone());
     let manual_routes = config.routes.clone();
+    let dhcp_enabled = config.dhcp.unwrap_or(false);
     let my_node_info = MyNodeInfo {
-        virtual_ipv4: non_empty_string(config.virtual_ipv4.clone()),
-        virtual_ipv4_cidr: config_virtual_ipv4_cidr(&config),
+        virtual_ipv4: (!dhcp_enabled)
+            .then(|| non_empty_string(config.virtual_ipv4.clone()))
+            .flatten(),
+        virtual_ipv4_cidr: (!dhcp_enabled)
+            .then(|| config_virtual_ipv4_cidr(&config))
+            .flatten(),
         hostname: non_empty_string(config.hostname.clone()),
         version: None,
         peer_id: None,
@@ -478,6 +486,7 @@ pub fn runtime_instance_from_config_snapshot(
                 .is_some_and(|z| !z.items.is_empty()),
         need_exit_node: !config.exit_nodes.is_empty(),
         error_message: None,
+        config_server_connected: None,
         my_node_info: Some(my_node_info),
         events: Vec::new(),
         routes: configured_route_views(&endpoint_urls, public_server_url.as_deref()),

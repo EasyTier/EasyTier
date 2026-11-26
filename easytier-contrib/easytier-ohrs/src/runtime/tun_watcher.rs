@@ -73,9 +73,16 @@ pub fn spawn_instance_watcher(instance_id: Uuid, tun_enabled: bool) {
     bump_policy_revision();
 
     ASYNC_RUNTIME.spawn(async move {
-        if local_dns::refresh_all_async().await {
-            bump_policy_revision();
+        if !instance.is_ready() {
+            for _ in 0..40 {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                if instance.is_ready() {
+                    break;
+                }
+            }
         }
+        let _ = local_dns::refresh_all_async().await;
+        bump_policy_revision();
         loop {
             match receiver.recv().await {
                 Ok(event) => match event {
@@ -86,12 +93,14 @@ pub fn spawn_instance_watcher(instance_id: Uuid, tun_enabled: bool) {
                         let _ = local_dns::refresh_all_async().await;
                         bump_policy_revision();
                     }
-                    GlobalCtxEvent::DhcpIpv4Changed(_, None)
+                    GlobalCtxEvent::TunDeviceReady(_)
+                    | GlobalCtxEvent::DhcpIpv4Changed(_, None)
                     | GlobalCtxEvent::DhcpIpv4Conflicted(_)
                     | GlobalCtxEvent::ProxyCidrsUpdated(_, _)
                     | GlobalCtxEvent::PublicIpv6RoutesUpdated(_, _)
                     | GlobalCtxEvent::PeerAdded(_)
-                    | GlobalCtxEvent::PeerRemoved(_) => {
+                    | GlobalCtxEvent::PeerRemoved(_)
+                    | GlobalCtxEvent::ConfigPatched(_) => {
                         let _ = local_dns::refresh_all_async().await;
                         bump_policy_revision();
                     }

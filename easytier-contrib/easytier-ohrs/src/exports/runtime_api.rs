@@ -129,8 +129,10 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
         .map(|(instance_id, info)| (instance_id.to_string(), info))
         .collect::<std::collections::HashMap<_, _>>();
     let mut active_config_ids = live_infos.keys().cloned().collect::<Vec<_>>();
+    let mut web_client_status = std::collections::HashMap::<String, bool>::new();
     if let Ok(guard) = WEB_CLIENTS.lock() {
-        for config_id in guard.keys() {
+        for (config_id, managed) in guard.iter() {
+            web_client_status.insert(config_id.clone(), managed._client.is_connected());
             if !active_config_ids.iter().any(|value| value == config_id) {
                 active_config_ids.push(config_id.clone());
             }
@@ -168,6 +170,30 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 effective_config,
                 info,
             ));
+        } else if let Some(&connected) = web_client_status.get(&config_id) {
+            // Config-server control plane shell: never fabricate a default virtual IP,
+            // peer or route from the local config draft, otherwise it shadows real
+            // console-pushed instances in ProxyHub / TUN routing and status UI.
+            let display_name = get_runtime_config_snapshot(&config_id)
+                .map(|snapshot| snapshot.display_name)
+                .unwrap_or_else(|| config_id.clone());
+            instances.push(RuntimeInstanceState {
+                config_id: config_id.clone(),
+                instance_id: config_id,
+                display_name,
+                running: true,
+                tun_required: false,
+                tun_attached: false,
+                magic_dns_enabled: false,
+                need_exit_node: false,
+                error_message: None,
+                config_server_connected: Some(connected),
+                my_node_info: None,
+                events: Vec::new(),
+                routes: Vec::new(),
+                peers: Vec::new(),
+                manual_routes: Vec::new(),
+            });
         } else if let Some(snapshot) = get_runtime_config_snapshot(&config_id) {
             let mut inst = runtime_instance_from_config_snapshot(
                 config_id,
@@ -189,6 +215,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 magic_dns_enabled: false,
                 need_exit_node: false,
                 error_message: None,
+                config_server_connected: None,
                 my_node_info: None,
                 events: Vec::new(),
                 routes: Vec::new(),
