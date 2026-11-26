@@ -172,7 +172,12 @@ enum OutputFormat {
 
 #[derive(Parser, Debug)]
 struct InstanceSelectArgs {
-    #[arg(short = 'i', long = "instance-id", help = "the instance id")]
+    #[arg(
+        short = 'i',
+        long = "instance-id",
+        conflicts_with = "name",
+        help = "the instance id"
+    )]
     id: Option<uuid::Uuid>,
 
     #[arg(short = 'n', long = "instance-name", help = "the instance name")]
@@ -777,6 +782,24 @@ fn format_credential_peers(data: &CredentialPeersData) -> String {
 mod tests {
     use super::*;
     use easytier::proto::api::instance::PeerConnInfo;
+
+    #[test]
+    fn instance_id_and_name_are_mutually_exclusive() {
+        let id = "12345678-1234-1234-1234-123456789abc";
+        let err = Cli::try_parse_from([
+            "easytier-cli",
+            "--instance-id",
+            id,
+            "--instance-name",
+            "mesh",
+            "peer",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        Cli::try_parse_from(["easytier-cli", "--instance-id", id, "peer"]).unwrap();
+        Cli::try_parse_from(["easytier-cli", "--instance-name", "mesh", "peer"]).unwrap();
+    }
 
     #[test]
     fn dns_commands_parse_and_files_preserve_clear_semantics() {
