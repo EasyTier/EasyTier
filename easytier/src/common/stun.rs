@@ -1,7 +1,8 @@
 //! Native composition for the portable core STUN collector.
 
 #[cfg(test)]
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(test)]
 use async_trait::async_trait;
@@ -89,6 +90,16 @@ impl StunSocketMapper<RuntimeUdpSocket> for MockStunInfoCollector {
         use easytier_core::socket::udp::VirtualUdpSocket as _;
         self.get_udp_port_mapping(socket.local_addr()?.port()).await
     }
+}
+
+/// Process-wide collector for the default socket context and STUN servers.
+/// Instances with default STUN settings share it, and the config-server
+/// client reports the public IP it observes.
+pub fn global_stun_info_collector() -> Arc<StunInfoCollector> {
+    static COLLECTOR: OnceLock<Arc<StunInfoCollector>> = OnceLock::new();
+    COLLECTOR
+        .get_or_init(|| Arc::new(runtime_stun_info_collector(SocketContext::default())))
+        .clone()
 }
 
 pub fn runtime_stun_info_collector(socket_context: SocketContext) -> StunInfoCollector {

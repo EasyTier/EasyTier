@@ -472,7 +472,10 @@ impl NetworkApi {
             let mut machines = Vec::with_capacity(client_urls.len());
             for client_url in client_urls {
                 let info = client_mgr.get_heartbeat_requests(&client_url).await;
-                let location = client_mgr.get_machine_location(&client_url).await;
+                let location = client_mgr.reported_location(
+                    info.as_ref(),
+                    client_mgr.get_machine_location(&client_url).await,
+                );
                 machines.push(ListMachineItem {
                     client_url: Some(client_url),
                     online: info.is_some(),
@@ -532,9 +535,11 @@ impl NetworkApi {
                     failed_network_instances: Vec::new(),
                     support_heartbeat_policy: false,
                     support_manual_routes_patch: false,
+                    public_ip: device.reported_public_ip.clone(),
                     support_dns_config_patch: None,
                 }),
             };
+            let location = client_mgr.reported_location(info.as_ref(), location);
             machines.push(ListMachineItem {
                 client_url,
                 alias: (!device.alias.is_empty()).then_some(device.alias),

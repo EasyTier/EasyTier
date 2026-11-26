@@ -221,6 +221,20 @@ fn runtime_core_host_adapters_with_packet_egress_and_config(
     configure_runtime_core_host_adapters(global_ctx, adapters, host_config)
 }
 
+/// Instances without their own STUN servers, netns or socket mark probe
+/// exactly like the process-wide collector, so they share it.
+#[cfg(not(test))]
+fn uses_default_stun_settings(global_ctx: &ArcGlobalCtx) -> bool {
+    use crate::common::config::ConfigLoader as _;
+
+    let config = &global_ctx.config;
+    config.get_stun_servers().is_none()
+        && config.get_tcp_stun_servers().is_none()
+        && config.get_stun_servers_v6().is_none()
+        && config.get_netns().is_none()
+        && config.get_flags().socket_mark.is_none()
+}
+
 fn configure_runtime_core_host_adapters(
     global_ctx: ArcGlobalCtx,
     mut adapters: CoreHostAdapters<NativeInstanceHost>,
@@ -230,6 +244,10 @@ fn configure_runtime_core_host_adapters(
     adapters.replace_stun_provider(Arc::new(crate::common::stun::MockStunInfoCollector {
         udp_nat_type: crate::proto::common::NatType::Unknown,
     }));
+    #[cfg(not(test))]
+    if uses_default_stun_settings(&global_ctx) {
+        adapters.replace_stun_provider(crate::common::stun::global_stun_info_collector());
+    }
     adapters.config = host_config.clone();
     adapters.credential_storage = (!host_config.ignore_unsupported_config)
         .then(|| runtime_peer_credential_storage(&global_ctx))

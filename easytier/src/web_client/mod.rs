@@ -19,7 +19,7 @@ use crate::{
 use crate::{
     common::{
         MachineIdOptions, config::TomlConfigLoader, constants::EASYTIER_VERSION,
-        global_ctx::GlobalCtx, resolve_machine_id,
+        global_ctx::GlobalCtx, resolve_machine_id, stun::global_stun_info_collector,
     },
     instance::{
         composition::runtime_one_shot_manual_connector,
@@ -57,6 +57,7 @@ impl WebClient {
             device_os: web_client_device_os_info(),
             easytier_version: EASYTIER_VERSION.to_owned(),
             secure_mode,
+            stun: Some(global_stun_info_collector()),
         };
         #[cfg(feature = "management")]
         let inner = easytier_core::management::WebClient::new(
