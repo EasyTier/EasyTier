@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+use arc_swap::ArcSwap;
 use cidr::{Ipv4Inet, Ipv6Inet};
 use tokio::{
     runtime::{Builder, Runtime},
@@ -49,6 +50,7 @@ static SHARED_VIRTUAL_NIC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
 pub struct SharedVirtualNic {
     nic: Arc<Mutex<VirtualNic>>,
     ifcfg: SharedIfConfig,
+    ipv4_addresses: Arc<ArcSwap<BTreeSet<Ipv4Inet>>>,
     valid: Arc<AtomicBool>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
     member_registrations: BTreeMap<SharedVirtualNicMemberId, SharedVirtualNicMemberRegistrationId>,
@@ -60,6 +62,7 @@ impl SharedVirtualNic {
         Self {
             nic: Arc::new(Mutex::new(VirtualNic::new(config))),
             ifcfg: SharedIfConfig::default(),
+            ipv4_addresses: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
             valid: Arc::new(AtomicBool::new(true)),
             member_tunnel_table: SharedVirtualNicMemberTunnelTable::default(),
             member_registrations: BTreeMap::new(),
@@ -69,6 +72,7 @@ impl SharedVirtualNic {
 
     pub fn mark_invalid(&self) {
         self.valid.store(false, Ordering::Release);
+        self.ipv4_addresses.store(Arc::new(BTreeSet::new()));
     }
 
     pub fn is_valid(&self) -> bool {
@@ -193,6 +197,7 @@ impl SharedVirtualNic {
         self.sync_dispatcher_sources_for_claims(member_id, &claims)
             .await?;
         self.ifcfg = next_ifcfg;
+        self.publish_ipv4_addresses();
 
         Ok(())
     }
@@ -225,8 +230,20 @@ impl SharedVirtualNic {
             dispatcher.remove_sources(member_id).await?;
         }
         self.ifcfg = next_ifcfg;
+        self.publish_ipv4_addresses();
 
         Ok(())
+    }
+
+    fn publish_ipv4_addresses(&self) {
+        let previous = self.ipv4_addresses.load_full();
+        if !self.is_valid() {
+            return;
+        }
+        // A concurrent dispatcher failure clears the snapshot. Never publish a
+        // late configuration commit over that invalidation.
+        self.ipv4_addresses
+            .compare_and_swap(&previous, Arc::new(self.ifcfg.effective().ipv4_addresses));
     }
 
     async fn shutdown_dispatcher_if_idle(&mut self) {
@@ -363,6 +380,7 @@ impl SharedVirtualNic {
             tunnel,
             self.member_tunnel_table.clone(),
             self.valid.clone(),
+            self.ipv4_addresses.clone(),
         );
         if let Err(err) = self.sync_dispatcher_sources(&dispatcher).await {
             dispatcher.shutdown_without_invalidation().await;
@@ -395,6 +413,7 @@ impl SharedVirtualNic {
             tun_fd,
             self.member_tunnel_table.clone(),
             self.valid.clone(),
+            self.ipv4_addresses.clone(),
         )
         .await?;
         self.sync_dispatcher_sources(&dispatcher).await?;
@@ -601,6 +620,11 @@ impl SharedVirtualNicMember {
 
     pub fn shared_nic(&self) -> Arc<Mutex<SharedVirtualNic>> {
         self.shared_nic.clone()
+    }
+
+    /// Reads committed addresses without keeping this member registration alive.
+    pub(crate) async fn ipv4_addresses(&self) -> Arc<ArcSwap<BTreeSet<Ipv4Inet>>> {
+        self.shared_nic.lock().await.ipv4_addresses.clone()
     }
 
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {

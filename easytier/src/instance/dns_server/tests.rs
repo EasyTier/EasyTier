@@ -148,6 +148,7 @@ async fn test_magic_dns_server_instance() {
         Some(tun_name),
         tun_ip,
         fake_ip,
+        None,
     )
     .await
     .unwrap();
@@ -278,10 +279,16 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
     let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;
 
     let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
-    let dns_server_inst =
-        MagicDnsServerInstance::new(core_instance.packet_plane(), ctx, None, tun_ip, fake_ip)
-            .await
-            .unwrap();
+    let dns_server_inst = MagicDnsServerInstance::new(
+        core_instance.packet_plane(),
+        ctx,
+        None,
+        tun_ip,
+        fake_ip,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(
         dns_server_inst
             .data
@@ -411,8 +418,14 @@ async fn dns_address(server: &MagicDnsServerInstance, name: &str) -> Option<Ipv4
             source: "127.0.0.1:5353".parse().unwrap(),
             payload: message.to_vec().unwrap(),
         })
-        .await
-        .unwrap();
+        .await;
+    let bytes = match bytes {
+        easytier_core::gateway::magic_dns::MagicDnsQueryResult::Response(bytes) => bytes,
+        easytier_core::gateway::magic_dns::MagicDnsQueryResult::Forward { response, .. } => {
+            response.await
+        }
+    }
+    .unwrap();
     Message::from_vec(&bytes)
         .unwrap()
         .answers()
@@ -434,6 +447,7 @@ async fn test_magic_dns_live_configuration_and_publisher_lifecycle() {
         None,
         tun_ip,
         MAGIC_DNS_FAKE_IP.parse().unwrap(),
+        None,
     )
     .await
     .unwrap();
@@ -546,6 +560,7 @@ async fn test_magic_dns_released_client_connection_lifecycle() {
         None,
         tun_ip,
         MAGIC_DNS_FAKE_IP.parse().unwrap(),
+        None,
     )
     .await
     .unwrap();

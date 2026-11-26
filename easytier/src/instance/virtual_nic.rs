@@ -901,6 +901,15 @@ pub enum NicBackend {
 }
 
 impl NicBackend {
+    pub(crate) async fn shared_ipv4_addresses(
+        &self,
+    ) -> Option<Arc<arc_swap::ArcSwap<BTreeSet<Ipv4Inet>>>> {
+        match self {
+            Self::Dedicated(_) => None,
+            Self::Shared(member) => Some(member.ipv4_addresses().await),
+        }
+    }
+
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.create_dev().await,
