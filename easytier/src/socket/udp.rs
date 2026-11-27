@@ -146,11 +146,11 @@ impl RuntimeUdpSocketFactory {
             return BindDev::from(bind_device.as_str());
         }
 
+        // Port forwards bind only their local address by default, so replacing
+        // its interface does not strand the socket on the old interface index.
         if matches!(
             options.purpose,
-            UdpSocketPurpose::DirectConnect
-                | UdpSocketPurpose::PortBoundListener
-                | UdpSocketPurpose::PortForward
+            UdpSocketPurpose::DirectConnect | UdpSocketPurpose::PortBoundListener
         ) {
             return BindDev::Auto;
         }
@@ -438,7 +438,7 @@ mod tests {
         ));
         assert!(matches!(
             factory.bind_device_for(&UdpBindOptions::port_forward(listener_addr)),
-            BindDev::Auto
+            BindDev::Disabled
         ));
         assert!(matches!(
             factory.bind_device_for(&UdpBindOptions::port_lease(listener_addr)),
@@ -450,12 +450,16 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn factory_applies_listener_bind_device_option() {
+    #[rstest::rstest]
+    fn factory_applies_listener_bind_device_option(#[values(false, true)] port_forward: bool) {
         let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
         let factory = RuntimeUdpSocketFactory::new();
-        let options = UdpBindOptions::port_bound_listener(listener_addr)
-            .with_bind_device(Some("eth0".to_owned()));
+        let options = if port_forward {
+            UdpBindOptions::port_forward(listener_addr)
+        } else {
+            UdpBindOptions::port_bound_listener(listener_addr)
+        }
+        .with_bind_device(Some("eth0".to_owned()));
 
         match factory.bind_device_for(&options) {
             BindDev::Custom(dev) => assert_eq!(dev, "eth0"),
