@@ -1834,9 +1834,10 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
     let task_network = network.clone();
     let task = tokio::spawn(async move {
         let network = task_network;
-        for _ in 1..=2 {
-            // inst4 should be in inst1's route list
-            wait_for_condition(
+        // During the 15s disconnect and 7s route-withdrawal waits, inst4 can reach
+        // a 16s retry delay. Allow that delay plus route propagation after link-up.
+        for route_timeout in [Duration::from_secs(8), Duration::from_secs(30)] {
+            wait_for_condition_named(
                 || async {
                     insts[0]
                         .get_core_instance()
@@ -1845,7 +1846,8 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                         .iter()
                         .any(|r| r.peer_id == inst4.peer_id())
                 },
-                Duration::from_secs(8),
+                route_timeout,
+                "inst1 to learn the route to inst4",
             )
             .await;
 

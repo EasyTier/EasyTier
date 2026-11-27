@@ -1,6 +1,5 @@
-use crate::config::repository::{get_config_record, save_config_record};
-use crate::config::services::schema_service::get_network_config_field_mappings;
-use crate::config::types::stored_config::SharedConfigLinkPayload;
+use crate::config::schema::get_network_config_field_mappings;
+use crate::napi_types::SharedConfigLinkPayload;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use easytier::proto::api::manage::NetworkConfig;
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
@@ -81,18 +80,15 @@ fn decompress_from_base64url(raw: &str) -> Result<String, String> {
     Ok(out)
 }
 
-pub fn build_config_share_link(
-    config_id: &str,
+pub fn build_config_share_link_from_json(
+    config_json: &str,
     display_name: Option<String>,
     only_start: bool,
 ) -> Option<String> {
-    let record = get_config_record(config_id)?;
-    let config = serde_json::from_str::<NetworkConfig>(&record.config_json).ok()?;
+    let config = serde_json::from_str::<NetworkConfig>(config_json).ok()?;
     let mapped_json = map_config_json(&config).ok()?;
     let compressed = compress_to_base64url(&mapped_json).ok()?;
-    let final_name = display_name
-        .or(Some(record.meta.display_name))
-        .filter(|name| !name.is_empty());
+    let final_name = display_name.filter(|name| !name.is_empty());
 
     let mut url = Url::parse(&format!("https://{SHARE_LINK_HOST}{SHARE_LINK_PATH}")).ok()?;
     url.query_pairs_mut().append_pair("cfg", &compressed);
@@ -143,56 +139,31 @@ pub fn parse_config_share_link(share_link: &str) -> Option<SharedConfigLinkPaylo
     })
 }
 
-pub fn import_config_share_link(
-    share_link: &str,
-    display_name_override: Option<String>,
-) -> Option<String> {
-    let payload = parse_config_share_link(share_link)?;
-    let config = serde_json::from_str::<NetworkConfig>(&payload.config_json).ok()?;
-    let config_id = config.instance_id.clone()?;
-    let display_name = display_name_override
-        .filter(|name| !name.is_empty())
-        .or(payload.display_name)
-        .unwrap_or_else(|| config_id.clone());
-
-    save_config_record(config_id.clone(), display_name, payload.config_json)?;
-    Some(config_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::repository::{create_config_record, init_config_store};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn test_root() -> String {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir()
-            .join(format!("easytier_ohrs_share_test_{unique}"))
-            .to_string_lossy()
-            .into_owned()
-    }
+    use crate::config::repository::get_default_config_json;
 
     #[test]
-    fn share_link_roundtrip_works() {
+    fn share_link_roundtrip_works_statelessly() {
+        let mut raw = serde_json::from_str::<NetworkConfig>(
+            &get_default_config_json().expect("default config"),
+        )
+        .expect("parse default");
         const CONFIG_ID: &str = "00000000-0000-0000-0000-000000000003";
-        assert!(init_config_store(test_root()));
-        create_config_record(CONFIG_ID.to_string(), "share-demo".to_string())
-            .expect("create config");
+        raw.instance_id = Some(CONFIG_ID.to_string());
+        raw.network_name = Some("demo-net".to_string());
+        let json = serde_json::to_string(&raw).expect("serialize");
 
-        let link = build_config_share_link(CONFIG_ID, None, true).expect("share link");
+        let link = build_config_share_link_from_json(&json, Some("share-demo".to_string()), true)
+            .expect("share link");
         let payload = parse_config_share_link(&link).expect("parse link");
         let config =
             serde_json::from_str::<NetworkConfig>(&payload.config_json).expect("config json");
 
         assert!(payload.only_start);
         assert_eq!(payload.display_name.as_deref(), Some("share-demo"));
+        assert_eq!(config.network_name.as_deref(), Some("demo-net"));
         assert_ne!(config.instance_id.as_deref(), Some(CONFIG_ID));
-
-        let imported_id = import_config_share_link(&link, None).expect("import link");
-        assert_ne!(imported_id, CONFIG_ID);
     }
 }

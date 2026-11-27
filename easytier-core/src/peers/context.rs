@@ -18,6 +18,7 @@ use easytier_proto::{
 };
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use tokio::sync::Semaphore;
 
 pub use crate::config::{NetworkIdentity, NetworkSecretDigest};
 use crate::{
@@ -37,6 +38,7 @@ use crate::{
         util::shrink_dashmap,
         whitelist::check_network_in_relay_whitelist,
     },
+    tunnel::mpsc::NETWORK_QUEUE_SLOTS,
 };
 
 pub(crate) const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
@@ -270,6 +272,7 @@ pub(crate) struct CorePeerContext {
     stats_manager: Arc<StatsManager>,
     credentials: Arc<CredentialManager>,
     trusted_keys: Arc<TrustedKeyMapManager>,
+    send_queue_slots: Arc<Semaphore>,
     peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
     events: Arc<dyn CoreEventSink>,
 }
@@ -321,6 +324,7 @@ impl CorePeerContext {
             stats_manager,
             credentials,
             trusted_keys: Arc::new(TrustedKeyMapManager::new()),
+            send_queue_slots: Arc::new(Semaphore::new(NETWORK_QUEUE_SLOTS)),
             peer_events: tokio::sync::broadcast::channel(PEER_EVENT_CAPACITY).0,
             events: adapters.events,
         }
@@ -547,6 +551,10 @@ pub(crate) trait PeerContext: Send + Sync {
 
     fn network_identity(&self) -> NetworkIdentity;
 
+    fn send_queue_slots(&self) -> Option<Arc<Semaphore>> {
+        None
+    }
+
     fn network_name(&self) -> String {
         self.network_identity().network_name
     }
@@ -747,6 +755,10 @@ impl PeerContext for CorePeerContext {
 
     fn network_identity(&self) -> NetworkIdentity {
         self.snapshot().runtime.network_identity.clone()
+    }
+
+    fn send_queue_slots(&self) -> Option<Arc<Semaphore>> {
+        Some(self.send_queue_slots.clone())
     }
 
     fn flags(&self) -> Flags {

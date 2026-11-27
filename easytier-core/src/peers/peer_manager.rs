@@ -2695,15 +2695,11 @@ impl PeerOutboundPacketRouter {
     }
 
     fn is_all_peers_broadcast_ipv4(&self, ipv4_addr: &Ipv4Addr) -> bool {
-        let network_length = self
-            .context
-            .ipv4()
-            .map(|x| x.network_length())
-            .unwrap_or(24);
-        let ipv4_inet = cidr::Ipv4Inet::new(*ipv4_addr, network_length).unwrap();
         ipv4_addr.is_broadcast()
             || ipv4_addr.is_multicast()
-            || *ipv4_addr == ipv4_inet.last_address()
+            || self.context.ipv4().is_some_and(|local| {
+                local.network_length() < 31 && *ipv4_addr == local.last_address()
+            })
     }
 
     fn is_all_peers_broadcast_ipv6(&self, ipv6_addr: &Ipv6Addr) -> bool {
@@ -4493,6 +4489,31 @@ mod tests {
                 .context
                 .is_pubkey_trusted(&propagated_key, "portable-net")
         );
+    }
+
+    #[tokio::test]
+    async fn ipv4_broadcast_uses_local_subnet() {
+        for (prefix, dst, expected) in [
+            (Some(24), "10.126.126.255", true),
+            (Some(24), "203.0.113.255", false),
+            (Some(16), "203.0.255.255", false),
+            (Some(31), "10.126.126.11", false),
+            (Some(32), "10.126.126.10", false),
+            (None, "10.126.126.255", false),
+            (None, "255.255.255.255", true),
+            (None, "224.0.0.1", true),
+        ] {
+            let mut runtime = portable_runtime_config("portable-net");
+            runtime.core.routes.ipv4 =
+                prefix.map(|len| IpPrefix::new("10.126.126.10".parse().unwrap(), len).unwrap());
+            let core = build_portable_for_test(runtime).unwrap();
+            assert_eq!(
+                core.outbound_packet_router
+                    .is_all_peers_broadcast_ipv4(&dst.parse().unwrap()),
+                expected,
+                "prefix {prefix:?}, destination {dst}",
+            );
+        }
     }
 
     #[tokio::test]

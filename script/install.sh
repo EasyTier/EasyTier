@@ -33,11 +33,18 @@ HELP() {
   echo "  ./install.sh uninstall"
 }
 
-# Show help if no arguments or help command is used
-if [ $# -eq 0 ] || [ "$1" = "help" ]; then
-  HELP
-  exit 0
-fi
+case "${1-help}" in
+  help)
+    HELP
+    exit 0
+    ;;
+  install|uninstall|update) ;;
+  *)
+    printf 'Unknown command: %s\n' "$1" >&2
+    HELP >&2
+    exit 2
+    ;;
+esac
 
 # This script copy from alist , Thank for it!
 
@@ -527,10 +534,6 @@ elif [ "$COMMEND" = "install" ]; then
   else
     echo -e "${RED_COLOR} Install fail, try install by hand${RES}"
   fi
-else
-  echo -e "${RED_COLOR} Error Command ${RES}\n\r"
-  echo " ALLOW:"
-  echo -e "\n\r${GREEN_COLOR} install, uninstall, update, help ${RES}"
 fi
 
 rm -rf /tmp/easytier_tmp_*

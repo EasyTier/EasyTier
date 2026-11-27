@@ -362,6 +362,17 @@ impl RouteMessage {
         self.protocol
     }
 
+    pub(crate) fn table_id(&self) -> io::Result<u32> {
+        match self
+            .attributes
+            .iter()
+            .find(|attr| attr.kind & NLA_TYPE_MASK == RTA_TABLE)
+        {
+            Some(attr) => read_u32(&attr.value),
+            None => Ok(self.table.into()),
+        }
+    }
+
     pub(crate) fn route_type(&self) -> RouteType {
         RouteType::from_raw(self.route_type)
     }

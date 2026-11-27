@@ -397,11 +397,20 @@ pub fn runtime_instance_from_running_info(
     info: api::manage::NetworkInstanceRunningInfo,
 ) -> RuntimeInstanceState {
     let tun_attached = info.running && is_tun_attached(&config_id);
-    let tun_required = info.running && (info.dev_name != "no_tun" || tun_attached);
-    let magic_dns_enabled = config
+    let no_tun_configured = config
         .as_ref()
-        .and_then(|config| config.enable_magic_dns)
+        .and_then(|config| config.no_tun)
         .unwrap_or(false);
+    let tun_required =
+        info.running && !no_tun_configured && (info.dev_name != "no_tun" || tun_attached);
+    let magic_dns_enabled = config.as_ref().is_some_and(|config| {
+        config.enable_magic_dns.unwrap_or(false)
+            || config
+                .dns
+                .as_ref()
+                .and_then(|dns| dns.zone.as_ref())
+                .is_some_and(|z| !z.items.is_empty())
+    });
     let need_exit_node = config
         .as_ref()
         .is_some_and(|config| !config.exit_nodes.is_empty());
@@ -435,8 +444,10 @@ pub fn runtime_instance_from_config_snapshot(
     running: bool,
 ) -> RuntimeInstanceState {
     let tun_attached = running && is_tun_attached(&config_id);
-    let tun_required =
-        running && (config.dev_name.as_deref().unwrap_or("") != "no_tun" || tun_attached);
+    let no_tun_configured = config.no_tun.unwrap_or(false);
+    let tun_required = running
+        && !no_tun_configured
+        && (config.dev_name.as_deref().unwrap_or("") != "no_tun" || tun_attached);
     let endpoint_urls = config_endpoint_urls(&config);
     let public_server_url = non_empty_string(config.public_server_url.clone());
     let manual_routes = config.routes.clone();
@@ -459,7 +470,12 @@ pub fn runtime_instance_from_config_snapshot(
         running,
         tun_required,
         tun_attached,
-        magic_dns_enabled: config.enable_magic_dns.unwrap_or(false),
+        magic_dns_enabled: config.enable_magic_dns.unwrap_or(false)
+            || config
+                .dns
+                .as_ref()
+                .and_then(|dns| dns.zone.as_ref())
+                .is_some_and(|z| !z.items.is_empty()),
         need_exit_node: !config.exit_nodes.is_empty(),
         error_message: None,
         my_node_info: Some(my_node_info),

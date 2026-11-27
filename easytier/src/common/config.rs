@@ -23,11 +23,14 @@ use crate::tunnel::IpScheme;
 #[cfg(feature = "management")]
 pub use easytier_core::management::{config_source_from_rpc, config_source_to_rpc};
 
+pub fn mapped_listener_policy() -> MappedListenerPolicy {
+    MappedListenerPolicy::new(IpScheme::VARIANTS.iter().map(ToString::to_string))
+}
+
 pub fn parse_mapped_listener_urls(
     mapped_listeners: &[String],
 ) -> Result<Vec<url::Url>, anyhow::Error> {
-    MappedListenerPolicy::new(IpScheme::VARIANTS.iter().map(ToString::to_string))
-        .parse_urls(mapped_listeners)
+    mapped_listener_policy().parse_urls(mapped_listeners)
 }
 
 pub fn load_toml_config_from_path(path: &PathBuf) -> Result<TomlConfigLoader, anyhow::Error> {

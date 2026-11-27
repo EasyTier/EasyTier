@@ -1,7 +1,7 @@
 pub mod discovery;
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, Mutex, Weak},
@@ -25,6 +25,7 @@ use crate::{
         transport::{self, ConnectedByteStream, ConnectedTransport, UdpSessionMode},
     },
     events::{CoreEvent, CoreEventSink},
+    foundation::time,
     host::dns::{DnsQuery, DnsResolver},
     peers::{PeerConnectionOrigin, peer_manager::PeerManagerCore},
     proto::common::TunnelInfo,
@@ -38,6 +39,7 @@ use crate::{
 
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
 const MAX_MANUAL_ENDPOINT_HOPS: usize = 16;
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 
 fn manual_default_port(url: &Url) -> u16 {
     crate::connectivity::protocol::protocol_default_port(url.scheme()).unwrap_or(11010)
@@ -338,12 +340,30 @@ impl ManualConnectorOptions {
     }
 }
 
+struct RetryBackoff {
+    retry_at: time::Instant,
+    delay: Duration,
+}
+
+impl RetryBackoff {
+    fn after_failure(previous: Option<&Self>, interval: Duration) -> Self {
+        let delay = previous
+            .map_or(interval, |previous| previous.delay.saturating_mul(2))
+            .min(MAX_RECONNECT_DELAY);
+        Self {
+            retry_at: time::Instant::now() + delay,
+            delay,
+        }
+    }
+}
+
 #[derive(Default)]
 struct ManualConnectorState {
     connectors: DashSet<Url>,
     reconnecting: DashSet<Url>,
     removed: DashSet<Url>,
-    state_lock: Mutex<()>,
+    // The same lock guards the retry schedule and transitions between the sets.
+    state_lock: Mutex<BTreeMap<Url, RetryBackoff>>,
 }
 
 struct ManualConnectorData<H>
@@ -382,6 +402,26 @@ struct ReconnectReservation {
 impl ReconnectReservation {
     fn new(state: Arc<ManualConnectorState>, url: Url) -> Self {
         Self { state, url }
+    }
+
+    fn record_result(&self, result: anyhow::Result<()>, interval: Duration) {
+        let mut retries = self.state.state_lock.lock().unwrap();
+        if self.state.removed.contains(&self.url) {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                retries.remove(&self.url);
+            }
+            Err(error) => {
+                let previous = retries.get(&self.url);
+                if previous.is_none() {
+                    tracing::warn!(target: "CORE::INSTANCE::CONNECTION", url = %self.url, error = %format_args!("{error:#}"), "manual connection failed; retrying");
+                }
+                let next = RetryBackoff::after_failure(previous, interval);
+                retries.insert(self.url.clone(), next);
+            }
+        }
     }
 }
 
@@ -469,7 +509,8 @@ where
     }
 
     pub fn remove_connector(&self, url: &Url) -> bool {
-        let _state_guard = self.data.state.state_lock.lock().unwrap();
+        let mut retries = self.data.state.state_lock.lock().unwrap();
+        retries.remove(url);
         if self.data.state.connectors.remove(url).is_some() {
             tracing::warn!(%url, "manual connector removed");
             return true;
@@ -482,7 +523,8 @@ where
     }
 
     pub fn clear_connectors(&self) {
-        let _state_guard = self.data.state.state_lock.lock().unwrap();
+        let mut retries = self.data.state.state_lock.lock().unwrap();
+        retries.clear();
         self.data.state.connectors.clear();
         for url in self.data.state.reconnecting.iter() {
             self.data.state.removed.insert(url.key().clone());
@@ -529,28 +571,22 @@ where
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = interval.tick() => {
-                    for url in take_dead_connectors_for_reconnect(&data) {
+                    let Some(peer_manager) = data.peer_manager.upgrade() else {
+                        break;
+                    };
+                    for url in take_dead_connectors_for_reconnect(&data.state, |url| client_url_is_alive(&peer_manager, url)) {
                         let task_data = data.clone();
                         let reservation =
                             ReconnectReservation::new(data.state.clone(), url.clone());
                         reconnect_tasks.spawn(async move {
-                            let result = reconnect(task_data, url.clone()).await;
-                            drop(reservation);
-                            (url, result)
+                            let interval = task_data.options.reconnect_interval;
+                            reservation.record_result(reconnect(task_data, url).await, interval);
                         });
                     }
                 }
                 result = reconnect_tasks.join_next(), if !reconnect_tasks.is_empty() => {
-                    let Some(result) = result else {
-                        continue;
-                    };
-                    match result {
-                        Ok((url, reconnect_result)) => {
-                            tracing::warn!(?url, ?reconnect_result, "manual reconnect task done");
-                        }
-                        Err(error) => {
-                            tracing::error!(?error, "manual reconnect task failed");
-                        }
+                    if let Some(Err(error)) = result {
+                        tracing::error!(?error, "manual reconnect task failed");
                     }
                 }
             }
@@ -586,28 +622,32 @@ fn restore_interrupted_connectors(state: &ManualConnectorState) {
     }
 }
 
-fn take_dead_connectors_for_reconnect<H>(data: &ManualConnectorData<H>) -> BTreeSet<Url>
-where
-    H: ManualConnectorHost,
-{
-    let _state_guard = data.state.state_lock.lock().unwrap();
-    let Some(peer_manager) = data.peer_manager.upgrade() else {
-        tracing::warn!("peer manager is gone, skip manual reconnect");
-        return BTreeSet::new();
-    };
-    let dead_connectors = data
-        .state
+fn take_dead_connectors_for_reconnect(
+    state: &ManualConnectorState,
+    is_alive: impl Fn(&Url) -> bool,
+) -> BTreeSet<Url> {
+    let mut retries = state.state_lock.lock().unwrap();
+    let now = time::Instant::now();
+    let dead_connectors = state
         .connectors
         .iter()
         .filter_map(|entry| {
             let url = entry.key();
-            (!client_url_is_alive(&peer_manager, url)).then(|| url.clone())
+            if is_alive(url) {
+                retries.remove(url);
+                None
+            } else {
+                retries
+                    .get(url)
+                    .is_none_or(|retry| now >= retry.retry_at)
+                    .then(|| url.clone())
+            }
         })
         .collect::<BTreeSet<_>>();
     for url in &dead_connectors {
-        let removed = data.state.connectors.remove(url);
+        let removed = state.connectors.remove(url);
         debug_assert!(removed.is_some());
-        let inserted = data.state.reconnecting.insert(url.clone());
+        let inserted = state.reconnecting.insert(url.clone());
         debug_assert!(inserted);
     }
     dead_connectors
@@ -708,7 +748,7 @@ async fn resolve_reconnect_ip_versions(
         ),
     )
     .await?;
-    tracing::info!(?addrs, %url, "manual preflight resolve done");
+    tracing::debug!(?addrs, %url, "manual preflight resolve done");
 
     let mut ip_versions = Vec::new();
     if addrs.iter().any(SocketAddr::is_ipv4) {
@@ -726,7 +766,7 @@ where
 {
     validate_manual_url(&url)?;
     let connect_timeout = data.options.connect_timeout(&url, data.protocol.as_ref());
-    tracing::info!(%url, "manual reconnect start");
+    tracing::debug!(%url, "manual reconnect start");
     let normalized_url = match convert_idn_to_ascii(url.clone()) {
         Ok(url) => url,
         Err(error) => {
@@ -849,6 +889,7 @@ where
         url: requested_url.clone(),
     });
 
+    let mut interface_connect_pending = false;
     let tunnel = with_timeout_budget("connect", started_at, connect_timeout, async {
         if endpoint.url.scheme() == "ring" {
             return connect_ring_tunnel(&data.ring_registry, &endpoint.url);
@@ -865,7 +906,8 @@ where
         let transport = transport.expect("non-Ring endpoint should have a transport");
         let connected = match resolved {
             Some((remote_addr, bind_addrs)) => {
-                connect_resolved(
+                interface_connect_pending = !bind_addrs.is_empty();
+                let result = connect_resolved(
                     data.host.clone(),
                     transport,
                     remote_addr,
@@ -873,7 +915,9 @@ where
                     data.options.tcp_bind.clone(),
                     data.options.udp_bind.clone(),
                 )
-                .await?
+                .await;
+                interface_connect_pending = false;
+                result?
             }
             None => {
                 ConnectedTransport::ByteStream(data.host.connect_byte_stream(&endpoint.url).await?)
@@ -881,7 +925,14 @@ where
         };
         data.protocol.upgrade_client(connected, endpoint.url).await
     })
-    .await?;
+    .await
+    .map_err(|error| {
+        if interface_connect_pending {
+            anyhow::anyhow!("{error}; if the peer is otherwise reachable, try --bind-device false")
+        } else {
+            error
+        }
+    })?;
     let tunnel =
         apply_resolved_endpoint_info(tunnel, requested_url.clone(), endpoint.tunnel_prefixes);
     let peer_manager = data
@@ -1120,6 +1171,39 @@ mod tests {
         assert!(state.connectors.contains(url));
         assert!(!state.reconnecting.contains(url));
         assert!(!state.removed.contains(url));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn offline_connector_backs_off_independently_until_recovery() {
+        let state = Arc::new(ManualConnectorState::default());
+        let peer: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        let other: Url = "tcp://127.0.0.1:11011".parse().unwrap();
+        let tick = Duration::from_secs(1);
+        let due = || take_dead_connectors_for_reconnect(&state, |_| false);
+        let finish = |url: &Url, result| {
+            ReconnectReservation::new(state.clone(), url.clone()).record_result(result, tick);
+        };
+        state.connectors.insert(peer.clone());
+        assert_eq!(due(), BTreeSet::from([peer.clone()]));
+        for seconds in [1, 2, 4, 8, 16, 32, 60, 60] {
+            finish(&peer, Err(anyhow::anyhow!("offline")));
+            if seconds == 8 {
+                state.connectors.insert(other.clone());
+                assert_eq!(due(), BTreeSet::from([other.clone()]));
+                finish(&other, Ok(()));
+            }
+            let due_peer = || take_dead_connectors_for_reconnect(&state, |url| url == &other);
+            tokio::time::advance(Duration::from_secs(seconds) - tick).await;
+            assert!(due_peer().is_empty());
+            tokio::time::advance(tick).await;
+            assert_eq!(due_peer(), BTreeSet::from([peer.clone()]));
+        }
+        finish(&peer, Ok(()));
+        let due_peer = || take_dead_connectors_for_reconnect(&state, |url| url == &other);
+        assert_eq!(due_peer(), BTreeSet::from([peer.clone()]));
+        finish(&peer, Err(anyhow::anyhow!("offline again")));
+        tokio::time::advance(tick).await;
+        assert_eq!(due_peer(), BTreeSet::from([peer]));
     }
 
     #[test]

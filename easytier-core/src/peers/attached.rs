@@ -700,7 +700,7 @@ mod tests {
             wait_for_route(exit, attached.peer_id(), client_ip, true).await;
         }
 
-        let public_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let public_ip = Ipv4Addr::new(203, 0, 113, 255);
         let mut request = vec![0u8; 28];
         request[0] = 0x45;
         request[2..4].copy_from_slice(&28u16.to_be_bytes());

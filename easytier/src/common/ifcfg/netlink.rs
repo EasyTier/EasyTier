@@ -155,6 +155,38 @@ impl NetlinkIfConfiger {
         Err(Error::NotFound)
     }
 
+    pub(crate) fn restore_missing_ipv4(
+        name: &str,
+        index: u32,
+        ip: Ipv4Inet,
+    ) -> Result<bool, Error> {
+        if Self::list_addresses(name)?.contains(&ip.into()) {
+            return Ok(false);
+        }
+        // Use the original ifindex: a replacement interface may reuse the name.
+        Self::add_ipv4_at_index(index, ip.address(), ip.network_length())?;
+        Ok(true)
+    }
+
+    fn add_ipv4_at_index(index: u32, address: Ipv4Addr, cidr_prefix: u8) -> Result<(), Error> {
+        let broadcast = if cidr_prefix == 32 {
+            address
+        } else {
+            let ip_addr = u32::from(address);
+            Ipv4Addr::from((0xffff_ffff_u32) >> u32::from(cidr_prefix) | ip_addr)
+        };
+        let message =
+            AddressMessage::new(libc::AF_INET as u8, index, cidr_prefix, IpAddr::V4(address))
+                .local(IpAddr::V4(address))
+                .broadcast(broadcast);
+        let request = message_request(
+            RTM_NEWADDR,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
+    }
+
     fn remove_one_ip(name: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<(), Error> {
         let message = AddressMessage::new(
             libc::AF_INET as u8,
@@ -409,11 +441,11 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
                 .destination()
                 .copied()
                 .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-            // Only routes we added (RTPROT_STATIC), not the kernel's connected route.
             if destination == IpAddr::V4(address)
                 && msg.dst_len() == cidr_prefix
                 && msg.oif() == Some(ifidx)
                 && msg.protocol() == libc::RTPROT_STATIC
+                && msg.table_id()? == u32::from(libc::RT_TABLE_MAIN)
             {
                 let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
                 send_netlink_req_and_wait_ack(request)?;
@@ -452,26 +484,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let broadcast = if cidr_prefix == 32 {
-            address
-        } else {
-            let ip_addr = u32::from(address);
-            Ipv4Addr::from((0xffff_ffff_u32) >> u32::from(cidr_prefix) | ip_addr)
-        };
-        let message = AddressMessage::new(
-            libc::AF_INET as u8,
-            Self::get_interface_index(name)?,
-            cidr_prefix,
-            IpAddr::V4(address),
-        )
-        .local(IpAddr::V4(address))
-        .broadcast(broadcast);
-        let request = message_request(
-            RTM_NEWADDR,
-            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
-            &message,
-        )?;
-        send_netlink_req_and_wait_ack(request)
+        Self::add_ipv4_at_index(Self::get_interface_index(name)?, address, cidr_prefix)
     }
 
     async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
@@ -580,11 +593,11 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
                 .destination()
                 .copied()
                 .unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
-            // Only routes we added (RTPROT_STATIC), not the kernel's connected route.
             if destination == IpAddr::V6(address)
                 && msg.dst_len() == cidr_prefix
                 && msg.oif() == Some(ifidx)
                 && msg.protocol() == libc::RTPROT_STATIC
+                && msg.table_id()? == u32::from(libc::RT_TABLE_MAIN)
             {
                 let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
                 send_netlink_req_and_wait_ack(request)?;
@@ -795,6 +808,45 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn remove_route_keeps_policy_table_routes() {
+        let iface = test_iface_name("pt");
+        let _link = ScopedDummyLink::new(&iface);
+        let ifcfg = NetlinkIfConfiger {};
+        let v4 = "192.0.2.241".parse().unwrap();
+        let v6 = "2001:db8:2416::1".parse().unwrap();
+        let prefixes = [("-4", "192.0.2.241/32"), ("-6", "2001:db8:2416::1/128")];
+        let tables = [("100", "static"), ("101", "boot"), ("1000", "static")];
+
+        ifcfg.add_ipv4_route(&iface, v4, 32, None).await.unwrap();
+        ifcfg.add_ipv6_route(&iface, v6, 128, None).await.unwrap();
+        for (family, prefix) in prefixes {
+            for (table, proto) in tables {
+                run_cmd(&format!(
+                    "ip {family} route add {prefix} dev {iface} metric 65535 proto {proto} table {table}"
+                ));
+            }
+        }
+
+        // Retry after removal to cover either kernel dump order.
+        for _ in 0..2 {
+            ifcfg.remove_ipv4_route(&iface, v4, 32).await.unwrap();
+            ifcfg.remove_ipv6_route(&iface, v6, 128).await.unwrap();
+            for (family, prefix) in prefixes {
+                let show = |table| {
+                    run_cmd(&format!(
+                        "ip {family} route show table {table} dev {iface} exact {prefix}"
+                    ))
+                };
+                assert!(show("main").is_empty(), "{prefix} left in main");
+                for (table, _) in tables {
+                    assert!(!show(table).is_empty(), "{prefix} missing from {table}");
+                }
+            }
+        }
     }
 
     #[serial_test::serial]

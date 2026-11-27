@@ -10,38 +10,46 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-bytes.workspace = true
-easytier = { workspace = true, default-features = true }
-easytier-core.workspace = true
-easytier-ohos-core.workspace = true
-easytier-ohos-features.workspace = true
+base64.workspace = true
+easytier = { workspace = true, default-features = false, features = [
+    "dhcp-ipv4",
+    "endpoint-discovery",
+    "icmp-proxy",
+    "kcp",
+    "logging",
+    "management",
+    "proxy-cidr-monitor",
+    "quic",
+    "ring-crypto",
+    "smoltcp",
+    "tcp-hole-punch",
+    "tun",
+    "web-client",
+    "websocket",
+    "zstd",
+] }
+easytier-core = { workspace = true, features = ["proxy-packet"] }
 easytier-proto = { workspace = true, features = [
     "api",
     "core",
     "json-rpc",
 ] }
-futures = { workspace = true, features = ["default"] }
+flate2 = "1.1"
+gethostname.workspace = true
+hickory-proto = { version = "0.25.2", default-features = false, features = ["text-parsing"] }
+ipnet = "2.10"
 napi-derive-ohos = "1.1"
 napi-ohos = { version = "1.1", default-features = false, features = [
     "serde-json",
     "latin1",
-    "chrono_date",
-    "object_indexmap",
-    "tokio",
-    "async",
-    "tokio_rt",
-    "tokio_macros",
-    "tokio_io_util",
-    "deferred_trace",
     "napi8",
-    "web_stream",
 ] }
 once_cell.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
-tracing-subscriber = { workspace = true, default-features = true }
+tracing-subscriber = { workspace = true, default-features = false, features = ["registry"] }
 url.workspace = true
 uuid = { workspace = true, features = [
     "v4",
@@ -51,4 +59,8 @@ uuid = { workspace = true, features = [
 ] }
 
 [build-dependencies]
+easytier-proto = { workspace = true, default-features = false }
 napi-build-ohos = "1.1"
+prost-reflect = "0.16.4"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

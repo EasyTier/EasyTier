@@ -350,6 +350,7 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        visible_alias = "routes",
         env = "ET_MANUAL_ROUTES",
         value_delimiter = ',',
         help = t!("core_clap.manual_routes").to_string(),
@@ -1096,7 +1097,7 @@ fn win_service_event_loop(
 }
 
 fn flags_from(matches: &ArgMatches) -> Result<FlagsPatch, clap::Error> {
-    let given = Flags::flags()
+    let mut given = Flags::flags()
         .iter()
         .filter_map(|field| {
             let name = field.name();
@@ -1110,6 +1111,9 @@ fn flags_from(matches: &ArgMatches) -> Result<FlagsPatch, clap::Error> {
             Some((name.to_owned(), value))
         })
         .collect::<serde_json::Map<_, _>>();
+    if let Some(value) = matches.get_one::<Value>("disable_encryption") {
+        given.insert("enable_encryption".to_owned(), value.clone());
+    }
     serde_json::from_value(Value::Object(given)).map_err(|error| {
         clap::Error::raw(
             clap::error::ErrorKind::ValueValidation,
@@ -1136,16 +1140,17 @@ fn cli_command() -> clap::Command {
     let boolish = parser.map(|v| json!(v));
     let negated = parser.map(|v| json!(!v));
 
-    Cli::command().args(Flags::flags().iter().map(|field| {
+    let command = Cli::command().arg(
+        arg("disable_encryption", "disable_encryption")
+            .short('u')
+            .conflicts_with("enable_encryption")
+            .num_args(0..=1)
+            .default_missing_value("true")
+            .value_parser(negated.clone()),
+    );
+    command.args(Flags::flags().iter().map(|field| {
         let name = field.name();
         match name {
-            // The two the command line states in the negative, which can be given
-            // bare like any other boolean flag.
-            "enable_encryption" => arg(name, "disable_encryption")
-                .short('u')
-                .num_args(0..=1)
-                .default_missing_value("true")
-                .value_parser(negated.clone()),
             "enable_ipv6" => arg(name, "disable_ipv6")
                 .num_args(0..=1)
                 .default_missing_value("true")
@@ -1620,6 +1625,44 @@ mod tests {
     /// Parses the flags the way the binary does.
     fn parse_flags(argv: &[&str]) -> Result<FlagsPatch, clap::Error> {
         flags_from(&cli_command().try_get_matches_from(argv)?)
+    }
+
+    #[test]
+    fn cli_encryption_spellings_preserve_polarity_and_conflict() {
+        for (arg, expected) in [
+            ("--enable-encryption", true),
+            ("--enable-encryption=false", false),
+            ("--disable-encryption", false),
+            ("-u", false),
+        ] {
+            assert_eq!(
+                parse_flags(&["easytier", arg]).unwrap().enable_encryption,
+                Some(expected)
+            );
+        }
+        for args in [
+            ["--enable-encryption=false", "--disable-encryption"],
+            ["-u", "--enable-encryption"],
+        ] {
+            let err = parse_flags(&["easytier", args[0], args[1]]).unwrap_err();
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn cli_routes_spellings_set_the_same_manual_routes() {
+        for arg in ["--routes", "--manual-routes"] {
+            let cli = Cli::try_parse_from(["easytier", arg, "10.1.0.0/16,10.2.0.0/16"]).unwrap();
+            let config = TomlConfigLoader::default();
+            cli.network_options.merge_into(&config).unwrap();
+            assert_eq!(
+                config.get_routes().unwrap(),
+                vec![
+                    "10.1.0.0/16".parse().unwrap(),
+                    "10.2.0.0/16".parse().unwrap()
+                ]
+            );
+        }
     }
 
     #[test]

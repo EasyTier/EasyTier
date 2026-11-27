@@ -172,7 +172,12 @@ enum OutputFormat {
 
 #[derive(Parser, Debug)]
 struct InstanceSelectArgs {
-    #[arg(short = 'i', long = "instance-id", help = "the instance id")]
+    #[arg(
+        short = 'i',
+        long = "instance-id",
+        conflicts_with = "name",
+        help = "the instance id"
+    )]
     id: Option<uuid::Uuid>,
 
     #[arg(short = 'n', long = "instance-name", help = "the instance name")]
@@ -359,7 +364,6 @@ struct AclSetArgs {
     /// The TOML uses the same shape as the `[acl]` section of an easytier
     /// configuration file, for example:
     ///
-    /// ```toml
     /// [acl.acl_v1]
     /// [[acl.acl_v1.chains]]
     /// name = "Inbound"
@@ -369,12 +373,14 @@ struct AclSetArgs {
     /// [[acl.acl_v1.chains.rules]]
     /// protocol = 3
     /// action = 1
-    /// ```
     ///
     /// Using `@/path/to/acl.toml` makes it easy to manage and debug the full
     /// ACL offline. The whole ACL is replaced at runtime without restarting
     /// easytier-core.
-    #[arg(help = "full ACL TOML string or '@path/to/acl.toml'")]
+    #[arg(
+        verbatim_doc_comment,
+        help = "full ACL TOML string or '@path/to/acl.toml'"
+    )]
     acl: String,
 }
 
@@ -384,6 +390,41 @@ enum AclSubCommand {
     Stats,
     /// Replace the whole ACL at runtime without restarting easytier-core
     Set(AclSetArgs),
+}
+
+fn parse_acl(text: &str) -> Result<Acl, Error> {
+    #[derive(serde::Deserialize)]
+    struct PatchRequestJson {
+        patch: InstanceConfigPatch,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct AclWrapper {
+        acl: Acl,
+    }
+
+    let acl = if let Ok(req) = serde_json::from_str::<PatchRequestJson>(text) {
+        req.patch.acl.and_then(|a| a.acl).unwrap_or_default()
+    } else if let Ok(wrapper) = serde_json::from_str::<AclWrapper>(text) {
+        wrapper.acl
+    } else if let Ok(acl) = serde_json::from_str::<Acl>(text) {
+        acl
+    } else {
+        #[derive(serde::Deserialize)]
+        struct AclToml {
+            acl: Option<Acl>,
+        }
+        let wrapper: AclToml = toml::from_str(text).context(
+            "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)",
+        )?;
+        wrapper.acl.unwrap_or_default()
+    };
+    if acl.is_empty() {
+        anyhow::bail!(
+            "parsed ACL is empty; provide at least one chain or a non-empty group under `[acl.acl_v1]`"
+        );
+    }
+    Ok(acl)
 }
 
 #[derive(Args, Debug)]
@@ -777,6 +818,56 @@ fn format_credential_peers(data: &CredentialPeersData) -> String {
 mod tests {
     use super::*;
     use easytier::proto::api::instance::PeerConnInfo;
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn mapped_listener_accepts_wss_with_default_port() {
+        let url = CommandHandler::mapped_listener_validate_url("wss://example.com/path").unwrap();
+        assert_eq!(url.port_or_known_default(), Some(443));
+        assert_eq!(url.path(), "/path");
+    }
+
+    #[test]
+    fn mapped_listener_rejects_invalid_urls() {
+        assert!(CommandHandler::mapped_listener_validate_url("not a URL").is_err());
+        assert!(CommandHandler::mapped_listener_validate_url("ring://peer-id").is_err());
+    }
+
+    #[test]
+    fn instance_id_and_name_are_mutually_exclusive() {
+        let id = "12345678-1234-1234-1234-123456789abc";
+        let err = Cli::try_parse_from([
+            "easytier-cli",
+            "--instance-id",
+            id,
+            "--instance-name",
+            "mesh",
+            "peer",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        Cli::try_parse_from(["easytier-cli", "--instance-id", id, "peer"]).unwrap();
+        Cli::try_parse_from(["easytier-cli", "--instance-name", "mesh", "peer"]).unwrap();
+    }
+
+    #[test]
+    fn acl_set_parses_all_json_forms() {
+        let acl = serde_json::json!({"acl_v1": {"chains": [{
+            "name": "inbound", "chain_type": 1, "rules": [{"protocol": 3, "action": 1}]
+        }]}});
+        let expected: Acl = serde_json::from_value(acl.clone()).unwrap();
+        for (form, input) in [
+            ("direct", acl.clone()),
+            ("wrapped", serde_json::json!({"acl": acl})),
+            (
+                "request",
+                serde_json::json!({"patch": {"acl": {"acl": acl}}}),
+            ),
+        ] {
+            assert_eq!(parse_acl(&input.to_string()).unwrap(), expected, "{form}");
+        }
+    }
 
     #[test]
     fn dns_commands_parse_and_files_preserve_clear_semantics() {
@@ -2476,10 +2567,20 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
-    async fn handle_connector_list(&self) -> Result<(), Error> {
-        let results = self
+    async fn handle_connector_list(&self, peers: &[String]) -> Result<(), Error> {
+        let mut results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_connector_list()))
             .await?;
+        if !peers.is_empty() {
+            for result in &mut results {
+                result.value.retain(|connector| {
+                    connector
+                        .url
+                        .as_ref()
+                        .is_some_and(|url| peers.contains(&url.url))
+                });
+            }
+        }
         if self.verbose || *self.output_format == OutputFormat::Json {
             return self.print_json_results(results);
         }
@@ -2537,45 +2638,7 @@ impl<'a> CommandHandler<'a> {
             raw.to_string()
         };
 
-        // Try parsing as JSON first, then fallback to TOML if JSON parsing fails.
-        #[derive(serde::Deserialize, Default)]
-        struct AclWrapper {
-            acl: Option<Acl>,
-        }
-
-        // Your JSON file includes a full PatchConfigRequest structure: {"instance": ..., "patch": {"acl": {"acl": ...}}}
-        // Let's support parsing full PatchConfigRequest or patch payload or Acl directly.
-        #[derive(serde::Deserialize, Default)]
-        struct PatchRequestJson {
-            patch: Option<InstanceConfigPatch>,
-        }
-
-        let acl = if let Ok(parsed_req) = serde_json::from_str::<PatchRequestJson>(&text) {
-            parsed_req
-                .patch
-                .and_then(|p| p.acl)
-                .and_then(|a| a.acl)
-                .unwrap_or_default()
-        } else if let Ok(parsed_json) = serde_json::from_str::<AclWrapper>(&text) {
-            parsed_json.acl.unwrap_or_default()
-        } else if let Ok(parsed_json_direct) = serde_json::from_str::<Acl>(&text) {
-            parsed_json_direct
-        } else {
-            // Fallback to TOML
-            #[derive(serde::Deserialize, Default)]
-            struct AclToml {
-                acl: Option<Acl>,
-            }
-            let parsed_toml: AclToml = toml::from_str(&text).with_context(
-                || "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)",
-            )?;
-            parsed_toml.acl.unwrap_or_default()
-        };
-        if acl.is_empty() {
-            anyhow::bail!(
-                "parsed ACL is empty; provide at least one chain or a non-empty group under `[acl.acl_v1]`"
-            );
-        }
+        let acl = parse_acl(&text)?;
 
         // Redact group secrets before any JSON echo so credentials are never
         // written to stdout or captured logs (matches core's dump redaction).
@@ -2725,13 +2788,7 @@ impl<'a> CommandHandler<'a> {
 
     fn mapped_listener_validate_url(url: &str) -> Result<url::Url, Error> {
         let url = url::Url::parse(url)?;
-        if url.scheme() != "tcp" && url.scheme() != "udp" {
-            return Err(anyhow::anyhow!(
-                "Url ({url}) must start with tcp:// or udp://"
-            ));
-        } else if url.port().is_none() {
-            return Err(anyhow::anyhow!("Url ({url}) is missing port num"));
-        }
+        easytier::common::config::mapped_listener_policy().validate(&url)?;
         Ok(url)
     }
 
@@ -2739,13 +2796,9 @@ impl<'a> CommandHandler<'a> {
         &self,
         action: ConfigPatchAction,
         protocol: &str,
-        bind_addr: &str,
-        dst_addr: Option<&str>,
+        bind_addr: SocketAddr,
+        dst_addr: Option<SocketAddr>,
     ) -> Result<(), Error> {
-        let bind_addr: std::net::SocketAddr = bind_addr
-            .parse()
-            .with_context(|| format!("Invalid bind address: {}", bind_addr))?;
-
         let socket_type = match protocol {
             "tcp" => SocketType::Tcp,
             "udp" => SocketType::Udp,
@@ -2760,7 +2813,7 @@ impl<'a> CommandHandler<'a> {
                     action: action.into(),
                     cfg: Some(PortForwardConfigPb {
                         bind_addr: Some(bind_addr.into()),
-                        dst_addr: dst_addr.map(|s| s.parse::<SocketAddr>().unwrap().into()),
+                        dst_addr: dst_addr.map(Into::into),
                         socket_type: socket_type.into(),
                     }),
                 }],
@@ -2788,15 +2841,20 @@ impl<'a> CommandHandler<'a> {
         dst_addr: Option<&str>,
     ) -> Result<(), Error> {
         let protocol = protocol.to_string();
-        let bind_addr = bind_addr.to_string();
-        let dst_addr = dst_addr.map(str::to_string);
+        let bind_addr = bind_addr
+            .parse()
+            .with_context(|| format!("Invalid bind address: {bind_addr}"))?;
+        let dst_addr = dst_addr
+            .map(|addr| {
+                addr.parse()
+                    .with_context(|| format!("Invalid destination address: {addr}"))
+            })
+            .transpose()?;
         self.apply_to_instances(|handler| {
             let protocol = protocol.clone();
-            let bind_addr = bind_addr.clone();
-            let dst_addr = dst_addr.clone();
             Box::pin(async move {
                 handler
-                    .apply_port_forward_modify(action, &protocol, &bind_addr, dst_addr.as_deref())
+                    .apply_port_forward_modify(action, &protocol, bind_addr, dst_addr)
                     .await
             })
         })
@@ -3881,11 +3939,7 @@ async fn main() -> Result<(), Error> {
     rust_i18n::set_locale(&locale);
     let cli = Cli::parse();
 
-    let client = runtime_rpc_client(
-        format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
-            .parse()
-            .unwrap(),
-    );
+    let client = runtime_rpc_client(format!("tcp://{}", cli.rpc_portal).parse().unwrap());
     let handler = CommandHandler {
         client: Arc::new(tokio::sync::Mutex::new(client)),
         verbose: cli.verbose,
@@ -3927,11 +3981,8 @@ async fn main() -> Result<(), Error> {
                     .await?;
                 println!("connector remove applied to selected instance(s): {url}");
             }
-            Some(ConnectorSubCommand::List) => {
-                handler.handle_connector_list().await?;
-            }
-            None => {
-                handler.handle_connector_list().await?;
+            Some(ConnectorSubCommand::List) | None => {
+                handler.handle_connector_list(&conn_args.peers).await?;
             }
         },
         SubCommand::MappedListener(mapped_listener_args) => {
@@ -3979,7 +4030,7 @@ async fn main() -> Result<(), Error> {
                 }
             })
             .await
-            .unwrap();
+            .context("STUN probe timed out after 25 seconds")?;
         }
         SubCommand::PeerCenter => {
             handler.handle_peer_center().await?;
