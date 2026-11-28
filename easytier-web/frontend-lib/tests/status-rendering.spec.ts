@@ -19,6 +19,7 @@ async function render(localStun: unknown, peerStun: unknown, lossRate?: number) 
     detail: {
       my_node_info: {
         hostname: 'local-node',
+        virtual_ipv4: { address: { addr: 0x0a00000a }, network_length: 24 },
         version: 'test',
         peer_id: 1,
         stun_info: localStun,
@@ -26,6 +27,7 @@ async function render(localStun: unknown, peerStun: unknown, lossRate?: number) 
       peer_route_pairs: [{
         route: {
           hostname: 'remote-node',
+          ipv4_addr: '10.0.0.2/24',
           version: 'test',
           cost: 1,
           stun_info: peerStun,
@@ -56,6 +58,24 @@ async function render(localStun: unknown, peerStun: unknown, lossRate?: number) 
 }
 
 describe('status protobuf JSON rendering', () => {
+  it('sorts nodes in both directions by IPv4 or hostname', async () => {
+    const wrapper = await render({}, {})
+    const [ipHeader, hostnameHeader] = wrapper.findAll('thead th')
+    const ips = () => wrapper.findAll('tbody tr').map(row => row.get('td').text())
+    const localFirst = ['10.0.0.10/24', '10.0.0.2/24']
+    const remoteFirst = [...localFirst].reverse()
+
+    expect(ips()).toEqual(localFirst)
+    await ipHeader.trigger('click')
+    expect(ips()).toEqual(remoteFirst)
+    await ipHeader.trigger('click')
+    expect(ips()).toEqual(localFirst)
+    await hostnameHeader.trigger('click')
+    expect(ips()).toEqual(localFirst)
+    await hostnameHeader.trigger('click')
+    expect(ips()).toEqual(remoteFirst)
+  })
+
   it('renders enum names and omitted zero loss in the real peer table', async () => {
     const wrapper = await render({ udp_nat_type: 'FullCone' }, { udp_nat_type: 'PortRestricted' })
     const rows = wrapper.findAll('tbody tr')

@@ -422,8 +422,8 @@ function showEventLogs() {
         </template>
         <template #content>
           <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full">
-            <Column :field="ipFormat" :header="t('virtual_ipv4')" />
-            <Column :header="t('hostname')">
+            <Column :field="ipFormat" :header="t('virtual_ipv4')" sortable />
+            <Column field="route.hostname" :header="t('hostname')" sortable>
               <template #body="slotProps">
                 <div v-if="!slotProps.data.route.cost || !isPublicServerRoute(slotProps.data)"
                   v-tooltip="slotProps.data.route.hostname">
