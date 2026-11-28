@@ -52,7 +52,8 @@ where
                         SocksError::Other(error.context(AddrError::DNSResolutionFailed))
                     })?
                     .into_iter()
-                    .next()
+                    // The TCP data plane only routes IPv4. Preserve its reply for IPv6-only targets.
+                    .min_by_key(IpAddr::is_ipv6)
                     .ok_or_else(|| {
                         SocksError::Other(anyhow::Error::new(AddrError::Custom(format!(
                             "cannot resolve SOCKS domain {domain}"
@@ -220,8 +221,13 @@ mod tests {
     #[async_trait::async_trait]
     impl DnsResolver for StaticDns {
         async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
-            assert_eq!(query.host, "peer.example");
-            Ok(vec!["192.0.2.8".parse().unwrap()])
+            assert_eq!(query.context.ip_version, IpVersion::Both);
+            let ipv6 = "2001:db8::8".parse().unwrap();
+            match query.host.as_str() {
+                "peer.example" => Ok(vec![ipv6, "192.0.2.8".parse().unwrap()]),
+                "ipv6-only.example" => Ok(vec![ipv6]),
+                host => panic!("unexpected DNS query for {host}"),
+            }
         }
     }
 
@@ -279,6 +285,13 @@ mod tests {
                 .await
                 .unwrap(),
             TargetAddr::Ip("192.0.2.8:443".parse().unwrap())
+        );
+        assert_eq!(
+            runtime
+                .resolve_dns(TargetAddr::Domain("ipv6-only.example".into(), 443))
+                .await
+                .unwrap(),
+            TargetAddr::Ip("[2001:db8::8]:443".parse().unwrap())
         );
         let association = runtime.bind_udp_association().await.unwrap();
         assert_eq!(association.local_addr().unwrap().port(), 42000);
