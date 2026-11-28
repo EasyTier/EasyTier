@@ -278,7 +278,7 @@ impl AclProcessor {
             .and_then(|v1| {
                 v1.chains
                     .iter()
-                    .find(|c| c.chain_type == ChainType::Inbound as i32)
+                    .find(|c| c.enabled && c.chain_type == ChainType::Inbound as i32)
             })
             .map(|c| c.default_action())
             .unwrap_or(Action::Allow);
@@ -289,7 +289,7 @@ impl AclProcessor {
             .and_then(|v1| {
                 v1.chains
                     .iter()
-                    .find(|c| c.chain_type == ChainType::Outbound as i32)
+                    .find(|c| c.enabled && c.chain_type == ChainType::Outbound as i32)
             })
             .map(|c| c.default_action())
             .unwrap_or(Action::Allow);
@@ -300,7 +300,7 @@ impl AclProcessor {
             .and_then(|v1| {
                 v1.chains
                     .iter()
-                    .find(|c| c.chain_type == ChainType::Forward as i32)
+                    .find(|c| c.enabled && c.chain_type == ChainType::Forward as i32)
             })
             .map(|c| c.default_action())
             .unwrap_or(Action::Allow);
@@ -1029,6 +1029,37 @@ mod tests {
                 cache_hits as f64 / total_requests as f64
             }
         }
+    }
+
+    #[test]
+    fn test_default_actions_skip_disabled_chains() {
+        let chains = [
+            (ChainType::Inbound, false, Action::Drop),
+            (ChainType::Outbound, false, Action::Allow),
+            (ChainType::Outbound, true, Action::Drop),
+            (ChainType::Forward, false, Action::Drop),
+            (ChainType::Forward, true, Action::Allow),
+            (ChainType::Forward, true, Action::Drop),
+        ]
+        .into_iter()
+        .map(|(chain_type, enabled, default_action)| Chain {
+            chain_type: chain_type as i32,
+            enabled,
+            default_action: default_action as i32,
+            ..Default::default()
+        })
+        .collect();
+        let acl_config = Acl {
+            acl_v1: Some(AclV1 {
+                chains,
+                ..Default::default()
+            }),
+        };
+
+        assert_eq!(
+            AclProcessor::build_default_actions(&acl_config),
+            (Action::Allow, Action::Drop, Action::Allow),
+        );
     }
 
     #[tokio::test]
