@@ -42,6 +42,7 @@ struct PreparedMember {
     override_config: Option<String>,
     credential_id: Option<String>,
     acl_group_secret: Option<String>,
+    enabled: bool,
 }
 
 struct PreparedCredential {
@@ -90,22 +91,37 @@ fn prepare_intent(intent: CentralNetworkIntent) -> Result<PreparedIntent, Centra
     for member in &intent.members {
         let device_id = Uuid::parse_str(&member.device_id)
             .map_err(|_| CentralIntentError::InvalidDeviceId(member.device_id.clone()))?;
-        let compiled = compiled_by_member.get(&member.id).ok_or_else(|| {
-            CentralIntentError::InvalidStoredData(format!("compiler omitted member {}", member.id))
-        })?;
+        let compiled = compiled_by_member.get(&member.id);
+        let allocated_ipv4 = match (member.virtual_ipv4.is_some(), member.enabled) {
+            (true, _) => None,
+            (false, true) => {
+                // Enabled members are always part of the compiled output; a
+                // missing entry means the compiler dropped the member for an
+                // unknown reason and persisting would silently clear the
+                // stored address reservation.
+                let compiled = compiled.ok_or_else(|| {
+                    CentralIntentError::InvalidStoredData(format!(
+                        "compiler omitted member {}",
+                        member.id
+                    ))
+                })?;
+                compiled.network_config.virtual_ipv4.clone()
+            }
+            // The compiler omits suspended members, so their address
+            // reservation is whatever the stored row already holds instead
+            // of a fresh assignment derived from the compiled output.
+            (false, false) => member.allocated_ipv4.clone(),
+        };
         members.push(PreparedMember {
             id: member.id.to_string(),
             device_id,
             hostname: member.hostname.clone(),
             virtual_ipv4: member.virtual_ipv4.clone(),
-            allocated_ipv4: member
-                .virtual_ipv4
-                .is_none()
-                .then(|| compiled.network_config.virtual_ipv4.clone())
-                .flatten(),
+            allocated_ipv4,
             override_config: member.config_override.as_ref().map(json).transpose()?,
             credential_id: member.credential_id.clone(),
             acl_group_secret: member.acl_group_secret.clone(),
+            enabled: member.enabled,
         });
     }
     members.sort_by_key(|member| member.device_id);
@@ -499,8 +515,8 @@ async fn persist_intent(
             INSERT INTO network_members (
                 user_id, network_id, id, device_id, hostname_override,
                 virtual_ipv4, allocated_ipv4, override_config, credential_id,
-                acl_group_secret, create_time, update_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                acl_group_secret, enabled, create_time, update_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(prepared.intent.user_id)
@@ -513,6 +529,7 @@ async fn persist_intent(
         .bind(&member.override_config)
         .bind(&member.credential_id)
         .bind(&member.acl_group_secret)
+        .bind(member.enabled)
         .bind(now)
         .bind(now)
         .execute(&mut **transaction)
@@ -655,11 +672,12 @@ async fn load_intent(
         Option<String>,
         Option<String>,
         Option<String>,
+        bool,
     );
     let member_rows: Vec<MemberRow> = sqlx::query_as(
         r#"
         SELECT allocated_ipv4, id, device_id, hostname_override, virtual_ipv4,
-            override_config, credential_id, acl_group_secret
+            override_config, credential_id, acl_group_secret, enabled
         FROM network_members
         WHERE user_id = ? AND network_id = ?
         ORDER BY id
@@ -682,6 +700,7 @@ async fn load_intent(
                 override_config,
                 credential_id,
                 acl_group_secret,
+                enabled,
             )| {
                 Ok(NetworkMemberIntent {
                     id: Uuid::parse_str(&id).map_err(|_| {
@@ -702,6 +721,7 @@ async fn load_intent(
                         })?,
                     credential_id,
                     acl_group_secret,
+                    enabled,
                 })
             },
         )
@@ -748,6 +768,7 @@ mod tests {
             config_override: None,
             credential_id: credential_id.map(str::to_owned),
             acl_group_secret: None,
+            enabled: true,
         }
     }
 
@@ -907,6 +928,38 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(after, original);
+    }
+
+    #[tokio::test]
+    async fn suspended_member_with_invalid_override_is_rejected() {
+        let db = Db::memory_db().await;
+        let user_id = db
+            .auto_create_user("central-suspended-invalid-config")
+            .await
+            .unwrap()
+            .id;
+        let network_id = Uuid::new_v4();
+        let devices = [Uuid::new_v4(), Uuid::new_v4()];
+        register_devices(&db, user_id, &devices).await;
+        db.save_central_network_intent(intent(user_id, network_id, devices))
+            .await
+            .unwrap();
+        let mut candidate = db
+            .load_central_network_intent(user_id, network_id)
+            .await
+            .unwrap()
+            .unwrap();
+        candidate.members[0].enabled = false;
+        candidate.members[0].config_override = Some(easytier::common::config::NetworkConfig {
+            proxy_cidrs: vec!["2001:db8:240::/64".to_owned()],
+            ..Default::default()
+        });
+        assert!(matches!(
+            db.save_central_network_intent(candidate).await,
+            Err(CentralIntentError::Compile(
+                CompileError::InvalidMemberConfig { .. }
+            ))
+        ));
     }
 
     #[tokio::test]

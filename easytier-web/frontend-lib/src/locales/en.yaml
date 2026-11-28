@@ -536,6 +536,10 @@ web:
     no_candidate_devices: No devices available to add
     remove_member: Remove Device
     remove_member_confirm: Remove device {device} from this network? Its managed config will be withdrawn
+    suspend_member: Suspend Member
+    suspend_member_hint: The network instance stops on the device; its address and overrides stay reserved
+    resume_member: Resume Member
+    suspended: Suspended
     edit_member: Edit Member
     tab_basic_settings: Basic Settings
     hostname_override: Hostname Override

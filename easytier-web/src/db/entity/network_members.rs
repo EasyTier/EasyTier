@@ -26,6 +26,7 @@ pub struct Model {
     pub credential_id: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub acl_group_secret: Option<String>,
+    pub enabled: bool,
     pub create_time: DateTimeWithTimeZone,
     pub update_time: DateTimeWithTimeZone,
 }

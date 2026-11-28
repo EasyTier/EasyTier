@@ -102,6 +102,15 @@ pub struct NetworkMemberIntent {
     /// members authenticate their groups through their credential grant and
     /// must leave this empty.
     pub acl_group_secret: Option<String>,
+    /// A suspended member keeps its address, overrides and credentials
+    /// reserved in the intent, but the compiler omits it so its device
+    /// stops the network instance until the member is enabled again.
+    #[serde(default = "member_enabled_by_default")]
+    pub enabled: bool,
+}
+
+fn member_enabled_by_default() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
