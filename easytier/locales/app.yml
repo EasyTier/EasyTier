@@ -22,6 +22,12 @@ core_clap:
   config_dir:
     en: "Load all .toml files in the directory to start network instances, and store the received configurations in this directory."
     zh-CN: "加载目录中的所有 .toml 文件以启动网络实例，并将下发的配置保存在此目录中。"
+  config_url:
+    en: "Fetch a read-only TOML configuration from an HTTP(S) URL at startup."
+    zh-CN: "启动时从 HTTP(S) URL 加载一份只读 TOML 配置。"
+  config_refresh_interval:
+    en: "Poll --config-url every SECONDS and restart its instance when the content changes. By default, fetch only once."
+    zh-CN: "每隔指定秒数重新获取 --config-url，内容变化时重启对应实例。默认仅在启动时获取一次。"
   disable_env_parsing:
     en: "disable environment variable parsing in config file"
     zh-CN: "禁用配置文件中的环境变量解析"

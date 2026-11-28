@@ -5,17 +5,7 @@ use crate::{
     socket::udp::VirtualUdpSocketFactory,
 };
 
-use super::{
-    CoreHostAdapters, CoreInstance, CoreInstanceConfig, CoreInstanceHost, PeerRelaySessionSnapshot,
-    build_capabilities,
-};
-
-impl CoreInstanceConfig {
-    #[doc(hidden)]
-    pub fn validate_build_capabilities_for_test(&self) -> anyhow::Result<()> {
-        build_capabilities::validate(self)
-    }
-}
+use super::{CoreHostAdapters, CoreInstance, CoreInstanceHost, PeerRelaySessionSnapshot};
 
 impl<H> CoreHostAdapters<H>
 where

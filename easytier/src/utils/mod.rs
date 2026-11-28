@@ -12,6 +12,7 @@ pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
 /// Select the process-wide TLS backend before starting application services.
 pub fn init_crypto_provider() {
     #[cfg(any(
+        feature = "management",
         feature = "endpoint-discovery",
         feature = "quic",
         feature = "websocket"

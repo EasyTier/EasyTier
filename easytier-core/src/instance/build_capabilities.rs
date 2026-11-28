@@ -65,13 +65,30 @@ fn validate_snapshot(
     Ok(())
 }
 
-pub(super) fn validate(config: &CoreInstanceConfig) -> anyhow::Result<()> {
-    validate_snapshot(&config.connectivity.runtime, &config.peer.snapshot)?;
-    require(
-        VPN_PORTAL_AVAILABLE,
-        config.vpn_portal.is_some(),
-        "the VPN portal",
-    )
+impl CoreInstanceConfig {
+    /// Run the side-effect-free startup checks before replacing a running instance.
+    pub fn validate_before_replacement(&self) -> anyhow::Result<()> {
+        self.validate_build_capabilities()?;
+        self.connectivity.runtime.public_ipv6_provider.validate()?;
+        crate::config::gateway::port_forwards_by_bind(
+            &self.connectivity.runtime.gateway.port_forwards,
+        )?;
+        Ok(())
+    }
+
+    /// Check that this build supports the services requested by the configuration.
+    pub fn validate_build_capabilities(&self) -> anyhow::Result<()> {
+        validate_snapshot(&self.connectivity.runtime, &self.peer.snapshot)?;
+        let flags = &self.peer.snapshot.flags;
+        if flags.enable_encryption {
+            crate::tunnel::encrypt::validate_algorithm(&flags.encryption_algorithm)?;
+        }
+        require(
+            VPN_PORTAL_AVAILABLE,
+            self.vpn_portal.is_some(),
+            "the VPN portal",
+        )
+    }
 }
 
 pub(super) fn validate_runtime(

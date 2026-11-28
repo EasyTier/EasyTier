@@ -442,6 +442,8 @@ struct Config {
     port_forward: Option<Vec<PortForwardConfig>>,
 
     secure_mode: Option<SecureModeConfig>,
+    #[serde(skip)]
+    source_has_private_key: bool,
 
     #[serde(default)]
     flags: FlagsPatch,
@@ -511,6 +513,15 @@ impl Default for TomlConfig {
 }
 
 impl TomlConfig {
+    pub fn source_has_private_key(&self) -> bool {
+        self.config.lock().unwrap().source_has_private_key
+    }
+
+    /// The ID supplied by the source, before `get_id` generates a missing ID.
+    pub fn configured_id(&self) -> Option<uuid::Uuid> {
+        self.config.lock().unwrap().instance_id
+    }
+
     fn normalize_config_source(config: &mut Config) {
         if matches!(
             config.source.as_ref().map(|source| source.source),
@@ -600,6 +611,10 @@ impl TomlConfig {
         if let Some(dns) = &config.dns {
             super::dns::compile_dns(dns)?;
         }
+        config.source_has_private_key = config
+            .secure_mode
+            .as_ref()
+            .is_some_and(|mode| mode.local_private_key.is_some());
         config.secure_mode = config
             .secure_mode
             .take()

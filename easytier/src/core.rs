@@ -38,6 +38,9 @@ use std::{
 use strum::VariantArray;
 use tokio::io::AsyncReadExt;
 
+mod remote_config;
+use remote_config::RemoteConfig;
+
 use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
@@ -124,6 +127,14 @@ struct Cli {
         num_args = 1..,
     )]
     config_file: Option<Vec<PathBuf>>,
+
+    #[arg(long, env = "ET_CONFIG_URL", value_parser = remote_config::parse_url,
+          help = t!("core_clap.config_url").to_string())]
+    config_url: Option<url::Url>,
+
+    #[arg(long, env = "ET_CONFIG_REFRESH_INTERVAL", requires = "config_url",
+          value_name = "SECONDS", help = t!("core_clap.config_refresh_interval").to_string())]
+    config_refresh_interval: Option<std::num::NonZeroU32>,
 
     #[arg(
         long,
@@ -517,6 +528,28 @@ struct RpcPortalOptions {
 }
 
 impl Cli {
+    fn explicit_config_file_count(&self) -> usize {
+        self.config_file.as_ref().map_or(0, Vec::len) + usize::from(self.config_url.is_some())
+    }
+
+    fn config_dir_files(&self) -> anyhow::Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        if let Some(dir) = &self.config_dir {
+            anyhow::ensure!(
+                dir.is_dir(),
+                "config_dir {} is not a directory",
+                dir.display()
+            );
+            for entry in std::fs::read_dir(dir)? {
+                let path = entry?.path();
+                if path.is_file() && path.extension().is_some_and(|ext| ext == "toml") {
+                    files.push(path);
+                }
+            }
+        }
+        Ok(files)
+    }
+
     fn take_runtime_thread_count(&mut self) -> u32 {
         let count = self
             .network_options
@@ -1292,6 +1325,8 @@ async fn run_with_manager(
     manager: Arc<NativeInstanceManager>,
     stop_notify: Option<Arc<tokio::sync::Notify>>,
 ) -> anyhow::Result<()> {
+    let explicit_config_file_count = cli.explicit_config_file_count();
+    let dir_files = cli.config_dir_files()?;
     let _rpc_server = ApiRpcServer::new(
         cli.rpc_portal_options.rpc_portal,
         cli.rpc_portal_options.rpc_portal_whitelist,
@@ -1333,42 +1368,24 @@ async fn run_with_manager(
         None
     };
 
-    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len());
-    let mut config_dir_file_count = 0;
-    let mut config_files = if let Some(v) = cli.config_file {
-        v.iter()
-            .cloned()
-            .map(|path| (path, ConfigFileSource::CliConfigFile))
-            .collect()
-    } else {
-        vec![]
-    };
-    if let Some(config_dir) = cli.config_dir.as_ref() {
-        if !config_dir.is_dir() {
-            anyhow::bail!("config_dir {} is not a directory", config_dir.display());
-        }
-
-        for entry in std::fs::read_dir(config_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(ext) = path.extension() else {
-                continue;
-            };
-            if ext != "toml" {
-                continue;
-            }
-            config_dir_file_count += 1;
-            config_files.push((path, ConfigFileSource::ConfigDir));
-        }
-    }
-    let config_file_count = config_files.len();
+    let config_dir_file_count = dir_files.len();
+    let config_files = cli
+        .config_file
+        .into_iter()
+        .flatten()
+        .map(|path| (path, ConfigFileSource::CliConfigFile))
+        .chain(
+            dir_files
+                .into_iter()
+                .map(|path| (path, ConfigFileSource::ConfigDir)),
+        );
     let mut crate_cli_network = {
         if cli.daemon {
             false
-        } else if config_file_count == 0 && cli.config_server.is_none() {
+        } else if explicit_config_file_count == 0
+            && config_dir_file_count == 0
+            && cli.config_server.is_none()
+        {
             true
         } else {
             cli.network_options.network_name.is_some()
@@ -1410,6 +1427,28 @@ async fn run_with_manager(
         manager.run_network_instance(cfg, control)?;
     }
 
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let mut remote = None;
+    if let Some(url) = cli.config_url {
+        let source = RemoteConfig::new(url)?;
+        let (document, overrides) = source
+            .load_initial(
+                &cli.network_options,
+                explicit_config_file_count,
+                config_dir_file_count,
+            )
+            .await?;
+        if overrides.is_some() {
+            crate_cli_network = false;
+        }
+        let (_, started) = manager
+            .spawn_network_instance(document.cfg.clone(), ConfigFileControl::STATIC_CONFIG)?;
+        started.await??;
+        if let Some(interval) = cli.config_refresh_interval {
+            remote = Some(source.watch(&manager, interval, document, overrides, &shutdown));
+        }
+    }
+
     if crate_cli_network {
         let cfg = TomlConfigLoader::default();
         cli.network_options
@@ -1441,35 +1480,46 @@ async fn run_with_manager(
         }
     };
 
-    tokio::select! {
-        _ = manager.wait() => {
-            let infos = manager.collect_network_infos().await?;
-            let mut errors = String::new();
-            for (instance_id, info) in infos {
-                if let Some(error) = info.error_msg {
-                    if errors.is_empty() {
-                        errors.push_str("some instances stopped with errors:");
+    let wait_for_shutdown = async {
+        let _cancel = shutdown.clone().drop_guard();
+        tokio::select! {
+            _ = manager.wait() => {
+                let infos = manager.collect_network_infos().await?;
+                let mut errors = String::new();
+                for (instance_id, info) in infos {
+                    if let Some(error) = info.error_msg {
+                        if errors.is_empty() {
+                            errors.push_str("some instances stopped with errors:");
+                        }
+                        write!(errors, "\n{instance_id}: {error}").unwrap();
                     }
-                    write!(errors, "\n{instance_id}: {error}").unwrap();
+                }
+                if !errors.is_empty() {
+                    return Err(anyhow::anyhow!(errors));
                 }
             }
-            if !errors.is_empty() {
-                return Err(anyhow::anyhow!(errors));
+            _ = tokio::signal::ctrl_c() => {
+                log::info!("ctrl-c received, exiting...");
+            }
+
+            _ = sigterm, if cfg!(unix) => {
+                log::warn!("terminate signal received, exiting...");
+            }
+
+            _ = service_stop => {
+                log::info!("service stop received, exiting...");
             }
         }
-        _ = tokio::signal::ctrl_c() => {
-            log::info!("ctrl-c received, exiting...");
+        Ok(())
+    };
+    let (result, ()) = tokio::join!(biased; wait_for_shutdown, async {
+        if let Some(watch) = remote
+            && let Err(error) = watch.await
+        {
+            log::warn!(%error, "Remote config watcher stopped");
         }
-
-        _ = sigterm, if cfg!(unix) => {
-            log::warn!("terminate signal received, exiting...");
-        }
-
-        _ = service_stop => {
-            log::info!("service stop received, exiting...");
-        }
-    }
-    Ok(())
+    });
+    result
 }
 
 fn memory_monitor(_force_dump: Arc<AtomicBool>) {
@@ -1573,7 +1623,7 @@ pub async fn main() -> ExitCode {
             eprintln!("Failed to initialize logging: {error}");
             return ExitCode::FAILURE;
         }
-        if let Err(error) = validate_config(&cli).await {
+        if let Err(error) = validate_config(cli).await {
             log::error!(%error, "Config validation failed");
             return ExitCode::FAILURE;
         } else {
@@ -1594,14 +1644,21 @@ pub async fn main() -> ExitCode {
     ExitCode::from(ret_code)
 }
 
-async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
-    // Check if a config file is provided
-    let config_files = cli
-        .config_file
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--config-file is required when using --check-config"))?;
+async fn validate_config(mut cli: Cli) -> anyhow::Result<()> {
+    if let Some(url) = cli.config_url.clone() {
+        cli.take_runtime_thread_count();
+        RemoteConfig::new(url)?
+            .load_initial(
+                &cli.network_options,
+                cli.explicit_config_file_count(),
+                cli.config_dir_files()?.len(),
+            )
+            .await?;
+    } else if cli.config_file.is_none() {
+        anyhow::bail!("--config-file or --config-url is required when using --check-config");
+    }
 
-    for config_file in config_files {
+    for config_file in cli.config_file.iter().flatten() {
         if config_file == &PathBuf::from("-") {
             let mut stdin = String::new();
             _ = tokio::io::stdin()

@@ -504,7 +504,7 @@ where
         host_config: CoreInstanceHostConfig,
         mut adapters: CoreHostAdapters<H>,
     ) -> anyhow::Result<Arc<Self>> {
-        build_capabilities::validate(&config)?;
+        config.validate_build_capabilities()?;
         let connectivity_mode = config.connectivity.startup_plan.connectivity;
         let instance_name = config.instance_name;
         #[cfg(feature = "vpn-portal")]
