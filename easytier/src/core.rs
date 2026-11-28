@@ -1281,7 +1281,11 @@ async fn run_main(
     let result = run_with_manager(cli, manager.clone(), stop_notify).await;
     // DNS restoration needs the instance runtime and its interface to remain
     // alive until the existing asynchronous stop path has finished.
+    #[cfg(target_os = "linux")]
+    let _mutation = manager.mutation_lock().lock_owned().await;
     let stopped = manager.retain_network_instances(&[]).await;
+    #[cfg(target_os = "linux")]
+    manager.wait().await;
     result?;
     stopped?;
     Ok(())

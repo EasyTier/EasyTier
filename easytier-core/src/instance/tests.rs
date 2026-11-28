@@ -1970,6 +1970,14 @@ virtual_ip = "10.82.0.2/24"
         runtime_host.shutdown_started.notified().await;
         deletion.abort();
         assert!(deletion.await.unwrap_err().is_cancelled());
+        assert!(instances.mutation_lock().try_lock().is_err());
+        assert!(
+            instances
+                .retain_network_instances(&[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         let mut wait = tokio::spawn({
             let instances = instances.clone();
