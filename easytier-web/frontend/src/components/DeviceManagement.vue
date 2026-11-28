@@ -49,7 +49,8 @@ const newConfigGenerator = () => {
 
 <template>
     <RemoteManagement :api="remoteClient" v-model:instance-id="selectedInstanceId"
-        :new-config-generator="newConfigGenerator" />
+        :new-config-generator="newConfigGenerator" show-auto-run-on-online
+        :device-online="deviceInfo?.online ?? false" />
 </template>
 
 <style scoped>
