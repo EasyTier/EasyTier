@@ -10,7 +10,13 @@ pub mod darwin;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
-#[derive(Default, Debug)]
+#[cfg(target_os = "linux")]
+pub mod openresolv;
+
+#[cfg(target_os = "linux")]
+pub mod networkmanager;
+
+#[derive(Clone, Default, Debug)]
 pub struct OSConfig {
     pub nameservers: Vec<String>,
     pub search_domains: Vec<String>,
