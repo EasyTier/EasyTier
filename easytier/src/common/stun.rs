@@ -6,7 +6,7 @@ use std::{net::SocketAddr, sync::Arc};
 #[cfg(test)]
 use async_trait::async_trait;
 #[cfg(test)]
-use easytier_core::connectivity::stun::{StunInfoProvider, StunSocketMapper};
+use easytier_core::connectivity::stun::{StunInfoProvider, StunServerConfig, StunSocketMapper};
 use easytier_core::{
     connectivity::stun::StunInfoCollector as CoreStunInfoCollector, socket::SocketContext,
 };
@@ -93,14 +93,18 @@ impl StunSocketMapper<RuntimeUdpSocket> for MockStunInfoCollector {
 
 pub fn runtime_stun_info_collector(socket_context: SocketContext) -> StunInfoCollector {
     let runtime = native_host_runtime();
-    StunInfoCollector::new(
-        runtime.clone(),
-        runtime,
-        socket_context,
-        default_udp_stun_servers(),
-        default_tcp_stun_servers(),
-        default_udp_v6_stun_servers(),
-    )
+    if cfg!(test) {
+        StunInfoCollector::new(
+            runtime.clone(),
+            runtime,
+            socket_context,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    } else {
+        StunInfoCollector::new_with_default_servers(runtime.clone(), runtime, socket_context)
+    }
 }
 
 #[cfg(test)]
@@ -197,39 +201,39 @@ mod tests {
         tasks.abort_all();
     }
 
+    async fn spawn_tcp_stun_server(bind_addr: &str) -> (SocketAddr, AbortOnDropHandle<()>) {
+        let listener = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, peer_addr) = listener.accept().await.unwrap();
+            let mut header = [0_u8; 20];
+            stream.read_exact(&mut header).await.unwrap();
+            let payload_len = u16::from_be_bytes([header[2], header[3]]) as usize;
+            let mut bytes = vec![0_u8; 20 + payload_len];
+            bytes[..20].copy_from_slice(&header);
+            stream.read_exact(&mut bytes[20..]).await.unwrap();
+            let request = MessageDecoder::<Attribute>::new()
+                .decode_from_bytes(&bytes)
+                .unwrap()
+                .unwrap();
+            let mut response = Message::<Attribute>::new(
+                MessageClass::SuccessResponse,
+                BINDING,
+                request.transaction_id(),
+            );
+            response.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(
+                peer_addr,
+            )));
+            let bytes = MessageEncoder::new().encode_into_bytes(response).unwrap();
+            stream.write_all(&bytes).await.unwrap();
+        });
+        (address, AbortOnDropHandle::new(task))
+    }
+
     #[tokio::test]
     async fn native_tcp_runtime_drives_core_stun_detector() {
-        async fn spawn_server() -> (SocketAddr, AbortOnDropHandle<()>) {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let task = tokio::spawn(async move {
-                let (mut stream, peer_addr) = listener.accept().await.unwrap();
-                let mut header = [0_u8; 20];
-                stream.read_exact(&mut header).await.unwrap();
-                let payload_len = u16::from_be_bytes([header[2], header[3]]) as usize;
-                let mut bytes = vec![0_u8; 20 + payload_len];
-                bytes[..20].copy_from_slice(&header);
-                stream.read_exact(&mut bytes[20..]).await.unwrap();
-                let request = MessageDecoder::<Attribute>::new()
-                    .decode_from_bytes(&bytes)
-                    .unwrap()
-                    .unwrap();
-                let mut response = Message::<Attribute>::new(
-                    MessageClass::SuccessResponse,
-                    BINDING,
-                    request.transaction_id(),
-                );
-                response.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(
-                    peer_addr,
-                )));
-                let bytes = MessageEncoder::new().encode_into_bytes(response).unwrap();
-                stream.write_all(&bytes).await.unwrap();
-            });
-            (address, AbortOnDropHandle::new(task))
-        }
-
-        let (first, _first_task) = spawn_server().await;
-        let (second, _second_task) = spawn_server().await;
+        let (first, _first_task) = spawn_tcp_stun_server("127.0.0.1:0").await;
+        let (second, _second_task) = spawn_tcp_stun_server("127.0.0.1:0").await;
         let runtime = native_host_runtime();
         let detector = TcpNatTypeDetector::new(
             runtime.clone(),
@@ -246,5 +250,38 @@ mod tests {
 
         assert_eq!(result.nat_type(), NatType::OpenInternet);
         assert_eq!(result.usable_stun_resp_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn native_tcp_stun_discovers_ipv6_without_udp() {
+        let (server, _server_task) = spawn_tcp_stun_server("[::1]:0").await;
+        let runtime = native_host_runtime();
+        let collector = StunInfoCollector::new_with_server_config(
+            runtime.clone(),
+            runtime,
+            SocketContext::default(),
+            SocketContext::default(),
+            StunServerConfig {
+                udp_servers: Vec::new(),
+                tcp_servers: Vec::new(),
+                udp_v6_servers: Vec::new(),
+                tcp_v6_servers: vec![server.to_string()],
+            },
+        );
+
+        let info = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let info = StunInfoProvider::get_stun_info(&collector);
+                if !info.public_ip.is_empty() {
+                    break info;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(info.public_ip, ["::1"]);
+        assert_eq!(info.tcp_nat_type, NatType::Unknown as i32);
     }
 }

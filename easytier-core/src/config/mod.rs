@@ -29,6 +29,7 @@ pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "stun.hitv.com",
 ];
 pub(crate) const DEFAULT_TCP_STUN_SERVERS: &[&str] = &[
+    "txt:stun-tcp.easytier.cn",
     "stun.hot-chilli.net",
     "stun.fitauto.ru",
     "fwa.lifesizecloud.com",
@@ -38,6 +39,7 @@ pub(crate) const DEFAULT_TCP_STUN_SERVERS: &[&str] = &[
     "stun.radiojar.com",
 ];
 pub(crate) const DEFAULT_UDP_V6_STUN_SERVERS: &[&str] = &["txt:stun-v6.easytier.cn"];
+pub(crate) const DEFAULT_TCP_V6_STUN_SERVERS: &[&str] = &["txt:stun-tcp-v6.easytier.cn"];
 
 pub(crate) fn default_stun_servers(servers: &[&str]) -> Vec<String> {
     servers.iter().map(ToString::to_string).collect()

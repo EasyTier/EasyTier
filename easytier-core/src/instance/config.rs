@@ -360,6 +360,18 @@ impl CoreInstanceConfig {
             },
         };
         let stun_servers = config.get_stun_servers();
+        let default_stun = StunServerConfig::default();
+        let tcp_stun_servers = config
+            .get_tcp_stun_servers()
+            .or_else(|| stun_servers.clone());
+        let udp_v6_servers = config
+            .get_stun_servers_v6()
+            .or_else(|| stun_servers.as_ref().map(|_| Vec::new()));
+        let tcp_v6_servers = if tcp_stun_servers.is_none() && udp_v6_servers.is_none() {
+            default_stun.tcp_v6_servers
+        } else {
+            Vec::new()
+        };
 
         Ok(Self {
             instance_name: config.get_inst_name(),
@@ -390,17 +402,10 @@ impl CoreInstanceConfig {
                     connectivity: host.connectivity,
                 },
                 stun: StunServerConfig {
-                    udp_servers: stun_servers
-                        .clone()
-                        .unwrap_or_else(|| StunServerConfig::default().udp_servers),
-                    tcp_servers: config
-                        .get_tcp_stun_servers()
-                        .or_else(|| stun_servers.clone())
-                        .unwrap_or_else(|| StunServerConfig::default().tcp_servers),
-                    udp_v6_servers: config
-                        .get_stun_servers_v6()
-                        .or_else(|| stun_servers.as_ref().map(|_| Vec::new()))
-                        .unwrap_or_else(|| StunServerConfig::default().udp_v6_servers),
+                    udp_servers: stun_servers.unwrap_or(default_stun.udp_servers),
+                    tcp_servers: tcp_stun_servers.unwrap_or(default_stun.tcp_servers),
+                    udp_v6_servers: udp_v6_servers.unwrap_or(default_stun.udp_v6_servers),
+                    tcp_v6_servers,
                 },
                 endpoint_discovery: ManualEndpointDiscoveryConfig {
                     user_agent: format!("easytier/{}", host.easytier_version),
@@ -483,6 +488,16 @@ mod tests {
 
     #[test]
     fn tcp_stun_servers_follow_toml_override_rules() {
+        let normalized = CoreInstanceConfig::from_toml(&TomlConfig::default()).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.tcp_servers[0],
+            "txt:stun-tcp.easytier.cn"
+        );
+        assert_eq!(
+            normalized.connectivity.stun.tcp_v6_servers,
+            ["txt:stun-tcp-v6.easytier.cn"]
+        );
+
         let fallback = TomlConfig::new_from_str(
             r#"
 stun_servers = ["fallback.example.com:3478"]
@@ -494,10 +509,12 @@ stun_servers = ["fallback.example.com:3478"]
             normalized.connectivity.stun.tcp_servers,
             ["fallback.example.com:3478"]
         );
+        assert!(normalized.connectivity.stun.tcp_v6_servers.is_empty());
 
         let overridden = TomlConfig::new_from_str(
             r#"
 stun_servers = ["fallback.example.com:3478"]
+stun_servers_v6 = ["udp-v6.example.com:3478"]
 tcp_stun_servers = ["tcp.example.com:3478"]
 "#,
         )
@@ -507,16 +524,34 @@ tcp_stun_servers = ["tcp.example.com:3478"]
             normalized.connectivity.stun.tcp_servers,
             ["tcp.example.com:3478"]
         );
+        assert!(normalized.connectivity.stun.tcp_v6_servers.is_empty());
 
         let disabled = TomlConfig::new_from_str(
             r#"
-stun_servers = ["fallback.example.com:3478"]
 tcp_stun_servers = []
 "#,
         )
         .unwrap();
         let normalized = CoreInstanceConfig::from_toml(&disabled).unwrap();
         assert!(normalized.connectivity.stun.tcp_servers.is_empty());
+        assert!(normalized.connectivity.stun.tcp_v6_servers.is_empty());
+
+        let ipv6_overridden =
+            TomlConfig::new_from_str(r#"stun_servers_v6 = ["udp-v6.example.com:3478"]"#).unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&ipv6_overridden).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.udp_v6_servers,
+            ["udp-v6.example.com:3478"]
+        );
+        assert!(normalized.connectivity.stun.tcp_v6_servers.is_empty());
+
+        let ipv6_disabled = TomlConfig::new_from_str("stun_servers_v6 = []").unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&ipv6_disabled).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.tcp_servers[0],
+            "txt:stun-tcp.easytier.cn"
+        );
+        assert!(normalized.connectivity.stun.tcp_v6_servers.is_empty());
     }
 
     #[test]
