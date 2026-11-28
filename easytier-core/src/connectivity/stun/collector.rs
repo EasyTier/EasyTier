@@ -17,8 +17,8 @@ use tokio::task::JoinSet;
 
 use crate::{
     config::{
-        DEFAULT_TCP_STUN_SERVERS, DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS,
-        default_stun_servers,
+        DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS, FALLBACK_TCP_STUN_SERVERS,
+        PREFERRED_TCP_STUN_SERVERS, default_stun_servers,
     },
     proto::common::{NatType, StunInfo},
     socket::{
@@ -44,7 +44,11 @@ impl Default for StunServerConfig {
     fn default() -> Self {
         Self {
             udp_servers: default_stun_servers(DEFAULT_UDP_STUN_SERVERS),
-            tcp_servers: default_stun_servers(DEFAULT_TCP_STUN_SERVERS),
+            tcp_servers: PREFERRED_TCP_STUN_SERVERS
+                .iter()
+                .chain(FALLBACK_TCP_STUN_SERVERS)
+                .map(ToString::to_string)
+                .collect(),
             udp_v6_servers: default_stun_servers(DEFAULT_UDP_V6_STUN_SERVERS),
         }
     }
@@ -232,6 +236,32 @@ where
         None
     }
 
+    async fn get_tcp_public_ipv6(
+        runtime: Arc<R>,
+        dns: Arc<D>,
+        socket_context: SocketContext,
+        servers: Vec<String>,
+    ) -> Option<Ipv6Addr> {
+        let mut resolver = HostResolverIter::new(
+            dns,
+            socket_context.clone().with_ip_version(IpVersion::V6),
+            servers,
+            1,
+            true,
+        );
+        while let Some(server) = resolver.next().await {
+            let response =
+                tcp_bind_request(runtime.clone(), socket_context.clone(), server, 0).await;
+            tracing::debug!(?response, "finish ipv6 tcp stun probe");
+            if let Ok(Some(SocketAddr::V6(addr))) =
+                response.map(|response| response.mapped_socket_addr)
+            {
+                return Some(*addr.ip());
+            }
+        }
+        None
+    }
+
     fn start_stun_routine(&self) {
         if self.started.swap(true, Ordering::AcqRel) {
             return;
@@ -302,7 +332,7 @@ where
         let redetect_notify = self.redetect_notify.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
-                let servers = sampled_servers(&tcp_stun_servers.read().unwrap());
+                let servers = sampled_tcp_servers(&tcp_stun_servers.read().unwrap());
                 let detector = TcpNatTypeDetector::new(
                     runtime.clone(),
                     dns.clone(),
@@ -332,21 +362,33 @@ where
 
         let runtime = self.runtime.clone();
         let dns = self.dns.clone();
-        let socket_context = self.udp_socket_context.clone();
+        let udp_socket_context = self.udp_socket_context.clone();
+        let tcp_socket_context = self.tcp_socket_context.clone();
         let stun_servers_v6 = self.stun_servers_v6.clone();
+        let tcp_stun_servers = self.tcp_stun_servers.clone();
         let public_ipv6 = self.public_ipv6.clone();
         let redetect_notify = self.redetect_notify.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let servers = stun_servers_v6.read().unwrap().clone();
-                if let Some(ip) = Self::get_public_ipv6(
+                let mut ip = Self::get_public_ipv6(
                     runtime.clone(),
                     dns.clone(),
-                    socket_context.clone(),
+                    udp_socket_context.clone(),
                     &servers,
                 )
-                .await
-                {
+                .await;
+                if ip.is_none() && !servers.is_empty() {
+                    let servers = sampled_servers(&tcp_stun_servers.read().unwrap());
+                    ip = Self::get_tcp_public_ipv6(
+                        runtime.clone(),
+                        dns.clone(),
+                        tcp_socket_context.clone(),
+                        servers,
+                    )
+                    .await;
+                }
+                if let Some(ip) = ip {
                     *public_ipv6.write().unwrap() = Some(ip);
                 }
 
@@ -374,7 +416,8 @@ where
         self.start_stun_routine();
         let udp_result = self.udp_nat_test_result.read().unwrap().clone();
         let tcp_result = self.tcp_nat_test_result.read().unwrap().clone();
-        if udp_result.is_none() && tcp_result.is_none() {
+        let public_ipv6 = *self.public_ipv6.read().unwrap();
+        if udp_result.is_none() && tcp_result.is_none() && public_ipv6.is_none() {
             return StunInfo::default();
         }
 
@@ -385,7 +428,7 @@ where
         if let Some(result) = &tcp_result {
             public_ip.extend(result.public_ips().into_iter().map(|ip| ip.to_string()));
         }
-        if let Some(ip) = *self.public_ipv6.read().unwrap() {
+        if let Some(ip) = public_ipv6 {
             public_ip.insert(ip.to_string());
         }
 
@@ -534,6 +577,20 @@ fn sampled_servers(servers: &[String]) -> Vec<String> {
         .chain(servers.iter().skip(2).choose(&mut rand::thread_rng()))
         .cloned()
         .collect()
+}
+
+fn sampled_tcp_servers(servers: &[String]) -> Vec<String> {
+    let preferred_count = PREFERRED_TCP_STUN_SERVERS.len();
+    if let Some((preferred, fallback)) = servers.split_at_checked(preferred_count)
+        && preferred == PREFERRED_TCP_STUN_SERVERS
+    {
+        return preferred
+            .iter()
+            .cloned()
+            .chain(sampled_servers(fallback))
+            .collect();
+    }
+    sampled_servers(servers)
 }
 
 fn unix_timestamp() -> i64 {
@@ -712,6 +769,16 @@ mod tests {
         assert_eq!(&sampled[..2], &["a", "b"]);
         assert_eq!(sampled.len(), 3);
         assert!(matches!(sampled[2].as_str(), "c" | "d"));
+    }
+
+    #[test]
+    fn sampled_tcp_servers_keep_fallbacks_after_preferred_servers() {
+        let defaults = StunServerConfig::default().tcp_servers;
+        let sampled = sampled_tcp_servers(&defaults);
+
+        assert_eq!(&sampled[..4], &defaults[..4]);
+        assert_eq!(sampled.len(), 5);
+        assert!(defaults[4..].contains(&sampled[4]));
     }
 
     #[test]

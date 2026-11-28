@@ -28,7 +28,9 @@ pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "stun.chat.bilibili.com",
     "stun.hitv.com",
 ];
-pub(crate) const DEFAULT_TCP_STUN_SERVERS: &[&str] = &[
+pub(crate) const PREFERRED_TCP_STUN_SERVERS: &[&str] =
+    &["txt:stun-tcp-v6.easytier.cn", "txt:stun-tcp.easytier.cn"];
+pub(crate) const FALLBACK_TCP_STUN_SERVERS: &[&str] = &[
     "stun.hot-chilli.net",
     "stun.fitauto.ru",
     "fwa.lifesizecloud.com",
