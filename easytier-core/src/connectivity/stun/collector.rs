@@ -17,8 +17,8 @@ use tokio::task::JoinSet;
 
 use crate::{
     config::{
-        DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS, FALLBACK_TCP_STUN_SERVERS,
-        PREFERRED_TCP_STUN_SERVERS, default_stun_servers,
+        DEFAULT_TCP_STUN_SERVERS, DEFAULT_TCP_V6_STUN_SERVERS, DEFAULT_UDP_STUN_SERVERS,
+        DEFAULT_UDP_V6_STUN_SERVERS, default_stun_servers,
     },
     proto::common::{NatType, StunInfo},
     socket::{
@@ -38,18 +38,17 @@ pub struct StunServerConfig {
     pub udp_servers: Vec<String>,
     pub tcp_servers: Vec<String>,
     pub udp_v6_servers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tcp_v6_servers: Vec<String>,
 }
 
 impl Default for StunServerConfig {
     fn default() -> Self {
         Self {
             udp_servers: default_stun_servers(DEFAULT_UDP_STUN_SERVERS),
-            tcp_servers: PREFERRED_TCP_STUN_SERVERS
-                .iter()
-                .chain(FALLBACK_TCP_STUN_SERVERS)
-                .map(ToString::to_string)
-                .collect(),
+            tcp_servers: default_stun_servers(DEFAULT_TCP_STUN_SERVERS),
             udp_v6_servers: default_stun_servers(DEFAULT_UDP_V6_STUN_SERVERS),
+            tcp_v6_servers: default_stun_servers(DEFAULT_TCP_V6_STUN_SERVERS),
         }
     }
 }
@@ -87,6 +86,7 @@ where
     stun_servers: Arc<RwLock<Vec<String>>>,
     tcp_stun_servers: Arc<RwLock<Vec<String>>>,
     stun_servers_v6: Arc<RwLock<Vec<String>>>,
+    tcp_stun_servers_v6: Vec<String>,
     udp_nat_test_result: Arc<RwLock<Option<StunNatTypeDetectResult>>>,
     tcp_nat_test_result: Arc<RwLock<Option<StunNatTypeDetectResult>>>,
     public_ipv6: Arc<RwLock<Option<Ipv6Addr>>>,
@@ -129,14 +129,36 @@ where
         tcp_stun_servers: Vec<String>,
         stun_servers_v6: Vec<String>,
     ) -> Self {
+        Self::new_with_server_config(
+            runtime,
+            dns,
+            udp_socket_context,
+            tcp_socket_context,
+            StunServerConfig {
+                udp_servers: udp_stun_servers,
+                tcp_servers: tcp_stun_servers,
+                udp_v6_servers: stun_servers_v6,
+                tcp_v6_servers: Vec::new(),
+            },
+        )
+    }
+
+    pub fn new_with_server_config(
+        runtime: Arc<R>,
+        dns: Arc<D>,
+        udp_socket_context: SocketContext,
+        tcp_socket_context: SocketContext,
+        servers: StunServerConfig,
+    ) -> Self {
         Self {
             runtime,
             dns,
             udp_socket_context,
             tcp_socket_context,
-            stun_servers: Arc::new(RwLock::new(udp_stun_servers)),
-            tcp_stun_servers: Arc::new(RwLock::new(tcp_stun_servers)),
-            stun_servers_v6: Arc::new(RwLock::new(stun_servers_v6)),
+            stun_servers: Arc::new(RwLock::new(servers.udp_servers)),
+            tcp_stun_servers: Arc::new(RwLock::new(servers.tcp_servers)),
+            stun_servers_v6: Arc::new(RwLock::new(servers.udp_v6_servers)),
+            tcp_stun_servers_v6: servers.tcp_v6_servers,
             udp_nat_test_result: Arc::new(RwLock::new(None)),
             tcp_nat_test_result: Arc::new(RwLock::new(None)),
             public_ipv6: Arc::new(RwLock::new(None)),
@@ -152,13 +174,11 @@ where
         dns: Arc<D>,
         socket_context: SocketContext,
     ) -> Self {
-        Self::new(
+        Self::new_with_default_servers_and_socket_contexts(
             runtime,
             dns,
+            socket_context.clone(),
             socket_context,
-            Self::get_default_servers(),
-            Self::get_default_tcp_servers(),
-            Self::get_default_servers_v6(),
         )
     }
 
@@ -168,14 +188,12 @@ where
         udp_socket_context: SocketContext,
         tcp_socket_context: SocketContext,
     ) -> Self {
-        Self::new_with_socket_contexts(
+        Self::new_with_server_config(
             runtime,
             dns,
             udp_socket_context,
             tcp_socket_context,
-            Self::get_default_servers(),
-            Self::get_default_tcp_servers(),
-            Self::get_default_servers_v6(),
+            StunServerConfig::default(),
         )
     }
 
@@ -240,12 +258,12 @@ where
         runtime: Arc<R>,
         dns: Arc<D>,
         socket_context: SocketContext,
-        servers: Vec<String>,
+        servers: &[String],
     ) -> Option<Ipv6Addr> {
         let mut resolver = HostResolverIter::new(
             dns,
             socket_context.clone().with_ip_version(IpVersion::V6),
-            servers,
+            servers.to_vec(),
             1,
             true,
         );
@@ -332,7 +350,7 @@ where
         let redetect_notify = self.redetect_notify.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
-                let servers = sampled_tcp_servers(&tcp_stun_servers.read().unwrap());
+                let servers = sampled_servers(&tcp_stun_servers.read().unwrap());
                 let detector = TcpNatTypeDetector::new(
                     runtime.clone(),
                     dns.clone(),
@@ -365,7 +383,7 @@ where
         let udp_socket_context = self.udp_socket_context.clone();
         let tcp_socket_context = self.tcp_socket_context.clone();
         let stun_servers_v6 = self.stun_servers_v6.clone();
-        let tcp_stun_servers = self.tcp_stun_servers.clone();
+        let tcp_stun_servers_v6 = self.tcp_stun_servers_v6.clone();
         let public_ipv6 = self.public_ipv6.clone();
         let redetect_notify = self.redetect_notify.clone();
         self.tasks.lock().unwrap().spawn(async move {
@@ -378,13 +396,12 @@ where
                     &servers,
                 )
                 .await;
-                if ip.is_none() && !servers.is_empty() {
-                    let servers = sampled_servers(&tcp_stun_servers.read().unwrap());
+                if ip.is_none() && !tcp_stun_servers_v6.is_empty() {
                     ip = Self::get_tcp_public_ipv6(
                         runtime.clone(),
                         dns.clone(),
                         tcp_socket_context.clone(),
-                        servers,
+                        &tcp_stun_servers_v6,
                     )
                     .await;
                 }
@@ -579,20 +596,6 @@ fn sampled_servers(servers: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn sampled_tcp_servers(servers: &[String]) -> Vec<String> {
-    let preferred_count = PREFERRED_TCP_STUN_SERVERS.len();
-    if let Some((preferred, fallback)) = servers.split_at_checked(preferred_count)
-        && preferred == PREFERRED_TCP_STUN_SERVERS
-    {
-        return preferred
-            .iter()
-            .cloned()
-            .chain(sampled_servers(fallback))
-            .collect();
-    }
-    sampled_servers(servers)
-}
-
 fn unix_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -772,13 +775,11 @@ mod tests {
     }
 
     #[test]
-    fn sampled_tcp_servers_keep_fallbacks_after_preferred_servers() {
-        let defaults = StunServerConfig::default().tcp_servers;
-        let sampled = sampled_tcp_servers(&defaults);
-
-        assert_eq!(&sampled[..4], &defaults[..4]);
-        assert_eq!(sampled.len(), 5);
-        assert!(defaults[4..].contains(&sampled[4]));
+    fn default_tcp_servers_are_separate_by_address_family() {
+        let defaults = StunServerConfig::default();
+        assert_eq!(defaults.tcp_servers[0], "txt:stun-tcp.easytier.cn");
+        assert_eq!(defaults.tcp_v6_servers, ["txt:stun-tcp-v6.easytier.cn"]);
+        assert!(!defaults.tcp_servers.contains(&defaults.tcp_v6_servers[0]));
     }
 
     #[test]

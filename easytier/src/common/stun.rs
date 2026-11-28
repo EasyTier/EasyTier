@@ -6,7 +6,7 @@ use std::{net::SocketAddr, sync::Arc};
 #[cfg(test)]
 use async_trait::async_trait;
 #[cfg(test)]
-use easytier_core::connectivity::stun::{StunInfoProvider, StunSocketMapper};
+use easytier_core::connectivity::stun::{StunInfoProvider, StunServerConfig, StunSocketMapper};
 use easytier_core::{
     connectivity::stun::StunInfoCollector as CoreStunInfoCollector, socket::SocketContext,
 };
@@ -93,14 +93,18 @@ impl StunSocketMapper<RuntimeUdpSocket> for MockStunInfoCollector {
 
 pub fn runtime_stun_info_collector(socket_context: SocketContext) -> StunInfoCollector {
     let runtime = native_host_runtime();
-    StunInfoCollector::new(
-        runtime.clone(),
-        runtime,
-        socket_context,
-        default_udp_stun_servers(),
-        default_tcp_stun_servers(),
-        default_udp_v6_stun_servers(),
-    )
+    if cfg!(test) {
+        StunInfoCollector::new(
+            runtime.clone(),
+            runtime,
+            socket_context,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    } else {
+        StunInfoCollector::new_with_default_servers(runtime.clone(), runtime, socket_context)
+    }
 }
 
 #[cfg(test)]
@@ -252,13 +256,17 @@ mod tests {
     async fn native_tcp_stun_discovers_ipv6_without_udp() {
         let (server, _server_task) = spawn_tcp_stun_server("[::1]:0").await;
         let runtime = native_host_runtime();
-        let collector = StunInfoCollector::new(
+        let collector = StunInfoCollector::new_with_server_config(
             runtime.clone(),
             runtime,
             SocketContext::default(),
-            Vec::new(),
-            vec![server.to_string()],
-            vec!["127.0.0.1:3478".to_owned()],
+            SocketContext::default(),
+            StunServerConfig {
+                udp_servers: Vec::new(),
+                tcp_servers: Vec::new(),
+                udp_v6_servers: Vec::new(),
+                tcp_v6_servers: vec![server.to_string()],
+            },
         );
 
         let info = tokio::time::timeout(Duration::from_secs(5), async {

@@ -463,14 +463,12 @@ where
         if let Some(stun_override) = &adapters.stun_override {
             return stun_override.clone();
         }
-        Arc::new(StunInfoCollector::new_with_socket_contexts(
+        Arc::new(StunInfoCollector::new_with_server_config(
             adapters.host.clone(),
             adapters.dns.clone(),
             config.direct.udp_bind.context.clone(),
             config.direct.tcp_bind.context.clone(),
-            config.stun.udp_servers.clone(),
-            config.stun.tcp_servers.clone(),
-            config.stun.udp_v6_servers.clone(),
+            config.stun.clone(),
         ))
     }
 
