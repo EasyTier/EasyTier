@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,30 @@ pub struct PortForwardConfig {
     pub bind_addr: SocketAddr,
     pub dst_addr: SocketAddr,
     pub proto: String,
+}
+
+pub(crate) fn port_forwards_by_bind(
+    rules: &[PortForwardConfig],
+) -> anyhow::Result<HashMap<(String, SocketAddr), PortForwardConfig>> {
+    let mut configs = HashMap::new();
+    for rule in rules {
+        let mut cfg = rule.clone();
+        cfg.proto.make_ascii_lowercase();
+        anyhow::ensure!(
+            matches!(cfg.proto.as_str(), "tcp" | "udp"),
+            "unsupported protocol: {}, only support udp / tcp",
+            cfg.proto
+        );
+        if let Some(previous) = configs.insert((cfg.proto.clone(), cfg.bind_addr), cfg.clone()) {
+            anyhow::ensure!(
+                previous == cfg,
+                "conflicting port-forward targets for {} {}",
+                cfg.proto,
+                cfg.bind_addr
+            );
+        }
+    }
+    Ok(configs)
 }
 
 impl From<PortForwardConfigPb> for PortForwardConfig {

@@ -199,7 +199,7 @@ easytier-core --config-url https://config.example.org/node.toml --config-refresh
 
 Omit the interval to fetch only at startup. Use `--check-config` to check the remote TOML without starting a network. The URL must serve a UTF-8 TOML file (up to 1 MiB); use HTTPS for configurations containing secrets.
 
-When the content changes, EasyTier restarts only that instance, keeping its ID. A failed download or invalid configuration leaves it running. If the replacement fails to start, EasyTier attempts to restore the previous instance.
+When the content changes, EasyTier restarts only that instance, keeping its ID. A failed download or invalid configuration leaves it running. If the replacement fails to start, EasyTier attempts to restore the previous instance and skips the failed configuration until the served content changes. An automatically generated secure-mode key is preserved across refreshes of the same network within the running process.
 
 #### Subnet Proxy
 

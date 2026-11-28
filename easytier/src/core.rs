@@ -1422,10 +1422,11 @@ async fn run_with_manager(
         manager.run_network_instance(cfg, control)?;
     }
 
+    let shutdown = tokio_util::sync::CancellationToken::new();
     let mut remote = None;
     if let Some(url) = cli.config_url {
         let source = RemoteConfig::new(url)?;
-        let (body, cfg, overrides) = source
+        let (document, overrides) = source
             .load_initial(
                 &cli.network_options,
                 explicit_config_file_count,
@@ -1435,11 +1436,11 @@ async fn run_with_manager(
         if overrides.is_some() {
             crate_cli_network = false;
         }
-        let (id, started) =
-            manager.spawn_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
+        let (_, started) = manager
+            .spawn_network_instance(document.cfg.clone(), ConfigFileControl::STATIC_CONFIG)?;
         started.await??;
         if let Some(interval) = cli.config_refresh_interval {
-            remote = Some(source.watch(&manager, interval, id, body, overrides));
+            remote = Some(source.watch(&manager, interval, document, overrides, &shutdown));
         }
     }
 
@@ -1474,41 +1475,46 @@ async fn run_with_manager(
         }
     };
 
-    tokio::select! {
-        _ = async {
-            if let Some(watch) = remote && let Err(error) = watch.await {
-                log::warn!(%error, "Remote config watcher stopped");
-            }
-            std::future::pending::<()>().await
-        } => unreachable!(),
-        _ = manager.wait() => {
-            let infos = manager.collect_network_infos().await?;
-            let mut errors = String::new();
-            for (instance_id, info) in infos {
-                if let Some(error) = info.error_msg {
-                    if errors.is_empty() {
-                        errors.push_str("some instances stopped with errors:");
+    let wait_for_shutdown = async {
+        let _cancel = shutdown.clone().drop_guard();
+        tokio::select! {
+            _ = manager.wait() => {
+                let infos = manager.collect_network_infos().await?;
+                let mut errors = String::new();
+                for (instance_id, info) in infos {
+                    if let Some(error) = info.error_msg {
+                        if errors.is_empty() {
+                            errors.push_str("some instances stopped with errors:");
+                        }
+                        write!(errors, "\n{instance_id}: {error}").unwrap();
                     }
-                    write!(errors, "\n{instance_id}: {error}").unwrap();
+                }
+                if !errors.is_empty() {
+                    return Err(anyhow::anyhow!(errors));
                 }
             }
-            if !errors.is_empty() {
-                return Err(anyhow::anyhow!(errors));
+            _ = tokio::signal::ctrl_c() => {
+                log::info!("ctrl-c received, exiting...");
+            }
+
+            _ = sigterm, if cfg!(unix) => {
+                log::warn!("terminate signal received, exiting...");
+            }
+
+            _ = service_stop => {
+                log::info!("service stop received, exiting...");
             }
         }
-        _ = tokio::signal::ctrl_c() => {
-            log::info!("ctrl-c received, exiting...");
+        Ok(())
+    };
+    let (result, ()) = tokio::join!(biased; wait_for_shutdown, async {
+        if let Some(watch) = remote
+            && let Err(error) = watch.await
+        {
+            log::warn!(%error, "Remote config watcher stopped");
         }
-
-        _ = sigterm, if cfg!(unix) => {
-            log::warn!("terminate signal received, exiting...");
-        }
-
-        _ = service_stop => {
-            log::info!("service stop received, exiting...");
-        }
-    }
-    Ok(())
+    });
+    result
 }
 
 fn memory_monitor(_force_dump: Arc<AtomicBool>) {

@@ -319,26 +319,7 @@ where
         cfgs: &[PortForwardConfig],
         operation: OwnedMutexGuard<()>,
     ) -> anyhow::Result<PreparedPortForwards<H>> {
-        let mut configs = HashMap::new();
-        for cfg in cfgs {
-            let mut cfg = cfg.clone();
-            cfg.proto.make_ascii_lowercase();
-            if !matches!(cfg.proto.as_str(), "tcp" | "udp") {
-                anyhow::bail!(
-                    "unsupported protocol: {}, only support udp / tcp",
-                    cfg.proto
-                );
-            }
-            let key = (cfg.proto.clone(), cfg.bind_addr);
-            if let Some(previous) = configs.insert(key, cfg.clone()) {
-                anyhow::ensure!(
-                    previous == cfg,
-                    "conflicting port-forward targets for {} {}",
-                    cfg.proto,
-                    cfg.bind_addr
-                );
-            }
-        }
+        let configs = crate::config::gateway::port_forwards_by_bind(cfgs)?;
         let consumer_lease = if !configs.is_empty() && self.consumer_lease.lock().unwrap().is_none()
         {
             Some(self.data_plane.acquire_consumer_lease()?)

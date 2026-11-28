@@ -3,6 +3,7 @@ use std::{num::NonZeroU32, time::Duration};
 use anyhow::{Context as _, ensure};
 use easytier_core::instance::CoreInstanceConfig;
 use reqwest::{Client, StatusCode};
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::Uuid;
 
@@ -32,13 +33,64 @@ fn prepare(cfg: &TomlConfigLoader, overrides: Option<&NetworkOptions>) -> anyhow
         cfg,
         &crate::instance::config::runtime_core_host_config(),
     )
-    .and_then(|config| config.validate_build_capabilities())
+    .and_then(|config| config.validate_before_replacement())
     .map_err(|_| anyhow::anyhow!("invalid remote instance configuration"))
 }
 
 pub(super) struct RemoteConfig {
     url: Url,
     client: Client,
+}
+
+pub(super) struct RemoteDocument {
+    body: String,
+    pub(super) cfg: TomlConfigLoader,
+}
+
+impl RemoteDocument {
+    fn reuse_generated_key(&self, next: &TomlConfigLoader, overrides: Option<&NetworkOptions>) {
+        if self.cfg.source_has_private_key()
+            || next.source_has_private_key()
+            || overrides.is_some_and(|opts| {
+                opts.credential.is_some()
+                    || (opts.secure_mode == Some(true)
+                        && opts
+                            .local_private_key
+                            .as_ref()
+                            .is_some_and(|key| !key.is_empty()))
+            })
+            || self.cfg.get_network_identity() != next.get_network_identity()
+        {
+            return;
+        }
+        if let (Some(previous), Some(mut mode)) =
+            (self.cfg.get_secure_mode(), next.get_secure_mode())
+            && previous.enabled
+            && mode.enabled
+        {
+            mode.local_private_key = previous.local_private_key;
+            mode.local_public_key = previous.local_public_key;
+            next.set_secure_mode(Some(mode));
+        }
+    }
+}
+
+// Keep a handle until the stop is complete: deletion removes the manager entry
+// before it joins the stop task.
+async fn remove_instance(manager: &NativeInstanceManager, id: Uuid) -> anyhow::Result<bool> {
+    let instance = manager.instance(id);
+    if let Err(error) = manager.delete_network_instances([id]).await {
+        log::warn!(%id, %error, "Could not delete remote instance");
+        if manager.instance(id).is_none()
+            && let Some(instance) = instance
+        {
+            tokio::spawn(async move { instance.stop().await })
+                .await
+                .context("failed to finish remote instance cleanup")?;
+        }
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 impl RemoteConfig {
@@ -56,7 +108,7 @@ impl RemoteConfig {
         options: &'a NetworkOptions,
         explicit_file_count: usize,
         dir_file_count: usize,
-    ) -> anyhow::Result<(String, TomlConfigLoader, Option<&'a NetworkOptions>)> {
+    ) -> anyhow::Result<(RemoteDocument, Option<&'a NetworkOptions>)> {
         let body = self.fetch().await?;
         let cfg = parse(&body)?;
         let overrides = options
@@ -68,7 +120,7 @@ impl RemoteConfig {
             )
             .then_some(options);
         prepare(&cfg, overrides)?;
-        Ok((body, cfg, overrides))
+        Ok((RemoteDocument { body, cfg }, overrides))
     }
 
     async fn fetch(&self) -> anyhow::Result<String> {
@@ -102,15 +154,26 @@ impl RemoteConfig {
         self,
         manager: &NativeInstanceManager,
         interval: NonZeroU32,
-        id: Uuid,
-        mut applied: String,
+        mut applied: RemoteDocument,
         overrides: Option<&NetworkOptions>,
+        shutdown: &CancellationToken,
     ) -> anyhow::Result<()> {
+        let id = applied.cfg.get_id();
+        let mut failed = None;
+        let start = async |config| -> anyhow::Result<()> {
+            let (_, started) =
+                manager.spawn_network_instance(config, ConfigFileControl::STATIC_CONFIG)?;
+            started.await?
+        };
         loop {
-            tokio::time::sleep(Duration::from_secs(interval.get().into())).await;
             let candidate = async {
+                tokio::time::sleep(Duration::from_secs(interval.get().into())).await;
                 let body = self.fetch().await?;
-                if body == applied {
+                if failed.as_ref() == Some(&body) {
+                    return Ok(None);
+                }
+                failed = None;
+                if body == applied.body {
                     return Ok(None);
                 }
                 let cfg = parse(&body)?;
@@ -120,10 +183,16 @@ impl RemoteConfig {
                 );
                 cfg.set_id(id);
                 prepare(&cfg, overrides)?;
-                anyhow::Ok(Some((body, cfg)))
-            }
-            .await;
-            let (body, cfg) = match candidate {
+                applied.reuse_generated_key(&cfg, overrides);
+                let guard = manager.mutation_lock().lock_owned().await;
+                anyhow::Ok(Some((RemoteDocument { body, cfg }, guard)))
+            };
+            let candidate = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => return Ok(()),
+                candidate = candidate => candidate,
+            };
+            let (next, _mutation) = match candidate {
                 Ok(Some(candidate)) => candidate,
                 Ok(None) => continue,
                 Err(error) => {
@@ -132,27 +201,35 @@ impl RemoteConfig {
                 }
             };
 
-            let _mutation = manager.mutation_lock().lock_owned().await;
             // Keep manager.wait() from exiting between stop, start and possible rollback.
             let _daemon = manager.register_daemon();
-            let previous = manager
-                .config(id)
-                .context("remote instance no longer exists")?;
-            manager.delete_network_instances([id]).await?;
-            let start = async |config| -> anyhow::Result<()> {
-                let (_, started) =
-                    manager.spawn_network_instance(config, ConfigFileControl::STATIC_CONFIG)?;
-                started.await?
-            };
-            if start(cfg).await.is_err() {
-                manager.delete_network_instances([id]).await?;
-                start(previous)
+            ensure!(
+                manager.instance(id).is_some(),
+                "remote instance no longer exists"
+            );
+            if remove_instance(manager, id).await? {
+                if shutdown.is_cancelled() {
+                    return Ok(());
+                }
+                if start(next.cfg.clone()).await.is_ok() {
+                    applied = next;
+                    log::info!(%id, "Applied remote config");
+                    continue;
+                }
+                failed = Some(next.body);
+                remove_instance(manager, id).await?;
+                ensure!(
+                    manager.instance(id).is_none(),
+                    "failed remote instance still registered"
+                );
+            } else if manager.instance(id).is_some() {
+                continue;
+            }
+            if !shutdown.is_cancelled() {
+                start(applied.cfg.clone())
                     .await
                     .context("failed to restore previous remote configuration")?;
-                log::warn!(%id, "Remote config failed to start; restored previous instance");
-            } else {
-                log::info!(%id, "Applied remote config");
-                applied = body;
+                log::warn!(%id, "Restored previous remote instance");
             }
         }
     }
@@ -169,6 +246,24 @@ mod tests {
         io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},
         net::{TcpListener, TcpStream},
     };
+
+    const FIRST: &str = "hostname = 'first'\nlisteners = []\nstun_servers = []\nstun_servers_v6 = []\ntcp_stun_servers = []\n[flags]\nno_tun = true\ndisable_upnp = true\nenable_encryption = false";
+
+    fn refresh_cli(listener: &TcpListener) -> Cli {
+        let rpc = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let matches = cli_command()
+            .try_get_matches_from([
+                "easytier-core",
+                "--rpc-portal",
+                &rpc.local_addr().unwrap().to_string(),
+                "--config-url",
+                &format!("http://{}/node.toml", listener.local_addr().unwrap()),
+                "--config-refresh-interval",
+                "1",
+            ])
+            .unwrap();
+        Cli::from_arg_matches(&matches).unwrap()
+    }
 
     async fn request(listener: &TcpListener) -> BufReader<TcpStream> {
         let (socket, _) = listener.accept().await.unwrap();
@@ -227,6 +322,45 @@ mod tests {
     }
 
     #[test]
+    fn refresh_preserves_only_generated_keys_on_the_same_network() {
+        let body = "[secure_mode]\nenabled = true";
+        let previous = RemoteDocument {
+            body: body.into(),
+            cfg: parse(body).unwrap(),
+        };
+        let public_key =
+            |cfg: &TomlConfigLoader| cfg.get_secure_mode().unwrap().local_public_key.unwrap();
+        let old_key = public_key(&previous.cfg);
+
+        let edited = parse(&format!("{body}\n# comment")).unwrap();
+        previous.reuse_generated_key(&edited, None);
+        assert_eq!(public_key(&edited), old_key);
+
+        let other = parse(&format!(
+            "{body}\n[network_identity]\nnetwork_name = 'other'"
+        ))
+        .unwrap();
+        previous.reuse_generated_key(&other, None);
+        assert_ne!(public_key(&other), old_key);
+
+        let mode = parse(body).unwrap().get_secure_mode().unwrap();
+        let explicit = parse(&format!(
+            "{body}\nlocal_private_key = '{}'",
+            mode.local_private_key.unwrap()
+        ))
+        .unwrap();
+        previous.reuse_generated_key(&explicit, None);
+        assert_eq!(public_key(&explicit), mode.local_public_key.unwrap());
+        let explicit = RemoteDocument {
+            body: String::new(),
+            cfg: explicit,
+        };
+        let fresh = parse(body).unwrap();
+        explicit.reuse_generated_key(&fresh, None);
+        assert_ne!(public_key(&explicit.cfg), public_key(&fresh));
+    }
+
+    #[test]
     fn refresh_requires_http_url_and_positive_interval() {
         for args in [
             vec!["--config-refresh-interval", "1"],
@@ -247,42 +381,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removed_instance_is_stopped_even_if_the_manager_cannot_join_its_stop_task() {
+        crate::utils::init_crypto_provider();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let manager = crate::instance::factory::native_instance_manager_with_runtime(
+            runtime.handle().clone(),
+        );
+        let instance = manager.create(parse(FIRST).unwrap(), ()).unwrap();
+        instance.start().await.unwrap();
+        runtime.shutdown_background();
+        assert!(
+            !remove_instance(&manager, instance.instance_id())
+                .await
+                .unwrap()
+        );
+        assert!(manager.instance(instance.instance_id()).is_none());
+        assert_eq!(
+            instance.state(),
+            easytier_core::instance::CoreInstanceState::Stopped
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_refresh_waits_for_removed_instance() {
+        use std::{future::Future, task::Poll};
+        crate::utils::init_crypto_provider();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cli = refresh_cli(&listener);
+        let manager = Arc::new(crate::instance::factory::native_instance_manager());
+        let stop = Arc::new(tokio::sync::Notify::new());
+        let run = run_with_manager(cli, manager.clone(), Some(stop.clone()));
+        tokio::pin!(run);
+        let serve = async {
+            respond(request(&listener).await, "200 OK", FIRST).await;
+            let socket = request(&listener).await;
+            let old = manager.instances().pop().unwrap();
+            respond(socket, "200 OK", &format!("{FIRST}\n# update")).await;
+            old
+        };
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let old = tokio::select! {
+                result = &mut run => panic!("unexpected exit: {result:?}"),
+                old = serve => old,
+            };
+            // On this current-thread runtime the spawned stop cannot run inside
+            // this poll. Deliver shutdown exactly after removal, before cleanup.
+            std::future::poll_fn(|cx| {
+                assert!(run.as_mut().poll(cx).is_pending());
+                if manager.instance(old.instance_id()).is_none() {
+                    stop.notify_one();
+                    assert!(run.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            run.await.unwrap();
+            assert_eq!(
+                old.state(),
+                easytier_core::instance::CoreInstanceState::Stopped
+            );
+            assert!(manager.instances().is_empty());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn remote_refresh_keeps_good_instance_until_valid_change() {
-        const FIRST: &str = "hostname = 'first'\nlisteners = []\nstun_servers = []\nstun_servers_v6 = []\ntcp_stun_servers = []\n[flags]\nno_tun = true\ndisable_upnp = true\nenable_encryption = false";
-        let second = FIRST.replace("first", "second");
+        let first = format!("{FIRST}\n[secure_mode]\nenabled = true");
+        let second = first.replace("first", "second");
+        let invalid_forward = format!(
+            "{second}\n[[port_forward]]\nproto = 'invalid'\nbind_addr = '127.0.0.1:0'\ndst_addr = '127.0.0.1:9'"
+        );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         #[cfg(any(feature = "socks5", not(feature = "smoltcp")))]
         let port_forward = format!(
             "{second}\n[[port_forward]]\nproto = 'tcp'\nbind_addr = '{}'\ndst_addr = '127.0.0.1:9'",
             listener.local_addr().unwrap()
         );
-        let url = format!("http://{}/node.toml", listener.local_addr().unwrap());
-        let args = [
-            "easytier-core",
-            "--config-url",
-            &url,
-            "--config-refresh-interval",
-            "1",
-        ];
-        let cli =
-            Cli::from_arg_matches(&cli_command().try_get_matches_from(args).unwrap()).unwrap();
+        let cli = refresh_cli(&listener);
         crate::utils::init_crypto_provider();
         let manager = Arc::new(crate::instance::factory::native_instance_manager());
         let stop = Arc::new(tokio::sync::Notify::new());
         let serve = async {
-            let mut original = None;
+            let mut previous = None;
+            let mut public_key = None;
             // Each request observes the result of the preceding response.
             for (status, body, before) in [
-                ("200 OK", FIRST, None),
-                ("200 OK", FIRST, Some(("first", true))),
+                ("200 OK", first.as_str(), None),
+                ("200 OK", &first, Some(("first", true))),
                 ("503 Service Unavailable", &second, Some(("first", true))),
                 ("200 OK", "hostname = [", Some(("first", true))),
+                ("200 OK", &invalid_forward, Some(("first", true))),
                 #[cfg(not(feature = "smoltcp"))]
                 ("200 OK", &port_forward, Some(("first", true))),
                 ("200 OK", &second, Some(("first", true))),
                 #[cfg(feature = "socks5")]
                 ("200 OK", &port_forward, Some(("second", false))),
+                #[cfg(feature = "socks5")]
+                ("200 OK", &port_forward, Some(("second", false))),
+                #[cfg(feature = "socks5")]
+                ("200 OK", &second, Some(("second", true))),
+                #[cfg(not(feature = "socks5"))]
                 ("200 OK", &second, Some(("second", false))),
+                ("200 OK", &first, Some(("second", true))),
+                ("200 OK", &first, Some(("first", false))),
             ] {
                 let socket = request(&listener).await;
                 if let Some((hostname, unchanged)) = before {
@@ -290,23 +497,17 @@ mod tests {
                     assert_eq!(instances.len(), 1);
                     let current = &instances[0];
                     assert!(current.is_ready());
-                    let first = original.get_or_insert_with(|| current.clone());
-                    assert_eq!(first.instance_id(), current.instance_id());
-                    assert_eq!(Arc::ptr_eq(first, current), unchanged);
-                    assert!(
-                        manager
-                            .config(current.instance_id())
-                            .unwrap()
-                            .get_port_forwards()
-                            .is_empty()
-                    );
-                    assert_eq!(
-                        manager
-                            .config(current.instance_id())
-                            .unwrap()
-                            .get_hostname(),
-                        hostname
-                    );
+                    if let Some(last) = previous.replace(current.clone()) {
+                        assert_eq!(last.instance_id(), current.instance_id());
+                        assert_eq!(Arc::ptr_eq(&last, current), unchanged);
+                    }
+                    let cfg = manager.config(current.instance_id()).unwrap();
+                    let key = cfg.get_secure_mode().unwrap().local_public_key.unwrap();
+                    if let Some(old_key) = public_key.replace(key.clone()) {
+                        assert_eq!(old_key, key);
+                    }
+                    assert!(cfg.get_port_forwards().is_empty());
+                    assert_eq!(cfg.get_hostname(), hostname);
                 }
                 respond(socket, status, body).await;
             }
@@ -316,7 +517,7 @@ mod tests {
                 .unwrap();
             started.await.unwrap().unwrap();
             manager.retain_network_instances(&[other]).await.unwrap();
-            respond(socket, "200 OK", FIRST).await;
+            respond(socket, "200 OK", &second).await;
             assert!(
                 tokio::time::timeout(Duration::from_secs(2), listener.accept())
                     .await

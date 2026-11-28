@@ -197,7 +197,7 @@ easytier-core --config-url https://config.example.org/node.toml --config-refresh
 
 此例每 300 秒检查一次；省略刷新周期则只在启动时获取。加上 `--check-config` 可仅检查远程 TOML，不启动网络。配置须为 UTF-8 编码，最大 1 MiB；含密钥时请使用 HTTPS。
 
-内容变化时，EasyTier 只重启对应实例，保留实例 ID。下载失败或配置无效不会中断当前实例。若新实例启动失败，EasyTier 会尝试恢复上一份配置。
+内容变化时，EasyTier 只重启对应实例，保留实例 ID。下载失败或配置无效不会中断当前实例。若新实例启动失败，EasyTier 会尝试恢复上一份配置；只要服务端内容未变，就不会重试这份失败的配置。同一进程内刷新同一网络时，会保留安全模式自动生成的密钥。
 
 #### 子网代理
 

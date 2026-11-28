@@ -66,6 +66,16 @@ fn validate_snapshot(
 }
 
 impl CoreInstanceConfig {
+    /// Run the side-effect-free startup checks before replacing a running instance.
+    pub fn validate_before_replacement(&self) -> anyhow::Result<()> {
+        self.validate_build_capabilities()?;
+        self.connectivity.runtime.public_ipv6_provider.validate()?;
+        crate::config::gateway::port_forwards_by_bind(
+            &self.connectivity.runtime.gateway.port_forwards,
+        )?;
+        Ok(())
+    }
+
     /// Check that this build supports the services requested by the configuration.
     pub fn validate_build_capabilities(&self) -> anyhow::Result<()> {
         validate_snapshot(&self.connectivity.runtime, &self.peer.snapshot)?;
