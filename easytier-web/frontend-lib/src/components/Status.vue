@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { NetworkInstance, type NetworkConfig, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance } from '../types/network'
+import type { NetworkConfig, TunnelInfo, NodeInfo, PeerRoutePair } from '../types/network'
 import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { latencyMs, lossRate, numericValue, peerConns, udpNatTypeName } from '../modules/statusDisplay';
+import { defaultConnFirst, latencyMs, lossRate, numericValue, peerConns, udpNatTypeName } from '../modules/statusDisplay';
 import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 import VpnPortalDialog from './VpnPortalDialog.vue';
@@ -14,15 +15,95 @@ const props = defineProps<{
   curNetworkInst: NetworkInstance | null,
   api: RemoteClient,
   readonly?: boolean,
+  copyText?: (text: string) => Promise<void>,
 }>()
 
 const { t } = useI18n()
+const hasFineHover = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
+
+const copiedPeerId = ref<string | null>(null)
+const statusRoot = ref<HTMLElement | null>(null)
+const touchTooltip = ref<{ text: string, left: number, top?: number, bottom?: number } | null>(null)
+const touchTooltipElement = ref<HTMLElement | null>(null)
+const longPressMs = 500
+const longPressMoveTolerance = 12
+let lastTouchAt = -Infinity
+let touchStart: { x: number, y: number } | null = null
+let longPressTimer: ReturnType<typeof setTimeout> | undefined
+
+function cancelLongPress() {
+  clearTimeout(longPressTimer)
+  longPressTimer = undefined
+  touchStart = null
+}
+
+function hostnameTooltip(info: PeerRoutePair) {
+  return {
+    content: formatHostnameWithTunnel(info),
+    triggers: hasFineHover ? ['hover', 'focus'] : [],
+    hideTriggers: hasFineHover ? ['hover', 'focus'] : [],
+  }
+}
+
+function onHostnameTouchStart(event: TouchEvent, info: PeerRoutePair) {
+  cancelLongPress()
+  lastTouchAt = Date.now()
+  if (event.touches.length !== 1) {
+    return
+  }
+  touchStart = { x: event.touches[0].clientX, y: event.touches[0].clientY }
+  const target = event.currentTarget as HTMLElement
+  longPressTimer = setTimeout(() => {
+    const rect = target.getBoundingClientRect()
+    const width = Math.min(window.innerWidth - 16, 512)
+    touchTooltip.value = {
+      text: formatHostnameWithTunnel(info),
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      ...(rect.bottom < window.innerHeight / 2
+        ? { top: rect.bottom + 8 }
+        : { bottom: window.innerHeight - rect.top + 8 }),
+    }
+    longPressTimer = undefined
+  }, longPressMs)
+}
+
+function onHostnameTouchMove(event: TouchEvent) {
+  const start = touchStart
+  if (!start || event.touches.length !== 1 ||
+    Math.abs(event.touches[0].clientX - start.x) > longPressMoveTolerance ||
+    Math.abs(event.touches[0].clientY - start.y) > longPressMoveTolerance) cancelLongPress()
+}
+
+function onHostnameTouchEnd() {
+  lastTouchAt = Date.now()
+  cancelLongPress()
+}
+
+function onHostnameContextMenu(event: MouseEvent) {
+  if (Date.now() - lastTouchAt < 1000) event.preventDefault()
+}
+
+function onHostnameDoubleClick(info: PeerRoutePair) {
+  if (Date.now() - lastTouchAt <= 500) return
+  void copyNodeAddr(info)
+}
+
+function onDocumentPointerDown(event: PointerEvent) {
+  const target = event.target
+  if (target instanceof Element && (
+    statusRoot.value?.contains(target.closest('[data-status-hostname]')) ||
+    touchTooltipElement.value?.contains(target)
+  )) return
+  touchTooltip.value = null
+  cancelLongPress()
+}
 
 const peerRouteInfos = computed(() => {
   if (props.curNetworkInst) {
     const my_node_info = props.curNetworkInst.detail?.my_node_info
     return [{
       route: {
+        peer_id: my_node_info?.peer_id,
         ipv4_addr: my_node_info?.virtual_ipv4,
         hostname: my_node_info?.hostname,
         version: my_node_info?.version,
@@ -130,6 +211,64 @@ function oneTunnelProto(tunnel?: TunnelInfo): string {
 
 function tunnelProto(info: PeerRoutePair) {
   return [...new Set(peerConns(info).map(c => oneTunnelProto(c.tunnel)))].join(',')
+}
+
+/**
+ * Returns the tunnel detail string for the default connection:
+ * "tunnel_type/local_addr/remote_addr".
+ * Falls back to "tunnel_type/" when addresses are missing.
+ */
+function formatTunnelDetail(info: PeerRoutePair): string {
+  const conns = defaultConnFirst(info)
+  for (const conn of conns) {
+    const tunnel = conn.tunnel
+    if (!tunnel) continue
+    const remoteAddr = tunnel.remote_addr?.url
+    // Prefer resolved_remote_addr, fall back to remote_addr
+    const resolvedRemoteAddr = tunnel.resolved_remote_addr?.url
+    if (remoteAddr && resolvedRemoteAddr && resolvedRemoteAddr !== remoteAddr)
+      return `${remoteAddr}/${resolvedRemoteAddr}`
+    return resolvedRemoteAddr || remoteAddr || ''
+  }
+  return ''
+}
+
+/**
+ * Formats the hostname column content and tooltip text:
+ * "Route.hostname(TunnelInfo.tunnel_type/local/remote)"
+ */
+function formatHostnameWithTunnel(info: PeerRoutePair): string {
+  const base = info.route?.hostname ?? ''
+  const tunnel = formatTunnelDetail(info)
+  return tunnel ? `${base}(${tunnel})` : base
+}
+
+/**
+ * Copies the formatted hostname+tunnel string to clipboard on double-click.
+ */
+async function copyNodeAddr(info: PeerRoutePair): Promise<void> {
+  const text = formatHostnameWithTunnel(info)
+  if (!text) return
+  try {
+    if (props.copyText) {
+      await props.copyText(text)
+    } else if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    copiedPeerId.value = info.route.peer_id?.toString() ?? ''
+    setTimeout(() => { copiedPeerId.value = null }, 1500)
+  } catch (error) {
+    console.error('Failed to copy hostname information', error)
+  }
 }
 
 const myNodeInfo = computed(() => {
@@ -281,6 +420,7 @@ const rxRate = ref('0')
 const showNodeDetails = ref(false)
 
 onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointerDown)
   rateIntervalId = window.setInterval(() => {
     const curTxSum = txGlobalSum()
     txRate.value = humanFileSize((curTxSum - prevTxSum) / (rateInterval / 1000))
@@ -293,7 +433,11 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
   clearInterval(rateIntervalId)
+  cancelLongPress()
+  touchTooltip.value = null
+  lastTouchAt = -Infinity
 })
 
 const dialogVisible = ref(false)
@@ -307,6 +451,9 @@ const vpnPortalEnabled = computed(() => props.curNetworkInst?.running
 
 watch(() => props.curNetworkInst?.instance_id, async (instanceId, _, onCleanup) => {
   let active = true
+  touchTooltip.value = null
+  cancelLongPress()
+  lastTouchAt = -Infinity
   vpnPortalVisible.value = false
   networkConfig.value = undefined
   if (!instanceId) return
@@ -340,7 +487,13 @@ function showEventLogs() {
 </script>
 
 <template>
-  <div class="frontend-lib">
+  <div ref="statusRoot" class="frontend-lib">
+    <Teleport to="body">
+      <div v-if="touchTooltip" ref="touchTooltipElement" class="status-touch-tooltip" role="tooltip"
+        :style="{ left: `${touchTooltip.left}px`, top: touchTooltip.top === undefined ? undefined : `${touchTooltip.top}px`, bottom: touchTooltip.bottom === undefined ? undefined : `${touchTooltip.bottom}px` }">
+        {{ touchTooltip.text }}
+      </div>
+    </Teleport>
     <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" class="w-full h-auto max-h-full"
       :baseZIndex="2000">
       <Timeline :value="dialogContent">
@@ -426,11 +579,25 @@ function showEventLogs() {
             <Column :header="t('hostname')">
               <template #body="slotProps">
                 <div v-if="!slotProps.data.route.cost || !isPublicServerRoute(slotProps.data)"
-                  v-tooltip="slotProps.data.route.hostname">
-                  {{
-                    slotProps.data.route.hostname }}
+                  v-tooltip="hostnameTooltip(slotProps.data)" data-status-hostname
+                  @touchstart="onHostnameTouchStart($event, slotProps.data)"
+                  @touchmove="onHostnameTouchMove($event)"
+                  @touchend="onHostnameTouchEnd"
+                  @touchcancel="onHostnameTouchEnd"
+                  @contextmenu="onHostnameContextMenu($event)"
+                  @dblclick.prevent="onHostnameDoubleClick(slotProps.data)"
+                  :class="{ 'copy-feedback': copiedPeerId === slotProps.data.route.peer_id?.toString() }">
+                  {{ formatHostnameWithTunnel(slotProps.data) }}
                 </div>
-                <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
+                <div v-else v-tooltip="hostnameTooltip(slotProps.data)" data-status-hostname
+                  class="space-x-1"
+                  @touchstart="onHostnameTouchStart($event, slotProps.data)"
+                  @touchmove="onHostnameTouchMove($event)"
+                  @touchend="onHostnameTouchEnd"
+                  @touchcancel="onHostnameTouchEnd"
+                  @contextmenu="onHostnameContextMenu($event)"
+                  @dblclick.prevent="onHostnameDoubleClick(slotProps.data)"
+                  :class="{ 'copy-feedback': copiedPeerId === slotProps.data.route.peer_id?.toString() }">
                   <Tag v-if="isPublicServerRoute(slotProps.data)" severity="info" value="Info">
                     {{ t('status.server') }}
                   </Tag>
@@ -466,5 +633,45 @@ function showEventLogs() {
 
 :deep(.p-datatable .p-datatable-column-title) {
   white-space: nowrap;
+}
+
+.copy-feedback {
+  outline: 1.5px solid var(--p-primary-color, #3b82f6);
+  outline-offset: 2px;
+  border-radius: 3px;
+  transition: outline-offset 0.15s;
+}
+
+[data-status-hostname] {
+  touch-action: manipulation;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  [data-status-hostname] {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+}
+</style>
+
+<style>
+.status-touch-tooltip {
+  position: fixed;
+  z-index: 10000;
+  box-sizing: border-box;
+  max-width: min(calc(100vw - 16px), 32rem);
+  max-height: 40vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  padding: 7px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .85);
+  color: white;
+  pointer-events: auto;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 </style>

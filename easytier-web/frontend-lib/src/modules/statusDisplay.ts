@@ -48,7 +48,7 @@ function defaultConnId(info: PeerRoutePair) {
   return `${part1Hex}-${part2Hex.slice(0, 4)}-${part2Hex.slice(4, 8)}-${part3Hex.slice(0, 4)}-${part3Hex.slice(4, 8)}${part4Hex}`
 }
 
-function defaultConnFirst(info: PeerRoutePair) {
+export function defaultConnFirst(info: PeerRoutePair) {
   const conns = peerConns(info)
   const connId = defaultConnId(info)
   if (!connId)

@@ -285,6 +285,39 @@ pub mod instance {
             }
             format!("{:?}", ret)
         }
+
+        /// Returns the resolved (actual) remote socket address for the default
+        /// connection, e.g. `quic://203.0.113.5:443`.
+        ///
+        /// When no tunnel info is present (local/self row) returns `None`.
+        /// Falls back to `remote_addr` when `resolved_remote_addr` is not set.
+        pub fn get_remote_addr(&self) -> Option<String> {
+            let p = self.peer.as_ref()?;
+            for conn in &p.conns {
+                let Some(tunnel) = conn.tunnel.as_ref() else {
+                    continue;
+                };
+                if let Some(addr) = tunnel.display_remote_addr() {
+                    return Some(addr);
+                }
+            }
+            None
+        }
+
+        /// Returns the local bound address for the default connection, e.g.
+        /// `quic://192.168.1.2:54321`.
+        pub fn get_local_addr(&self) -> Option<String> {
+            let p = self.peer.as_ref()?;
+            for conn in &p.conns {
+                let Some(tunnel) = conn.tunnel.as_ref() else {
+                    continue;
+                };
+                if let Some(addr) = tunnel.display_local_addr() {
+                    return Some(addr);
+                }
+            }
+            None
+        }
     }
 
     pub fn list_peer_route_pair(peers: Vec<PeerInfo>, routes: Vec<Route>) -> Vec<PeerRoutePair> {
@@ -624,5 +657,144 @@ mod tests {
 
         let unknown_json = serde_json::to_value(unknown).unwrap();
         assert_eq!(unknown_json["route"]["stun_info"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn peer_route_pair_get_remote_addr_returns_resolved() {
+        use super::instance::{PeerConnInfo, PeerInfo, Route};
+        use crate::proto::common::{TunnelInfo, Url};
+
+        let pair = PeerRoutePair {
+            route: Some(Route { peer_id: 1, ..Default::default() }),
+            peer: Some(PeerInfo {
+                peer_id: 1,
+                conns: vec![PeerConnInfo {
+                    conn_id: "c1".to_string(),
+                    tunnel: Some(TunnelInfo {
+                        tunnel_type: "quic".to_string(),
+                        local_addr: Some(Url {
+                            url: "quic://192.168.1.2:54321".to_string(),
+                        }),
+                        remote_addr: Some(Url {
+                            url: "quic://relay.example.com:443".to_string(),
+                        }),
+                        resolved_remote_addr: Some(Url {
+                            url: "quic://203.0.113.5:443".to_string(),
+                        }),
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        };
+        assert_eq!(
+            pair.get_remote_addr(),
+            Some("quic://203.0.113.5:443".to_string())
+        );
+    }
+
+    #[test]
+    fn peer_route_pair_get_remote_addr_fallback_to_remote() {
+        use super::instance::{PeerConnInfo, PeerInfo, Route};
+        use crate::proto::common::{TunnelInfo, Url};
+
+        let pair = PeerRoutePair {
+            route: Some(Route { peer_id: 1, ..Default::default() }),
+            peer: Some(PeerInfo {
+                peer_id: 1,
+                conns: vec![PeerConnInfo {
+                    conn_id: "c1".to_string(),
+                    tunnel: Some(TunnelInfo {
+                        tunnel_type: "tcp".to_string(),
+                        local_addr: None,
+                        remote_addr: Some(Url {
+                            url: "tcp://1.2.3.4:11010".to_string(),
+                        }),
+                        resolved_remote_addr: None,
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        };
+        assert_eq!(
+            pair.get_remote_addr(),
+            Some("tcp://1.2.3.4:11010".to_string())
+        );
+    }
+
+    #[test]
+    fn peer_route_pair_get_local_addr() {
+        use super::instance::{PeerConnInfo, PeerInfo, Route};
+        use crate::proto::common::{TunnelInfo, Url};
+
+        let pair = PeerRoutePair {
+            route: Some(Route { peer_id: 1, ..Default::default() }),
+            peer: Some(PeerInfo {
+                peer_id: 1,
+                conns: vec![PeerConnInfo {
+                    conn_id: "c1".to_string(),
+                    tunnel: Some(TunnelInfo {
+                        tunnel_type: "quic".to_string(),
+                        local_addr: Some(Url {
+                            url: "quic://192.168.1.2:54321".to_string(),
+                        }),
+                        remote_addr: None,
+                        resolved_remote_addr: None,
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        };
+        assert_eq!(
+            pair.get_local_addr(),
+            Some("quic://192.168.1.2:54321".to_string())
+        );
+    }
+
+    #[test]
+    fn peer_route_pair_get_remote_addr_returns_none_when_no_tunnel() {
+        use super::instance::{PeerConnInfo, PeerInfo, Route};
+
+        let pair = PeerRoutePair {
+            route: Some(Route { peer_id: 1, ..Default::default() }),
+            peer: Some(PeerInfo {
+                peer_id: 1,
+                conns: vec![PeerConnInfo {
+                    conn_id: "c1".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        };
+        assert!(pair.get_remote_addr().is_none());
+        assert!(pair.get_local_addr().is_none());
+    }
+
+    #[test]
+    fn peer_route_pair_skips_connection_without_tunnel() {
+        use super::instance::{PeerConnInfo, PeerInfo, Route};
+        use crate::proto::common::{TunnelInfo, Url};
+
+        let pair = PeerRoutePair {
+            route: Some(Route { peer_id: 1, ..Default::default() }),
+            peer: Some(PeerInfo {
+                conns: vec![
+                    PeerConnInfo::default(),
+                    PeerConnInfo {
+                        tunnel: Some(TunnelInfo {
+                            local_addr: Some(Url { url: "tcp://local:1".to_string() }),
+                            remote_addr: Some(Url { url: "tcp://remote:2".to_string() }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+        };
+        assert_eq!(pair.get_local_addr().as_deref(), Some("tcp://local:1"));
+        assert_eq!(pair.get_remote_addr().as_deref(), Some("tcp://remote:2"));
     }
 }
